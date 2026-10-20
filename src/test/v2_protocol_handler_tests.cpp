@@ -13,6 +13,8 @@
 #include <blockencodings.h>
 #include <chain.h>
 #include <chainparams.h>
+#include <common/args.h>
+#include <net/txrelay_index.h>
 #include <config.h>
 #include <consensus/merkle.h>
 #include <logging.h>
@@ -35,6 +37,7 @@
 #include <test/util/net.h>
 #include <test/util/random.h>
 #include <test/util/setup_common.h>
+#include <test/util/validation.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -1622,8 +1625,14 @@ BOOST_AUTO_TEST_CASE(permissions_follow_fixed_relay_tick) {
                    std::move(node_opts));
         connman->Handshake(node, true, NODE_NETWORK, NODE_NETWORK,
                            PROTOCOL_VERSION, true);
-        peerman->GetV2ProtocolHandler()->SetHighBandwidthShortTxPeer(
-            node.GetId(), high_bandwidth);
+        DataStream capability{};
+        capability << txrelay::SENDINVSHORT_VERSION
+                   << (high_bandwidth
+                           ? uint64_t{txrelay::TXRELAY_HIGH_BANDWIDTH}
+                           : uint64_t{0});
+        std::atomic<bool> interrupt{false};
+        peerman->ProcessMessage(config, node, NetMsgType::SENDINVSHORT,
+                                capability, 0us, interrupt);
         // Prime both clocks before any transaction exists. A single relay
         // cannot trigger the 16-item fast-burst threshold.
         BOOST_REQUIRE(peerman->SendMessages(config, &node));
@@ -1707,8 +1716,14 @@ BOOST_AUTO_TEST_CASE(single_tx_relays_wait_for_the_relay_tick) {
                            PROTOCOL_VERSION, true);
         BOOST_CHECK(peerman->SendMessages(config, &node));
         WITH_LOCK(node.cs_vSend, node.vSendMsg.clear());
-        peerman->GetV2ProtocolHandler()->SetHighBandwidthShortTxPeer(
-            node.GetId(), high_bandwidth);
+        DataStream capability{};
+        capability << txrelay::SENDINVSHORT_VERSION
+                   << (high_bandwidth
+                           ? uint64_t{txrelay::TXRELAY_HIGH_BANDWIDTH}
+                           : uint64_t{0});
+        std::atomic<bool> interrupt{false};
+        peerman->ProcessMessage(config, node, NetMsgType::SENDINVSHORT,
+                                capability, 0us, interrupt);
         FastRandomContext rng(uint256{static_cast<uint8_t>(100 + scenario)});
         std::vector<CTransactionRef> txs;
         TestMemPoolEntryHelper entry;
@@ -1887,8 +1902,14 @@ BOOST_AUTO_TEST_CASE(bursts_wait_for_the_relay_tick) {
                            PROTOCOL_VERSION, true);
         BOOST_CHECK(peerman->SendMessages(config, &node));
         WITH_LOCK(node.cs_vSend, node.vSendMsg.clear());
-        peerman->GetV2ProtocolHandler()->SetHighBandwidthShortTxPeer(
-            node.GetId(), high_bandwidth);
+        DataStream capability{};
+        capability << txrelay::SENDINVSHORT_VERSION
+                   << (high_bandwidth
+                           ? uint64_t{txrelay::TXRELAY_HIGH_BANDWIDTH}
+                           : uint64_t{0});
+        std::atomic<bool> interrupt{false};
+        peerman->ProcessMessage(config, node, NetMsgType::SENDINVSHORT,
+                                capability, 0us, interrupt);
         FastRandomContext rng(uint256{static_cast<uint8_t>(100 + scenario)});
         std::vector<CTransactionRef> txs;
         TestMemPoolEntryHelper entry;
@@ -2547,6 +2568,173 @@ BOOST_AUTO_TEST_CASE(tachyon_avalanche_snapsync_reverse_peel_and_opt_out) {
 }
 
 
+BOOST_AUTO_TEST_CASE(relay_epoch_responses_use_authoritative_requests) {
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    struct ResetClock {
+        ~ResetClock() {
+            SetMockTime(0);
+            gArgs.ClearForcedArg("-highbandwidthtx");
+        }
+    } reset_clock;
+    gArgs.ForceSetArg("-highbandwidthtx", "0");
+    SetMockTime(1'700'000'000);
+    auto &chainman{static_cast<TestChainstateManager &>(*m_node.chainman)};
+    chainman.JumpOutOfIbd();
+    const Config &config{chainman.GetConfig()};
+    auto connman = std::make_unique<ConnmanTestMsg>(
+        config, 123, 456, *m_node.addrman);
+    PeerManager::Options peer_opts;
+    peer_opts.deterministic_rng = true;
+    peer_opts.txrelay_shortid_bits = 6; // deterministic collision coverage
+    auto peerman = PeerManager::make(
+        *connman, *m_node.addrman, nullptr, chainman, *m_node.mempool,
+        nullptr, peer_opts);
+    CConnman::Options opts;
+    opts.m_msgproc = {peerman.get()};
+    opts.nSendBufferMaxSize = 16 * 1024 * 1024;
+    connman->Init(opts);
+    MockRelayTick tick{12'000'000ms};
+    std::vector<CNode *> peers;
+    std::atomic<bool> interrupt{false};
+    for (int i = 0; i < 2; ++i) {
+        CAddress addr(MakeTestIp(0xa0b0c0a0 + i), NODE_NONE);
+        auto *peer = new CNode(960 + i, nullptr, addr, 0, 0, 0,
+                              CAddress(), "",
+                              ConnectionType::OUTBOUND_FULL_RELAY, false);
+        connman->Handshake(*peer, true, NODE_NETWORK, NODE_NETWORK,
+                           PROTOCOL_VERSION, true);
+        connman->AddTestNode(*peer);
+        peers.push_back(peer);
+        DataStream offer{};
+        offer << txrelay::SENDINVSHORT_VERSION
+              << uint64_t{txrelay::TXRELAY_INVSHORT};
+        peerman->ProcessMessage(config, *peer, NetMsgType::SENDINVSHORT,
+                                offer, 0us, interrupt);
+        peer->m_bip152_highbandwidth_to = false;
+        peer->m_bip152_highbandwidth_from = false;
+        WITH_LOCK(peer->cs_vSend, peer->vSendMsg.clear());
+    }
+    auto *handler{peerman->GetV2ProtocolHandler()};
+    BOOST_REQUIRE(!handler->IsHighBandwidthShortTxPeer(peers[0]->GetId()));
+    const auto tip{WITH_LOCK(cs_main, return chainman.ActiveTip())};
+    const auto epoch{txrelay::MakeEpochKey(tip->GetBlockHash(), tip->nHeight)};
+    const auto short_id = [&](const CTransactionRef &tx) {
+        return txrelay::ComputeShortId(epoch.k0, epoch.k1, tx->GetId(), 6);
+    };
+    FastRandomContext rng{uint256{0x71}};
+    auto requested_tx{MakeNonCoinbaseTx(rng, 0x71)};
+    BOOST_REQUIRE(requested_tx);
+    const auto sid{short_id(requested_tx)};
+    CTransactionRef colliding_tx, unrequested_tx, expired_tx;
+    for (unsigned attempt = 0; attempt < 1024 && !colliding_tx; ++attempt) {
+        const auto tx{MakeNonCoinbaseTx(rng, 0x74)};
+        BOOST_REQUIRE(tx);
+        if (short_id(tx) == sid) colliding_tx = tx;
+    }
+    for (unsigned attempt = 0; attempt < 1024 && !unrequested_tx; ++attempt) {
+        const auto tx{MakeNonCoinbaseTx(rng, 0x72)};
+        BOOST_REQUIRE(tx);
+        if (short_id(tx) != sid) unrequested_tx = tx;
+    }
+    BOOST_REQUIRE(colliding_tx && unrequested_tx);
+    for (unsigned attempt = 0; attempt < 1024 && !expired_tx; ++attempt) {
+        const auto tx{MakeNonCoinbaseTx(rng, 0x73)};
+        BOOST_REQUIRE(tx);
+        if (short_id(tx) != sid && short_id(tx) != short_id(unrequested_tx)) {
+            expired_tx = tx;
+        }
+    }
+    BOOST_REQUIRE(expired_tx);
+    for (const auto &tx : {requested_tx, colliding_tx, unrequested_tx, expired_tx}) {
+        FundTxInputInCoinsTip(chainman, *tx);
+    }
+    std::vector<uint64_t> ids;
+    for (uint64_t i = 1; ids.size() < 4999; ++i) {
+        if (i != sid && i != short_id(unrequested_tx) && i != short_id(expired_tx)) {
+            ids.push_back(i);
+        }
+    }
+    ids.push_back(sid);
+    auto announce = [&](const std::vector<uint64_t> &announced) {
+        DataStream message{};
+        message << epoch.epoch_id << announced;
+        peerman->ProcessMessage(config, *peers[0], NetMsgType::INVSHORT,
+                                message, 0us, interrupt);
+    };
+    auto send_requests = [&] {
+        BOOST_REQUIRE(peerman->SendMessages(config, peers[0]));
+        std::vector<uint64_t> requested;
+        V1TransportDeserializer deserializer(config, peers[0]->GetId());
+        LOCK(peers[0]->cs_vSend);
+        for (const auto &chunk : peers[0]->vSendMsg) {
+            Span<const uint8_t> bytes{chunk};
+            while (!bytes.empty()) {
+                BOOST_REQUIRE_GE(deserializer.Read(config, bytes), 0);
+                if (!deserializer.Complete()) continue;
+                bool rejected{false};
+                auto message = deserializer.GetMessage(0us, rejected);
+                BOOST_REQUIRE(!rejected);
+                if (message.m_type == NetMsgType::GETSHORTTX) {
+                    ShortTxRequest request;
+                    message.m_recv >> request;
+                    requested.insert(requested.end(), request.short_ids.begin(),
+                                     request.short_ids.end());
+                }
+            }
+        }
+        peers[0]->vSendMsg.clear();
+        return requested;
+    };
+    auto respond = [&](CNode &peer, const uint256 &context,
+                       const CTransactionRef &tx) {
+        ShortTxResponse response;
+        response.context_id = context;
+        response.txs = {tx};
+        DataStream message{};
+        message << response;
+        peerman->ProcessMessage(config, peer, NetMsgType::SHORTTX,
+                                message, 1us, interrupt);
+    };
+    announce(ids);
+    const auto requested{send_requests()};
+    BOOST_REQUIRE_EQUAL(requested.size(), 5000U);
+    BOOST_CHECK_EQUAL(requested.back(), sid);
+    // The authoritative request exists beyond the old duplicate 4096-ID cap.
+    // A different peer, epoch or unrequested body still cannot answer it.
+    respond(*peers[1], epoch.epoch_id, requested_tx);
+    BOOST_CHECK(!m_node.mempool->exists(requested_tx->GetId()));
+    respond(*peers[0], epoch.epoch_id, unrequested_tx);
+    BOOST_CHECK(!m_node.mempool->exists(unrequested_tx->GetId()));
+    respond(*peers[0], rng.rand256(), requested_tx);
+    BOOST_CHECK(!m_node.mempool->exists(requested_tx->GetId()));
+    {
+        // Both valid transactions match the requested short ID. Selection must
+        // precede consuming that request while admitting the first body.
+        ShortTxResponse response;
+        response.context_id = epoch.epoch_id;
+        response.txs = {requested_tx, colliding_tx};
+        DataStream message{};
+        message << response;
+        peerman->ProcessMessage(config, *peers[0], NetMsgType::SHORTTX,
+                                message, 1us, interrupt);
+    }
+    BOOST_CHECK(m_node.mempool->exists(requested_tx->GetId()));
+    BOOST_CHECK(m_node.mempool->exists(colliding_tx->GetId()));
+    const auto expired_sid{short_id(expired_tx)};
+    announce({expired_sid});
+    BOOST_REQUIRE_EQUAL(send_requests().size(), 1U);
+    SetMockTime(1'700'000'003);
+    tick.Set(12'003'000ms);
+    send_requests();
+    respond(*peers[0], epoch.epoch_id, expired_tx);
+    BOOST_CHECK(!m_node.mempool->exists(expired_tx->GetId()));
+    for (CNode *peer : peers) {
+        peerman->FinalizeNode(config, *peer);
+    }
+    connman->ClearTestNodes();
+    chainman.ResetIbd();
+}
+
 BOOST_AUTO_TEST_CASE(shorttx_batch_admission_fallback_and_proactive_push) {
     LOCK(NetEventsInterface::g_msgproc_mutex);
     MockRelayTick tick{std::chrono::milliseconds{9'000'001}};
@@ -2632,6 +2820,16 @@ BOOST_AUTO_TEST_CASE(shorttx_batch_admission_fallback_and_proactive_push) {
     FastRandomContext rng(uint256{88});
     std::atomic<bool> interrupt{false};
     auto cur_time = std::chrono::microseconds{base_time * 1'000'000};
+
+    // BIP152 high bandwidth alone does not opt into private body pushes.
+    // Negotiate the actual remote capability before checking outgoing SHORTTX.
+    BOOST_CHECK(!v2_handler->IsHighBandwidthShortTxPeer(peer_hb.GetId()));
+    DataStream hb_offer{};
+    hb_offer << txrelay::SENDINVSHORT_VERSION
+             << uint64_t{txrelay::TXRELAY_HIGH_BANDWIDTH};
+    peerman->ProcessMessage(config, peer_hb, NetMsgType::SENDINVSHORT,
+                            hb_offer, cur_time, interrupt);
+    BOOST_CHECK(v2_handler->IsHighBandwidthShortTxPeer(peer_hb.GetId()));
 
     // 1. Batch of 20 valid transactions in SHORTTX (including a parent-child
     //    pair placed out of topological order: child before parent):
@@ -2867,6 +3065,10 @@ BOOST_AUTO_TEST_CASE(shorttx_batch_admission_fallback_and_proactive_push) {
 
 BOOST_AUTO_TEST_CASE(high_bandwidth_sealedheader_push_and_peer_cleanup) {
     LOCK(NetEventsInterface::g_msgproc_mutex);
+    struct ResetArgs {
+        ~ResetArgs() { gArgs.ClearForcedArg("-highbandwidthtx"); }
+    } reset_args;
+    gArgs.ForceSetArg("-highbandwidthtx", "1");
     SetMockTime(
         WITH_LOCK(cs_main, return m_node.chainman->ActiveTip()->GetBlockTime()));
 
@@ -2929,19 +3131,22 @@ BOOST_AUTO_TEST_CASE(high_bandwidth_sealedheader_push_and_peer_cleanup) {
         connman->AddTestNode(*p);
     }
 
-    // Opt in peer_sender and peer_hb as high-bandwidth V2 peers; keep peer_normal
-    // as a standard low-bandwidth peer.
-    peer_sender->m_bip152_highbandwidth_to = true;
-    peer_sender->m_bip152_highbandwidth_from = true;
-    v2_handler->SetHighBandwidthShortTxPeer(peer_sender->GetId(), true);
-
-    peer_hb->m_bip152_highbandwidth_to = true;
-    peer_hb->m_bip152_highbandwidth_from = true;
-    v2_handler->SetHighBandwidthShortTxPeer(peer_hb->GetId(), true);
-
-    peer_normal->m_bip152_highbandwidth_to = false;
-    peer_normal->m_bip152_highbandwidth_from = false;
-    v2_handler->SetHighBandwidthShortTxPeer(peer_normal->GetId(), false);
+    // Only an explicit remote private-format offer enables sealed relay.
+    // Stock peers can request BIP152 high bandwidth without supporting it.
+    auto offer = [&](CNode &node, uint64_t flags) {
+        DataStream message{};
+        message << txrelay::SENDINVSHORT_VERSION << flags;
+        std::atomic<bool> interrupt{false};
+        peerman->ProcessMessage(config, node, NetMsgType::SENDINVSHORT,
+                                message, 0us, interrupt);
+    };
+    BOOST_CHECK(!v2_handler->IsHighBandwidthShortTxPeer(peer_hb->GetId()));
+    offer(*peer_sender, txrelay::TXRELAY_HIGH_BANDWIDTH);
+    offer(*peer_hb, txrelay::TXRELAY_HIGH_BANDWIDTH | (1ULL << 40));
+    BOOST_CHECK(v2_handler->IsHighBandwidthShortTxPeer(peer_hb->GetId()));
+    peer_normal->m_bip152_highbandwidth_to = true;
+    peer_normal->m_bip152_highbandwidth_from = true;
+    BOOST_CHECK(!v2_handler->IsHighBandwidthShortTxPeer(peer_normal->GetId()));
 
     // 1. Build a valid V2 block containing tx1 on top of the current tip, and
     //    add tx1 to the mempool WITHOUT manually calling SyncMerklixOverlayToTip
@@ -3050,6 +3255,23 @@ BOOST_AUTO_TEST_CASE(high_bandwidth_sealedheader_push_and_peer_cleanup) {
         }
     }
     BOOST_CHECK_EQUAL(hb_sealedheader_count, 1U);
+
+    {
+        V1TransportDeserializer deserializer(config, peer_normal->GetId());
+        LOCK(peer_normal->cs_vSend);
+        for (const auto &chunk : peer_normal->vSendMsg) {
+            Span<const uint8_t> bytes{chunk};
+            while (!bytes.empty()) {
+                BOOST_REQUIRE_GE(deserializer.Read(config, bytes), 0);
+                if (deserializer.Complete()) {
+                    bool rejected{false};
+                    const auto message = deserializer.GetMessage(0us, rejected);
+                    BOOST_CHECK(!rejected);
+                    BOOST_CHECK_NE(message.m_type, NetMsgType::SEALEDHEADER);
+                }
+            }
+        }
+    }
 
     // 3. Verify duplicate SEALEDHEADER from peer_hb for an already-connected
     //    block is a no-op (no fallback GETDATA(MSG_CMPCT_BLOCK) emitted).

@@ -56,9 +56,13 @@ class P2PWebSocketInboundTest(BitcoinTestFramework):
             their_version = peer.handshake()
             assert_equal(their_version.nStartingHeight, 10)
 
-            ping = msg_ping(nonce=0x1234567890)
-            peer.send_message(ping)
-            assert_equal(peer.wait_for(b"pong").nonce, 0x1234567890)
+            # A few pings: the handshake alone is too small for stream
+            # compression without a dictionary to beat its own overhead
+            # reliably (every message the node adds after verack shifts it).
+            for i in range(10):
+                ping = msg_ping(nonce=0x1234567890 + i)
+                peer.send_message(ping)
+                assert_equal(peer.wait_for(b"pong").nonce, 0x1234567890 + i)
 
             self.wait_until(lambda: len(self.ws_peers()) == 1)
             info = self.ws_peers()[0]

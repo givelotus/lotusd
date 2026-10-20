@@ -7,8 +7,11 @@
 #include <net_processing.h>
 
 #include <config.h>
+#include <common/args.h>
 #include <net.h>
+#include <net/txrelay_index.h>
 #include <net/v2_protocol_handler.h>
+#include <node/snapshot.h>
 #include <primitives/transaction.h>
 #include <protocol.h>
 #include <script/script.h>
@@ -21,6 +24,7 @@
 #include <test/util/net.h>
 #include <test/util/random.h>
 #include <test/util/setup_common.h>
+#include <test/util/validation.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -65,7 +69,13 @@ CTransactionRef MakeTx(FastRandomContext &rng,
 struct Sent {
     std::vector<TxId> inv_txids;
     std::vector<TxId> shorttx_txids;
-    size_t Total() const { return inv_txids.size() + shorttx_txids.size(); }
+    //! invshort announcements: (epoch_id, short id)
+    std::vector<std::pair<uint256, uint64_t>> short_ids;
+    //! getshorttx requests
+    std::vector<lotus::v2::net::ShortTxRequest> short_requests;
+    size_t Total() const {
+        return inv_txids.size() + shorttx_txids.size() + short_ids.size();
+    }
 };
 
 /** A PeerManager with full-relay peers, driven by a mocked relay tick clock */
@@ -142,6 +152,17 @@ struct RelayHarness {
                             sent.inv_txids.emplace_back(inv.hash);
                         }
                     }
+                } else if (msg.m_type == NetMsgType::INVSHORT) {
+                    uint256 epoch_id;
+                    std::vector<uint64_t> ids;
+                    msg.m_recv >> epoch_id >> ids;
+                    for (const uint64_t id : ids) {
+                        sent.short_ids.emplace_back(epoch_id, id);
+                    }
+                } else if (msg.m_type == NetMsgType::GETSHORTTX) {
+                    lotus::v2::net::ShortTxRequest req;
+                    msg.m_recv >> req;
+                    sent.short_requests.push_back(std::move(req));
                 } else if (msg.m_type == NetMsgType::SHORTTX) {
                     lotus::v2::net::ShortTxResponse response;
                     msg.m_recv >> response;
@@ -390,6 +411,270 @@ BOOST_AUTO_TEST_CASE(per_tick_rate_budget) {
         total += n;
     }
     BOOST_CHECK_EQUAL(total, 25U);
+}
+
+BOOST_AUTO_TEST_CASE(shortid_index_epochs_and_collisions) {
+    using txrelay::TxRelayIndex;
+    FastRandomContext rng{true};
+    const auto key1{txrelay::MakeEpochKey(BlockHash{rng.rand256()}, 100)};
+    const auto key2{txrelay::MakeEpochKey(BlockHash{rng.rand256()}, 101)};
+    const auto key3{txrelay::MakeEpochKey(BlockHash{rng.rand256()}, 102)};
+    BOOST_CHECK(key1.k0 != key2.k0 || key1.k1 != key2.k1);
+    // Deterministic: every node derives the same key for the same tip.
+    BOOST_CHECK(txrelay::MakeEpochKey(BlockHash{key1.epoch_id}, 100) == key1);
+
+    // Request keys round-trip and never parse under another epoch.
+    const uint64_t sid{0x0123456789abcdefULL};
+    const uint256 rkey{txrelay::ShortIdRequestKey(key1.epoch_id, sid)};
+    BOOST_CHECK(txrelay::ParseShortIdRequestKey(rkey, key1.epoch_id) == sid);
+    BOOST_CHECK(!txrelay::ParseShortIdRequestKey(rkey, key2.epoch_id));
+    BOOST_CHECK(!txrelay::ParseShortIdRequestKey(rng.rand256(), key1.epoch_id));
+
+    TxRelayIndex index;
+    BOOST_CHECK(!index.Current());
+    std::vector<std::pair<TxId, std::chrono::microseconds>> mempool;
+    for (int i = 0; i < 50; ++i) {
+        mempool.emplace_back(TxId{rng.rand256()},
+                             std::chrono::microseconds{i * 1'000'000});
+    }
+    index.SetEpoch(key1, mempool);
+    BOOST_CHECK(index.Current() == key1);
+    BOOST_CHECK_EQUAL(index.Size(), 50U);
+    const TxId &a{mempool[0].first};
+    std::vector<TxId> out;
+    BOOST_CHECK(index.Find(key1.epoch_id, index.ShortId(key1, a), &out) ==
+                TxRelayIndex::Lookup::HAVE);
+    BOOST_REQUIRE_EQUAL(out.size(), 1U);
+    BOOST_CHECK(out[0] == a);
+    BOOST_CHECK(index.Find(key2.epoch_id, 1) ==
+                TxRelayIndex::Lookup::UNKNOWN_EPOCH);
+
+    // A new epoch re-keys; the previous one stays readable, an older one
+    // is dropped.
+    index.Remove(a);
+    BOOST_CHECK(index.Find(key1.epoch_id, index.ShortId(key1, a)) ==
+                TxRelayIndex::Lookup::MISSING);
+    index.SetEpoch(key2, {mempool.begin() + 1, mempool.end()});
+    BOOST_CHECK(index.Current() == key2);
+    BOOST_CHECK(index.FindEpoch(key1.epoch_id) == key1);
+    const TxId &b{mempool[1].first};
+    BOOST_CHECK(index.Find(key1.epoch_id, index.ShortId(key1, b)) ==
+                TxRelayIndex::Lookup::HAVE);
+    BOOST_CHECK(index.Find(key2.epoch_id, index.ShortId(key2, b)) ==
+                TxRelayIndex::Lookup::HAVE);
+    // Removal affects only the current epoch.
+    index.Remove(b);
+    BOOST_CHECK(index.Find(key1.epoch_id, index.ShortId(key1, b)) ==
+                TxRelayIndex::Lookup::HAVE);
+    index.SetEpoch(key3, {});
+    BOOST_CHECK(!index.FindEpoch(key1.epoch_id));
+    BOOST_CHECK(index.FindEpoch(key2.epoch_id));
+
+    // Window: transactions admitted since a time, still indexed.
+    TxRelayIndex window_index;
+    window_index.SetEpoch(key1, mempool);
+    const auto recent{
+        window_index.AdmittedSince(std::chrono::microseconds{40'000'000})};
+    BOOST_CHECK_EQUAL(recent.size(), 10U);
+    window_index.Remove(mempool[45].first);
+    window_index.Add(TxId{rng.rand256()},
+                     std::chrono::microseconds{60'000'000});
+    BOOST_CHECK_EQUAL(
+        window_index.AdmittedSince(std::chrono::microseconds{40'000'000})
+            .size(),
+        10U);
+    window_index.PruneWindow(std::chrono::microseconds{45'000'000});
+    BOOST_CHECK_EQUAL(
+        window_index.AdmittedSince(std::chrono::microseconds{0}).size(), 5U);
+
+    // Collisions (forced with 4-bit ids): both are kept under the id and
+    // counted.
+    TxRelayIndex narrow{4};
+    narrow.SetEpoch(key1, mempool);
+    BOOST_CHECK_GT(narrow.Collisions(), 30U);
+    size_t total{0};
+    for (uint64_t id = 1; id < 16; ++id) {
+        std::vector<TxId> under;
+        narrow.Find(key1.epoch_id, id, &under);
+        total += under.size();
+    }
+    BOOST_CHECK_EQUAL(total, 50U);
+}
+
+BOOST_AUTO_TEST_CASE(invshort_negotiation_and_announcements) {
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    MockTick clock{5'000'000ms};
+    auto &chainman{static_cast<TestChainstateManager &>(*m_node.chainman)};
+    chainman.JumpOutOfIbd();
+    RelayHarness h{m_node, PeerManager::Options{}};
+    CNode &stock = h.AddPeer();
+    CNode &nucleation = h.AddPeer();
+    // Our sendinvshort went out after verack (to both peers).
+    // Only the second peer offers short ids.
+    {
+        DataStream offer{};
+        offer << txrelay::SENDINVSHORT_VERSION
+              << uint64_t{txrelay::TXRELAY_INVSHORT | (1ULL << 40)};
+        std::atomic<bool> interrupt{false};
+        h.peerman->ProcessMessage(h.config, nucleation,
+                                  NetMsgType::SENDINVSHORT, offer, 0us,
+                                  interrupt);
+    }
+    h.SendAll();
+
+    FastRandomContext rng{true};
+    auto tx{MakeTx(rng)};
+    AddToMempool(m_node, tx);
+    h.peerman->RelayTransaction(tx->GetId());
+    clock.Set(5'000'010ms);
+    auto sent{h.SendAll()};
+    // The stock peer gets an ordinary INV, the other a short id under the
+    // current tip's epoch key.
+    BOOST_REQUIRE_EQUAL(sent[stock.GetId()].inv_txids.size(), 1U);
+    BOOST_CHECK(sent[stock.GetId()].short_ids.empty());
+    BOOST_CHECK(sent[nucleation.GetId()].inv_txids.empty());
+    BOOST_REQUIRE_EQUAL(sent[nucleation.GetId()].short_ids.size(), 1U);
+    const auto [epoch_id, sid] = sent[nucleation.GetId()].short_ids[0];
+    const auto tip{WITH_LOCK(::cs_main, return m_node.chainman->ActiveTip())};
+    const auto key{txrelay::MakeEpochKey(tip->GetBlockHash(), tip->nHeight)};
+    BOOST_CHECK(epoch_id == key.epoch_id);
+    BOOST_CHECK_EQUAL(sid,
+                      txrelay::ComputeShortId(key.k0, key.k1, tx->GetId()));
+    // 8 bytes on the wire, against 36 for an INV entry.
+    BOOST_CHECK_EQUAL(sizeof(sid), 8U);
+
+    // Announcements back: a short id we have marks the peer as knowing it
+    // (no request); one we lack is requested by getshorttx under its epoch.
+    auto missing{MakeTx(rng)};
+    {
+        DataStream ann{};
+        ann << key.epoch_id
+            << std::vector<uint64_t>{
+                   sid,
+                   txrelay::ComputeShortId(key.k0, key.k1, missing->GetId())};
+        std::atomic<bool> interrupt{false};
+        h.peerman->ProcessMessage(h.config, nucleation, NetMsgType::INVSHORT,
+                                  ann, 0us, interrupt);
+    }
+    sent = h.SendAll();
+    BOOST_REQUIRE_EQUAL(sent[nucleation.GetId()].short_requests.size(), 1U);
+    const auto &req{sent[nucleation.GetId()].short_requests[0]};
+    BOOST_CHECK(req.context_id == key.epoch_id);
+    BOOST_CHECK_EQUAL(req.salt_k0, key.k0);
+    BOOST_CHECK_EQUAL(req.salt_k1, key.k1);
+    BOOST_REQUIRE_EQUAL(req.short_ids.size(), 1U);
+    BOOST_CHECK_EQUAL(req.short_ids[0], txrelay::ComputeShortId(
+                                            key.k0, key.k1, missing->GetId()));
+    // Not requested twice while in flight.
+    sent = h.SendAll();
+    BOOST_CHECK(sent[nucleation.GetId()].short_requests.empty());
+
+    // The peer serves our short ids from the index (getshorttx under the
+    // relay epoch), answering with the body.
+    {
+        lotus::v2::net::ShortTxRequest ask;
+        ask.scope = uint8_t(lotus::v2::net::ReconScope::LIVE_MEMPOOL);
+        ask.context_id = key.epoch_id;
+        ask.salt_k0 = key.k0;
+        ask.salt_k1 = key.k1;
+        ask.short_ids = {sid};
+        DataStream ss{};
+        ss << ask;
+        std::atomic<bool> interrupt{false};
+        h.peerman->ProcessMessage(h.config, nucleation, NetMsgType::GETSHORTTX,
+                                  ss, 0us, interrupt);
+    }
+    sent = h.SendAll();
+    BOOST_REQUIRE_EQUAL(sent[nucleation.GetId()].shorttx_txids.size(), 1U);
+    BOOST_CHECK(sent[nucleation.GetId()].shorttx_txids[0] == tx->GetId());
+
+    // Without negotiation, invshort is ignored (no request).
+    {
+        DataStream ann{};
+        ann << key.epoch_id << std::vector<uint64_t>{12345};
+        std::atomic<bool> interrupt{false};
+        h.peerman->ProcessMessage(h.config, stock, NetMsgType::INVSHORT, ann,
+                                  0us, interrupt);
+    }
+    sent = h.SendAll();
+    BOOST_CHECK(sent[stock.GetId()].short_requests.empty());
+    chainman.ResetIbd();
+}
+
+BOOST_AUTO_TEST_CASE(shorttx_fetch_publishes_unbroadcast_batch) {
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    MockTick clock{5'500'000ms};
+    auto &chainman{static_cast<TestChainstateManager &>(*m_node.chainman)};
+    chainman.JumpOutOfIbd();
+    RelayHarness h{m_node, PeerManager::Options{}};
+    CNode &peer = h.AddPeer();
+    std::atomic<bool> interrupt{false};
+    DataStream offer{};
+    offer << txrelay::SENDINVSHORT_VERSION << uint64_t{txrelay::TXRELAY_INVSHORT};
+    h.peerman->ProcessMessage(h.config, peer, NetMsgType::SENDINVSHORT,
+                              offer, 0us, interrupt);
+    h.SendAll();
+
+    FastRandomContext rng{true};
+    std::vector<CTransactionRef> txs;
+    for (size_t i = 0; i < 3; ++i) {
+        txs.push_back(MakeTx(rng));
+        AddToMempool(m_node, txs.back(), /*local=*/true);
+        h.peerman->RelayTransaction(txs.back()->GetId());
+    }
+    clock.Set(5'500'010ms);
+    h.SendAll();
+    const auto tip{WITH_LOCK(::cs_main, return m_node.chainman->ActiveTip())};
+    const auto key{txrelay::MakeEpochKey(tip->GetBlockHash(), tip->nHeight)};
+    lotus::v2::net::ShortTxRequest ask;
+    ask.scope = uint8_t(lotus::v2::net::ReconScope::LIVE_MEMPOOL);
+    ask.context_id = key.epoch_id;
+    ask.salt_k0 = key.k0;
+    ask.salt_k1 = key.k1;
+    for (const auto &tx : txs) {
+        ask.short_ids.push_back(txrelay::ComputeShortId(key.k0, key.k1, tx->GetId()));
+    }
+    const auto before{node::GetGlobalSnapshotPublisher().Load()};
+    BOOST_REQUIRE(before && before->entry_tree);
+    BOOST_REQUIRE_EQUAL(before->unbroadcast_count, txs.size());
+    const auto publications{node::GetGlobalSnapshotPublisher().PublicationCount()};
+    auto fetch = [&] {
+        DataStream request{};
+        request << ask;
+        h.peerman->ProcessMessage(h.config, peer, NetMsgType::GETSHORTTX,
+                                  request, 0us, interrupt);
+        return h.Drain(peer).shorttx_txids;
+    };
+    const auto fetched{fetch()};
+    BOOST_REQUIRE_EQUAL(fetched.size(), txs.size());
+    const auto after{node::GetGlobalSnapshotPublisher().Load()};
+    BOOST_REQUIRE(after && after->entry_tree);
+    // Clearing unbroadcast publishes one snapshot. Tip, size, and
+    // transactions_updated are unchanged, so InitMiningTemplate shares the
+    // previous generation's template instead of allocating a new id.
+    BOOST_CHECK(after.get() != before.get());
+    BOOST_CHECK_EQUAL(node::GetGlobalSnapshotPublisher().PublicationCount(),
+                      publications + 1);
+    BOOST_CHECK_EQUAL(after->transactions_updated, before->transactions_updated);
+    BOOST_CHECK(after->mining == before->mining);
+    BOOST_CHECK_EQUAL(after->GetMiningTemplate().template_id,
+                      before->GetMiningTemplate().template_id);
+    BOOST_CHECK_EQUAL(after->unbroadcast_count, 0U);
+    BOOST_CHECK_EQUAL(after->mempool_size, before->mempool_size);
+    for (size_t i = 0; i < txs.size(); ++i) {
+        BOOST_CHECK(fetched[i] == txs[i]->GetId());
+        const auto old_entry{before->entry_tree->get(Uint256RadixKey(txs[i]->GetId()))};
+        const auto new_entry{after->entry_tree->get(Uint256RadixKey(txs[i]->GetId()))};
+        BOOST_REQUIRE(old_entry && new_entry);
+        BOOST_CHECK(old_entry->entry.unbroadcast);
+        BOOST_CHECK(!new_entry->entry.unbroadcast);
+    }
+    // Fetching the same bodies again must not publish an unchanged snapshot.
+    BOOST_CHECK(fetch() == fetched);
+    BOOST_CHECK(node::GetGlobalSnapshotPublisher().Load().get() == after.get());
+    BOOST_CHECK_EQUAL(node::GetGlobalSnapshotPublisher().PublicationCount(),
+                      publications + 1);
+    chainman.ResetIbd();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

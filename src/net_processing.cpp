@@ -3,8 +3,9 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <net_processing.h>
+#include <net/txrelay_index.h>
 #include <net/v2_protocol_handler.h>
+#include <net_processing.h>
 
 #include <addrman.h>
 #include <avalanche/compactproofs.h>
@@ -197,6 +198,21 @@ static constexpr DataRequestParameters TX_REQUEST_PARAMS{
     std::chrono::milliseconds{200},  // nonpref_peer_delay
     std::chrono::milliseconds{2000}, // overloaded_peer_delay
     std::chrono::seconds(60),        // getdata_interval
+    NetPermissionFlags::Relay,       // bypass_request_limits_permissions
+};
+
+/**
+ * Requests for transactions announced by short id (invshort). Announcements
+ * come in per-tick batches and are fetched in one getshorttx per peer per
+ * tick, so a peer may have many in flight; a short-id request that is not
+ * answered is retried from another announcer after 2 s rather than 60 s.
+ */
+static constexpr DataRequestParameters SHORTID_REQUEST_PARAMS{
+    5000,                            // max_peer_request_in_flight
+    100000,                          // max_peer_announcements
+    std::chrono::milliseconds{200},  // nonpref_peer_delay
+    std::chrono::milliseconds{2000}, // overloaded_peer_delay
+    std::chrono::seconds(2),         // getdata_interval
     NetPermissionFlags::Relay,       // bypass_request_limits_permissions
 };
 
@@ -434,6 +450,12 @@ struct Peer {
     std::atomic<std::chrono::microseconds> m_ping_start{0us};
     /** Whether a ping has been requested by the user */
     std::atomic<bool> m_ping_queued{false};
+
+    /**
+     * Nucleation relay features (txrelay::Feature) this peer offered in
+     * sendinvshort that we also support: we may use them towards it.
+     */
+    std::atomic<uint64_t> m_txrelay_features{0};
 
     /**
      * The feerate in the most recent BIP133 `feefilter` message sent to the
@@ -795,7 +817,8 @@ struct CNodeState {
     CNodeState(bool is_inbound) : m_is_inbound(is_inbound) {}
 };
 
-class PeerManagerImpl final : public PeerManager {
+class PeerManagerImpl final : public PeerManager,
+                              public lotus::v2::net::TxRelayEpochProvider {
 public:
     PeerManagerImpl(CConnman &connman, AddrMan &addrman, BanMan *banman,
                     ChainstateManager &chainman, CTxMemPool &pool,
@@ -813,6 +836,42 @@ public:
                          const CBlockIndex *pindexFork,
                          bool fInitialDownload) override
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
+    void TransactionAddedToMempool(const CTransactionRef &tx,
+                                   std::shared_ptr<const std::vector<Coin>>,
+                                   uint64_t) override {
+        m_txrelay_index.Add(tx->GetId(), GetTime<std::chrono::microseconds>());
+    }
+    void TransactionRemovedFromMempool(const CTransactionRef &tx,
+                                       MemPoolRemovalReason,
+                                       uint64_t) override {
+        m_txrelay_index.Remove(tx->GetId());
+    }
+
+    /** Implement TxRelayEpochProvider (for the Merklix handler) */
+    std::optional<std::pair<uint64_t, uint64_t>>
+    RelayEpochKey(const uint256 &context_id) const override {
+        const auto key{m_txrelay_index.FindEpoch(context_id)};
+        if (!key) {
+            return std::nullopt;
+        }
+        return std::make_pair(key->k0, key->k1);
+    }
+    uint64_t RelayShortIdMask() const override {
+        const unsigned bits{m_txrelay_index.ShortIdBits()};
+        return bits >= 64 ? ~uint64_t{0} : (uint64_t{1} << bits) - 1;
+    }
+    std::vector<CTransactionRef>
+    ResolveRelayShortIds(const uint256 &context_id,
+                         const std::vector<uint64_t> &short_ids) const override;
+    std::vector<CTransactionRef> FilterRequestedShortTxResponse(
+        NodeId peer_id, const uint256 &epoch_id,
+        std::span<const CTransactionRef> txs,
+        bool allow_unsolicited) override
+        EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !m_peer_mutex);
+    void ProcessShortTxResponse(CNode &node,
+                                std::span<const CTransactionRef> txs) override
+        EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !m_peer_mutex,
+                                 !m_recent_confirmed_transactions_mutex);
     void BlockChecked(const CBlock &block,
                       const BlockValidationState &state) override
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
@@ -1198,6 +1257,12 @@ private:
      */
     void AddTxAnnouncement(const CNode &node, const TxId &txid,
                            std::chrono::microseconds current_time)
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+        AddTxAnnouncement(node, txid, current_time, TX_REQUEST_PARAMS);
+    }
+    void AddTxAnnouncement(const CNode &node, const TxId &txid,
+                           std::chrono::microseconds current_time,
+                           const DataRequestParameters &params)
         EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
     /**
@@ -1337,6 +1402,32 @@ private:
      */
     std::atomic<bool> m_txrelay_wake{false};
 
+    /** Short ids of the mempool's transactions, per epoch (chain tip) */
+    txrelay::TxRelayIndex m_txrelay_index;
+    /** Features we offer in sendinvshort (txrelay::Feature) */
+    uint64_t OurTxRelayFeatures() const {
+        uint64_t features{0};
+        if (m_opts.txrelay_shortids) {
+            features |= txrelay::TXRELAY_INVSHORT;
+        }
+        const bool disabled_for_test =
+            Params().GetChainType() == ChainType::REGTEST &&
+            gArgs.GetBoolArg("-testdisablehighbandwidthshorttx", false);
+        if (!disabled_for_test) {
+            features |= txrelay::TXRELAY_HIGH_BANDWIDTH;
+        }
+        return features;
+    }
+    /** Re-key the relay index if the chain tip changed (or on first use) */
+    void UpdateRelayEpoch();
+    void UpdateRelayEpochTo(const BlockHash &tip, int height);
+    /** The short id announcing txid to a peer (see the note there) */
+    uint64_t ShortIdFor(const Peer &peer, const TxId &txid,
+                        const txrelay::EpochKey &epoch) const;
+    /** Forget short-id requests that this transaction fulfils */
+    void ForgetShortIdRequests(const TxId &txid)
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+
     /**
      * Transactions waiting for the next relay tick. Appending is O(1) per
      * transaction; the fan-out is picked when the queue is drained.
@@ -1346,7 +1437,8 @@ private:
         //! Originated by this node: announce to every relay peer
         bool local;
     };
-    Mutex m_relay_queue_mutex;
+    // GlobalMutex: taken from many call paths without lock annotations.
+    GlobalMutex m_relay_queue_mutex;
     std::vector<RelayQueueEntry> m_relay_queue GUARDED_BY(m_relay_queue_mutex);
     std::chrono::microseconds m_next_relay_drain GUARDED_BY(g_msgproc_mutex){0};
     /**
@@ -1366,11 +1458,9 @@ private:
     }
     /** Drain the relay queue into peers' inventory, once per tick */
     void MaybeDrainRelayQueue()
-        EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !m_peer_mutex,
-                                 !m_relay_queue_mutex);
+        EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !m_peer_mutex);
     void DrainRelayQueue()
-        EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !m_peer_mutex,
-                                 !m_relay_queue_mutex);
+        EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !m_peer_mutex);
     /** Wake the message handler at each relay tick while inventory waits */
     void ScheduleRelayTick(CScheduler &scheduler);
     /**
@@ -2437,19 +2527,19 @@ void PeerManagerImpl::PushNodeVersion(const Config &config, CNode &pnode,
     }
 }
 
-void PeerManagerImpl::AddTxAnnouncement(
-    const CNode &node, const TxId &txid,
-    std::chrono::microseconds current_time) {
+void PeerManagerImpl::AddTxAnnouncement(const CNode &node, const TxId &txid,
+                                        std::chrono::microseconds current_time,
+                                        const DataRequestParameters &params) {
     // For m_txrequest and state
     AssertLockHeld(::cs_main);
 
-    if (TooManyAnnouncements(node, m_txrequest, TX_REQUEST_PARAMS)) {
+    if (TooManyAnnouncements(node, m_txrequest, params)) {
         return;
     }
 
     const bool preferred = isPreferredDownloadPeer(node);
-    auto reqtime = ComputeRequestTime(node, m_txrequest, TX_REQUEST_PARAMS,
-                                      current_time, preferred);
+    auto reqtime =
+        ComputeRequestTime(node, m_txrequest, params, current_time, preferred);
 
     m_txrequest.ReceivedInv(node.GetId(), txid, preferred, reqtime);
 }
@@ -2503,10 +2593,6 @@ void PeerManagerImpl::InitializeNode(const Config &config, CNode &node,
         m_peer_map.emplace_hint(m_peer_map.end(), nodeid, peer);
     }
     m_v2_protocol_handler.RegisterPeerNode(node);
-    if (gArgs.GetBoolArg("-highbandwidthtx", false) &&
-        !node.IsBlockOnlyConn()) {
-        m_v2_protocol_handler.SetHighBandwidthShortTxPeer(nodeid, true);
-    }
     if (!node.IsInboundConn()) {
         PushNodeVersion(config, node, *peer);
     }
@@ -3034,9 +3120,11 @@ PeerManagerImpl::PeerManagerImpl(CConnman &connman, AddrMan &addrman,
       m_chainparams(chainman.GetParams()), m_connman(connman),
       m_addrman(addrman), m_banman(banman), m_chainman(chainman),
       m_mempool(pool), m_avalanche(avalanche), m_opts{opts},
+      m_txrelay_index{opts.txrelay_shortid_bits},
       m_v2_protocol_handler{m_chainman, m_mempool, m_connman, *this},
       m_block_messages{opts.block_message_cache_bytes} {
     m_v2_protocol_handler.SetAvalancheProcessor(m_avalanche);
+    m_v2_protocol_handler.SetTxRelayEpochProvider(this);
 }
 
 void PeerManagerImpl::StartScheduledTasks(CScheduler &scheduler) {
@@ -3219,6 +3307,7 @@ void PeerManagerImpl::NewPoWValidBlock(
                 ProcessBlockAvailability(pnode->GetId());
                 CNodeState &state = *State(pnode->GetId());
                 if (is_v2_sealed_candidate &&
+                    gArgs.GetBoolArg("-highbandwidthtx", false) &&
                     m_v2_protocol_handler.IsHighBandwidthShortTxPeer(
                         pnode->GetId()) &&
                     !PeerHasHeader(&state, pindex) &&
@@ -3265,6 +3354,11 @@ void PeerManagerImpl::UpdatedBlockTip(const CBlockIndex *pindexNew,
     // Don't relay inventory during initial block download.
     if (fInitialDownload) {
         return;
+    }
+
+    // A new tip is a new short-id epoch (new key).
+    if (m_opts.txrelay_shortids) {
+        UpdateRelayEpochTo(pindexNew->GetBlockHash(), pindexNew->nHeight);
     }
 
     // Find the hashes of all blocks that weren't previously in the best chain.
@@ -3409,6 +3503,9 @@ void PeerManagerImpl::SendPings() {
 void PeerManagerImpl::RelayTransaction(const TxId &txid) {
     const bool local =
         WITH_LOCK(m_mempool.cs, return m_mempool.IsUnbroadcastTx(txid));
+    // Index the short id now, so that an announcement of this transaction
+    // arriving before the next tick is recognised as known.
+    m_txrelay_index.Add(txid, GetTime<std::chrono::microseconds>());
     WITH_LOCK(m_relay_queue_mutex, m_relay_queue.push_back({txid, local}));
     m_txrelay_wake.store(true, std::memory_order_relaxed);
 }
@@ -3427,6 +3524,12 @@ void PeerManagerImpl::RelayTransactionBatch(
             if (txs[i]) {
                 local[i] = m_mempool.IsUnbroadcastTx(txs[i]->GetId());
             }
+        }
+    }
+    const auto now{GetTime<std::chrono::microseconds>()};
+    for (const auto &tx : txs) {
+        if (tx) {
+            m_txrelay_index.Add(tx->GetId(), now);
         }
     }
     {
@@ -3451,6 +3554,138 @@ size_t TxRelayFanout(size_t relay_peers, size_t fanout_min, double fanout_pct,
     return std::clamp(std::max(fanout_min, k), fanout_min, fanout_max);
 }
 
+void PeerManagerImpl::UpdateRelayEpoch() {
+    BlockHash tip;
+    int height;
+    {
+        LOCK(::cs_main);
+        const CBlockIndex *tip_index{m_chainman.ActiveTip()};
+        if (!tip_index) {
+            return;
+        }
+        tip = tip_index->GetBlockHash();
+        height = tip_index->nHeight;
+    }
+    UpdateRelayEpochTo(tip, height);
+}
+
+void PeerManagerImpl::UpdateRelayEpochTo(const BlockHash &tip, int height) {
+    if (const auto current{m_txrelay_index.Current()};
+        current && current->epoch_id == uint256{tip}) {
+        return;
+    }
+    // A new key: re-index the mempool (one SipHash per transaction).
+    std::vector<std::pair<TxId, std::chrono::microseconds>> txs;
+    {
+        LOCK(m_mempool.cs);
+        txs.reserve(m_mempool.mapTx.size());
+        for (const auto &entry : m_mempool.mapTx) {
+            txs.emplace_back(entry->GetTx().GetId(),
+                             std::chrono::microseconds{entry->GetTime()});
+        }
+    }
+    m_txrelay_index.SetEpoch(txrelay::MakeEpochKey(tip, uint64_t(height)), txs);
+}
+
+uint64_t PeerManagerImpl::ShortIdFor(const Peer &peer, const TxId &txid,
+                                     const txrelay::EpochKey &epoch) const {
+    // NOTE: Announcement short ids use the per-epoch key shared with set
+    // reconciliation (DeriveEpochSipHashKey), so one mempool index serves both.
+    // Someone who knows the epoch key can grind a transaction whose short id
+    // collides with another's (~2^32 SipHash operations); a peer that has one
+    // then skips the other until an Avalanche poll or a block requests it by
+    // full id. That delays one transaction; it does not lose it.
+    // TODO: If collisions show up in practice (txrelay_shortid_collision_total,
+    // or a stuck transaction traced to a collision), add per-connection salted
+    // short ids, as compact blocks do. The epoch_id field in invshort leaves
+    // room for a per-link key mode without changing the message format.
+    (void)peer;
+    return m_txrelay_index.ShortId(epoch, txid);
+}
+
+std::vector<CTransactionRef> PeerManagerImpl::ResolveRelayShortIds(
+    const uint256 &context_id, const std::vector<uint64_t> &short_ids) const {
+    std::vector<TxId> txids;
+    for (const uint64_t short_id : short_ids) {
+        m_txrelay_index.Find(context_id, short_id, &txids);
+    }
+    std::vector<CTransactionRef> txs;
+    txs.reserve(txids.size());
+    {
+        LOCK(m_mempool.cs);
+        for (const TxId &txid : txids) {
+            if (auto tx{m_mempool.get(txid)}) {
+                txs.push_back(std::move(tx));
+            }
+        }
+    }
+    // A peer fetched them: they have been broadcast (as for getdata).
+    // Publish the completed batch before returning it to the peer, rather
+    // than cloning the immutable snapshot once for every fetched transaction.
+    {
+        LOCK(m_mempool.cs);
+        CTxMemPool::ScopedSnapshotDefer defer(m_mempool);
+        for (const auto &tx : txs) {
+            m_mempool.RemoveUnbroadcastTx(tx->GetId());
+        }
+    }
+    return txs;
+}
+
+std::vector<CTransactionRef> PeerManagerImpl::FilterRequestedShortTxResponse(
+    NodeId peer_id, const uint256 &epoch_id,
+    std::span<const CTransactionRef> txs, bool allow_unsolicited) {
+    AssertLockHeld(g_msgproc_mutex);
+    const auto epoch{m_txrelay_index.FindEpoch(epoch_id)};
+    std::vector<CTransactionRef> selected;
+    if (!epoch ||
+        txs.size() > lotus::v2::net::ShortTxResponse::MAX_TXS) {
+        return selected;
+    }
+    if (allow_unsolicited) {
+        selected.assign(txs.begin(), txs.end());
+        return selected;
+    }
+    selected.reserve(txs.size());
+    // A wire response is bounded to 4096 bodies by the handler. Lookup is
+    // O(log(requests)) per body; no growing request/window scan or copy.
+    LOCK(cs_main);
+    for (const auto &tx : txs) {
+        const auto short_id{m_txrelay_index.ShortId(*epoch, tx->GetId())};
+        if (m_txrequest.IsRequested(
+                peer_id, TxId{txrelay::ShortIdRequestKey(epoch_id, short_id)})) {
+            selected.push_back(tx);
+        }
+    }
+    return selected;
+}
+
+void PeerManagerImpl::ProcessShortTxResponse(
+    CNode &node, std::span<const CTransactionRef> txs) {
+    AssertLockHeld(g_msgproc_mutex);
+    PeerRef peer{GetPeerRef(node.GetId())};
+    if (!peer || RejectIncomingTxs(node) ||
+        m_chainman.IsInitialBlockDownload()) {
+        return;
+    }
+    // Exactly as if each had come in a tx message: orphan handling, 1p1c
+    // packages, reject caches and relay all apply.
+    for (const auto &tx : txs) {
+        ProcessSingleTx(node, *peer, tx);
+    }
+}
+
+void PeerManagerImpl::ForgetShortIdRequests(const TxId &txid) {
+    AssertLockHeld(::cs_main);
+    if (m_txrequest.Size() == 0) {
+        return;
+    }
+    for (const auto &epoch : m_txrelay_index.Epochs()) {
+        m_txrequest.ForgetInvId(TxId{txrelay::ShortIdRequestKey(
+            epoch.epoch_id, m_txrelay_index.ShortId(epoch, txid))});
+    }
+}
+
 void PeerManagerImpl::MaybeDrainRelayQueue() {
     const auto tick_now{RelayTickNow()};
     if (tick_now < m_next_relay_drain) {
@@ -3465,6 +3700,9 @@ void PeerManagerImpl::DrainRelayQueue() {
     WITH_LOCK(m_relay_queue_mutex, batch.swap(m_relay_queue));
     if (batch.empty()) {
         return;
+    }
+    if (m_opts.txrelay_shortids && !m_txrelay_index.Current()) {
+        UpdateRelayEpoch();
     }
 
     // Relay peers (handshake complete, accepting transactions), and for
@@ -3635,6 +3873,7 @@ void PeerManagerImpl::MarkPeerKnownTxBatch(
         for (const auto &tx : txs) {
             if (tx) {
                 m_txrequest.ForgetInvId(tx->GetId());
+                ForgetShortIdRequests(tx->GetId());
             }
         }
     }
@@ -4847,6 +5086,8 @@ void PeerManagerImpl::ProcessSingleTx(CNode &pfrom, Peer &peer,
     LOCK(cs_main);
 
     m_txrequest.ReceivedResponse(pfrom.GetId(), txid);
+    // Whichever way it came, it answers announcements of its short id.
+    ForgetShortIdRequests(txid);
 
     if (AlreadyHaveTx(txid, /*include_reconsiderable=*/true)) {
         if (pfrom.HasPermission(NetPermissionFlags::ForceRelay)) {
@@ -6029,6 +6270,15 @@ void PeerManagerImpl::ProcessMessage(
                                /*version=*/CMPCTBLOCKS_VERSION);
         }
 
+        // Offer Nucleation relay features to transaction relay peers. Sent
+        // after verack: stock peers ignore the unknown message.
+        if (OurTxRelayFeatures() != 0 && peer->GetTxRelay() &&
+            !pfrom.IsBlockOnlyConn()) {
+            MakeAndPushMessage(pfrom, NetMsgType::SENDINVSHORT,
+                               txrelay::SENDINVSHORT_VERSION,
+                               OurTxRelayFeatures());
+        }
+
         if (m_avalanche) {
             if (m_avalanche->sendHello(&pfrom)) {
                 auto localProof = m_avalanche->getLocalProof();
@@ -6055,14 +6305,6 @@ void PeerManagerImpl::ProcessMessage(
                              return tx_relay->m_tx_inventory_to_send.empty() &&
                                     !tx_relay->m_relay_ready));
         }
-
-        const bool disable_shorttx_for_test =
-            Params().GetChainType() == ChainType::REGTEST &&
-            gArgs.GetBoolArg("-testdisablehighbandwidthshorttx", false);
-        m_v2_protocol_handler.SetHighBandwidthShortTxPeer(
-            pfrom.GetId(), !disable_shorttx_for_test &&
-                               gArgs.GetBoolArg("-highbandwidthtx", false) &&
-                               !pfrom.IsBlockOnlyConn());
 
         if (auto *metrics{node::GetNodeMetrics()};
             metrics && pfrom.m_metrics_connected_at !=
@@ -6228,6 +6470,83 @@ void PeerManagerImpl::ProcessMessage(
 
     if (msg_type == NetMsgType::SENDHEADERS) {
         peer->m_prefers_headers = true;
+        return;
+    }
+
+    if (msg_type == NetMsgType::SENDINVSHORT) {
+        uint32_t version{0};
+        uint64_t flags{0};
+        vRecv >> version >> flags;
+        // Any version: flags are only ever added, each with its meaning.
+        peer->m_txrelay_features =
+            peer->GetTxRelay() && !pfrom.IsBlockOnlyConn()
+                ? flags & OurTxRelayFeatures()
+                : 0;
+        // Local opt-in, compact-block negotiation and permissions cannot prove
+        // that the remote peer understands our private block/transaction wire.
+        m_v2_protocol_handler.SetHighBandwidthShortTxPeer(
+            pfrom.GetId(), peer->m_txrelay_features &
+                               txrelay::TXRELAY_HIGH_BANDWIDTH);
+        LogDebug(BCLog::NET, "sendinvshort version=%u flags=%u peer=%d\n",
+                 version, flags, pfrom.GetId());
+        return;
+    }
+
+    if (msg_type == NetMsgType::INVSHORT) {
+        uint256 epoch_id;
+        std::vector<uint64_t> short_ids;
+        vRecv >> epoch_id >> short_ids;
+        if (short_ids.size() > MAX_INV_SZ) {
+            Misbehaving(*peer, strprintf("invshort message size = %u",
+                                         short_ids.size()));
+            return;
+        }
+        if (!(peer->m_txrelay_features & txrelay::TXRELAY_INVSHORT)) {
+            LogDebug(BCLog::NET, "unexpected invshort from peer=%d\n",
+                     pfrom.GetId());
+            return;
+        }
+        if (RejectIncomingTxs(pfrom)) {
+            LogDebug(BCLog::NET,
+                     "invshort sent in violation of protocol, disconnecting "
+                     "peer=%d\n",
+                     pfrom.GetId());
+            pfrom.fDisconnect = true;
+            return;
+        }
+        if (m_chainman.IsInitialBlockDownload()) {
+            return;
+        }
+        if (!m_txrelay_index.FindEpoch(epoch_id)) {
+            // Perhaps the peer is on a tip we have but not yet re-keyed for.
+            UpdateRelayEpoch();
+            if (!m_txrelay_index.FindEpoch(epoch_id)) {
+                LogDebug(BCLog::NET,
+                         "invshort for unknown epoch %s from peer=%d\n",
+                         epoch_id.ToString(), pfrom.GetId());
+                return;
+            }
+        }
+        const auto current_time{GetTime<std::chrono::microseconds>()};
+        LOCK(cs_main);
+        std::vector<TxId> have;
+        for (const uint64_t short_id : short_ids) {
+            if (interruptMsgProc) {
+                return;
+            }
+            have.clear();
+            if (m_txrelay_index.Find(epoch_id, short_id, &have) ==
+                txrelay::TxRelayIndex::Lookup::HAVE) {
+                // The peer has it: never announce it back.
+                for (const TxId &txid : have) {
+                    AddKnownTx(*peer, txid);
+                }
+                continue;
+            }
+            AddTxAnnouncement(
+                pfrom, TxId{txrelay::ShortIdRequestKey(epoch_id, short_id)},
+                current_time, SHORTID_REQUEST_PARAMS);
+        }
         return;
     }
 
@@ -9999,11 +10318,7 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                 gArgs.GetBoolArg("-testdisablehighbandwidthshorttx", false);
             const bool high_bandwidth_peer =
                 !disable_shorttx_for_test && !pto->IsBlockOnlyConn() &&
-                (pto->m_bip152_highbandwidth_from.load() ||
-                 pto->m_bip152_highbandwidth_to.load() ||
-                 pto->HasPermission(NetPermissionFlags::NoBan) ||
-                 m_v2_protocol_handler.IsHighBandwidthShortTxPeer(
-                     pto->GetId()));
+                (peer->m_txrelay_features & txrelay::TXRELAY_HIGH_BANDWIDTH);
             // Every peer announces transactions on the same fixed relay
             // tick (-txrelaytick) of the monotonic clock; there is no
             // random per-peer delay.
@@ -10129,6 +10444,26 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                     vShortTxBatch.reserve(vRelayTxs.size());
                     for (auto &entry : vRelayTxs) {
                         vShortTxBatch.push_back(std::move(entry.second));
+                    }
+                } else if (const auto epoch{m_txrelay_index.Current()};
+                           epoch && (peer->m_txrelay_features &
+                                     txrelay::TXRELAY_INVSHORT)) {
+                    // 8-byte short ids instead of 36-byte INV entries
+                    std::vector<uint64_t> short_ids;
+                    short_ids.reserve(
+                        std::min<size_t>(vRelayTxs.size(), MAX_INV_SZ));
+                    for (const auto &entry : vRelayTxs) {
+                        short_ids.push_back(
+                            ShortIdFor(*peer, entry.first, *epoch));
+                        if (short_ids.size() == MAX_INV_SZ) {
+                            MakeAndPushMessage(*pto, NetMsgType::INVSHORT,
+                                               epoch->epoch_id, short_ids);
+                            short_ids.clear();
+                        }
+                    }
+                    if (!short_ids.empty()) {
+                        MakeAndPushMessage(*pto, NetMsgType::INVSHORT,
+                                           epoch->epoch_id, short_ids);
                     }
                 } else {
                     for (const auto &entry : vRelayTxs) {
@@ -10375,7 +10710,40 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
             LogDebug(BCLog::NET, "timeout of inflight tx %s from peer=%d\n",
                      entry.second.ToString(), entry.first);
         }
+        // Transactions announced by short id are fetched with getshorttx,
+        // one request per epoch.
+        const auto epochs{m_txrelay_index.Epochs()};
+        std::vector<std::pair<txrelay::EpochKey, std::vector<uint64_t>>>
+            short_requests;
         for (const TxId &txid : requestable) {
+            std::optional<uint64_t> short_id;
+            const txrelay::EpochKey *epoch{nullptr};
+            for (const auto &e : epochs) {
+                if ((short_id =
+                         txrelay::ParseShortIdRequestKey(txid, e.epoch_id))) {
+                    epoch = &e;
+                    break;
+                }
+            }
+            if (short_id) {
+                if (m_txrelay_index.Find(epoch->epoch_id, *short_id) ==
+                    txrelay::TxRelayIndex::Lookup::HAVE) {
+                    m_txrequest.ForgetInvId(txid);
+                    continue;
+                }
+                auto it{std::find_if(
+                    short_requests.begin(), short_requests.end(),
+                    [&](const auto &r) { return r.first == *epoch; })};
+                if (it == short_requests.end()) {
+                    it = short_requests.emplace(short_requests.end(), *epoch,
+                                                std::vector<uint64_t>{});
+                }
+                it->second.push_back(*short_id);
+                m_txrequest.RequestedData(
+                    pto->GetId(), txid,
+                    current_time + SHORTID_REQUEST_PARAMS.getdata_interval);
+                continue;
+            }
             // Exclude m_recent_rejects_package_reconsiderable: we may be
             // requesting a missing parent that was previously rejected for
             // being too low feerate.
@@ -10394,6 +10762,26 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
 
         if (!vGetData.empty()) {
             MakeAndPushMessage(*pto, NetMsgType::GETDATA, vGetData);
+        }
+
+        for (auto &[epoch, short_ids] : short_requests) {
+            for (size_t offset = 0; offset < short_ids.size();
+                 offset += lotus::v2::net::ShortTxRequest::MAX_SHORT_IDS) {
+                lotus::v2::net::ShortTxRequest req;
+                req.scope = static_cast<uint8_t>(
+                    lotus::v2::net::ReconScope::LIVE_MEMPOOL);
+                req.context_id = epoch.epoch_id;
+                req.salt_k0 = epoch.k0;
+                req.salt_k1 = epoch.k1;
+                req.short_ids.assign(
+                    short_ids.begin() + offset,
+                    short_ids.begin() +
+                        std::min(
+                            short_ids.size(),
+                            offset +
+                                lotus::v2::net::ShortTxRequest::MAX_SHORT_IDS));
+                MakeAndPushMessage(*pto, NetMsgType::GETSHORTTX, req);
+            }
         }
 
     } // release cs_main
