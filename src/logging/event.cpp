@@ -190,8 +190,8 @@ void AppendQuotedText(std::string &out, std::string_view text) {
 }
 
 namespace {
-    // Only explicit, bounded float precision is supported; formatting runs here
-    // on the consumer, with the same backend as the original printf call.
+    // Explicit, bounded formatting runs on the consumer, with the same
+    // backend and integral values as the original printf call.
     bool AppendFormattedField(std::string &out, const FieldView &field,
                               std::string_view format) {
         if (format.empty()) {
@@ -220,6 +220,40 @@ namespace {
             out += '"';
             return true;
         }
+        // Decimal padding is bounded to a 64-bit integer's maximum width.
+        // Preserve the numeric field, including all UINT64_MAX bits. A signed
+        // negative value with %u needs its original source width to reproduce
+        // its cast, which the normalized field does not retain: reject it.
+        if ((format.back() == 'd' || format.back() == 'u') &&
+            (field.kind == FieldKind::I64 || field.kind == FieldKind::U64)) {
+            const bool unsigned_format{format.back() == 'u'};
+            if (unsigned_format && field.kind == FieldKind::I64 &&
+                field.I64() < 0)
+                return false;
+            format.remove_suffix(1);
+            if (format.empty()) {
+                field.AppendText(out);
+                return true;
+            }
+            const bool zero_pad{format.front() == '0'};
+            if (zero_pad) format.remove_prefix(1);
+            if (format.empty() || format.front() == '0') return false;
+            int width{0};
+            const auto [end, error]{std::from_chars(
+                format.data(), format.data() + format.size(), width)};
+            if (error != std::errc{} || end != format.data() + format.size() ||
+                width < 1 || width > 20)
+                return false;
+            if (field.kind == FieldKind::U64) {
+                out += strprintf(zero_pad ? "%0*u" : "%*u", width, field.U64());
+            } else if (unsigned_format) {
+                out += strprintf(zero_pad ? "%0*u" : "%*u", width,
+                                 uint64_t(field.I64()));
+            } else {
+                out += strprintf(zero_pad ? "%0*d" : "%*d", width, field.I64());
+            }
+            return true;
+        }
         // Bounded zero-padded hexadecimal preserves diagnostic bit patterns
         // without turning the structured integer into a string. Signed values
         // must be nonnegative; callers cast a signed bitfield to its wire type.
@@ -241,8 +275,10 @@ namespace {
             out += strprintf("%0*x", width, value);
             return true;
         }
-        if (field.kind != FieldKind::F64 ||
-            (format.back() != 'f' && format.back() != 'g')) return false;
+        if ((field.kind != FieldKind::F64 && field.kind != FieldKind::I64 &&
+             field.kind != FieldKind::U64) ||
+            (format.back() != 'f' && format.back() != 'g'))
+            return false;
         const char kind{format.back()};
         format.remove_suffix(1);
         int precision{6};
@@ -254,8 +290,14 @@ namespace {
             if (error != std::errc{} || end != format.data() + format.size() ||
                 precision < 0 || precision > 18) return false;
         }
-        out += kind == 'f' ? strprintf("%.*f", precision, field.F64())
-                           : strprintf("%.*g", precision, field.F64());
+        // tinyformat streams integral operands as integers even with %f/%g;
+        // precision does not invent a fractional part or round a large value.
+        if (field.kind == FieldKind::I64 || field.kind == FieldKind::U64) {
+            field.AppendText(out);
+        } else {
+            out += kind == 'f' ? strprintf("%.*f", precision, field.F64())
+                               : strprintf("%.*g", precision, field.F64());
+        }
         return true;
     }
 } // namespace

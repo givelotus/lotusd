@@ -147,23 +147,41 @@ def check(source, names, types=None):
                 message = literal(args[2])
                 # Double braces are not a single registry placeholder.
                 message = message.replace("{{", "").replace("}}", "")
-                placeholders = list(re.finditer(
-                    r"\{([a-z][a-z0-9_]*)(?::([^}]*))?\}", message))
+                placeholders = list(
+                    re.finditer(r"\{([a-z][a-z0-9_]*)(?::([^}]*))?\}", message)
+                )
                 for placeholder in placeholders:
                     spec = placeholder.group(2)
                     if spec is None:
                         continue
-                    key = next((key for key in fields
-                                if names[key] == placeholder.group(1)), None)
+                    key = next(
+                        (key for key in fields if names[key] == placeholder.group(1)),
+                        None,
+                    )
                     if spec == "fsq":
                         if types is None or types.get(key) != "STRING":
-                            raise ValueError("fsq format requires a STRING registry field")
+                            raise ValueError(
+                                "fsq format requires a STRING registry field"
+                            )
                     elif re.fullmatch(r"(?:0(?:[1-9]|1[0-6]))?x", spec):
                         if types is None or types.get(key) not in {"INT", "UINT"}:
-                            raise ValueError("hex format requires an INT/UINT registry field")
+                            raise ValueError(
+                                "hex format requires an INT/UINT registry field"
+                            )
+                    elif re.fullmatch(r"(?:0?(?:[1-9]|1[0-9]|20))?[du]", spec):
+                        if types is None or types.get(key) not in {"INT", "UINT"}:
+                            raise ValueError(
+                                "decimal format requires an INT/UINT registry field"
+                            )
                     elif re.fullmatch(r"(?:\.(?:[0-9]|1[0-8]))?[fg]", spec):
-                        if types is None or types.get(key) != "FLOAT":
-                            raise ValueError("float format requires a FLOAT registry field")
+                        if types is None or types.get(key) not in {
+                            "FLOAT",
+                            "INT",
+                            "UINT",
+                        }:
+                            raise ValueError(
+                                "float format requires a FLOAT/INT/UINT registry field"
+                            )
                     else:
                         raise ValueError("template format spec is not supported")
                 used = {placeholder.group(1) for placeholder in placeholders}
@@ -238,8 +256,54 @@ class ContractTests(unittest.TestCase):
             self.assertFalse(check(source % spec, names, {"ElapsedMs": "FLOAT"})[1])
         for spec in ["", ".19f", ".-1f", "08.2f", "*f", ".2x"]:
             self.assertTrue(check(source % spec, names, {"ElapsedMs": "FLOAT"})[1])
-        self.assertIn("requires a FLOAT", check(
-            source % ".2f", names, {"ElapsedMs": "STRING"})[1][0][1])
+        self.assertIn(
+            "requires a FLOAT",
+            check(source % ".2f", names, {"ElapsedMs": "STRING"})[1][0][1],
+        )
+
+    def test_integral_numeric_format_contract(self):
+        names = {"Count": "count"}
+        source = 'LogInfoEvent(BCLog::ALL,"counted","{count:%s}").Field(LogField::Count, value);'
+        for kind in ("INT", "UINT"):
+            for spec in (
+                "d",
+                "u",
+                "1d",
+                "01u",
+                "05u",
+                "15d",
+                "20u",
+                "020d",
+                "f",
+                "g",
+                ".0f",
+                ".2f",
+                ".18g",
+            ):
+                self.assertFalse(
+                    check(source % spec, names, {"Count": kind})[1], (kind, spec)
+                )
+            for spec in (
+                "0d",
+                "00u",
+                "005u",
+                "21d",
+                "021u",
+                "+5d",
+                "-5d",
+                "1.0d",
+                ".19f",
+                "08.2f",
+            ):
+                self.assertTrue(
+                    check(source % spec, names, {"Count": kind})[1], (kind, spec)
+                )
+        for kind in ("STRING", "BOOL", "HASH", "DURATION"):
+            for spec in ("15d", "05u", "f", ".2g"):
+                self.assertTrue(
+                    check(source % spec, names, {"Count": kind})[1], (kind, spec)
+                )
+        self.assertTrue(check(source % "15d", names, {"Count": "FLOAT"})[1])
 
     def test_hex_precision_contract(self):
         names = {"Version": "version"}
@@ -255,11 +319,15 @@ class ContractTests(unittest.TestCase):
         source = 'LogInfoEvent(BCLog::ALL,"file_loaded","{path:fsq}").Field(LogField::Path, value);'
         self.assertFalse(check(source, names, {"Path": "STRING"})[1])
         for wrong in ["INT", "UINT", "FLOAT", "HASH"]:
-            self.assertIn("requires a STRING", check(
-                source, names, {"Path": wrong})[1][0][1])
+            self.assertIn(
+                "requires a STRING", check(source, names, {"Path": wrong})[1][0][1]
+            )
         for changed in ["q", "fsquote", "fsq:1"]:
-            self.assertTrue(check(source.replace(":fsq", ":" + changed),
-                                  names, {"Path": "STRING"})[1])
+            self.assertTrue(
+                check(source.replace(":fsq", ":" + changed), names, {"Path": "STRING"})[
+                    1
+                ]
+            )
 
     def test_comments_and_strings(self):
         source = '// LogEvent(NET, "peer_bad");\nconst char *x = R"q(LogEvent(NET, "peer_bad"))q";\n/* LogEvent(NET,"bad"); */'
@@ -320,9 +388,12 @@ def main():
         return not result.wasSuccessful()
     root = Path(__file__).resolve().parents[2]
     names = registry(root)
-    types = dict(re.findall(
-        r"\bX\(\s*(\w+)\s*,\s*\w+\s*,\s*(\w+)\s*,",
-        (root / "src/logging/fields.h").read_text(encoding="utf-8")))
+    types = dict(
+        re.findall(
+            r"\bX\(\s*(\w+)\s*,\s*\w+\s*,\s*(\w+)\s*,",
+            (root / "src/logging/fields.h").read_text(encoding="utf-8"),
+        )
+    )
     if options.paths:
         paths = [Path(path) for path in options.paths]
     else:
