@@ -65,6 +65,8 @@ struct QuicEngineOptions {
     QuicRetryMode retry{QuicRetryMode::AUTO};
     //! BBR instead of CUBIC
     bool bbr{false};
+    //! Linux UDP segmentation offload (runtime-probed; safe datagram fallback).
+    bool gso{true};
     std::chrono::milliseconds idle_timeout{std::chrono::seconds{30}};
     //! PING after this long without traffic (outbound connections; 0: off)
     std::chrono::milliseconds keep_alive{std::chrono::seconds{15}};
