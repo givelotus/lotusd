@@ -170,7 +170,14 @@
     X(CertificatePath, certificate_path, STRING, "", "") \
     X(KeyPath, key_path, STRING, "", "") \
     X(ServerName, server_name, STRING, "", "") \
-    X(CertificateValidityDays, certificate_validity_days, INT, "", "")
+    X(CertificateValidityDays, certificate_validity_days, INT, "", "") \
+    X(ListenAddress, listen_address, STRING, "", "") \
+    X(ListenPort, listen_port, INT, "", "") \
+    X(PublicPrefixes, public_prefixes, STRING, "", "") \
+    X(HttpPath, http_path, STRING, "", "") \
+    X(CoroutineWorkerThreads, coroutine_worker_threads, INT, "", "") \
+    X(IOThreads, io_threads, INT, "", "") \
+    X(ListenerKind, listener_kind, STRING, "", "")
 
 namespace BCLog {
 
