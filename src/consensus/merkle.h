@@ -25,8 +25,8 @@ uint256 BlockMerkleRoot(const CBlock &block, bool *mutated = nullptr);
  * returns once all have returned. Supplied by the caller (consensus code
  * owns no threads); running every task on the calling thread is valid.
  */
-using MerkleTaskRunner = std::function<void(
-    size_t n_tasks, const std::function<void(size_t)> &fn)>;
+using MerkleTaskRunner =
+    std::function<void(size_t n_tasks, const std::function<void(size_t)> &fn)>;
 
 /**
  * The same root and mutation flag as ComputeMerkleRoot over leaf(0) ...

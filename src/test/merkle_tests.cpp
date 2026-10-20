@@ -405,16 +405,16 @@ void CheckChunkedMatches(const std::vector<uint256> &leaves, size_t chunk,
     bool mutated_seq{false}, mutated_par{true};
     const uint256 seq{ComputeMerkleRoot(leaves, &mutated_seq)};
     const uint256 par{ComputeMerkleRootChunked(
-        leaves.size(), [&](size_t i) { return leaves[i]; }, &mutated_par,
-        chunk, run)};
-    BOOST_CHECK_MESSAGE(seq == par, "n=" << leaves.size()
-                                         << " chunk=" << chunk);
+        leaves.size(), [&](size_t i) { return leaves[i]; }, &mutated_par, chunk,
+        run)};
+    BOOST_CHECK_MESSAGE(seq == par,
+                        "n=" << leaves.size() << " chunk=" << chunk);
     BOOST_CHECK_MESSAGE(mutated_seq == mutated_par,
                         "mutated n=" << leaves.size() << " chunk=" << chunk);
     // Without a mutation flag requested, the root is the same.
     BOOST_CHECK(ComputeMerkleRootChunked(
-                    leaves.size(), [&](size_t i) { return leaves[i]; },
-                    nullptr, chunk, run) == seq);
+                    leaves.size(), [&](size_t i) { return leaves[i]; }, nullptr,
+                    chunk, run) == seq);
 }
 } // namespace
 
