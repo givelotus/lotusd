@@ -59,6 +59,9 @@
 #cmakedefine ENABLE_WALLET 1
 #cmakedefine ENABLE_ZMQ 1
 
+/* Define if HTTP/2 (nghttp2) should be compiled in. */
+#cmakedefine ENABLE_HTTP2 1
+
 /* Define if the Chronik indexer should be compiled in. */
 #cmakedefine01 ENABLE_CHRONIK
 
