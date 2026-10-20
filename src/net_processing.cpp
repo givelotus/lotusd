@@ -1434,7 +1434,9 @@ private:
         const bool disabled_for_test =
             Params().GetChainType() == ChainType::REGTEST &&
             gArgs.GetBoolArg("-testdisablehighbandwidthshorttx", false);
-        if (!disabled_for_test) {
+        if (!disabled_for_test &&
+            (gArgs.GetBoolArg("-highbandwidthtx", false) ||
+             m_opts.txrelay_push_hb)) {
             features |= txrelay::TXRELAY_HIGH_BANDWIDTH;
         }
         return features;
@@ -10425,8 +10427,12 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
             const bool disable_shorttx_for_test =
                 Params().GetChainType() == ChainType::REGTEST &&
                 gArgs.GetBoolArg("-testdisablehighbandwidthshorttx", false);
+            // Unsolicited bodies (shorttx pushes of 16 or more) only with
+            // -txrelaypushhb: in simulation they save ~0.1 s per hop and
+            // cost a duplicate body most of the time.
             const bool high_bandwidth_peer =
-                !disable_shorttx_for_test && !pto->IsBlockOnlyConn() &&
+                m_opts.txrelay_push_hb && !disable_shorttx_for_test &&
+                !pto->IsBlockOnlyConn() &&
                 (peer->m_txrelay_features & txrelay::TXRELAY_HIGH_BANDWIDTH);
             // Every peer announces transactions on the same fixed relay
             // tick (-txrelaytick) of the monotonic clock; there is no
