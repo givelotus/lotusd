@@ -1,0 +1,306 @@
+{
+  "schema": 1,
+  "batch": "address-manager-lifecycle",
+  "review_note": "All14 direct legacy addrman producers; preserve address state and debug gates while exposing endpoint/bucket/count semantics. Its separate timing macro remains explicit deferred.",
+  "files": [
+    {
+      "path": "src/addrman.cpp",
+      "rules": [
+        {
+          "id": "addrman_rebucket_required",
+          "old": "LogDebug(BCLog::ADDRMAN,\n                 \"Bucketing method was updated, re-bucketing addrman \"\n                 \"entries from disk\\n\")",
+          "replacement": "LogEvent(BCLog::ADDRMAN, \"addrman_rebucket_required\", \"Bucketing method was updated, re-bucketing addrman entries from disk\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Bucketing method was updated, re-bucketing addrman entries from disk\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve original level/category, message and all address-management state/locks/assertions. Copy CService/CNetAddr raw values through existing adapters; explicit base casts preserve prior ToStringAddrPort, source CNetAddr preserves prior ToStringAddr. MappedAS computation stays inside the same debug gate as before. Internal bucket indices/loss/new/tried counts stay signed for diagnostic fidelity. CandidateCount and positive added Count reflect original values. Conditional missing-collider display remains its original producer string/empty branch; no claim that this one formatting operation was deferred. ExistingAddr is an opaque prior endpoint, not falsely mapped to ECS sender/OTel network.peer.address. One generic LOG_TIME_* producer remains separately deferred by inventory."
+        },
+        {
+          "id": "addrman_deserialization_collisions",
+          "old": "LogDebug(BCLog::ADDRMAN,\n                 \"addrman lost %i new and %i tried addresses due to \"\n                 \"collisions\\n\",\n                 nLostUnk, nLost)",
+          "replacement": "LogEvent(BCLog::ADDRMAN, \"addrman_deserialization_collisions\", \"addrman lost {lost_new_address_count} new and {lost_tried_address_count} tried addresses due to collisions\").Field(BCLog::LogField::LostNewAddressCount, nLostUnk).Field(BCLog::LogField::LostTriedAddressCount, nLost)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "addrman lost %i new and %i tried addresses due to collisions\n",
+            "specifiers": [
+              "%i",
+              "%i"
+            ],
+            "arguments": [
+              "nLostUnk",
+              "nLost"
+            ]
+          },
+          "review_note": "Preserve original level/category, message and all address-management state/locks/assertions. Copy CService/CNetAddr raw values through existing adapters; explicit base casts preserve prior ToStringAddrPort, source CNetAddr preserves prior ToStringAddr. MappedAS computation stays inside the same debug gate as before. Internal bucket indices/loss/new/tried counts stay signed for diagnostic fidelity. CandidateCount and positive added Count reflect original values. Conditional missing-collider display remains its original producer string/empty branch; no claim that this one formatting operation was deferred. ExistingAddr is an opaque prior endpoint, not falsely mapped to ECS sender/OTel network.peer.address. One generic LOG_TIME_* producer remains separately deferred by inventory."
+        },
+        {
+          "id": "addrman_address_removed_new",
+          "old": "LogDebug(BCLog::ADDRMAN, \"Removed %s from new[%i][%i]\\n\",\n                 infoDelete.ToStringAddrPort(), nUBucket, nUBucketPos)",
+          "replacement": "LogEvent(BCLog::ADDRMAN, \"addrman_address_removed_new\", \"Removed {addr} from new[{new_bucket_index}][{new_bucket_position}]\").Field(BCLog::LogField::Addr, static_cast<const CService &>(infoDelete)).Field(BCLog::LogField::NewBucketIndex, nUBucket).Field(BCLog::LogField::NewBucketPosition, nUBucketPos)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Removed %s from new[%i][%i]\n",
+            "specifiers": [
+              "%s",
+              "%i",
+              "%i"
+            ],
+            "arguments": [
+              "infoDelete.ToStringAddrPort()",
+              "nUBucket",
+              "nUBucketPos"
+            ]
+          },
+          "review_note": "Preserve original level/category, message and all address-management state/locks/assertions. Copy CService/CNetAddr raw values through existing adapters; explicit base casts preserve prior ToStringAddrPort, source CNetAddr preserves prior ToStringAddr. MappedAS computation stays inside the same debug gate as before. Internal bucket indices/loss/new/tried counts stay signed for diagnostic fidelity. CandidateCount and positive added Count reflect original values. Conditional missing-collider display remains its original producer string/empty branch; no claim that this one formatting operation was deferred. ExistingAddr is an opaque prior endpoint, not falsely mapped to ECS sender/OTel network.peer.address. One generic LOG_TIME_* producer remains separately deferred by inventory."
+        },
+        {
+          "id": "addrman_address_evicted_tried",
+          "old": "LogDebug(BCLog::ADDRMAN,\n                 \"Moved %s from tried[%i][%i] to new[%i][%i] to make space\\n\",\n                 infoOld.ToStringAddrPort(), nKBucket, nKBucketPos, nUBucket,\n                 nUBucketPos)",
+          "replacement": "LogEvent(BCLog::ADDRMAN, \"addrman_address_evicted_tried\", \"Moved {addr} from tried[{tried_bucket_index}][{tried_bucket_position}] to new[{new_bucket_index}][{new_bucket_position}] to make space\").Field(BCLog::LogField::Addr, static_cast<const CService &>(infoOld)).Field(BCLog::LogField::TriedBucketIndex, nKBucket).Field(BCLog::LogField::TriedBucketPosition, nKBucketPos).Field(BCLog::LogField::NewBucketIndex, nUBucket).Field(BCLog::LogField::NewBucketPosition, nUBucketPos)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Moved %s from tried[%i][%i] to new[%i][%i] to make space\n",
+            "specifiers": [
+              "%s",
+              "%i",
+              "%i",
+              "%i",
+              "%i"
+            ],
+            "arguments": [
+              "infoOld.ToStringAddrPort()",
+              "nKBucket",
+              "nKBucketPos",
+              "nUBucket",
+              "nUBucketPos"
+            ]
+          },
+          "review_note": "Preserve original level/category, message and all address-management state/locks/assertions. Copy CService/CNetAddr raw values through existing adapters; explicit base casts preserve prior ToStringAddrPort, source CNetAddr preserves prior ToStringAddr. MappedAS computation stays inside the same debug gate as before. Internal bucket indices/loss/new/tried counts stay signed for diagnostic fidelity. CandidateCount and positive added Count reflect original values. Conditional missing-collider display remains its original producer string/empty branch; no claim that this one formatting operation was deferred. ExistingAddr is an opaque prior endpoint, not falsely mapped to ECS sender/OTel network.peer.address. One generic LOG_TIME_* producer remains separately deferred by inventory."
+        },
+        {
+          "id": "addrman_address_added_new",
+          "old": "LogDebug(BCLog::ADDRMAN, \"Added %s mapped to AS%i to new[%i][%i]\\n\",\n                     addr.ToStringAddrPort(), addr.GetMappedAS(m_asmap),\n                     nUBucket, nUBucketPos)",
+          "replacement": "LogEvent(BCLog::ADDRMAN, \"addrman_address_added_new\", \"Added {addr} mapped to AS{mapped_as} to new[{new_bucket_index}][{new_bucket_position}]\").Field(BCLog::LogField::Addr, static_cast<const CService &>(addr)).Field(BCLog::LogField::MappedAS, addr.GetMappedAS(m_asmap)).Field(BCLog::LogField::NewBucketIndex, nUBucket).Field(BCLog::LogField::NewBucketPosition, nUBucketPos)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Added %s mapped to AS%i to new[%i][%i]\n",
+            "specifiers": [
+              "%s",
+              "%i",
+              "%i",
+              "%i"
+            ],
+            "arguments": [
+              "addr.ToStringAddrPort()",
+              "addr.GetMappedAS(m_asmap)",
+              "nUBucket",
+              "nUBucketPos"
+            ]
+          },
+          "review_note": "Preserve original level/category, message and all address-management state/locks/assertions. Copy CService/CNetAddr raw values through existing adapters; explicit base casts preserve prior ToStringAddrPort, source CNetAddr preserves prior ToStringAddr. MappedAS computation stays inside the same debug gate as before. Internal bucket indices/loss/new/tried counts stay signed for diagnostic fidelity. CandidateCount and positive added Count reflect original values. Conditional missing-collider display remains its original producer string/empty branch; no claim that this one formatting operation was deferred. ExistingAddr is an opaque prior endpoint, not falsely mapped to ECS sender/OTel network.peer.address. One generic LOG_TIME_* producer remains separately deferred by inventory."
+        },
+        {
+          "id": "addrman_tried_collision",
+          "old": "LogDebug(BCLog::ADDRMAN,\n                 \"Collision with %s while attempting to move %s to tried \"\n                 \"table. Collisions=%d\\n\",\n                 colliding_entry != mapInfo.end()\n                     ? colliding_entry->second.ToStringAddrPort()\n                     : \"\",\n                 addr.ToStringAddrPort(), m_tried_collisions.size())",
+          "replacement": "LogEvent(BCLog::ADDRMAN, \"addrman_tried_collision\", \"Collision with {existing_addr} while attempting to move {addr} to tried table. Collisions={count}\").Field(BCLog::LogField::ExistingAddr, colliding_entry != mapInfo.end() ? colliding_entry->second.ToStringAddrPort() : \"\").Field(BCLog::LogField::Addr, static_cast<const CService &>(addr)).Field(BCLog::LogField::Count, m_tried_collisions.size())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Collision with %s while attempting to move %s to tried table. Collisions=%d\n",
+            "specifiers": [
+              "%s",
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "colliding_entry != mapInfo.end()\n                     ? colliding_entry->second.ToStringAddrPort()\n                     : \"\"",
+              "addr.ToStringAddrPort()",
+              "m_tried_collisions.size()"
+            ]
+          },
+          "review_note": "Preserve original level/category, message and all address-management state/locks/assertions. Copy CService/CNetAddr raw values through existing adapters; explicit base casts preserve prior ToStringAddrPort, source CNetAddr preserves prior ToStringAddr. MappedAS computation stays inside the same debug gate as before. Internal bucket indices/loss/new/tried counts stay signed for diagnostic fidelity. CandidateCount and positive added Count reflect original values. Conditional missing-collider display remains its original producer string/empty branch; no claim that this one formatting operation was deferred. ExistingAddr is an opaque prior endpoint, not falsely mapped to ECS sender/OTel network.peer.address. One generic LOG_TIME_* producer remains separately deferred by inventory."
+        },
+        {
+          "id": "addrman_address_moved_tried",
+          "old": "LogDebug(BCLog::ADDRMAN, \"Moved %s mapped to AS%i to tried[%i][%i]\\n\",\n                 addr.ToStringAddrPort(), addr.GetMappedAS(m_asmap),\n                 tried_bucket, tried_bucket_pos)",
+          "replacement": "LogEvent(BCLog::ADDRMAN, \"addrman_address_moved_tried\", \"Moved {addr} mapped to AS{mapped_as} to tried[{tried_bucket_index}][{tried_bucket_position}]\").Field(BCLog::LogField::Addr, static_cast<const CService &>(addr)).Field(BCLog::LogField::MappedAS, addr.GetMappedAS(m_asmap)).Field(BCLog::LogField::TriedBucketIndex, tried_bucket).Field(BCLog::LogField::TriedBucketPosition, tried_bucket_pos)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Moved %s mapped to AS%i to tried[%i][%i]\n",
+            "specifiers": [
+              "%s",
+              "%i",
+              "%i",
+              "%i"
+            ],
+            "arguments": [
+              "addr.ToStringAddrPort()",
+              "addr.GetMappedAS(m_asmap)",
+              "tried_bucket",
+              "tried_bucket_pos"
+            ]
+          },
+          "review_note": "Preserve original level/category, message and all address-management state/locks/assertions. Copy CService/CNetAddr raw values through existing adapters; explicit base casts preserve prior ToStringAddrPort, source CNetAddr preserves prior ToStringAddr. MappedAS computation stays inside the same debug gate as before. Internal bucket indices/loss/new/tried counts stay signed for diagnostic fidelity. CandidateCount and positive added Count reflect original values. Conditional missing-collider display remains its original producer string/empty branch; no claim that this one formatting operation was deferred. ExistingAddr is an opaque prior endpoint, not falsely mapped to ECS sender/OTel network.peer.address. One generic LOG_TIME_* producer remains separately deferred by inventory."
+        },
+        {
+          "id": "addrman_addresses_added",
+          "old": "LogDebug(BCLog::ADDRMAN,\n                 \"Added %i addresses (of %i) from %s: %i tried, %i new\\n\",\n                 added, vAddr.size(), source.ToStringAddr(), nTried, nNew)",
+          "replacement": "LogEvent(BCLog::ADDRMAN, \"addrman_addresses_added\", \"Added {count} addresses (of {candidate_count}) from {addr}: {tried_address_count} tried, {new_address_count} new\").Field(BCLog::LogField::Count, added).Field(BCLog::LogField::CandidateCount, vAddr.size()).Field(BCLog::LogField::Addr, source).Field(BCLog::LogField::TriedAddressCount, nTried).Field(BCLog::LogField::NewAddressCount, nNew)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Added %i addresses (of %i) from %s: %i tried, %i new\n",
+            "specifiers": [
+              "%i",
+              "%i",
+              "%s",
+              "%i",
+              "%i"
+            ],
+            "arguments": [
+              "added",
+              "vAddr.size()",
+              "source.ToStringAddr()",
+              "nTried",
+              "nNew"
+            ]
+          },
+          "review_note": "Preserve original level/category, message and all address-management state/locks/assertions. Copy CService/CNetAddr raw values through existing adapters; explicit base casts preserve prior ToStringAddrPort, source CNetAddr preserves prior ToStringAddr. MappedAS computation stays inside the same debug gate as before. Internal bucket indices/loss/new/tried counts stay signed for diagnostic fidelity. CandidateCount and positive added Count reflect original values. Conditional missing-collider display remains its original producer string/empty branch; no claim that this one formatting operation was deferred. ExistingAddr is an opaque prior endpoint, not falsely mapped to ECS sender/OTel network.peer.address. One generic LOG_TIME_* producer remains separately deferred by inventory."
+        },
+        {
+          "id": "addrman_address_selected_tried",
+          "old": "LogDebug(BCLog::ADDRMAN, \"Selected %s from tried\\n\",\n                         info.ToStringAddrPort())",
+          "replacement": "LogEvent(BCLog::ADDRMAN, \"addrman_address_selected_tried\", \"Selected {addr} from tried\").Field(BCLog::LogField::Addr, static_cast<const CService &>(info))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Selected %s from tried\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "info.ToStringAddrPort()"
+            ]
+          },
+          "review_note": "Preserve original level/category, message and all address-management state/locks/assertions. Copy CService/CNetAddr raw values through existing adapters; explicit base casts preserve prior ToStringAddrPort, source CNetAddr preserves prior ToStringAddr. MappedAS computation stays inside the same debug gate as before. Internal bucket indices/loss/new/tried counts stay signed for diagnostic fidelity. CandidateCount and positive added Count reflect original values. Conditional missing-collider display remains its original producer string/empty branch; no claim that this one formatting operation was deferred. ExistingAddr is an opaque prior endpoint, not falsely mapped to ECS sender/OTel network.peer.address. One generic LOG_TIME_* producer remains separately deferred by inventory."
+        },
+        {
+          "id": "addrman_address_selected_new",
+          "old": "LogDebug(BCLog::ADDRMAN, \"Selected %s from new\\n\",\n                         info.ToStringAddrPort())",
+          "replacement": "LogEvent(BCLog::ADDRMAN, \"addrman_address_selected_new\", \"Selected {addr} from new\").Field(BCLog::LogField::Addr, static_cast<const CService &>(info))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Selected %s from new\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "info.ToStringAddrPort()"
+            ]
+          },
+          "review_note": "Preserve original level/category, message and all address-management state/locks/assertions. Copy CService/CNetAddr raw values through existing adapters; explicit base casts preserve prior ToStringAddrPort, source CNetAddr preserves prior ToStringAddr. MappedAS computation stays inside the same debug gate as before. Internal bucket indices/loss/new/tried counts stay signed for diagnostic fidelity. CandidateCount and positive added Count reflect original values. Conditional missing-collider display remains its original producer string/empty branch; no claim that this one formatting operation was deferred. ExistingAddr is an opaque prior endpoint, not falsely mapped to ECS sender/OTel network.peer.address. One generic LOG_TIME_* producer remains separately deferred by inventory."
+        },
+        {
+          "id": "addrman_getaddr_finished",
+          "old": "LogDebug(BCLog::ADDRMAN, \"GetAddr returned %d random addresses\\n\",\n             addresses.size())",
+          "replacement": "LogEvent(BCLog::ADDRMAN, \"addrman_getaddr_finished\", \"GetAddr returned {count} random addresses\").Field(BCLog::LogField::Count, addresses.size())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "GetAddr returned %d random addresses\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "addresses.size()"
+            ]
+          },
+          "review_note": "Preserve original level/category, message and all address-management state/locks/assertions. Copy CService/CNetAddr raw values through existing adapters; explicit base casts preserve prior ToStringAddrPort, source CNetAddr preserves prior ToStringAddr. MappedAS computation stays inside the same debug gate as before. Internal bucket indices/loss/new/tried counts stay signed for diagnostic fidelity. CandidateCount and positive added Count reflect original values. Conditional missing-collider display remains its original producer string/empty branch; no claim that this one formatting operation was deferred. ExistingAddr is an opaque prior endpoint, not falsely mapped to ECS sender/OTel network.peer.address. One generic LOG_TIME_* producer remains separately deferred by inventory."
+        },
+        {
+          "id": "addrman_tried_address_replaced",
+          "old": "LogDebug(BCLog::ADDRMAN,\n                                 \"Replacing %s with %s in tried table\\n\",\n                                 info_old.ToStringAddrPort(),\n                                 info_new.ToStringAddrPort())",
+          "replacement": "LogEvent(BCLog::ADDRMAN, \"addrman_tried_address_replaced\", \"Replacing {existing_addr} with {addr} in tried table\").Field(BCLog::LogField::ExistingAddr, static_cast<const CService &>(info_old)).Field(BCLog::LogField::Addr, static_cast<const CService &>(info_new))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Replacing %s with %s in tried table\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "info_old.ToStringAddrPort()",
+              "info_new.ToStringAddrPort()"
+            ]
+          },
+          "review_note": "Preserve original level/category, message and all address-management state/locks/assertions. Copy CService/CNetAddr raw values through existing adapters; explicit base casts preserve prior ToStringAddrPort, source CNetAddr preserves prior ToStringAddr. MappedAS computation stays inside the same debug gate as before. Internal bucket indices/loss/new/tried counts stay signed for diagnostic fidelity. CandidateCount and positive added Count reflect original values. Conditional missing-collider display remains its original producer string/empty branch; no claim that this one formatting operation was deferred. ExistingAddr is an opaque prior endpoint, not falsely mapped to ECS sender/OTel network.peer.address. One generic LOG_TIME_* producer remains separately deferred by inventory."
+        },
+        {
+          "id": "addrman_tried_address_replaced_untested",
+          "old": "LogDebug(BCLog::ADDRMAN,\n                             \"Unable to test; replacing %s with %s in tried \"\n                             \"table anyway\\n\",\n                             info_old.ToStringAddrPort(),\n                             info_new.ToStringAddrPort())",
+          "replacement": "LogEvent(BCLog::ADDRMAN, \"addrman_tried_address_replaced_untested\", \"Unable to test; replacing {existing_addr} with {addr} in tried table anyway\").Field(BCLog::LogField::ExistingAddr, static_cast<const CService &>(info_old)).Field(BCLog::LogField::Addr, static_cast<const CService &>(info_new))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Unable to test; replacing %s with %s in tried table anyway\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "info_old.ToStringAddrPort()",
+              "info_new.ToStringAddrPort()"
+            ]
+          },
+          "review_note": "Preserve original level/category, message and all address-management state/locks/assertions. Copy CService/CNetAddr raw values through existing adapters; explicit base casts preserve prior ToStringAddrPort, source CNetAddr preserves prior ToStringAddr. MappedAS computation stays inside the same debug gate as before. Internal bucket indices/loss/new/tried counts stay signed for diagnostic fidelity. CandidateCount and positive added Count reflect original values. Conditional missing-collider display remains its original producer string/empty branch; no claim that this one formatting operation was deferred. ExistingAddr is an opaque prior endpoint, not falsely mapped to ECS sender/OTel network.peer.address. One generic LOG_TIME_* producer remains separately deferred by inventory."
+        },
+        {
+          "id": "addrman_consistency_failed",
+          "old": "LogPrintf(\"ADDRMAN CONSISTENCY CHECK FAILED!!! err=%i\\n\", err)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"addrman_consistency_failed\", \"ADDRMAN CONSISTENCY CHECK FAILED!!! err={error_code}\").Field(BCLog::LogField::ErrorCode, err)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "ADDRMAN CONSISTENCY CHECK FAILED!!! err=%i\n",
+            "specifiers": [
+              "%i"
+            ],
+            "arguments": [
+              "err"
+            ]
+          },
+          "review_note": "Preserve original level/category, message and all address-management state/locks/assertions. Copy CService/CNetAddr raw values through existing adapters; explicit base casts preserve prior ToStringAddrPort, source CNetAddr preserves prior ToStringAddr. MappedAS computation stays inside the same debug gate as before. Internal bucket indices/loss/new/tried counts stay signed for diagnostic fidelity. CandidateCount and positive added Count reflect original values. Conditional missing-collider display remains its original producer string/empty branch; no claim that this one formatting operation was deferred. ExistingAddr is an opaque prior endpoint, not falsely mapped to ECS sender/OTel network.peer.address. One generic LOG_TIME_* producer remains separately deferred by inventory."
+        }
+      ],
+      "support_adjustments": [
+        {
+          "purpose": "Use existing copied network address adapters explicitly.",
+          "old": "#include <addrman_impl.h>\n",
+          "new": "#include <addrman_impl.h>\n\n#include <logging/values.h>\n"
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Append address-manager internal counter/bucket semantics with original signedness; mapped AS is ASmap group, not asserted peer ASN.",
+          "old": "    X(ConfigSectionPrefix, config_section_prefix, STRING, \"\", \"\")\n\nnamespace BCLog {",
+          "new": "    X(ConfigSectionPrefix, config_section_prefix, STRING, \"\", \"\") \\\n    X(LostNewAddressCount, lost_new_address_count, INT, \"\", \"\") \\\n    X(LostTriedAddressCount, lost_tried_address_count, INT, \"\", \"\") \\\n    X(NewBucketIndex, new_bucket_index, INT, \"\", \"\") \\\n    X(NewBucketPosition, new_bucket_position, INT, \"\", \"\") \\\n    X(TriedBucketIndex, tried_bucket_index, INT, \"\", \"\") \\\n    X(TriedBucketPosition, tried_bucket_position, INT, \"\", \"\") \\\n    X(MappedAS, mapped_as, UINT, \"\", \"\") \\\n    X(ExistingAddr, existing_addr, STRING, \"\", \"\") \\\n    X(CandidateCount, candidate_count, UINT, \"\", \"\") \\\n    X(TriedAddressCount, tried_address_count, INT, \"\", \"\") \\\n    X(NewAddressCount, new_address_count, INT, \"\", \"\")\n\nnamespace BCLog {"
+        }
+      ]
+    }
+  ]
+}
