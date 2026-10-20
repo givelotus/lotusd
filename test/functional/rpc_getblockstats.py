@@ -60,13 +60,13 @@ class GetblockstatsTest(BitcoinTestFramework):
         self.nodes[0].importprivkey(self.nodes[0].get_deterministic_priv_key().key)
         mocktime = 1525107225
         self.nodes[0].setmocktime(mocktime)
-        self.generate(self.nodes[0], COINBASE_MATURITY + 1)
+        self.generate(self.nodes[0], COINBASE_MATURITY + 1, coinbase_version=2)
 
         address = self.nodes[0].get_deterministic_priv_key().address
         self.nodes[0].sendtoaddress(
             address=address, amount=10000000, subtractfeefromamount=True
         )
-        self.generate(self.nodes[0], 1)
+        self.generate(self.nodes[0], 1, coinbase_version=2)
 
         self.nodes[0].sendtoaddress(
             address=address, amount=10000000, subtractfeefromamount=True
@@ -79,7 +79,7 @@ class GetblockstatsTest(BitcoinTestFramework):
             address=address, amount=1000000, subtractfeefromamount=True
         )
         self.sync_all()
-        self.generate(self.nodes[0], 1)
+        self.generate(self.nodes[0], 1, coinbase_version=2)
 
         self.expected_stats = self.get_stats()
 

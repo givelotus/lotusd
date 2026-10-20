@@ -145,6 +145,10 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_genesis, TestChain100Setup) {
 
     chronik_bridge::Block bridgedGenesisBlock = chronik_bridge::bridge_block(
         genesisBlock, *genesisBlockUndo, *pgenesis);
+    const CTxIn &genesisInput = genesisBlock.vtx[0]->vin[0];
+    const CScript genesisInputScript = genesisBlock.vtx[0]->nVersion == 7
+        ? CScript(genesisInput.vCoinbaseData.begin(), genesisInput.vCoinbaseData.end())
+        : genesisInput.scriptSig;
     chronik_bridge::Tx expectedGenesisTx = {
         .txid = HashToArray(genesisBlock.vtx[0]->GetId()),
         .version = genesisBlock.vtx[0]->nVersion,
@@ -153,7 +157,7 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_genesis, TestChain100Setup) {
                 .txid = {},
                 .out_idx = 0xffff'ffff,
             }),
-            .script = ToRustVec<uint8_t>(genesisBlock.vtx[0]->vin[0].scriptSig),
+            .script = ToRustVec<uint8_t>(genesisInputScript),
             .sequence = 0xffff'ffff,
             .coin = {}, // null coin
         }},
@@ -260,7 +264,7 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_detailled, TestChain100Setup) {
         .outputs = {{
             .sats = 2500000000,
             .script = ToRustVec<uint8_t>(
-                CanonicalNativeOutputBytes(testBlock.vtx[0]->vout[0])),
+                ExpectedBridgeScriptBytes(testBlock.vtx[0]->vout[0])),
         }},
         .locktime = 0,
     };
@@ -276,7 +280,7 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_detailled, TestChain100Setup) {
             .sequence = 0xffff'ffff,
             .coin = chronik_bridge::Coin({
                 .output = {5000000000, ToRustVec<uint8_t>(
-                    CanonicalNativeOutputBytes(coinsBlock.vtx[0]->vout[0]))},
+                    ExpectedBridgeScriptBytes(coinsBlock.vtx[0]->vout[0]))},
                 .height = 101,
                 .is_coinbase = true,
             }),

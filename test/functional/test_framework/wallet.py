@@ -22,7 +22,6 @@ from test_framework.currency import XPI_RPC_CURRENCY, RpcCurrency
 from test_framework.hash import hash160
 from test_framework.key import SECP256K1, SECP256K1_G, SECP256K1_ORDER, ECKey
 from test_framework.messages import (
-    XEC,
     COutPoint,
     CTransaction,
     CTxIn,
@@ -48,7 +47,6 @@ from test_framework.txtools import pad_tx, sign_input
 from test_framework.util import (
     assert_equal,
     assert_greater_than_or_equal,
-    satoshi_round,
 )
 
 DEFAULT_FEE_ATOMS = 10000
@@ -464,6 +462,7 @@ class MiniWallet:
 class NativeMiniWallet:
     def __init__(self, test_node, *, mode=MiniWalletMode.ADDRESS_OP_TRUE):
         self._test_node = test_node
+        self._currency = RpcCurrency.from_node(test_node)
         self._utxos = []
         self._input_values = {}
         self._mode = mode
@@ -487,7 +486,7 @@ class NativeMiniWallet:
         self.rescan_utxos()
 
     def _create_utxo(self, *, txid, vout, value, height, coinbase, confirmations):
-        self._input_values[(txid, vout)] = int(value * XEC)
+        self._input_values[(txid, vout)] = self._currency.to_atoms(value)
         return {
             "txid": txid,
             "vout": vout,
@@ -810,7 +809,9 @@ class NativeMiniWallet:
 
         # Each input signs its own resolved coin, never a summed input value.
         for utxo in utxos_to_spend:
-            self._input_values[(utxo["txid"], utxo["vout"])] = int(utxo["value"] * XEC)
+            self._input_values[(utxo["txid"], utxo["vout"])] = self._currency.to_atoms(
+                utxo["value"]
+            )
 
         # calculate output amount
         inputs_value_total = sum(

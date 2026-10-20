@@ -295,12 +295,16 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_genesis, TestChain100Setup) {
     cn::Block convertedGenesisBlock =
         cn::abc::ConvertBlock(genesisBlock, *genesisBlockUndo, *pgenesis);
 
+    const CTxIn &genesisInput = genesisBlock.vtx[0]->vin[0];
+    const CScript genesisInputScript = genesisBlock.vtx[0]->nVersion == 7
+        ? CScript(genesisInput.vCoinbaseData.begin(), genesisInput.vCoinbaseData.end())
+        : genesisInput.scriptSig;
     cn::Tx expectedGenesisTx;
     expectedGenesisTx.txid = ToHash(genesisBlock.vtx[0]->GetId());
     expectedGenesisTx.version = int32_t(genesisBlock.vtx[0]->nVersion);
     expectedGenesisTx.inputs = {{
         .prev_out = {.txid = {}, .out_idx = 0xffff'ffff},
-        .script = ToBytes(genesisBlock.vtx[0]->vin[0].scriptSig),
+        .script = ToBytes(genesisInputScript),
         .sequence = 0xffff'ffff,
         // Like the bridge: an empty (not absent) coin for coinbase inputs
         .coin = cn::Coin{},

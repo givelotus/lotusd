@@ -4,8 +4,8 @@
 
 #include <config.h>
 #include <lotus_v2/commitment.h>
-#include <consensus/consensus.h>
 #include <lotus_v2/signing.h>
+#include <consensus/consensus.h>
 #include <algorithm>
 #include <array>
 #include <consensus/validation.h>
@@ -41,8 +41,8 @@ static CTxOut NativePackageOutput(Amount value, const CScript &program) {
     return CTxOut::FromV2Output(output);
 }
 
-struct TxPackageTest : TestChain100Setup {
-    TxPackageTest() {
+struct NativeTxPackageTest : TestChain100Setup {
+    NativeTxPackageTest() {
         // Native funding uses the same private key and real activated coinbases.
         m_coinbase_txns.clear();
         // Native spends need V2 coinbases; this fixture mines legacy ones by
@@ -95,23 +95,13 @@ struct TxPackageTest : TestChain100Setup {
         return tx;
     }
 
-    Amount NativeRelayBandFee() {
-        const auto prototype = MakeTransactionRef(CreateNativePackageTransaction(
-            m_coinbase_txns[0], 0, 0, coinbaseKey,
-            NativePackageProgram(coinbaseKey),
-            m_coinbase_txns[0]->vout[0].nValue - COIN, false));
-        const auto size = GetVirtualTransactionSize(*prototype);
-        const Amount relay_floor = m_node.mempool->m_opts.min_relay_feerate.GetFee(size);
-        const Amount mempool_floor = m_node.mempool->GetMinFee().GetFee(size);
-        const Amount fee = 2 * relay_floor;
-        BOOST_REQUIRE(fee >= relay_floor);
-        BOOST_REQUIRE(fee < mempool_floor);
-        BOOST_TEST_MESSAGE("native_package_fixture serialized_bytes=" << prototype->GetTotalSize()
-                           << " virtual_bytes=" << size << " relay_fee=" << relay_floor
-                           << " mempool_fee=" << mempool_floor << " parent_fee=" << fee);
-        return fee;
-    }
+};
 
+// A fee amount that is above 1sat/B but below 5sat/B for most transactions
+// created within these unit tests.
+static const Amount low_fee_amt{200 * SATOSHI};
+
+struct TxPackageTest : TestChain100Setup {
     // Create placeholder transactions that have no meaning.
     inline CTransactionRef create_placeholder_tx(size_t num_inputs,
                                                  size_t num_outputs) {
@@ -274,8 +264,8 @@ BOOST_AUTO_TEST_CASE(package_validation_tests) {
     CKey parent_key;
     parent_key.MakeNewKey(true);
     CScript parent_locking_script =
-        NativePackageProgram(parent_key);
-    auto mtx_parent = CreateNativePackageTransaction(
+        GetScriptForDestination(PKHash(parent_key.GetPubKey()));
+    auto mtx_parent = CreateValidMempoolTransaction(
         /* input_transaction */ m_coinbase_txns[0], /* vout */ 0,
         /* input_height */ 0, /* input_signing_key */ coinbaseKey,
         /* output_destination */ parent_locking_script,
@@ -285,8 +275,8 @@ BOOST_AUTO_TEST_CASE(package_validation_tests) {
     CKey child_key;
     child_key.MakeNewKey(true);
     CScript child_locking_script =
-        NativePackageProgram(child_key);
-    auto mtx_child = CreateNativePackageTransaction(
+        GetScriptForDestination(PKHash(child_key.GetPubKey()));
+    auto mtx_child = CreateValidMempoolTransaction(
         /* input_transaction */ tx_parent, /* vout */ 0,
         /* input_height */ 101, /* input_signing_key */ parent_key,
         /* output_destination */ child_locking_script,
@@ -325,8 +315,8 @@ BOOST_AUTO_TEST_CASE(package_validation_tests) {
 
     // A single, giant transaction submitted through ProcessNewPackage fails on
     // single tx policy.
-    // V2 transactions have at most 256 inputs and outputs, so the size comes
-    // from large scriptSigs rather than from the input count.
+    // The256input/output cap applies to both transaction families; preserve
+    // oversized-wire policy coverage with genuinely large legacy scriptSigs.
     CMutableTransaction giant_mtx{*create_placeholder_tx(256, 256)};
     for (auto &in : giant_mtx.vin) {
         in.scriptSig = CScript() << std::vector<uint8_t>(400, 0x51);
@@ -361,20 +351,20 @@ BOOST_AUTO_TEST_CASE(noncontextual_package_tests) {
     // The signatures won't be verified so we can just use a placeholder
     CKey placeholder_key;
     placeholder_key.MakeNewKey(true);
-    CScript spk = NativePackageProgram(placeholder_key);
+    CScript spk = GetScriptForDestination(PKHash(placeholder_key.GetPubKey()));
     CKey placeholder_key_2;
     placeholder_key_2.MakeNewKey(true);
     CScript spk2 =
-        NativePackageProgram(placeholder_key_2);
+        GetScriptForDestination(PKHash(placeholder_key_2.GetPubKey()));
 
     // Parent and Child Package
     {
-        auto mtx_parent = CreateNativePackageTransaction(
+        auto mtx_parent = CreateValidMempoolTransaction(
             m_coinbase_txns[0], 0, 0, coinbaseKey, spk, Amount(49 * COIN),
             /* submit */ false);
         CTransactionRef tx_parent = MakeTransactionRef(mtx_parent);
 
-        auto mtx_child = CreateNativePackageTransaction(
+        auto mtx_child = CreateValidMempoolTransaction(
             tx_parent, 0, 101, placeholder_key, spk2, Amount(48 * COIN),
             /* submit */ false);
         CTransactionRef tx_child = MakeTransactionRef(mtx_child);
@@ -394,7 +384,7 @@ BOOST_AUTO_TEST_CASE(noncontextual_package_tests) {
         Package package;
         CMutableTransaction child;
         for (int i{0}; i < 49; ++i) {
-            auto parent = MakeTransactionRef(CreateNativePackageTransaction(
+            auto parent = MakeTransactionRef(CreateValidMempoolTransaction(
                 m_coinbase_txns[i + 1], 0, 0, coinbaseKey, spk,
                 Amount(48 * COIN), false));
             package.emplace_back(parent);
@@ -471,12 +461,12 @@ BOOST_AUTO_TEST_CASE(package_submission_tests) {
     CKey parent_key;
     parent_key.MakeNewKey(true);
     CScript parent_locking_script =
-        NativePackageProgram(parent_key);
+        GetScriptForDestination(PKHash(parent_key.GetPubKey()));
 
     // Unrelated transactions are not allowed in package submission.
     Package package_unrelated;
     for (size_t i{0}; i < 10; ++i) {
-        auto mtx = CreateNativePackageTransaction(
+        auto mtx = CreateValidMempoolTransaction(
             /*input_transaction=*/m_coinbase_txns[i + 25], /*input_vout=*/0,
             /*input_height=*/0, /*input_signing_key=*/coinbaseKey,
             /*output_destination=*/parent_locking_script,
@@ -502,7 +492,7 @@ BOOST_AUTO_TEST_CASE(package_submission_tests) {
     // Parent and Child (and Grandchild) Package
     Package package_parent_child;
     Package package_3gen;
-    auto mtx_parent = CreateNativePackageTransaction(
+    auto mtx_parent = CreateValidMempoolTransaction(
         /*input_transaction=*/m_coinbase_txns[0], /*input_vout=*/0,
         /*input_height=*/0, /*input_signing_key=*/coinbaseKey,
         /*output_destination=*/parent_locking_script,
@@ -514,8 +504,8 @@ BOOST_AUTO_TEST_CASE(package_submission_tests) {
     CKey child_key;
     child_key.MakeNewKey(true);
     CScript child_locking_script =
-        NativePackageProgram(child_key);
-    auto mtx_child = CreateNativePackageTransaction(
+        GetScriptForDestination(PKHash(child_key.GetPubKey()));
+    auto mtx_child = CreateValidMempoolTransaction(
         /*input_transaction=*/tx_parent, /*input_vout=*/0,
         /*input_height=*/101, /*input_signing_key=*/parent_key,
         /*output_destination=*/child_locking_script,
@@ -527,8 +517,8 @@ BOOST_AUTO_TEST_CASE(package_submission_tests) {
     CKey grandchild_key;
     grandchild_key.MakeNewKey(true);
     CScript grandchild_locking_script =
-        NativePackageProgram(grandchild_key);
-    auto mtx_grandchild = CreateNativePackageTransaction(
+        GetScriptForDestination(PKHash(grandchild_key.GetPubKey()));
+    auto mtx_grandchild = CreateValidMempoolTransaction(
         /*input_transaction=*/tx_child, /*input_vout=*/0,
         /*input_height=*/101, /*input_signing_key=*/child_key,
         /*output_destination=*/grandchild_locking_script,
@@ -555,14 +545,13 @@ BOOST_AUTO_TEST_CASE(package_submission_tests) {
     // happen.
     {
         CMutableTransaction mtx_parent_invalid{mtx_parent};
-        mtx_parent_invalid.nV2Lock = 1;
-        mtx_parent_invalid.vin[0].vWitnesses[0].arguments[0].clear();
+        mtx_parent_invalid.vin[0].scriptSig << OP_FALSE;
         CTransactionRef tx_parent_invalid =
             MakeTransactionRef(mtx_parent_invalid);
 
         // This changed the parent txid so we have to update the child
         // accordingly
-        auto mtx_child_of_invalid_parent = CreateNativePackageTransaction(
+        auto mtx_child_of_invalid_parent = CreateValidMempoolTransaction(
             /*input_transaction=*/tx_parent_invalid, /*input_vout=*/0,
             /*input_height=*/101, /*input_signing_key=*/parent_key,
             /*output_destination=*/child_locking_script,
@@ -684,7 +673,6 @@ BOOST_AUTO_TEST_CASE(package_mix) {
     mineBlocks(5);
     MockMempoolMinFee(CFeeRate(5000 * SATOSHI));
     LOCK(::cs_main);
-    const Amount low_fee_amt = NativeRelayBandFee();
 
     // A package Package{parent1, parent2, child} where the parents are a
     // mixture of identical-tx-in-mempool and new transaction.
@@ -692,20 +680,12 @@ BOOST_AUTO_TEST_CASE(package_mix) {
 
     // Give all the parents anyone-can-spend scripts so we don't have to deal
     // with signing the child.
-    const std::vector<uint8_t> acs_program{0x4e}; // Native OP_1.
-    const CScript acs_spk(acs_program.begin(), acs_program.end());
-    auto anyone_can_spend_input = [&](const COutPoint &outpoint) {
-        CTxIn input(outpoint);
-        input.nFlags = 1;
-        input.nPathIndex = 0;
-        lotus::v2::BranchWitness witness;
-        witness.script = acs_program;
-        input.vWitnesses = {witness};
-        return input;
-    };
+    CScript acs_script = CScript() << OP_TRUE;
+    CScript acs_scriptsig = CScript() << std::vector<uint8_t>{OP_TRUE};
+    CScript acs_spk = GetScriptForDestination(ScriptHash(acs_script));
 
     // parent1 will already be in the mempool
-    auto mtx_parent1 = CreateNativePackageTransaction(
+    auto mtx_parent1 = CreateValidMempoolTransaction(
         /*input_transaction=*/m_coinbase_txns[1], /*input_vout=*/0,
         /*input_height=*/0, /*input_signing_key=*/coinbaseKey,
         /*output_destination=*/acs_spk,
@@ -715,7 +695,7 @@ BOOST_AUTO_TEST_CASE(package_mix) {
 
     // parent2 will be a new transaction. Put a low feerate to make it invalid
     // on its own.
-    auto mtx_parent2 = CreateNativePackageTransaction(
+    auto mtx_parent2 = CreateValidMempoolTransaction(
         /*input_transaction=*/m_coinbase_txns[3], /*input_vout=*/0,
         /*input_height=*/0, /*input_signing_key=*/coinbaseKey,
         /*output_destination=*/acs_spk,
@@ -731,16 +711,15 @@ BOOST_AUTO_TEST_CASE(package_mix) {
     CKey mixed_grandchild_key;
     mixed_grandchild_key.MakeNewKey(true);
     CScript mixed_child_spk =
-        NativePackageProgram(mixed_grandchild_key);
+        GetScriptForDestination(PKHash(mixed_grandchild_key.GetPubKey()));
 
     CMutableTransaction mtx_mixed_child;
-    mtx_mixed_child.nVersion = 7;
     mtx_mixed_child.vin.push_back(
-        anyone_can_spend_input(COutPoint(ptx_parent1->GetId(), 0)));
+        CTxIn(COutPoint(ptx_parent1->GetId(), 0), acs_scriptsig));
     mtx_mixed_child.vin.push_back(
-        anyone_can_spend_input(COutPoint(ptx_parent2->GetId(), 0)));
+        CTxIn(COutPoint(ptx_parent2->GetId(), 0), acs_scriptsig));
     mtx_mixed_child.vout.push_back(
-        NativePackageOutput((49 + 50 - 1) * COIN, mixed_child_spk));
+        CTxOut((49 + 50 - 1) * COIN, mixed_child_spk));
     CTransactionRef ptx_mixed_child = MakeTransactionRef(mtx_mixed_child);
     package_mixed.push_back(ptx_mixed_child);
 
@@ -794,15 +773,14 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests) {
     mineBlocks(5);
     MockMempoolMinFee(CFeeRate(5000 * SATOSHI));
     LOCK(::cs_main);
-    const Amount low_fee_amt = NativeRelayBandFee();
     size_t expected_pool_size = m_node.mempool->size();
     CKey child_key;
     child_key.MakeNewKey(true);
-    CScript parent_spk = NativePackageProgram(child_key);
+    CScript parent_spk = GetScriptForDestination(PKHash(child_key.GetPubKey()));
     CKey grandchild_key;
     grandchild_key.MakeNewKey(true);
     CScript child_spk =
-        NativePackageProgram(grandchild_key);
+        GetScriptForDestination(PKHash(grandchild_key.GetPubKey()));
 
     // low-fee parent and high-fee child package
     const Amount coinbase_value{50 * COIN};
@@ -810,7 +788,7 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests) {
     const Amount child_value{parent_value - COIN};
 
     Package package_cpfp;
-    auto mtx_parent = CreateNativePackageTransaction(
+    auto mtx_parent = CreateValidMempoolTransaction(
         /*input_transaction=*/m_coinbase_txns[0], /*input_vout=*/0,
         /*input_height=*/0, /*input_signing_key=*/coinbaseKey,
         /*output_destination=*/parent_spk,
@@ -818,7 +796,7 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests) {
     CTransactionRef tx_parent = MakeTransactionRef(mtx_parent);
     package_cpfp.push_back(tx_parent);
 
-    auto mtx_child = CreateNativePackageTransaction(
+    auto mtx_child = CreateValidMempoolTransaction(
         /*input_transaction=*/tx_parent, /*input_vout=*/0,
         /*input_height=*/101, /*input_signing_key=*/child_key,
         /*output_destination=*/child_spk,
@@ -909,13 +887,12 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests) {
 
     // Just because we allow low-fee parents doesn't mean we allow low-feerate
     // packages. The mempool minimum feerate is 5sat/vB, but this package just
-    // pays below the combined native-size mempool minimum. The child fees would be able to pay for itself,
+    // pays 1400 satoshis total. The child fees would be able to pay for itself,
     // but isn't enough for the entire package.
     Package package_still_too_low;
-    const Amount parent_fee{low_fee_amt};
-    const Amount child_fee{m_node.mempool->GetMinFee().GetFee(
-        GetVirtualTransactionSize(*tx_child)) + SATOSHI};
-    auto mtx_parent_cheap = CreateNativePackageTransaction(
+    const Amount parent_fee{200 * SATOSHI};
+    const Amount child_fee{1200 * SATOSHI};
+    auto mtx_parent_cheap = CreateValidMempoolTransaction(
         /*input_transaction=*/m_coinbase_txns[1], /*input_vout=*/0,
         /*input_height=*/0, /*input_signing_key=*/coinbaseKey,
         /*output_destination=*/parent_spk,
@@ -927,7 +904,7 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests) {
     BOOST_CHECK(m_node.mempool->m_opts.min_relay_feerate.GetFee(
                     GetVirtualTransactionSize(*tx_parent_cheap)) <= parent_fee);
 
-    auto mtx_child_cheap = CreateNativePackageTransaction(
+    auto mtx_child_cheap = CreateValidMempoolTransaction(
         /*input_transaction=*/tx_parent_cheap, /*input_vout=*/0,
         /*input_height=*/101, /* input_signing_key */ child_key,
         /*output_destination=*/child_spk,
@@ -1036,7 +1013,7 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests) {
     // doesn't prevent the parent from being accepted.
     Package package_rich_parent;
     const Amount high_parent_fee{1 * COIN};
-    auto mtx_parent_rich = CreateNativePackageTransaction(
+    auto mtx_parent_rich = CreateValidMempoolTransaction(
         /*input_transaction=*/m_coinbase_txns[2], /*input_vout=*/0,
         /*input_height=*/0, /*input_signing_key=*/coinbaseKey,
         /*output_destination=*/parent_spk,
@@ -1044,7 +1021,7 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests) {
     CTransactionRef tx_parent_rich = MakeTransactionRef(mtx_parent_rich);
     package_rich_parent.push_back(tx_parent_rich);
 
-    auto mtx_child_poor = CreateNativePackageTransaction(
+    auto mtx_child_poor = CreateValidMempoolTransaction(
         /*input_transaction=*/tx_parent_rich, /*input_vout=*/0,
         /*input_height=*/101, /*input_signing_key=*/child_key,
         /*output_destination=*/child_spk,
@@ -1098,4 +1075,52 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests) {
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
     }
 }
+
+// Keep native package admission explicit while the inherited suite above uses
+// real legacy funding, scripts and signatures unchanged.
+BOOST_FIXTURE_TEST_CASE(native_package_parent_child_and_missing_parent,
+                        NativeTxPackageTest) {
+    LOCK(cs_main);
+    const auto initial_size = m_node.mempool->size();
+    CKey parent_key;
+    parent_key.MakeNewKey(true);
+    auto parent_mtx = CreateNativePackageTransaction(
+        m_coinbase_txns[0], 0, 0, coinbaseKey,
+        NativePackageProgram(parent_key), 49 * COIN, false);
+    const auto parent = MakeTransactionRef(parent_mtx);
+    auto child_mtx = CreateNativePackageTransaction(
+        parent, 0, 0, parent_key, NativePackageProgram(coinbaseKey),
+        48 * COIN, false);
+    const auto child = MakeTransactionRef(child_mtx);
+    BOOST_REQUIRE_EQUAL(parent->nVersion, 7U);
+    BOOST_REQUIRE_EQUAL(child->nVersion, 7U);
+    const Package package{parent, child};
+    const auto checked = ProcessNewPackage(
+        m_node.chainman->ActiveChainstate(), *m_node.mempool, package, true);
+    const auto check_error = CheckPackageMempoolAcceptResult(
+        package, checked, true, nullptr);
+    BOOST_REQUIRE_MESSAGE(!check_error, check_error.value_or(""));
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), initial_size);
+
+    auto missing_input = child_mtx.vin.front();
+    missing_input.prevout = COutPoint(TxId{m_rng.rand256()}, 0);
+    child_mtx.vin.push_back(std::move(missing_input));
+    const auto missing = ProcessNewPackage(
+        m_node.chainman->ActiveChainstate(), *m_node.mempool,
+        {parent, MakeTransactionRef(child_mtx)}, false);
+    BOOST_CHECK(missing.m_state.IsInvalid());
+    BOOST_CHECK_EQUAL(missing.m_state.GetResult(), PackageValidationResult::PCKG_POLICY);
+    BOOST_CHECK_EQUAL(missing.m_state.GetRejectReason(),
+                      "package-not-child-with-unconfirmed-parents");
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), initial_size);
+
+    const auto submitted = ProcessNewPackage(
+        m_node.chainman->ActiveChainstate(), *m_node.mempool, package, false);
+    BOOST_REQUIRE_MESSAGE(submitted.m_state.IsValid(),
+                          submitted.m_state.GetRejectReason());
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), initial_size + 2);
+    BOOST_CHECK(m_node.mempool->exists(parent->GetId()));
+    BOOST_CHECK(m_node.mempool->exists(child->GetId()));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

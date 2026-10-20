@@ -4,6 +4,8 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Default MiniWallet spends legacy coins; NativeMiniWallet spends V2 coins."""
 
+from test_framework.currency import RpcCurrency
+from test_framework.messages import COutPoint, CTransaction, CTxIn, CTxOut
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal
 from test_framework.wallet import MiniWallet, MiniWalletMode, NativeMiniWallet
@@ -17,6 +19,14 @@ class WalletTransactionFamiliesTest(BitcoinTestFramework):
 
     def run_test(self):
         node = self.nodes[0]
+        currency = RpcCurrency.from_node(node)
+        assert_equal(currency.atoms_per_unit, 1000000)
+        # Node-attached fee estimation must convert the RPC relay fee to atoms.
+        probe = CTransaction()
+        probe.vin = [CTxIn(COutPoint(0, 0))]
+        probe.vout = [CTxOut(10000, b"\x51")]
+        expected_size = probe.billable_size() + 107
+        assert_equal(node.calculate_fee(probe), expected_size)
         wallets = [
             (MiniWallet(node), 2, 1),
             (MiniWallet(node, mode=MiniWalletMode.RAW_P2PK), 2, 1),
@@ -32,7 +42,30 @@ class WalletTransactionFamiliesTest(BitcoinTestFramework):
         txids = []
         for wallet, _, version in wallets:
             wallet.rescan_utxos()
-            transfer = wallet.send_self_transfer(from_node=node)
+            utxo = wallet.get_utxo(mark_as_spent=False)
+            # An unsent one-atom fee checks sub-cent accounting independently
+            # of policy minimums. Keep the actual sent default fee unchanged.
+            one_atom = wallet.create_self_transfer_multi(
+                utxos_to_spend=[utxo], fee_per_output=1
+            )
+            assert_equal(currency.to_atoms(one_atom["fee"]), 1)
+            assert_equal(
+                currency.to_atoms(utxo["value"])
+                - sum(out.nValue for out in one_atom["tx"].vout),
+                1,
+            )
+            transfer = wallet.send_self_transfer(from_node=node, utxo_to_spend=utxo)
+            # All four families retain the old 300000 atoms/kB default.
+            assert_equal(
+                currency.to_atoms(transfer["fee"]),
+                len(transfer["tx"].serialize()) * 300,
+            )
+            assert_equal(
+                currency.to_atoms(
+                    node.getmempoolentry(transfer["txid"])["fees"]["base"]
+                ),
+                currency.to_atoms(transfer["fee"]),
+            )
             tx = transfer["tx"]
             assert_equal(tx.nVersion, version)
             assert_equal(
