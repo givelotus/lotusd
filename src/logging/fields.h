@@ -119,7 +119,18 @@
     X(MaxOpenFiles, max_open_files, INT, "", "") \
     X(DefaultOpenFiles, default_open_files, INT, "", "") \
     X(ObfuscationKey, obfuscation_key, STRING, "", "") \
-    X(ConfigSectionPrefix, config_section_prefix, STRING, "", "")
+    X(ConfigSectionPrefix, config_section_prefix, STRING, "", "") \
+    X(LostNewAddressCount, lost_new_address_count, INT, "", "") \
+    X(LostTriedAddressCount, lost_tried_address_count, INT, "", "") \
+    X(NewBucketIndex, new_bucket_index, INT, "", "") \
+    X(NewBucketPosition, new_bucket_position, INT, "", "") \
+    X(TriedBucketIndex, tried_bucket_index, INT, "", "") \
+    X(TriedBucketPosition, tried_bucket_position, INT, "", "") \
+    X(MappedAS, mapped_as, UINT, "", "") \
+    X(ExistingAddr, existing_addr, STRING, "", "") \
+    X(CandidateCount, candidate_count, UINT, "", "") \
+    X(TriedAddressCount, tried_address_count, INT, "", "") \
+    X(NewAddressCount, new_address_count, INT, "", "")
 
 namespace BCLog {
 

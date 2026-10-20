@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <addrman.h>
 #include <common/args.h>
 #include <logging.h>
 #include <logging/values.h>
@@ -835,6 +836,96 @@ BOOST_AUTO_TEST_CASE(fee_rate_value_is_snapshot_and_preserves_text) {
     const auto record{Json()};
     BOOST_CHECK_EQUAL(record["fee_rate"].get_str(), expected);
     BOOST_CHECK_EQUAL(record["message"].get_str(), "rate=" + expected);
+}
+
+BOOST_AUTO_TEST_CASE(addrman_events_preserve_endpoint_bucket_and_state_counts) {
+    Format(BCLog::LogFormat::JSON);
+    LogInstance().EnableCategory(BCLog::ADDRMAN);
+    const CService endpoint{LookupNumeric("250.1.1.1", 10605)};
+    const CNetAddr origin{LookupNumeric("252.2.2.2", 0)};
+    {
+        AddrMan manager{{},
+                        /*deterministic=*/true,
+                        /*consistency_check_ratio=*/0};
+        CAddress address{endpoint, NODE_NETWORK};
+        address.nTime = Now<NodeSeconds>();
+        BOOST_REQUIRE(manager.Add({address}, origin));
+        BOOST_CHECK_EQUAL(manager.size(), 1U);
+        BOOST_CHECK_EQUAL(
+            manager.Select(/*newOnly=*/true).first.ToStringAddrPort(),
+            endpoint.ToStringAddrPort());
+        manager.Good(endpoint);
+        BOOST_CHECK_EQUAL(manager.size(), 1U);
+        BOOST_CHECK_EQUAL(manager.Select().first.ToStringAddrPort(),
+                          endpoint.ToStringAddrPort());
+        BOOST_CHECK_EQUAL(manager.GetAddr(0, 0, std::nullopt).size(), 1U);
+    }
+    const auto lines{Lines()};
+    BOOST_REQUIRE_EQUAL(lines.size(), 6U);
+    bool found_add{false}, found_counts{false}, found_tried{false},
+        found_new_select{false}, found_tried_select{false},
+        found_getaddr{false};
+    for (const auto &line : lines) {
+        UniValue record;
+        BOOST_REQUIRE(record.read(line));
+        BOOST_CHECK_EQUAL(record["level"].get_str(), "debug");
+        BOOST_CHECK_EQUAL(record["category"].get_str(), "addrman");
+        BOOST_CHECK(record["fields_truncated"].isNull());
+        const auto event{record["event"].get_str()};
+        if (event == "addrman_addresses_added") {
+            found_counts = true;
+            BOOST_CHECK_EQUAL(record["addr"].get_str(), origin.ToStringAddr());
+            BOOST_CHECK_EQUAL(record["count"].getInt<int>(), 1);
+            BOOST_CHECK_EQUAL(record["candidate_count"].getInt<int>(), 1);
+            BOOST_CHECK_EQUAL(record["tried_address_count"].getInt<int>(), 0);
+            BOOST_CHECK_EQUAL(record["new_address_count"].getInt<int>(), 1);
+            BOOST_CHECK_EQUAL(
+                record["message"].get_str(),
+                "Added 1 addresses (of 1) from 252.2.2.2: 0 tried, 1 new");
+        } else if (event == "addrman_getaddr_finished") {
+            found_getaddr = true;
+            BOOST_CHECK_EQUAL(record["count"].getInt<int>(), 1);
+            BOOST_CHECK_EQUAL(record["message"].get_str(),
+                              "GetAddr returned 1 random addresses");
+        } else {
+            BOOST_CHECK_EQUAL(record["addr"].get_str(),
+                              endpoint.ToStringAddrPort());
+            if (event == "addrman_address_added_new") {
+                found_add = true;
+                BOOST_CHECK_EQUAL(record["mapped_as"].getInt<int>(), 0);
+                const int bucket{record["new_bucket_index"].getInt<int>()};
+                const int position{record["new_bucket_position"].getInt<int>()};
+                BOOST_CHECK(bucket >= 0 && position >= 0);
+                BOOST_CHECK_EQUAL(
+                    record["message"].get_str(),
+                    strprintf("Added %s mapped to AS0 to new[%i][%i]",
+                              endpoint.ToStringAddrPort(), bucket, position));
+            } else if (event == "addrman_address_moved_tried") {
+                found_tried = true;
+                BOOST_CHECK_EQUAL(record["mapped_as"].getInt<int>(), 0);
+                const int bucket{record["tried_bucket_index"].getInt<int>()};
+                const int position{
+                    record["tried_bucket_position"].getInt<int>()};
+                BOOST_CHECK(bucket >= 0 && position >= 0);
+                BOOST_CHECK_EQUAL(
+                    record["message"].get_str(),
+                    strprintf("Moved %s mapped to AS0 to tried[%i][%i]",
+                              endpoint.ToStringAddrPort(), bucket, position));
+            } else if (event == "addrman_address_selected_new") {
+                found_new_select = true;
+                BOOST_CHECK_EQUAL(record["message"].get_str(),
+                                  "Selected 250.1.1.1:10605 from new");
+            } else if (event == "addrman_address_selected_tried") {
+                found_tried_select = true;
+                BOOST_CHECK_EQUAL(record["message"].get_str(),
+                                  "Selected 250.1.1.1:10605 from tried");
+            } else {
+                BOOST_ERROR("Unexpected address-manager event: " + event);
+            }
+        }
+    }
+    BOOST_CHECK(found_add && found_counts && found_tried && found_new_select &&
+                found_tried_select && found_getaddr);
 }
 
 BOOST_AUTO_TEST_CASE(config_argument_fields_keep_redaction_and_section_text) {
