@@ -17,6 +17,7 @@ MACROS = {
     "LogEvent",
     "LogTraceEvent",
     "LogInfoEvent",
+    "LogInfoEventNoRateLimit",
     "LogWarningEvent",
     "LogErrorEvent",
 }
@@ -152,12 +153,16 @@ def check(source, names, types=None):
                     spec = placeholder.group(2)
                     if spec is None:
                         continue
-                    if not re.fullmatch(r"(?:\.(?:[0-9]|1[0-8]))?[fg]", spec):
-                        raise ValueError("template format spec is not supported")
                     key = next((key for key in fields
                                 if names[key] == placeholder.group(1)), None)
-                    if types is None or types.get(key) != "FLOAT":
-                        raise ValueError("float format requires a FLOAT registry field")
+                    if re.fullmatch(r"(?:0(?:[1-9]|1[0-6]))?x", spec):
+                        if types is None or types.get(key) not in {"INT", "UINT"}:
+                            raise ValueError("hex format requires an INT/UINT registry field")
+                    elif re.fullmatch(r"(?:\.(?:[0-9]|1[0-8]))?[fg]", spec):
+                        if types is None or types.get(key) != "FLOAT":
+                            raise ValueError("float format requires a FLOAT registry field")
+                    else:
+                        raise ValueError("template format spec is not supported")
                 used = {placeholder.group(1) for placeholder in placeholders}
                 missing = used - {names[key] for key in fields}
                 if missing:
@@ -232,6 +237,15 @@ class ContractTests(unittest.TestCase):
             self.assertTrue(check(source % spec, names, {"ElapsedMs": "FLOAT"})[1])
         self.assertIn("requires a FLOAT", check(
             source % ".2f", names, {"ElapsedMs": "STRING"})[1][0][1])
+
+    def test_hex_precision_contract(self):
+        names = {"Version": "version"}
+        source = 'LogInfoEventNoRateLimit(BCLog::ALL,"v","{version:%s}").Field(LogField::Version, v);'
+        for spec in ["x", "01x", "08x", "016x"]:
+            self.assertFalse(check(source % spec, names, {"Version": "INT"})[1])
+        for spec in ["0x", "00x", "017x", "8x", ".2x", "08X"]:
+            self.assertTrue(check(source % spec, names, {"Version": "INT"})[1])
+        self.assertTrue(check(source % "08x", names, {"Version": "STRING"})[1])
 
     def test_comments_and_strings(self):
         source = '// LogEvent(NET, "peer_bad");\nconst char *x = R"q(LogEvent(NET, "peer_bad"))q";\n/* LogEvent(NET,"bad"); */'

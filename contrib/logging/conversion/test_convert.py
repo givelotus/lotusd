@@ -127,6 +127,19 @@ class ConversionTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 convert.convert(old, [rule(old, new)])
 
+    def test_hex_and_explicit_unthrottled_info(self):
+        old = 'LogPrintLevel_(BCLog::ALL, BCLog::Level::Info, /*should_ratelimit=*/false, "v=%08x", v)'
+        new = ('LogInfoEventNoRateLimit(BCLog::ALL,"version","v={version:08x}")'
+               '.Field(BCLog::LogField::Version,uint32_t(v))')
+        self.assertEqual(convert.convert(old, [rule(old, new)])[0], new)
+        for changed in [new.replace('NoRateLimit', ''),
+                        new.replace(':08x', ':x')]:
+            with self.assertRaises(ValueError):
+                convert.convert(old, [rule(old, changed)])
+        with self.assertRaises(ValueError):
+            changed = old.replace('false', 'true')
+            convert.convert(changed, [rule(changed, new)])
+
     def test_all_catalog_rules_and_idempotence(self):
         for path in sorted((Path(__file__).parent / "rules").glob("*.json")):
             catalog = json.loads(path.read_text())
