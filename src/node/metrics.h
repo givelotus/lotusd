@@ -311,6 +311,35 @@ struct NodeMetrics {
     metrics::Gauge &process_open_fds;
     metrics::Gauge &process_max_fds;
 
+    // Transaction relay (Nucleation relay). Names use MetricName("txrelay_...").
+    //! Announcements sent / received, by kind (TxRelayKind)
+    metrics::Counter &txrelay_announce_sent;
+    metrics::Counter &txrelay_announce_recv;
+    //! Announcements received for a transaction we already had
+    metrics::Counter &txrelay_announce_dup;
+    //! Transaction bodies received (tx messages and short-id responses),
+    //! and those for a transaction we already had
+    metrics::Counter &txrelay_body_recv;
+    metrics::Counter &txrelay_body_dup;
+    //! Peers each relayed transaction was announced to
+    metrics::EventHistogram &txrelay_fanout_peers;
+    //! Transactions drained from the relay queue at the last tick
+    metrics::Gauge &txrelay_queue_depth;
+    //! Ticks drained more than a tick late
+    metrics::Counter &txrelay_tick_overrun;
+    //! Reconciliation summaries sent
+    metrics::Counter &txrelay_recon_rounds;
+    //! Short ids found missing per received summary or bucket summary
+    metrics::EventHistogram &txrelay_recon_diff;
+    //! Sub-buckets whose difference could not be decoded (bisected deeper)
+    metrics::Counter &txrelay_recon_overflow;
+    //! Short ids requested because of reconciliation
+    metrics::Counter &txrelay_recon_fetched;
+    //! Short ids that already held another transaction in their epoch
+    metrics::Counter &txrelay_shortid_collision;
+    //! From queueing a transaction for relay to the tick that announces it
+    metrics::EventHistogram &txrelay_first_seen_to_announce_seconds;
+
     /** Label index of an RPC method ("other" if not in the set) */
     size_t RPCMethodIndex(std::string_view method) const noexcept;
 
@@ -509,6 +538,8 @@ inline void SetChronikIndexedHeight(int height) noexcept {
 /** Count a transaction pool's (orphans, conflicting) removals */
 void RecordTxPoolRemovals(std::string_view pool_kind, unsigned expired,
                           unsigned evicted) noexcept;
+/** Label index of txrelay_announce_* kind */
+enum class TxRelayKind : size_t { SHORT = 0, FULL = 1 };
 
 /** Label index of a P2P message type ("other" for unknown types) */
 size_t MetricMsgTypeIndex(std::string_view msg_type) noexcept;

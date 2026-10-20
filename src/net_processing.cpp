@@ -1466,6 +1466,8 @@ private:
         TxId txid;
         //! Originated by this node: announce to every relay peer
         bool local;
+        //! When it was queued (relay tick clock)
+        std::chrono::microseconds queued;
     };
     // GlobalMutex: taken from many call paths without lock annotations.
     GlobalMutex m_relay_queue_mutex;
@@ -3536,7 +3538,8 @@ void PeerManagerImpl::RelayTransaction(const TxId &txid) {
     // Index the short id now, so that an announcement of this transaction
     // arriving before the next tick is recognised as known.
     m_txrelay_index.Add(txid, GetTime<std::chrono::microseconds>());
-    WITH_LOCK(m_relay_queue_mutex, m_relay_queue.push_back({txid, local}));
+    WITH_LOCK(m_relay_queue_mutex,
+              m_relay_queue.push_back({txid, local, RelayTickNow()}));
     m_txrelay_wake.store(true, std::memory_order_relaxed);
 }
 
@@ -3562,12 +3565,13 @@ void PeerManagerImpl::RelayTransactionBatch(
             m_txrelay_index.Add(tx->GetId(), now);
         }
     }
+    const auto queued{RelayTickNow()};
     {
         LOCK(m_relay_queue_mutex);
         m_relay_queue.reserve(m_relay_queue.size() + txs.size());
         for (size_t i = 0; i < txs.size(); ++i) {
             if (txs[i]) {
-                m_relay_queue.push_back({txs[i]->GetId(), local[i]});
+                m_relay_queue.push_back({txs[i]->GetId(), local[i], queued});
             }
         }
     }
@@ -3729,13 +3733,29 @@ void PeerManagerImpl::MaybeReconcile() {
     const auto summary{m_v2_protocol_handler.BuildSyncSummary(
         lotus::v2::net::ReconScope::LIVE_MEMPOOL, epoch->epoch_id, epoch->k0,
         epoch->k1)};
-    m_connman.ForNode(next, [&](CNode *node) {
-        if (!node->fSuccessfullyConnected || node->fDisconnect) {
-            return false;
+    uint64_t window{0};
+    for (const auto &bucket : summary.buckets) {
+        window += bucket.count;
+    }
+    // Nothing admitted in the window: the peer cannot be missing anything
+    // from us.
+    if (window > 0) {
+        m_connman.ForNode(next, [&](CNode *node) {
+            if (!node->fSuccessfullyConnected || node->fDisconnect) {
+                return false;
+            }
+            MakeAndPushMessage(*node, NetMsgType::MERKLIXSYNC, summary);
+            return true;
+        });
+        if (auto *m{node::GetNodeMetrics()}) {
+            m->txrelay_recon_rounds.Inc();
         }
-        MakeAndPushMessage(*node, NetMsgType::MERKLIXSYNC, summary);
-        return true;
-    });
+        LogEvent(BCLog::TXRELAY, "peer_recon_summary_sent",
+                 "reconciliation summary of {count} transactions to "
+                 "peer={peer_id}")
+            .Field(BCLog::LogField::PeerId, next)
+            .Field(BCLog::LogField::Count, window);
+    }
     // Window entries older than the window are no longer needed.
     m_txrelay_index.PruneWindow(
         GetTime<std::chrono::microseconds>() -
@@ -3801,7 +3821,16 @@ void PeerManagerImpl::MaybeDrainRelayQueue() {
     if (tick_now < m_next_relay_drain) {
         return;
     }
+    const bool late{m_next_relay_drain > 0us &&
+                    tick_now >= m_next_relay_drain + m_opts.txrelay_tick};
     m_next_relay_drain = NextRelayTick(tick_now, m_opts.txrelay_tick);
+    if (late && WITH_LOCK(m_relay_queue_mutex, return !m_relay_queue.empty())) {
+        // A tick went by with transactions waiting (the message handler
+        // was busy): they go out now, nothing is dropped.
+        if (auto *m{node::GetNodeMetrics()}) {
+            m->txrelay_tick_overrun.Inc();
+        }
+    }
     DrainRelayQueue();
 }
 
@@ -3930,6 +3959,24 @@ void PeerManagerImpl::DrainRelayQueue() {
         }
         new_routes.emplace_back(batch[i].txid, std::move(route));
     }
+
+    size_t announcements{0};
+    for (const auto &route : new_routes) {
+        announcements += route.second.size();
+    }
+    if (auto *m{node::GetNodeMetrics()}) {
+        m->txrelay_queue_depth.Set(double(batch.size()));
+        const auto now{RelayTickNow()};
+        for (size_t i = 0; i < batch.size(); ++i) {
+            m->txrelay_fanout_peers.Record(new_routes[i].second.size());
+            m->txrelay_first_seen_to_announce_seconds.RecordDuration(
+                now - batch[i].queued);
+        }
+    }
+    LogEvent(BCLog::TXRELAY, "txrelay_tick",
+             "relay tick: {count} transactions, {peers} announcements queued")
+        .Field(BCLog::LogField::Count, uint64_t(batch.size()))
+        .Field(BCLog::LogField::Peers, uint64_t(announcements));
 
     for (auto &target : targets) {
         if (target.picks.empty()) {
@@ -5198,6 +5245,12 @@ void PeerManagerImpl::ProcessSingleTx(CNode &pfrom, Peer &peer,
     m_txrequest.ReceivedResponse(pfrom.GetId(), txid);
     // Whichever way it came, it answers announcements of its short id.
     ForgetShortIdRequests(txid);
+    if (auto *m{node::GetNodeMetrics()}) {
+        m->txrelay_body_recv.Inc();
+        if (AlreadyHaveTx(txid, /*include_reconsiderable=*/true)) {
+            m->txrelay_body_dup.Inc();
+        }
+    }
 
     if (AlreadyHaveTx(txid, /*include_reconsiderable=*/true)) {
         if (pfrom.HasPermission(NetPermissionFlags::ForceRelay)) {
@@ -6640,6 +6693,7 @@ void PeerManagerImpl::ProcessMessage(
         const auto current_time{GetTime<std::chrono::microseconds>()};
         LOCK(cs_main);
         std::vector<TxId> have;
+        uint64_t missing{0};
         for (const uint64_t short_id : short_ids) {
             if (interruptMsgProc) {
                 return;
@@ -6653,10 +6707,23 @@ void PeerManagerImpl::ProcessMessage(
                 }
                 continue;
             }
+            ++missing;
             AddTxAnnouncement(
                 pfrom, TxId{txrelay::ShortIdRequestKey(epoch_id, short_id)},
                 current_time, SHORTID_REQUEST_PARAMS);
         }
+        if (auto *m{node::GetNodeMetrics()}) {
+            m->txrelay_announce_recv.Add(size_t(node::TxRelayKind::SHORT),
+                                         short_ids.size());
+            m->txrelay_announce_dup.Add(size_t(node::TxRelayKind::SHORT),
+                                        short_ids.size() - missing);
+        }
+        LogEvent(BCLog::TXRELAY, "peer_invshort_received",
+                 "invshort from peer={peer_id}: {count} short ids, "
+                 "{missing} new")
+            .Field(BCLog::LogField::PeerId, pfrom.GetId())
+            .Field(BCLog::LogField::Count, uint64_t(short_ids.size()))
+            .Field(BCLog::LogField::Missing, missing);
         return;
     }
 
@@ -6756,6 +6823,14 @@ void PeerManagerImpl::ProcessMessage(
                 const bool fAlreadyHave =
                     AlreadyHaveTx(txid, /*include_reconsiderable=*/true);
                 logInv(inv, fAlreadyHave);
+                if (auto *m{node::GetNodeMetrics()}) {
+                    m->txrelay_announce_recv.Add(
+                        size_t(node::TxRelayKind::FULL));
+                    if (fAlreadyHave) {
+                        m->txrelay_announce_dup.Add(
+                            size_t(node::TxRelayKind::FULL));
+                    }
+                }
 
                 AddKnownTx(*peer, txid);
                 if (reject_tx_invs) {
@@ -10580,9 +10655,17 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                         MakeAndPushMessage(*pto, NetMsgType::INVSHORT,
                                            epoch->epoch_id, short_ids);
                     }
+                    if (auto *m{node::GetNodeMetrics()}) {
+                        m->txrelay_announce_sent.Add(
+                            size_t(node::TxRelayKind::SHORT), vRelayTxs.size());
+                    }
                 } else {
                     for (const auto &entry : vRelayTxs) {
                         addInvAndMaybeFlush(MSG_TX, entry.first);
+                    }
+                    if (auto *m{node::GetNodeMetrics()}) {
+                        m->txrelay_announce_sent.Add(
+                            size_t(node::TxRelayKind::FULL), vRelayTxs.size());
                     }
                 }
             }

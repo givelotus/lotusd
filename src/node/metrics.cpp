@@ -269,6 +269,17 @@ namespace {
         0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1,
         0.25,   0.5,     1,      2.5,   5,      10,    30,   60,    300};
 
+    //! Peers per relayed transaction
+    const std::vector<double> FANOUT_BUCKETS{1,  2,  4,  6,  8,  10, 12,
+                                             16, 24, 32, 48, 64, 128};
+    //! Missing short ids per reconciliation message
+    const std::vector<double> DIFF_BUCKETS{0,  1,   2,   4,    8,   16,
+                                           32, 128, 512, 2048, 8192};
+    //! Seconds; queue to tick (one tick is 10 ms by default)
+    const std::vector<double> ANNOUNCE_BUCKETS{
+        0.0005, 0.001, 0.0025, 0.005, 0.01, 0.015, 0.02,
+        0.05,   0.1,   0.25,   0.5,   1,    5};
+
     std::vector<std::string> SortedWithOther(std::vector<std::string> v) {
         std::sort(v.begin(), v.end());
         v.erase(std::unique(v.begin(), v.end()), v.end());
@@ -903,6 +914,65 @@ NodeMetrics::NodeMetrics(std::vector<std::string> rpc_methods)
       process_max_fds{
           Add<Gauge>(registry, "process_max_fds",
                      "Maximum number of open file descriptors (soft limit).")},
+      txrelay_announce_sent{Add<Counter>(
+          registry, MetricName("txrelay_announce_sent_total"),
+          "Transaction announcements sent, by kind (short: 8-byte invshort "
+          "ids, full: 36-byte inv entries).",
+          std::vector<LabelDim>{{"kind", {"short", "full"}}})},
+      txrelay_announce_recv{
+          Add<Counter>(registry, MetricName("txrelay_announce_recv_total"),
+                       "Transaction announcements received, by kind.",
+                       std::vector<LabelDim>{{"kind", {"short", "full"}}})},
+      txrelay_announce_dup{Add<Counter>(
+          registry, MetricName("txrelay_announce_dup_total"),
+          "Transaction announcements received for a transaction we already "
+          "had, by kind.",
+          std::vector<LabelDim>{{"kind", {"short", "full"}}})},
+      txrelay_body_recv{
+          Add<Counter>(registry, MetricName("txrelay_body_recv_total"),
+                       "Transaction bodies received (tx messages and "
+                       "short-id responses).")},
+      txrelay_body_dup{
+          Add<Counter>(registry, MetricName("txrelay_body_dup_total"),
+                       "Transaction bodies received for a transaction we "
+                       "already had.")},
+      txrelay_fanout_peers{Add<EventHistogram>(
+          registry, MetricName("txrelay_fanout_peers"),
+          "Peers each relayed transaction was queued for at a relay tick.",
+          FANOUT_BUCKETS, /*divisor=*/1)},
+      txrelay_queue_depth{
+          Add<Gauge>(registry, MetricName("txrelay_queue_depth"),
+                     "Transactions drained from the relay queue at the last "
+                     "tick that had any.")},
+      txrelay_tick_overrun{
+          Add<Counter>(registry, MetricName("txrelay_tick_overrun_total"),
+                       "Relay ticks drained more than one tick late.")},
+      txrelay_recon_rounds{
+          Add<Counter>(registry, MetricName("txrelay_recon_rounds_total"),
+                       "Reconciliation summaries sent.")},
+      txrelay_recon_diff{Add<EventHistogram>(
+          registry, MetricName("txrelay_recon_diff"),
+          "Short ids found missing per received reconciliation summary or "
+          "bucket summary (before dropping those we have outside the "
+          "window).",
+          DIFF_BUCKETS, /*divisor=*/1)},
+      txrelay_recon_overflow{Add<Counter>(
+          registry, MetricName("txrelay_recon_overflow_total"),
+          "Reconciliation sub-buckets with more differences than decode "
+          "(bisected deeper, or resolved from overflow ids).")},
+      txrelay_recon_fetched{
+          Add<Counter>(registry, MetricName("txrelay_recon_fetched_total"),
+                       "Short ids requested because reconciliation found "
+                       "them missing.")},
+      txrelay_shortid_collision{Add<Counter>(
+          registry, MetricName("txrelay_shortid_collision_total"),
+          "Short ids that already held another transaction in their epoch "
+          "when one was indexed.")},
+      txrelay_first_seen_to_announce_seconds{Add<EventHistogram>(
+          registry, MetricName("txrelay_first_seen_to_announce_seconds"),
+          "Time from queueing a transaction for relay to the tick that "
+          "queues its announcements.",
+          ANNOUNCE_BUCKETS, /*divisor=*/1e9)},
       m_rpc_methods{SortedWithOther(std::move(rpc_methods))} {
     build_info.Set(1);
     registry.Add(std::make_unique<metrics::FunctionCounter>(

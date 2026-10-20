@@ -5,7 +5,10 @@
 #include <net/txrelay_index.h>
 
 #include <crypto/siphash.h>
+#include <logging.h>
+#include <logging/values.h>
 #include <lotus_v2/set_reconciliation.h>
+#include <node/metrics.h>
 
 #include <algorithm>
 #include <cstring>
@@ -63,6 +66,15 @@ void TxRelayIndex::Insert(Epoch &epoch, const TxId &txid) {
     if (!txids.empty()) {
         // Keep both: either may be requested under this short id.
         ++m_collisions;
+        if (auto *m{node::GetNodeMetrics()}) {
+            m->txrelay_shortid_collision.Inc();
+        }
+        LogEvent(BCLog::TXRELAY, "mempool_tx_shortid_collision",
+                 "short id {short_id} of {txid} already holds {count} "
+                 "transaction(s) in this epoch")
+            .Field(BCLog::LogField::TxId, txid)
+            .Field(BCLog::LogField::ShortId, short_id)
+            .Field(BCLog::LogField::Count, uint64_t(txids.size()));
     }
     txids.push_back(txid);
 }
