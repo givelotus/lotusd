@@ -645,6 +645,19 @@ void SetupServerArgs(NodeContext &node) {
                   "(default: %u)",
                   DEFAULT_TXRELAY_SHORTIDS),
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
+        "-txreconinterval=<ms>",
+        strprintf("Every this many milliseconds, reconcile recently admitted "
+                  "transactions with the next peer that supports it, round "
+                  "robin; 0 to disable (default: %d)",
+                  count_milliseconds(DEFAULT_TXRECON_INTERVAL)),
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
+        "-txreconwindow=<s>",
+        strprintf("Reconcile the transactions admitted in the last this many "
+                  "seconds (default: %d)",
+                  count_seconds(DEFAULT_TXRECON_WINDOW)),
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg("-txrelaytestshortidbits=<n>",
                    "Truncate transaction relay short ids to this many bits, "
                    "to force collisions in tests (regtest only, default: 64)",
