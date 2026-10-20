@@ -1041,6 +1041,22 @@ BOOST_AUTO_TEST_CASE(
     BOOST_CHECK_EQUAL(failure["level"].get_str(), "info");
 }
 
+BOOST_AUTO_TEST_CASE(character_value_preserves_printf_byte_and_json_escaping) {
+    Format(BCLog::LogFormat::JSON);
+    for (uint8_t value :
+         std::array<uint8_t, 11>{0, 1, 9, 10, 13, 34, 38, 92, 104, 115, 127}) {
+        const auto expected{strprintf("%c", value)};
+        LogInfoEvent(BCLog::ALL, "character_snapshot", "byte=({value})")
+            .Field(LogField::Value, BCLog::LogChar{value});
+        value = 0xff;
+        const auto record{Json()};
+        BOOST_CHECK_EQUAL(record["value"].get_str(), expected);
+        BOOST_CHECK_EQUAL(record["message"].get_str(),
+                          "byte=(" + expected + ")");
+        BOOST_CHECK(record["fields_truncated"].isNull());
+    }
+}
+
 BOOST_AUTO_TEST_CASE(hex_value_is_snapshot_and_preserves_hexstr_output) {
     Format(BCLog::LogFormat::JSON);
     std::vector<std::vector<uint8_t>> cases{
