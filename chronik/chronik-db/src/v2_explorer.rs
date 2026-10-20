@@ -149,7 +149,9 @@ pub mod native_serde {
     }
 }
 /// Payload or native framed-table byte interval in the exact transaction.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize,
+)]
 pub struct WireRange {
     /// Zero-based byte offset in the retained transaction frame.
     pub offset: u64,
@@ -451,23 +453,29 @@ pub fn validate_input_meta(input: &InputMeta, wire_size: u64) -> Result<()> {
         return Err(Error::Corrupt);
     }
     let valid = match input.flags {
-        1 => {
+        1 | 4 => {
             !input.has_coinbase_data
-                && input.path_index < 16
-                && (1..=16).contains(&input.witness_count)
-                && (input.sequence == u32::MAX
-                    || input.sequence & !0x40ffff == 0)
+                && (if input.flags == 4 {
+                    input.path_index == 0 && input.witness_count == 0
+                } else {
+                    input.path_index < 16
+                        && (1..=16).contains(&input.witness_count)
+                        && (input.sequence == u32::MAX
+                            || input.sequence & !0x40ffff == 0)
+                })
                 && input.resolved_creation.as_ref().is_some_and(|coin| {
                     coin.outpoint.txid.0 .0 == input.prev_txid
                         && coin.outpoint.out_idx == input.prev_index
                         && coin.creation.txid == coin.outpoint.txid
                         && !coin.output.is_burn()
                         && coin.output.validate().is_ok()
+                        && (input.flags != 4
+                            || coin.output.legacy_script.is_some())
                 })
         }
-        2 => {
+        2 | 5 => {
             input.path_index == 0
-                && input.sequence == u32::MAX
+                && (input.flags == 5 || input.sequence == u32::MAX)
                 && input.witness_count == 0
                 && input.resolved_creation.is_none()
                 && (!input.has_coinbase_data
@@ -513,7 +521,7 @@ pub fn validate_witness_fact(
     Ok(())
 }
 fn validate_input(input: &InputFact, size: u64) -> Result<()> {
-    if !matches!(input.flags, 1..=3) {
+    if !matches!(input.flags, 1..=5) {
         return Err(Error::Invalid("input flags"));
     }
     input.coinbase_data.validate(size)?;
@@ -599,7 +607,7 @@ pub fn plan_explorer_block(
             .inputs
             .iter()
             .enumerate()
-            .filter(|(_, input)| input.flags == 1)
+            .filter(|(_, input)| matches!(input.flags, 1 | 4))
             .map(|(index, input)| {
                 (
                     index as u32,
@@ -768,7 +776,7 @@ impl ReadSnapshot<'_> {
             return Err(Error::Corrupt);
         }
         let stored: StoredInputMeta = decode_record(&bytes)?;
-        let resolved_creation = if stored.flags == 1 {
+        let resolved_creation = if matches!(stored.flags, 1 | 4) {
             let outpoint = OutPoint {
                 txid: TxId(Hash32(stored.prev_txid)),
                 out_idx: stored.prev_index,
@@ -853,8 +861,11 @@ impl ReadSnapshot<'_> {
         let tx = self.explorer_tx(id)?.ok_or(Error::Corrupt)?;
         let witness: WitnessFact = decode_record(&bytes)?;
         validate_witness_fact(&witness, tx.wire_size)?;
-        let (siblings, count_bytes) =
-            self.explorer_table_count(id, tx.wire_size, witness.siblings_table)?;
+        let (siblings, count_bytes) = self.explorer_table_count(
+            id,
+            tx.wire_size,
+            witness.siblings_table,
+        )?;
         let (arguments, _) = self.explorer_table_count(
             id,
             tx.wire_size,
@@ -950,7 +961,8 @@ impl ReadSnapshot<'_> {
         if start >= tx.wire_size {
             return Ok(None);
         }
-        let bytes = self.explorer_wire_slice(id, start, WIRE_CHUNK_BYTES as u64)?;
+        let bytes =
+            self.explorer_wire_slice(id, start, WIRE_CHUNK_BYTES as u64)?;
         if bytes
             .as_ref()
             .is_some_and(|b| b.is_empty() || b.len() > WIRE_CHUNK_BYTES)
@@ -975,7 +987,8 @@ impl ReadSnapshot<'_> {
                 | (Some(b"eW"), 38, 42)
         );
         if !allowed
-            || after.is_some_and(|k| k.len() != key_len || !k.starts_with(prefix))
+            || after
+                .is_some_and(|k| k.len() != key_len || !k.starts_with(prefix))
         {
             return Err(Error::Invalid("explorer continuation key"));
         }

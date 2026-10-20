@@ -46,7 +46,7 @@ impl SpentCoin {
         self.flags & 2 != 0
     }
     fn valid(&self) -> bool {
-        self.flags & !7 == 0
+        (self.flags & !7 == 0 || self.flags == 0x80 || self.flags == 0x82)
             && self.has_token() == (self.token_id != Hash32::default())
     }
 }
@@ -141,7 +141,9 @@ pub fn derive_asset_events(view: AssetTxView<'_>) -> Result<Vec<AssetEvent>> {
     let mut mints = BTreeSet::new();
     for &token in view.mint_token_ids {
         if token == Hash32::default() || !mints.insert(token) {
-            return Err(Error::Invalid("duplicate or zero asset mint selector"));
+            return Err(Error::Invalid(
+                "duplicate or zero asset mint selector",
+            ));
         }
         totals.entry(token).or_default();
     }
@@ -161,7 +163,8 @@ pub fn derive_asset_events(view: AssetTxView<'_>) -> Result<Vec<AssetEvent>> {
                     output_units,
                     explicit_burn_units,
                     minted_units,
-                    implicit_burn_units: spent_units.saturating_sub(output_units),
+                    implicit_burn_units: spent_units
+                        .saturating_sub(output_units),
                     has_mint_input,
                 })
             },
@@ -199,7 +202,11 @@ pub fn asset_event_key(token: Hash32, location: TxLocation) -> Vec<u8> {
     .concat()
 }
 /// Exact creation posting key, including the native output ordinal.
-pub fn asset_output_key(token: Hash32, location: TxLocation, out_idx: u32) -> Vec<u8> {
+pub fn asset_output_key(
+    token: Hash32,
+    location: TxLocation,
+    out_idx: u32,
+) -> Vec<u8> {
     [
         b"eP".as_slice(),
         &token.0,
@@ -257,35 +264,34 @@ pub fn plan_asset_tx(
         let previous = old
             .get(&event.token_id)
             .ok_or(Error::Invalid("missing old asset summary"))?;
-        let summary = match previous {
-            Some(s) => {
-                if s.token_id != event.token_id
+        let summary =
+            match previous {
+                Some(s) => {
+                    if s.token_id != event.token_id
                     || s.event_count == 0
                     // In a block in canonical (txid) order, an in-block
                     // parent applied first can sit at a later position.
                     || s.first_seen.height > view.location.height
-                {
-                    return Err(Error::Corrupt);
+                    {
+                        return Err(Error::Corrupt);
+                    }
+                    AssetSummary {
+                        event_count: s.event_count.checked_add(1).ok_or(
+                            Error::Invalid("asset event count overflow"),
+                        )?,
+                        output_count: s.output_count.checked_add(count).ok_or(
+                            Error::Invalid("asset output count overflow"),
+                        )?,
+                        ..s.clone()
+                    }
                 }
-                AssetSummary {
-                    event_count: s
-                        .event_count
-                        .checked_add(1)
-                        .ok_or(Error::Invalid("asset event count overflow"))?,
-                    output_count: s
-                        .output_count
-                        .checked_add(count)
-                        .ok_or(Error::Invalid("asset output count overflow"))?,
-                    ..s.clone()
-                }
-            }
-            None => AssetSummary {
-                token_id: event.token_id,
-                first_seen: view.location,
-                event_count: 1,
-                output_count: count,
-            },
-        };
+                None => AssetSummary {
+                    token_id: event.token_id,
+                    first_seen: view.location,
+                    event_count: 1,
+                    output_count: count,
+                },
+            };
         writes.push((asset_summary_key(event.token_id), encode(&summary)?));
         writes.push((
             asset_event_key(event.token_id, view.location),
@@ -298,10 +304,14 @@ pub fn plan_asset_tx(
         .enumerate()
         .filter(|(_, o)| o.has_token())
     {
-        let index = u32::try_from(index).map_err(|_| Error::Invalid("asset output ordinal"))?;
+        let index = u32::try_from(index)
+            .map_err(|_| Error::Invalid("asset output ordinal"))?;
         let mut op = view.location.txid.0 .0.to_vec();
         op.extend(index.to_be_bytes());
-        writes.push((asset_output_key(output.token_id, view.location, index), op));
+        writes.push((
+            asset_output_key(output.token_id, view.location, index),
+            op,
+        ));
     }
     Ok(writes)
 }
@@ -384,9 +394,9 @@ impl ReadSnapshot<'_> {
         if after.is_some_and(|k| k.len() != key_len || !k.starts_with(prefix)) {
             return Err(Error::Invalid("asset cursor key"));
         }
-        let Some((key, value)) = self
-            .inner
-            .seek_next_regular(prefix, after, || budget.charge())?
+        let Some((key, value)) =
+            self.inner
+                .seek_next_regular(prefix, after, || budget.charge())?
         else {
             return Ok(None);
         };
@@ -400,7 +410,10 @@ impl ReadSnapshot<'_> {
         &self,
         after: Option<&[u8]>,
     ) -> Result<Option<(Vec<u8>, AssetSummary)>> {
-        self.next_asset_summary_counted(after, &mut AssetReadBudget::new(usize::MAX))
+        self.next_asset_summary_counted(
+            after,
+            &mut AssetReadBudget::new(usize::MAX),
+        )
     }
     /// At most two iterator advancements plus two canonical-location reads.
     pub fn next_asset_summary_counted(
@@ -429,7 +442,11 @@ impl ReadSnapshot<'_> {
         token: Hash32,
         after: Option<&[u8]>,
     ) -> Result<Option<(Vec<u8>, AssetEvent)>> {
-        self.next_asset_event_counted(token, after, &mut AssetReadBudget::new(usize::MAX))
+        self.next_asset_event_counted(
+            token,
+            after,
+            &mut AssetReadBudget::new(usize::MAX),
+        )
     }
     /// At most two iterator advancements plus two canonical-location reads.
     pub fn next_asset_event_counted(
@@ -447,8 +464,10 @@ impl ReadSnapshot<'_> {
                     || key != asset_event_key(token, e.location)
                     || e.location.height > self.anchor.height
                     || e.explicit_burn_units > e.output_units
-                    || e.minted_units != e.output_units.saturating_sub(e.spent_units)
-                    || e.implicit_burn_units != e.spent_units.saturating_sub(e.output_units)
+                    || e.minted_units
+                        != e.output_units.saturating_sub(e.spent_units)
+                    || e.implicit_burn_units
+                        != e.spent_units.saturating_sub(e.output_units)
                     || e.has_mint_input != (e.minted_units > 0)
                 {
                     return Err(Error::Corrupt);
@@ -464,7 +483,11 @@ impl ReadSnapshot<'_> {
         token: Hash32,
         after: Option<&[u8]>,
     ) -> Result<Option<(Vec<u8>, OutPoint)>> {
-        self.next_asset_output_counted(token, after, &mut AssetReadBudget::new(usize::MAX))
+        self.next_asset_output_counted(
+            token,
+            after,
+            &mut AssetReadBudget::new(usize::MAX),
+        )
     }
     /// At most two iterator advancements. Output and canonical joins are additional.
     pub fn next_asset_output_counted(
@@ -479,13 +502,16 @@ impl ReadSnapshot<'_> {
                 if token == Hash32::default()
                     || bytes.len() != 36
                     || bytes[32..] != key[46..]
-                    || u64::from_be_bytes(key[34..42].try_into().map_err(|_| Error::Corrupt)?)
-                        > self.anchor.height
+                    || u64::from_be_bytes(
+                        key[34..42].try_into().map_err(|_| Error::Corrupt)?,
+                    ) > self.anchor.height
                 {
                     return Err(Error::Corrupt);
                 }
                 let op = OutPoint {
-                    txid: TxId(Hash32(bytes[..32].try_into().map_err(|_| Error::Corrupt)?)),
+                    txid: TxId(Hash32(
+                        bytes[..32].try_into().map_err(|_| Error::Corrupt)?,
+                    )),
                     out_idx: u32::from_be_bytes(
                         bytes[32..].try_into().map_err(|_| Error::Corrupt)?,
                     ),

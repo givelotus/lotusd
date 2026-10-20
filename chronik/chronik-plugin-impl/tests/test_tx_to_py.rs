@@ -57,6 +57,7 @@ fn make_py_tx(
     let tx = Tx::with_txid(
         TxId::from([params.txid_num; 32]),
         TxMut {
+            native_txid: None,
             version: 0,
             inputs: params
                 .spent_tokens
@@ -119,6 +120,7 @@ fn test_tx_to_py() -> Result<()> {
     let non_token_tx = Tx::with_txid(
         TxId::new([1; 32]),
         TxMut {
+            native_txid: None,
             version: 1,
             inputs: vec![
                 TxInput {
@@ -129,6 +131,7 @@ fn test_tx_to_py() -> Result<()> {
                     script: Script::new(b"\x01\x01".as_ref().into()),
                     sequence: 0x12345678,
                     coin: Some(Coin {
+                        is_legacy: false,
                         output: TxOutput {
                             script: Script::p2sh(&ShaRmd160([2; 20])),
                             sats: 50000,

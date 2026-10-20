@@ -35,11 +35,15 @@ pub const MIN_SPEND_WIRE_BYTES: usize = 43;
 pub const MIN_OUTPUT_WIRE_BYTES: usize = 43;
 /// Shortest V2 branch witness.
 pub const MIN_WITNESS_WIRE_BYTES: usize = 3;
-/// Staging reserved per wire byte of a block. Every per-element reservation
-/// of a connect (below and in `v2_explorer`), charged to the shortest wire
-/// encoding of its element, stays within it; see the
-/// `staging_covers_shortest_encodings` test.
-pub const STAGING_PER_WIRE_BYTE: usize = 1024;
+/// Shortest legacy output in a transaction (the indexed coin adds its tag).
+pub const MIN_LEGACY_OUTPUT_WIRE_BYTES: usize = 9;
+/// Conservative per-wire-byte accounting bound; not an allocation size.
+// The largest per-byte charge is a legacy output: asset 8192 + output
+// 6*1200, over nine wire bytes. Seven covers explorer per-byte/chunk charges.
+// This is a checked accounting ceiling, never an allocation size.
+pub const STAGING_PER_WIRE_BYTE: usize = 7
+    + (RESERVE_ASSET_ELEMENT + RESERVE_OUTPUT)
+        .div_ceil(MIN_LEGACY_OUTPUT_WIRE_BYTES);
 /// Staging reserved once per block (framing, checkpoint, header facts).
 pub const STAGING_PER_BLOCK: usize = 64 * 1024;
 /// Branch staging reserved per transaction.
@@ -84,7 +88,7 @@ impl Bounds {
     }
     /// Most created plus consumed outputs a block within the limit can hold.
     pub fn changes(&self) -> usize {
-        self.block_bytes / MIN_INPUT_WIRE_BYTES
+        self.block_bytes / MIN_LEGACY_OUTPUT_WIRE_BYTES
     }
     /// Bound on the staging reserved for one block within the limit, and on
     /// its receipt, undo and write batch.
@@ -382,7 +386,8 @@ fn decode_coin(bytes: &[u8]) -> Result<Coin> {
         return Err(Error::Corrupt);
     }
     let coin: Coin = decode(bytes)?;
-    if coin.flags & !7 != 0 || coin.token_id.is_some() != (coin.flags & 1 != 0)
+    if (coin.flags & !7 != 0 && coin.flags != 0x80 && coin.flags != 0x82)
+        || coin.token_id.is_some() != (coin.flags & 1 != 0)
     {
         return Err(Error::Corrupt);
     }
@@ -658,18 +663,16 @@ impl V2Db {
         for &tx_index in &order {
             let tx = &block.transactions[tx_index];
             for (index, input) in tx.explorer.inputs.iter().enumerate() {
-                if input.flags != 1 {
+                if input.flags != 1 && input.flags != 4 {
                     continue;
                 }
                 let op = OutPoint {
                     txid: TxId(Hash32(input.prev_txid)),
                     out_idx: input.prev_index,
                 };
-                if !tx
-                    .spends
-                    .iter()
-                    .any(|s| s.input_index as usize == index && s.outpoint == op)
-                {
+                if !tx.spends.iter().any(|s| {
+                    s.input_index as usize == index && s.outpoint == op
+                }) {
                     return Err(Error::Invalid("full spend mismatch"));
                 }
                 let coin = match created.get(&op) {
@@ -688,7 +691,7 @@ impl V2Db {
                 tx.explorer
                     .inputs
                     .get(s.input_index as usize)
-                    .is_none_or(|i| i.flags != 1)
+                    .map_or(true, |i| i.flags != 1 && i.flags != 4)
             }) {
                 return Err(Error::Invalid("full spend missing"));
             }
@@ -1029,8 +1032,11 @@ fn validate_undo(
     if undo_map.len() != undo.entries.len() {
         return Err(Error::Corrupt);
     }
-    let in_block: BTreeSet<TxId> =
-        block.transactions.iter().map(|tx| tx.location.txid).collect();
+    let in_block: BTreeSet<TxId> = block
+        .transactions
+        .iter()
+        .map(|tx| tx.location.txid)
+        .collect();
     let order = processing_order(&block.transactions);
     // Value of every key the block wrote, and the prior value its undo must
     // restore.
@@ -1084,7 +1090,9 @@ fn validate_undo(
                 out_idx: u32::try_from(i).map_err(|_| Error::Corrupt)?,
             };
             let k = key(b'o', &op_bytes(op));
-            if current.insert(k.clone(), encode(&Coin::new(output))?).is_some()
+            if current
+                .insert(k.clone(), encode(&Coin::new(output))?)
+                .is_some()
             {
                 return Err(Error::Corrupt);
             }
@@ -1556,6 +1564,7 @@ mod tests {
     }
     fn output(root: u8, burn: bool) -> Output {
         Output {
+            legacy_script: None,
             flags: if burn { 2 } else { 0 },
             value: 100,
             token_id: Hash32::default(),
@@ -1657,7 +1666,8 @@ mod tests {
         drop(view);
         let input_key = e::input_key(TxId(Hash32([22; 32])), 0);
         let saved = db.db.get(&input_key).unwrap().unwrap();
-        let mut corrupted: e::StoredInputMeta = e::decode_record(&saved).unwrap();
+        let mut corrupted: e::StoredInputMeta =
+            e::decode_record(&saved).unwrap();
         corrupted.flags = 255;
         db.db
             .put(&input_key, e::encode_record(&corrupted).unwrap())
@@ -1760,7 +1770,9 @@ mod tests {
         assert!(db.connect(&conflicting).is_err());
         // The node's bytes no longer match the recorded wire checksum: reads
         // and the undo check fail closed.
-        assert!(mem.modify(TxId(Hash32([22; 32])), |tx| tx.explorer.wire[0] ^= 1));
+        assert!(
+            mem.modify(TxId(Hash32([22; 32])), |tx| tx.explorer.wire[0] ^= 1)
+        );
         assert!(db
             .snapshot()
             .unwrap()
@@ -1768,7 +1780,9 @@ mod tests {
             .is_err());
         assert!(db.disconnect(second.anchor).is_err());
         assert_eq!(db.checkpoint().unwrap(), Some(second.anchor));
-        assert!(mem.modify(TxId(Hash32([22; 32])), |tx| tx.explorer.wire[0] ^= 1));
+        assert!(
+            mem.modify(TxId(Hash32([22; 32])), |tx| tx.explorer.wire[0] ^= 1)
+        );
         db.disconnect(second.anchor).unwrap();
         assert!(db
             .snapshot()
@@ -1819,9 +1833,8 @@ mod tests {
             raw.put(b"v2-binding", encode(&(old, binding())).unwrap())
                 .unwrap();
             drop(raw);
-            let err = V2Db::open(dir.path(), binding(), bounds())
-                .err()
-                .unwrap();
+            let err =
+                V2Db::open(dir.path(), binding(), bounds()).err().unwrap();
             assert!(matches!(
                 err,
                 Error::Schema { found, expected: SCHEMA_VERSION } if found == old
@@ -2028,6 +2041,7 @@ mod tests {
         db.initialize_genesis(fixture_genesis(vec![])).unwrap();
         let genesis = db.snapshot().unwrap().anchor;
         let policy = Output {
+            legacy_script: None,
             flags: 1,
             value: u64::MAX,
             token_id: Hash32([77; 32]),
@@ -2170,21 +2184,36 @@ mod tests {
         let budget = STAGING_PER_WIRE_BYTE - per_byte;
         let tx = RESERVE_TX + e::RESERVE_TX + e::RESERVE_CHUNK;
         assert!(tx <= budget * MIN_TX_HEADER_WIRE_BYTES);
+        // Legacy version/counts/locktime need ten bytes; an empty-script
+        // input is outpoint36 + CompactSize1 + sequence4 = 41 bytes.
+        assert!(tx <= budget * 10);
         // A spend is an input, a spend and an asset element twice.
         let spend =
             2 * RESERVE_ASSET_ELEMENT + RESERVE_SPEND + e::RESERVE_INPUT;
         assert!(spend <= budget * MIN_SPEND_WIRE_BYTES);
+        assert!(spend <= budget * 41);
         let input = RESERVE_ASSET_ELEMENT + e::RESERVE_INPUT;
         assert!(input <= budget * MIN_INPUT_WIRE_BYTES);
+        assert!(input <= budget * 41);
         assert!(e::RESERVE_WITNESS <= budget * MIN_WITNESS_WIRE_BYTES);
         // The shortest output has one branch; each further one is 32 bytes.
         let output = RESERVE_ASSET_ELEMENT + RESERVE_OUTPUT + RESERVE_BRANCH;
         assert!(output <= budget * MIN_OUTPUT_WIRE_BYTES);
+        let legacy_output = RESERVE_ASSET_ELEMENT + RESERVE_OUTPUT;
+        assert!(legacy_output <= budget * MIN_LEGACY_OUTPUT_WIRE_BYTES);
+        assert_eq!(STAGING_PER_WIRE_BYTE, 1718);
+        assert_eq!(STAGING_PER_WIRE_BYTE, per_byte + legacy_output.div_ceil(9));
+        #[cfg(target_pointer_width = "64")]
+        {
+            let max = Bounds::new(u32::MAX.into()).unwrap();
+            assert_eq!(max.batch_bytes(), u32::MAX as usize * 1718 + 65536);
+            assert_eq!(max.changes(), u32::MAX as usize / 9);
+        }
         assert!(RESERVE_BRANCH <= budget * 32);
         assert!(1024 + e::RESERVE_BLOCK <= STAGING_PER_BLOCK);
         let bounds = Bounds::new(32_000_000).unwrap();
         assert_eq!(bounds.transactions(), 32_000_000 / MIN_TX_WIRE_BYTES);
-        assert_eq!(bounds.changes(), 32_000_000 / MIN_INPUT_WIRE_BYTES);
+        assert_eq!(bounds.changes(), 32_000_000 / MIN_LEGACY_OUTPUT_WIRE_BYTES);
         assert!(Bounds::new(0).is_err());
         assert!(Bounds::new(Bounds::MAX_BLOCK_BYTES + 1).is_err());
     }

@@ -5,6 +5,8 @@
 //! Transaction fields follow `transaction.h` (C10/C11); no transaction codec,
 //! identity computation, contextual validation or ownership inference is implied.
 
+use crate::ser::BitcoinSer;
+
 /// A 32-byte commitment in V2 wire order, without display-endian conversion.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Hash32(pub [u8; 32]);
@@ -31,7 +33,10 @@ pub struct OutPoint {
 /// spendability; burns also carry public roots.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Output {
-    /// Bit 0: token; bit 1: burn; bit 2: state. All other bits must be zero.
+    /// Exact legacy script; legacy coins have no V2 authorization roots.
+    pub legacy_script: Option<Vec<u8>>,
+    /// Native flags: bit 0 token, bit 1 burn, bit 2 state. Legacy records
+    /// use 0x80, with bit 1 additionally marking an unspendable script.
     pub flags: u8,
     /// Unsigned native/token quantity, including the full u64 range.
     pub value: u64,
@@ -49,6 +54,8 @@ pub struct Output {
 
 /// Hard native framing bound, independent of stricter deployment profiles.
 pub const MAX_OUTPUT_BYTES: usize = 844;
+/// Legacy state coin framing permits the consensus legacy script bound.
+pub const MAX_COIN_OUTPUT_BYTES: usize = 10020;
 /// Maximum branches and paths in the native output grammar.
 pub const MAX_OUTPUT_BRANCHES: usize = 16;
 
@@ -76,6 +83,24 @@ impl Output {
     /// Check native output structure only, without coin or script validation.
     pub fn validate(&self) -> Result<()> {
         let fail = |category| Err(OutputError(category));
+        if let Some(script) = &self.legacy_script {
+            if self.flags
+                != (0x80
+                    | if script.first() == Some(&0x6a) || script.len() > 10000 {
+                        2
+                    } else {
+                        0
+                    })
+                || script.len() > u32::MAX as usize - 12
+                || !self.branches.is_empty()
+                || !self.paths.is_empty()
+                || self.token_id != Hash32::default()
+                || self.state_root != Hash32::default()
+            {
+                return fail("legacy coin");
+            }
+            return Ok(());
+        }
         if self.flags & 0xf8 != 0 {
             return fail("flags");
         }
@@ -130,6 +155,12 @@ impl Output {
     /// Encode a canonical native output frame after structural checks.
     pub fn encode(&self) -> Result<Vec<u8>> {
         self.validate()?;
+        if let Some(script) = &self.legacy_script {
+            let mut bytes = vec![0x80];
+            bytes.extend(self.value.to_le_bytes());
+            bytes.extend(script.ser());
+            return Ok(bytes);
+        }
         let mut bytes = Vec::with_capacity(MAX_OUTPUT_BYTES);
         bytes.push(self.flags);
         bytes.extend(self.value.to_le_bytes());
@@ -158,6 +189,51 @@ impl Output {
     /// Decode exactly one native frame, rejecting trailing bytes and allocating
     /// only after count bounds and available bytes have been checked.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
+        if bytes.first() == Some(&0x80) {
+            if bytes.len() > u32::MAX as usize || bytes.len() < 10 {
+                return Err(OutputError("legacy coin"));
+            }
+            let value = u64::from_le_bytes(bytes[1..9].try_into().unwrap());
+            let first = bytes[9];
+            let width = match first {
+                253 => 2,
+                254 => 4,
+                255 => 8,
+                _ => 0,
+            };
+            if bytes.len() < 10 + width {
+                return Err(OutputError("legacy coin"));
+            }
+            let mut length = u64::from(first);
+            if width != 0 {
+                let mut encoded = [0u8; 8];
+                encoded[..width].copy_from_slice(&bytes[10..10 + width]);
+                length = u64::from_le_bytes(encoded);
+                if length < 253
+                    || (width > 2 && length <= 0xffff)
+                    || (width > 4 && length <= 0xffff_ffff)
+                {
+                    return Err(OutputError("legacy coin"));
+                }
+            }
+            if length > u64::from(u32::MAX) - 12
+                || bytes.len() - 10 - width != length as usize
+            {
+                return Err(OutputError("legacy coin"));
+            }
+            let script = bytes[10 + width..].to_vec();
+            return Ok(Self {
+                flags: 0x80
+                    | if script.first() == Some(&0x6a) || script.len() > 10000 {
+                        2
+                    } else {
+                        0
+                    },
+                value,
+                legacy_script: Some(script),
+                ..Self::default()
+            });
+        }
         if bytes.len() > MAX_OUTPUT_BYTES {
             return Err(OutputError("output bytes"));
         }
@@ -207,6 +283,7 @@ impl Output {
             return Err(OutputError("trailing bytes"));
         }
         let output = Self {
+            legacy_script: None,
             flags,
             value,
             token_id,
@@ -356,6 +433,47 @@ mod tests {
                 Err(OutputError("trailing bytes"))
             );
         }
+    }
+
+    #[test]
+    fn legacy_coin_frames_have_no_native_roots() {
+        for script in [
+            vec![],
+            vec![0x51],
+            vec![0x6a, 1, 0x42],
+            vec![0x51; 10000],
+            vec![0x51; 10001],
+        ] {
+            let output = Output {
+                flags: 0x80
+                    | if script.first() == Some(&0x6a) || script.len() > 10000 {
+                        2
+                    } else {
+                        0
+                    },
+                value: 123,
+                legacy_script: Some(script),
+                ..Output::default()
+            };
+            let wire = output.encode().unwrap();
+            assert_eq!(wire[0], 0x80);
+            let decoded = Output::decode(&wire).unwrap();
+            assert_eq!(decoded, output);
+            assert!(decoded.branches.is_empty());
+            assert!(!decoded.has_token());
+            for end in
+                (0..wire.len().min(32)).chain(std::iter::once(wire.len() - 1))
+            {
+                assert!(Output::decode(&wire[..end]).is_err());
+            }
+            let mut extra = wire;
+            extra.push(0);
+            assert!(Output::decode(&extra).is_err());
+        }
+        let mut nonminimal = vec![0x80];
+        nonminimal.extend(123u64.to_le_bytes());
+        nonminimal.extend([253, 1, 0, 0x51]);
+        assert!(Output::decode(&nonminimal).is_err());
     }
 
     #[test]

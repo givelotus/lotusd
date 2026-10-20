@@ -75,6 +75,7 @@ pub(crate) fn make_tx_proto(params: MakeTxProtoParams<'_>) -> proto::Tx {
                     .map(|coin| (coin.output.script.to_vec(), coin.output.sats))
                     .unwrap_or_default();
                 proto::TxInput {
+                    is_legacy: coin.is_some_and(|coin| coin.is_legacy),
                     prev_out: Some(make_outpoint_proto(&input.prev_out)),
                     input_script: input.script.to_vec(),
                     output_script,
@@ -101,9 +102,14 @@ pub(crate) fn make_tx_proto(params: MakeTxProtoParams<'_>) -> proto::Tx {
             .iter()
             .enumerate()
             .map(|(output_idx, output)| proto::TxOutput {
+                is_legacy: tx.version != 7,
                 sats: output.sats,
                 output_script: output.script.to_vec(),
-                state_root: v2_state_root(&output.script),
+                state_root: if tx.version == 7 {
+                    v2_state_root(&output.script)
+                } else {
+                    vec![]
+                },
                 spent_by: params
                     .outputs_spent
                     .spent_by(output_idx as u32)
@@ -282,7 +288,9 @@ impl<'a> OutputsSpent<'a> {
 }
 
 /// The state root of a Lotus V2 HAS_STATE output, or empty.
-pub(crate) fn v2_state_root(script: &bitcoinsuite_core::script::Script) -> Vec<u8> {
+pub(crate) fn v2_state_root(
+    script: &bitcoinsuite_core::script::Script,
+) -> Vec<u8> {
     decode_v2_output_script(script)
         .filter(|output| output.has_state())
         .map(|output| output.state_root.0.to_vec())

@@ -135,10 +135,12 @@ class ChronikBlockTxsTest(BitcoinTestFramework):
             ],
             outputs=[
                 pb.TxOutput(
+                    is_legacy=True,
                     sats=coinvalue,
                     output_script=bytes(tx_coinbase.vout[0].scriptPubKey),
                 ),
                 pb.TxOutput(
+                    is_legacy=True,
                     output_script=bytes(CScript([OP_RETURN])),
                 ),
             ],
@@ -153,6 +155,7 @@ class ChronikBlockTxsTest(BitcoinTestFramework):
             version=1,
             inputs=[
                 pb.TxInput(
+                    is_legacy=True,
                     prev_out=pb.OutPoint(txid=bytes.fromhex(cointx)[::-1], out_idx=0),
                     input_script=bytes(SCRIPTSIG_OP_TRUE),
                     output_script=bytes(P2SH_OP_TRUE),
@@ -162,6 +165,7 @@ class ChronikBlockTxsTest(BitcoinTestFramework):
             ],
             outputs=[
                 pb.TxOutput(
+                    is_legacy=True,
                     sats=coinvalue - 10000,
                     output_script=bytes(P2SH_OP_TRUE),
                     spent_by=pb.SpentBy(
@@ -170,6 +174,7 @@ class ChronikBlockTxsTest(BitcoinTestFramework):
                     ),
                 ),
                 pb.TxOutput(
+                    is_legacy=True,
                     sats=1000,
                     output_script=bytes(CScript([OP_RETURN, b"test"])),
                 ),
@@ -184,6 +189,7 @@ class ChronikBlockTxsTest(BitcoinTestFramework):
             version=1,
             inputs=[
                 pb.TxInput(
+                    is_legacy=True,
                     prev_out=pb.OutPoint(
                         txid=bytes.fromhex(tx1.txid_hex)[::-1], out_idx=0
                     ),
@@ -195,10 +201,12 @@ class ChronikBlockTxsTest(BitcoinTestFramework):
             ],
             outputs=[
                 pb.TxOutput(
+                    is_legacy=True,
                     sats=3000,
                     output_script=bytes(CScript([OP_RETURN, b"test"])),
                 ),
                 pb.TxOutput(
+                    is_legacy=True,
                     sats=coinvalue - 20000,
                     output_script=bytes(P2SH_OP_TRUE),
                 ),

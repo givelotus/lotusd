@@ -2,13 +2,13 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+use crate::db::WriteBatch;
 use abc_rust_error::Result;
 use bitcoinsuite_core::{
     script::Script,
     tx::{Coin, OutPoint, Tx, TxId, TxInput, TxMut, TxOutput},
 };
 use bitcoinsuite_slp::{structs::Atoms, token_id::TokenId};
-use crate::db::WriteBatch;
 
 use crate::{
     db::Db,
@@ -45,6 +45,7 @@ pub(crate) fn make_tx<const N: usize>(
     Tx::with_txid(
         TxId::from([txid_num; 32]),
         TxMut {
+            native_txid: None,
             version: 0,
             inputs: inputs
                 .into_iter()
@@ -84,6 +85,7 @@ pub(crate) fn make_tx_with_scripts<const N: usize>(
     Tx::with_txid(
         TxId::from([txid_num; 32]),
         TxMut {
+            native_txid: None,
             version: 0,
             inputs: inputs
                 .into_iter()

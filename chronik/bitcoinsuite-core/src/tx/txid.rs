@@ -56,7 +56,9 @@ impl TxId {
 
     /// Return the [`TxId`] for the given [`TxMut`] (or `Tx`).
     ///
-    /// This is done by hashing the serialized tx using [`Sha256d`].
+    /// Legacy versions hash the exact legacy serialization using [`Sha256d`].
+    /// V7 projections retain the node-computed structural identity: their
+    /// flattened script fields cannot reproduce the native transaction frame.
     ///
     /// ```
     /// # use bitcoinsuite_core::tx::{Tx, TxId, TxMut};
@@ -68,6 +70,11 @@ impl TxId {
     /// assert_eq!(TxId::from_tx(&Tx::default()), zero_tx_hash);
     /// ```
     pub fn from_tx(tx: &TxMut) -> Self {
+        if tx.version == 7 {
+            return tx.native_txid.expect(
+                "v7 projections require the node-computed structural TxId",
+            );
+        }
         TxId(Sha256d::digest(tx.ser()))
     }
 
@@ -188,6 +195,28 @@ mod tests {
         hash::{Hashed, Sha256d},
         tx::TxId,
     };
+
+    #[test]
+    fn legacy_and_native_identity_namespaces() {
+        use crate::{ser::BitcoinSer, tx::TxMut};
+        for version in [1, 2] {
+            let tx = TxMut {
+                version,
+                ..TxMut::default()
+            };
+            assert_eq!(
+                TxId::from_tx(&tx),
+                TxId::from(Sha256d::digest(tx.ser()))
+            );
+        }
+        let tx = TxMut {
+            version: 7,
+            native_txid: Some(TxId::new([9; 32])),
+            ..TxMut::default()
+        };
+        assert_eq!(TxId::from_tx(&tx), TxId::new([9; 32]));
+        assert_ne!(TxId::from_tx(&tx), TxId::from(Sha256d::digest(tx.ser())));
+    }
 
     const HASH_HEX: &str =
         "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b";

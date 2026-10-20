@@ -43,7 +43,7 @@ void AddSize(size_t &total, size_t amount) {
 
 /** Owner-side input checks before entries are planned. */
 void ValidateInput(const InputFact &input, uint64_t size) {
-    if (input.flags < 1 || input.flags > 3) {
+    if (input.flags < 1 || input.flags > 5) {
         ThrowInvalid("input flags");
     }
     input.coinbase_data.Validate(size);
@@ -129,20 +129,27 @@ void ValidateInputMeta(const InputMeta &input, uint64_t wire_size) {
     }
     bool valid = false;
     switch (input.flags) {
-        case 1: {
+        case 1:
+        case 4: {
             const auto &coin = input.resolved_creation;
-            valid = !input.has_coinbase_data && input.path_index < 16 &&
-                    input.witness_count >= 1 && input.witness_count <= 16 &&
-                    (input.sequence == UINT32_MAX ||
-                     (input.sequence & ~uint32_t(0x40ffff)) == 0) &&
-                    coin && coin->outpoint.txid.hash.b == input.prev_txid &&
-                    coin->outpoint.out_idx == input.prev_index &&
-                    coin->creation.txid == coin->outpoint.txid &&
-                    !coin->output.IsBurn() && !coin->output.Validate();
+            valid =
+                !input.has_coinbase_data &&
+                (input.flags == 4
+                     ? (input.path_index == 0 && input.witness_count == 0)
+                     : (input.path_index < 16 && input.witness_count >= 1 &&
+                        input.witness_count <= 16 &&
+                        (input.sequence == UINT32_MAX ||
+                         (input.sequence & ~uint32_t(0x40ffff)) == 0))) &&
+                coin && coin->outpoint.txid.hash.b == input.prev_txid &&
+                coin->outpoint.out_idx == input.prev_index &&
+                coin->creation.txid == coin->outpoint.txid &&
+                !coin->output.IsBurn() && !coin->output.Validate() &&
+                (input.flags != 4 || coin->output.legacy_script.has_value());
             break;
         }
         case 2:
-            valid = input.path_index == 0 && input.sequence == UINT32_MAX &&
+        case 5:
+            valid = input.path_index == 0 && (input.flags == 5 || input.sequence == UINT32_MAX) &&
                     input.witness_count == 0 && !input.resolved_creation &&
                     (!input.has_coinbase_data ||
                      (input.coinbase_data.length >= 1 &&
@@ -246,7 +253,7 @@ PlanExplorerBlock(const CommittedBlock &block) {
         bool subset_ok = true;
         for (size_t i = 0; i < facts.inputs.size(); ++i) {
             const InputFact &input = facts.inputs[i];
-            if (input.flags != 1) {
+            if (input.flags != 1 && input.flags != 4) {
                 continue;
             }
             if (n_spends >= tx.spends.size() ||
@@ -408,7 +415,7 @@ std::optional<InputMeta> ReadSnapshot::ExplorerInput(const TxId &id,
     }
     const auto stored = DecodeRecord<StoredInputMeta>(*bytes);
     std::optional<ResolvedCreation> creation;
-    if (stored.flags == 1) {
+    if (stored.flags == 1 || stored.flags == 4) {
         const OutPoint outpoint{TxId{H(stored.prev_txid)}, stored.prev_index};
         auto record = GetOutput(outpoint);
         if (!record) {

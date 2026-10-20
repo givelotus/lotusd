@@ -113,6 +113,7 @@ pub(crate) fn make_inputs_tx<const N: usize, const M: usize>(
     Tx::with_txid(
         TxId::from([txid_num; 32]),
         TxMut {
+            native_txid: None,
             version: 0,
             inputs: input_values
                 .into_iter()

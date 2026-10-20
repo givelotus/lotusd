@@ -147,6 +147,8 @@ mod ffi_inner {
     /// Coin, can be spent by providing a valid unlocking script.
     #[derive(Clone, Debug, Default, Eq, PartialEq)]
     pub struct Coin {
+        /// Whether the creating transaction used the legacy grammar.
+        pub is_legacy: bool,
         /// Output, locking the coins.
         pub output: TxOutput,
         /// Height of the coin in the chain.

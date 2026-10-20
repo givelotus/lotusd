@@ -81,8 +81,14 @@ pub fn open_service(
         .entry(path.to_string())
         .or_default()
         .clone();
-    open_service_impl(path, binding, fresh, limits, TxSourceKind::Memory(memory))
-        .map_err(|e| e.to_string())
+    open_service_impl(
+        path,
+        binding,
+        fresh,
+        limits,
+        TxSourceKind::Memory(memory),
+    )
+    .map_err(|e| e.to_string())
 }
 /// Open a dedicated directory; fresh requires absence, existing requires mdbx.dat.
 /// No deletion occurs. Reads stay unavailable until explicit genesis commits.
@@ -262,9 +268,7 @@ impl V2Service {
             return Err("block bytes bound".into());
         }
         for tx in &block.transactions {
-            wire = wire
-                .checked_add(tx.wire.len())
-                .ok_or("block overflow")?;
+            wire = wire.checked_add(tx.wire.len()).ok_or("block overflow")?;
             if wire > self.bounds.block_bytes() {
                 return Err("block bytes bound".into());
             }
@@ -303,7 +307,12 @@ impl V2Service {
                 return Err("block input bound".into());
             }
             for output in &tx.outputs {
-                if output.wire.len() > MAX_OUTPUT_BYTES {
+                let cap = if output.wire.first() == Some(&0x80) {
+                    self.bounds.block_bytes().saturating_add(1)
+                } else {
+                    MAX_OUTPUT_BYTES
+                };
+                if output.wire.len() > cap {
                     return Err("output bound".into());
                 }
                 bytes = bytes
@@ -648,9 +657,7 @@ fn confirmed_tx(tx: f::NativeTx, block: db::Anchor) -> Result<db::ConfirmedTx> {
                             script: range(w.script),
                             siblings_table: range(w.siblings_table),
                             siblings_count: w.siblings_count,
-                            arguments_table: range(
-                                w.arguments_table,
-                            ),
+                            arguments_table: range(w.arguments_table),
                             arguments_count: w.arguments_count,
                         })
                         .collect(),

@@ -25,9 +25,9 @@
 
 use std::{ops::Range, time::Instant};
 
+use crate::db::{ColumnFamilyDescriptor, Options, WriteBatch};
 use abc_rust_error::Result;
 use bitcoinsuite_core::tx::TxId;
-use crate::db::{ColumnFamilyDescriptor, Options, WriteBatch};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -69,6 +69,8 @@ pub type TxNum = u64;
 /// files.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TxEntry {
+    /// Whether outputs were created with the legacy transaction grammar.
+    pub is_legacy: bool,
     /// TxId of the tx.
     pub txid: TxId,
     /// Position of the tx data in the tx's block's block file.
@@ -123,6 +125,7 @@ struct SerTx {
     data_pos: u32,
     undo_pos: u32, // == 0 <==> is_coinbase == true
     time_first_seen: i64,
+    is_legacy: bool,
 }
 
 struct TxColumn<'a> {
@@ -545,6 +548,7 @@ impl From<&'_ TxEntry> for SerTx {
             data_pos: value.data_pos,
             undo_pos: value.undo_pos,
             time_first_seen: value.time_first_seen,
+            is_legacy: value.is_legacy,
         }
     }
 }
@@ -557,21 +561,40 @@ impl From<SerTx> for TxEntry {
             undo_pos: value.undo_pos,
             time_first_seen: value.time_first_seen,
             is_coinbase: value.undo_pos == 0,
+            is_legacy: value.is_legacy,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::db::WriteBatch;
     use abc_rust_error::Result;
     use bitcoinsuite_core::tx::TxId;
     use pretty_assertions::assert_eq;
-    use crate::db::WriteBatch;
 
     use crate::{
         db::Db,
         io::{BlockTx, BlockTxs, TxEntry, TxReader, TxWriter, TxsMemData},
     };
+
+    #[test]
+    fn legacy_kind_does_not_change_undo_position_or_coinbase() {
+        for undo_pos in [0, 123, 0x7fff_ffff, 0x8000_0000, u32::MAX] {
+            for is_legacy in [false, true] {
+                let entry = super::TxEntry {
+                    undo_pos,
+                    is_legacy,
+                    is_coinbase: undo_pos == 0,
+                    ..super::TxEntry::default()
+                };
+                assert_eq!(
+                    super::TxEntry::from(super::SerTx::from(&entry)),
+                    entry
+                );
+            }
+        }
+    }
 
     #[test]
     fn test_insert_txs() -> Result<()> {
@@ -582,6 +605,7 @@ mod tests {
         let tx_reader = TxReader::new(&db)?;
         let mut mem_data = TxsMemData::default();
         let tx1 = TxEntry {
+            is_legacy: false,
             txid: TxId::from([1; 32]),
             data_pos: 100,
             undo_pos: 0,
@@ -624,6 +648,7 @@ mod tests {
             );
         }
         let tx2 = TxEntry {
+            is_legacy: false,
             txid: TxId::from([2; 32]),
             data_pos: 200,
             undo_pos: 20,
@@ -635,6 +660,7 @@ mod tests {
             block_height: 1,
         };
         let tx3 = TxEntry {
+            is_legacy: false,
             txid: TxId::from([3; 32]),
             data_pos: 300,
             undo_pos: 30,
@@ -718,6 +744,7 @@ mod tests {
             assert_eq!(tx_reader.tx_by_tx_num(2)?, None);
         }
         let tx2 = TxEntry {
+            is_legacy: false,
             txid: TxId::from([102; 32]),
             data_pos: 200,
             undo_pos: 20,
@@ -729,6 +756,7 @@ mod tests {
             block_height: 1,
         };
         let tx3 = TxEntry {
+            is_legacy: false,
             txid: TxId::from([103; 32]),
             data_pos: 300,
             undo_pos: 30,
