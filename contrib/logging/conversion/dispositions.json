@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "reviewed_against": "abdbbae484d22094e7a8a69ad387d890c0bd36b7",
-  "review_scope": "Explicitly inspected legacy logging regression/benchmark controls and infrastructure wrappers; remaining sites are not waived. Unknown/stale identities fail closed.",
+  "review_scope": "Explicitly inspected legacy regression/benchmark controls, infrastructure wrappers and Chronik source/host adapters. Native Chronik LogDebug has a separate callback API. Remaining consumers are explicitly deferred, not waived; unknown/stale identities fail closed.",
   "sites": {
     "src/logging/timer.h:597879d4a32261e80035:1": {
       "disposition": "infrastructure",
@@ -290,6 +290,119 @@
     "src/wallet/wallet.h:1ab99f177f9b72fbe574:1": {
       "disposition": "infrastructure",
       "reason": "Reviewed logging infrastructure or generic forwarding wrapper, not an application event schema. Logger internals preserve diagnostic/recovery paths; wallet forwarding has no caller field semantics. Inventory actual application/wallet call sites separately rather than falsely counting a wrapper conversion."
+    },
+    "chronik/chronik-cpp/chronik.cpp:17b726871a85f5748905:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed mirrored static Chronik shutdown message. Pending coordinated typed lifecycle event in the canonical Chronik batch; preserve Info level, readable text and shutdown ordering. Static messages still need stable event identities."
+    },
+    "chronik/chronik-cpp/chronik_bridge.cpp:da9e1376d81fa55ad39e:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed generic Chronik adapter receiving already-rendered Rust/core messages. Cannot recover typed fields from text. Pending an upstream/host-neutral typed event interface; retain existing Info category, shared quota and explicit no-rate-limit branches. A JSON envelope here is not a structured application schema."
+    },
+    "chronik/chronik-cpp/chronik_validationinterface.cpp:8ee8e5828182027ab4f5:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed Chronik worker failure/queue overflow shutdown diagnostic in mirrored Rust/native subscribers. Pending coordinated typed worker event in the canonical Chronik batch. Preserve current Info level and shutdown; FATAL text is not a mechanical severity change or exemption."
+    },
+    "chronik/chronik-cpp/chronik_validationinterface.cpp:0d022b108b0c3f2f24b4:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed mirrored Chronik stop exception diagnostic. Pending coordinated typed lifecycle event and copied error field in the canonical Chronik batch; preserve current Info level and stop behavior. Freeform exception detail is a field, not a conversion exemption."
+    },
+    "chronik/chronik-cpp/chronik_validationinterface.cpp:7c08468a0750d566a23a:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed mirrored Chronik missing spent-coin notification diagnostic. Pending coordinated typed event with actual GetId TxId (not serialization GetHash), notification phase and current Info level. Retain canonical Chronik ownership instead of competing producer edits."
+    },
+    "chronik/chronik-cpp/chronik_validationinterface.cpp:fbc65ff11ab89f405f03:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed mirrored Chronik missing spent-coin notification diagnostic. Pending coordinated typed event with actual GetId TxId (not serialization GetHash), notification phase and current Info level. Retain canonical Chronik ownership instead of competing producer edits."
+    },
+    "chronik/native/core/ws/ws_handler.cpp:28f3e373760b517e32ae:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed native WebSocket subscription diagnostic. This LogDebug resolves to the local LogDebug(const std::string &) member, forwarding m_log(msg, true), not the shared BCLog category macro. Pending a host-neutral typed logging callback carrying subscription kind and actual native TxId/script/token/LOKAD data; do not parse formatted messages, substitute host BCLog, or change filtering."
+    },
+    "chronik/native/core/ws/ws_handler.cpp:18e98fd3614ec93af196:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed native WebSocket subscription diagnostic. This LogDebug resolves to the local LogDebug(const std::string &) member, forwarding m_log(msg, true), not the shared BCLog category macro. Pending a host-neutral typed logging callback carrying subscription kind and actual native TxId/script/token/LOKAD data; do not parse formatted messages, substitute host BCLog, or change filtering."
+    },
+    "chronik/native/core/ws/ws_handler.cpp:d34c6a8a5adf554ed198:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed native WebSocket subscription diagnostic. This LogDebug resolves to the local LogDebug(const std::string &) member, forwarding m_log(msg, true), not the shared BCLog category macro. Pending a host-neutral typed logging callback carrying subscription kind and actual native TxId/script/token/LOKAD data; do not parse formatted messages, substitute host BCLog, or change filtering."
+    },
+    "chronik/native/core/ws/ws_handler.cpp:76114e8e6b7ec12f766c:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed native WebSocket subscription diagnostic. This LogDebug resolves to the local LogDebug(const std::string &) member, forwarding m_log(msg, true), not the shared BCLog category macro. Pending a host-neutral typed logging callback carrying subscription kind and actual native TxId/script/token/LOKAD data; do not parse formatted messages, substitute host BCLog, or change filtering."
+    },
+    "chronik/native/core/ws/ws_handler.cpp:e2b62cf8fabf1a933ad7:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed native WebSocket subscription diagnostic. This LogDebug resolves to the local LogDebug(const std::string &) member, forwarding m_log(msg, true), not the shared BCLog category macro. Pending a host-neutral typed logging callback carrying subscription kind and actual native TxId/script/token/LOKAD data; do not parse formatted messages, substitute host BCLog, or change filtering."
+    },
+    "chronik/native/core/ws/ws_handler.cpp:947e8d4175a50b30ec9d:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed native WebSocket subscription diagnostic. This LogDebug resolves to the local LogDebug(const std::string &) member, forwarding m_log(msg, true), not the shared BCLog category macro. Pending a host-neutral typed logging callback carrying subscription kind and actual native TxId/script/token/LOKAD data; do not parse formatted messages, substitute host BCLog, or change filtering."
+    },
+    "chronik/native/core/ws/ws_handler.cpp:b6fe166bda98443c0c04:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed native WebSocket subscription diagnostic. This LogDebug resolves to the local LogDebug(const std::string &) member, forwarding m_log(msg, true), not the shared BCLog category macro. Pending a host-neutral typed logging callback carrying subscription kind and actual native TxId/script/token/LOKAD data; do not parse formatted messages, substitute host BCLog, or change filtering."
+    },
+    "chronik/native/core/ws/ws_handler.cpp:a3d9f920ceef7be31d0f:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed native WebSocket subscription diagnostic. This LogDebug resolves to the local LogDebug(const std::string &) member, forwarding m_log(msg, true), not the shared BCLog category macro. Pending a host-neutral typed logging callback carrying subscription kind and actual native TxId/script/token/LOKAD data; do not parse formatted messages, substitute host BCLog, or change filtering."
+    },
+    "chronik/native/core/ws/ws_handler.cpp:94f7f6ec900887593ac5:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed native WebSocket subscription diagnostic. This LogDebug resolves to the local LogDebug(const std::string &) member, forwarding m_log(msg, true), not the shared BCLog category macro. Pending a host-neutral typed logging callback carrying subscription kind and actual native TxId/script/token/LOKAD data; do not parse formatted messages, substitute host BCLog, or change filtering."
+    },
+    "chronik/native/core/ws/ws_handler.cpp:b2cf920edc7cd6f1d505:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed native WebSocket subscription diagnostic. This LogDebug resolves to the local LogDebug(const std::string &) member, forwarding m_log(msg, true), not the shared BCLog category macro. Pending a host-neutral typed logging callback carrying subscription kind and actual native TxId/script/token/LOKAD data; do not parse formatted messages, substitute host BCLog, or change filtering."
+    },
+    "chronik/native/core/ws/ws_handler.cpp:160d0c820b405a071d48:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed native WebSocket subscription diagnostic. This LogDebug resolves to the local LogDebug(const std::string &) member, forwarding m_log(msg, true), not the shared BCLog category macro. Pending a host-neutral typed logging callback carrying subscription kind and actual native TxId/script/token/LOKAD data; do not parse formatted messages, substitute host BCLog, or change filtering."
+    },
+    "chronik/native/core/ws/ws_handler.cpp:d5c60bfef6cbd4abd4f7:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed native WebSocket subscription diagnostic. This LogDebug resolves to the local LogDebug(const std::string &) member, forwarding m_log(msg, true), not the shared BCLog category macro. Pending a host-neutral typed logging callback carrying subscription kind and actual native TxId/script/token/LOKAD data; do not parse formatted messages, substitute host BCLog, or change filtering."
+    },
+    "chronik/native/core/ws/ws_handler.cpp:92030f7d98233ed49903:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed native WebSocket subscription diagnostic. This LogDebug resolves to the local LogDebug(const std::string &) member, forwarding m_log(msg, true), not the shared BCLog category macro. Pending a host-neutral typed logging callback carrying subscription kind and actual native TxId/script/token/LOKAD data; do not parse formatted messages, substitute host BCLog, or change filtering."
+    },
+    "chronik/native/core/ws/ws_handler.cpp:836e5b3fe5c1dfc07785:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed native WebSocket subscription diagnostic. This LogDebug resolves to the local LogDebug(const std::string &) member, forwarding m_log(msg, true), not the shared BCLog category macro. Pending a host-neutral typed logging callback carrying subscription kind and actual native TxId/script/token/LOKAD data; do not parse formatted messages, substitute host BCLog, or change filtering."
+    },
+    "chronik/native/hosts/abc/abc_entry.cpp:17b726871a85f5748905:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed mirrored static Chronik shutdown message. Pending coordinated typed lifecycle event in the canonical Chronik batch; preserve Info level, readable text and shutdown ordering. Static messages still need stable event identities."
+    },
+    "chronik/native/hosts/abc/abc_host.cpp:0cb832d2725e260be5e5:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed generic Chronik adapter receiving already-rendered Rust/core messages. Cannot recover typed fields from text. Pending an upstream/host-neutral typed event interface; retain existing Info category, shared quota and explicit no-rate-limit branches. A JSON envelope here is not a structured application schema."
+    },
+    "chronik/native/hosts/abc/abc_host.cpp:213eeca5a787352d9130:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed generic Chronik adapter receiving already-rendered Rust/core messages. Cannot recover typed fields from text. Pending an upstream/host-neutral typed event interface; retain existing Info category, shared quota and explicit no-rate-limit branches. A JSON envelope here is not a structured application schema."
+    },
+    "chronik/native/hosts/abc/abc_subscriber.cpp:8ee8e5828182027ab4f5:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed Chronik worker failure/queue overflow shutdown diagnostic in mirrored Rust/native subscribers. Pending coordinated typed worker event in the canonical Chronik batch. Preserve current Info level and shutdown; FATAL text is not a mechanical severity change or exemption."
+    },
+    "chronik/native/hosts/abc/abc_subscriber.cpp:0d022b108b0c3f2f24b4:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed mirrored Chronik stop exception diagnostic. Pending coordinated typed lifecycle event and copied error field in the canonical Chronik batch; preserve current Info level and stop behavior. Freeform exception detail is a field, not a conversion exemption."
+    },
+    "chronik/native/hosts/abc/abc_subscriber.cpp:7c08468a0750d566a23a:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed mirrored Chronik missing spent-coin notification diagnostic. Pending coordinated typed event with actual GetId TxId (not serialization GetHash), notification phase and current Info level. Retain canonical Chronik ownership instead of competing producer edits."
+    },
+    "chronik/native/hosts/abc/abc_subscriber.cpp:fbc65ff11ab89f405f03:1": {
+      "disposition": "deferred",
+      "reason": "Reviewed mirrored Chronik missing spent-coin notification diagnostic. Pending coordinated typed event with actual GetId TxId (not serialization GetHash), notification phase and current Info level. Retain canonical Chronik ownership instead of competing producer edits."
+    },
+    "chronik/test/chronikbridge_tests.cpp:1d0cbe549ab5311575fc:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed bridge rate-limit regression control, not an application event: BRIDGE_BARRIER is sent through the original LogPrintStr Error API to drain publications before reading callback counters. Preserve the legacy interface/quota/progress behavior under test; converting this marker changes its control path."
     }
-  }
+  },
+  "additional_review_revision": "af414ca13af4eefec9f07ddc4037818bae2a7ca5"
 }
