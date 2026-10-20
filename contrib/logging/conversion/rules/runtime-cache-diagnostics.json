@@ -1,0 +1,127 @@
+{
+  "schema": 1,
+  "batch": "runtime-cache-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/validation.cpp",
+      "rules": [
+        {
+          "id": "script_execution_cache_initialized",
+          "old": "LogPrintf(\"Using %zu MiB out of %zu MiB requested for script execution \"\n              \"cache, able to store %zu elements\\n\",\n              approx_size_bytes >> 20, script_execution_cache_bytes >> 20,\n              num_elems)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"script_execution_cache_initialized\", \"Using {cache_allocated_mib} MiB out of {cache_requested_mib} MiB requested for script execution cache, able to store {cache_capacity} elements\").Field(BCLog::LogField::CacheAllocatedMiB, approx_size_bytes >> 20).Field(BCLog::LogField::CacheRequestedMiB, script_execution_cache_bytes >> 20).Field(BCLog::LogField::CacheCapacity, num_elems)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Using %zu MiB out of %zu MiB requested for script execution cache, able to store %zu elements\n",
+            "specifiers": [
+              "%zu",
+              "%zu",
+              "%zu"
+            ],
+            "arguments": [
+              "approx_size_bytes >> 20",
+              "script_execution_cache_bytes >> 20",
+              "num_elems"
+            ]
+          },
+          "review_note": "Preserve Info, readable text, original integer MiB shifts/capacity values, signed int64 pressure arithmetic, real double MiB resizing and exact .1f consumer formatting. No cache allocation/size/eviction/flush/locking changes. CoinsTip configured budget is distinct from actual UTXO cache usage."
+        },
+        {
+          "id": "coins_cache_budget_exceeded",
+          "old": "LogPrintf(\"Cache size (%s) exceeds total space (%s)\\n\", cacheSize,\n                  nTotalSpace)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"coins_cache_budget_exceeded\", \"Cache size ({cache_size_bytes}) exceeds total space ({cache_budget_bytes})\").Field(BCLog::LogField::CacheSizeBytes, cacheSize).Field(BCLog::LogField::CacheBudgetBytes, nTotalSpace)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Cache size (%s) exceeds total space (%s)\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "cacheSize",
+              "nTotalSpace"
+            ]
+          },
+          "review_note": "Preserve Info, readable text, original integer MiB shifts/capacity values, signed int64 pressure arithmetic, real double MiB resizing and exact .1f consumer formatting. No cache allocation/size/eviction/flush/locking changes. CoinsTip configured budget is distinct from actual UTXO cache usage."
+        },
+        {
+          "id": "coins_database_cache_resized",
+          "old": "LogPrintf(\"[%s] resized coinsdb cache to %.1f MiB\\n\", this->ToString(),\n              coinsdb_size * (1.0 / 1024 / 1024))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"coins_database_cache_resized\", \"[{chainstate_description}] resized coinsdb cache to {database_cache_mib:.1f} MiB\").Field(BCLog::LogField::ChainstateDescription, this->ToString()).Field(BCLog::LogField::DatabaseCacheMiB, coinsdb_size * (1.0 / 1024 / 1024))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[%s] resized coinsdb cache to %.1f MiB\n",
+            "specifiers": [
+              "%s",
+              "%.1f"
+            ],
+            "arguments": [
+              "this->ToString()",
+              "coinsdb_size * (1.0 / 1024 / 1024)"
+            ]
+          },
+          "review_note": "Preserve Info, readable text, original integer MiB shifts/capacity values, signed int64 pressure arithmetic, real double MiB resizing and exact .1f consumer formatting. No cache allocation/size/eviction/flush/locking changes. CoinsTip configured budget is distinct from actual UTXO cache usage."
+        },
+        {
+          "id": "coins_tip_cache_resized",
+          "old": "LogPrintf(\"[%s] resized coinstip cache to %.1f MiB\\n\", this->ToString(),\n              coinstip_size * (1.0 / 1024 / 1024))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"coins_tip_cache_resized\", \"[{chainstate_description}] resized coinstip cache to {coins_tip_cache_budget_mib:.1f} MiB\").Field(BCLog::LogField::ChainstateDescription, this->ToString()).Field(BCLog::LogField::CoinsTipCacheBudgetMiB, coinstip_size * (1.0 / 1024 / 1024))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[%s] resized coinstip cache to %.1f MiB\n",
+            "specifiers": [
+              "%s",
+              "%.1f"
+            ],
+            "arguments": [
+              "this->ToString()",
+              "coinstip_size * (1.0 / 1024 / 1024)"
+            ]
+          },
+          "review_note": "Preserve Info, readable text, original integer MiB shifts/capacity values, signed int64 pressure arithmetic, real double MiB resizing and exact .1f consumer formatting. No cache allocation/size/eviction/flush/locking changes. CoinsTip configured budget is distinct from actual UTXO cache usage."
+        }
+      ]
+    },
+    {
+      "path": "src/script/sigcache.cpp",
+      "rules": [
+        {
+          "id": "signature_cache_initialized",
+          "old": "LogPrintf(\"Using %zu MiB out of %zu MiB requested for signature cache, \"\n              \"able to store %zu elements\\n\",\n              total_approx_bytes >> 20, max_size_bytes >> 20, total_elems)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"signature_cache_initialized\", \"Using {cache_allocated_mib} MiB out of {cache_requested_mib} MiB requested for signature cache, able to store {cache_capacity} elements\").Field(BCLog::LogField::CacheAllocatedMiB, total_approx_bytes >> 20).Field(BCLog::LogField::CacheRequestedMiB, max_size_bytes >> 20).Field(BCLog::LogField::CacheCapacity, total_elems)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Using %zu MiB out of %zu MiB requested for signature cache, able to store %zu elements\n",
+            "specifiers": [
+              "%zu",
+              "%zu",
+              "%zu"
+            ],
+            "arguments": [
+              "total_approx_bytes >> 20",
+              "max_size_bytes >> 20",
+              "total_elems"
+            ]
+          },
+          "review_note": "Preserve Info, readable text, original integer MiB shifts/capacity values, signed int64 pressure arithmetic, real double MiB resizing and exact .1f consumer formatting. No cache allocation/size/eviction/flush/locking changes. CoinsTip configured budget is distinct from actual UTXO cache usage."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Keep unsigned whole MiB/capacity and signed int64 pressure values; distinguish configured CoinsTip budget from actual cache usage.",
+          "old": "    X(TxHash, tx_hash, HASH, \"\", \"\")\n",
+          "new": "    X(TxHash, tx_hash, HASH, \"\", \"\") \\\n    X(CacheAllocatedMiB, cache_allocated_mib, UINT, \"\", \"\") \\\n    X(CacheRequestedMiB, cache_requested_mib, UINT, \"\", \"\") \\\n    X(CacheCapacity, cache_capacity, UINT, \"\", \"\") \\\n    X(CacheSizeBytes, cache_size_bytes, INT, \"\", \"\") \\\n    X(CacheBudgetBytes, cache_budget_bytes, INT, \"\", \"\") \\\n    X(CoinsTipCacheBudgetMiB, coins_tip_cache_budget_mib, FLOAT, \"\", \"\")\n"
+        }
+      ]
+    }
+  ]
+}
