@@ -71,8 +71,18 @@ std::optional<OutputError> Output::Validate() const {
     auto fail = [](std::string_view category) {
         return std::optional<OutputError>(OutputError{category});
     };
-    if (flags & 0xfc) {
+    if (flags & 0xf8) {
         return fail("flags");
+    }
+    if (HasState()) {
+        if (IsBurn()) {
+            return fail("burn state");
+        }
+        if (state_root == Hash32{}) {
+            return fail("zero state root");
+        }
+    } else if (state_root != Hash32{}) {
+        return fail("stateless root field");
     }
     if (HasToken()) {
         if (token_id == Hash32{}) {
@@ -131,6 +141,9 @@ std::optional<Bytes> Output::Encode(OutputError *error) const {
     if (HasToken()) {
         bytes.insert(bytes.end(), token_id.b.begin(), token_id.b.end());
     }
+    if (HasState()) {
+        bytes.insert(bytes.end(), state_root.b.begin(), state_root.b.end());
+    }
     // All CompactSize fields are bounded below 253, hence one byte.
     bytes.push_back(uint8_t(branches.size()));
     for (const Hash32 &root : branches) {
@@ -159,7 +172,7 @@ std::optional<Output> Output::Decode(ByteView bytes, OutputError *error) {
     if (!r.Byte(output.flags)) {
         return Fail(error, "truncated flags");
     }
-    if (output.flags & 0xfc) {
+    if (output.flags & 0xf8) {
         return Fail(error, "flags");
     }
     ByteView value;
@@ -171,6 +184,9 @@ std::optional<Output> Output::Decode(ByteView bytes, OutputError *error) {
     }
     if ((output.flags & 1) && !r.Hash(output.token_id)) {
         return Fail(error, "truncated token");
+    }
+    if ((output.flags & 4) && !r.Hash(output.state_root)) {
+        return Fail(error, "truncated state root");
     }
     size_t n;
     if (!r.Count(16, n)) {

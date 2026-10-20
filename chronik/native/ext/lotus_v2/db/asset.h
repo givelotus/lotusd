@@ -41,7 +41,7 @@ struct SpentCoin {
     bool HasToken() const { return (flags & 1) != 0; }
     bool IsBurn() const { return (flags & 2) != 0; }
     bool Valid() const {
-        return (flags & ~3) == 0 && HasToken() == (token_id != Hash32{});
+        return (flags & ~7) == 0 && HasToken() == (token_id != Hash32{});
     }
 };
 

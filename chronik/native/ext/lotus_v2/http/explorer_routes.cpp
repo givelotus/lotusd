@@ -559,6 +559,8 @@ Json OutputFields(const Output &out) {
                          {"has_token", out.HasToken()},
                          {"token_id", Hex(out.token_id.b)},
                          {"is_burn", out.IsBurn()},
+                         {"has_state", out.HasState()},
+                         {"state_root", Hex(out.state_root.b)},
                          {"branches", std::move(branches)},
                          {"paths", std::move(paths)}});
 }

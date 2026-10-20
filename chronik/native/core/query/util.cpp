@@ -468,6 +468,9 @@ proto::Tx MakeTxProto(const MakeTxProtoParams &params) {
         proto::TxOutput *p = result.add_outputs();
         p->set_sats(output.sats);
         p->set_output_script(BytesStr(output.script));
+        if (!output.state_root.empty()) {
+            p->set_state_root(BytesStr(output.state_root));
+        }
         if (auto spent_by = params.outputs_spent.SpentBy(uint32_t(output_idx))) {
             proto::SpentBy *sb = p->mutable_spent_by();
             sb->set_txid(HashStr(spent_by->txid));
