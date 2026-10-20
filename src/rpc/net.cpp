@@ -57,6 +57,51 @@ static RPCHelpMan getconnectioncount() {
     };
 }
 
+static RPCHelpMan getwebtransportinfo() {
+    return RPCHelpMan{
+        "getwebtransportinfo",
+        "Returns WebTransport dialing availability and automatic fallback "
+        "counters.\n",
+        {},
+        RPCResult{
+            RPCResult::Type::OBJ,
+            "",
+            "",
+            {
+                {RPCResult::Type::BOOL, "enabled",
+                 "The WebTransport dialer is running"},
+                {RPCResult::Type::NUM, "negative_cache",
+                 "Unexpired automatic UDP failure entries"},
+                {RPCResult::Type::OBJ,
+                 "fallback",
+                 "Failed automatic UDP attempts by reason",
+                 {
+                     {RPCResult::Type::NUM, "timeout", "Timed-out attempts"},
+                     {RPCResult::Type::NUM, "refused", "Refused sessions"},
+                     {RPCResult::Type::NUM, "unsupported",
+                      "Peers without WebTransport support"},
+                     {RPCResult::Type::NUM, "handshake", "Failed handshakes"},
+                 }},
+            }},
+        RPCExamples{HelpExampleCli("getwebtransportinfo", "")},
+        [&](const RPCHelpMan &, const Config &,
+            const JSONRPCRequest &request) -> UniValue {
+            auto &connman{EnsureConnman(EnsureAnyNodeContext(request.context))};
+            UniValue result{UniValue::VOBJ}, fallback{UniValue::VOBJ};
+            result.pushKV("enabled", bool(GetWebTransportDialer()));
+            result.pushKV("negative_cache",
+                          uint64_t(connman.WebTransportNegativeCacheSize()));
+            const auto counts{connman.WebTransportFallbackCounts()};
+            const char *names[]{"timeout", "refused", "unsupported",
+                                "handshake"};
+            for (size_t i{0}; i < counts.size(); ++i)
+                fallback.pushKV(names[i], counts[i]);
+            result.pushKV("fallback", fallback);
+            return result;
+        },
+    };
+}
+
 static RPCHelpMan ping() {
     return RPCHelpMan{
         "ping",
@@ -1460,6 +1505,7 @@ void RegisterNetRPCCommands(CRPCTable &t) {
         //  category            actor (function)
         //  ------------------  ----------------------
         { "network",            getconnectioncount,      },
+        { "network",            getwebtransportinfo,     },
         { "network",            ping,                    },
         { "network",            getpeerinfo,             },
         { "network",            addnode,                 },
