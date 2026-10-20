@@ -49,6 +49,11 @@ static constexpr std::chrono::milliseconds WEBTRANSPORT_DISCOVERY_TIMEOUT{3000};
 static constexpr std::chrono::seconds WEBTRANSPORT_RETRY_AFTER{3600};
 
 enum class WebTransportDialPolicy { OFF, PREFER, ONLY };
+/** Automatic address policy only. Explicit wt:// URLs bypass this choice.
+ * With bulk disabled, chain-serving peers without Avalanche use the existing
+ * TCP/WebSocket path. ONLY remains an explicit transport override. */
+bool ShouldTryWebTransport(ServiceFlags services, WebTransportDialPolicy policy,
+                           bool bulk);
 
 /** Bounded, exact-address negative cache. Uses monotonic time so changes to
  * network/mock wall time cannot retain failures indefinitely. Lookups refresh

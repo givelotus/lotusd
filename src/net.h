@@ -1005,6 +1005,7 @@ public:
         std::chrono::seconds p2p_port_handshake_timeout{
             DEFAULT_P2P_PORT_HANDSHAKE_TIMEOUT};
         WebTransportDialPolicy m_wt_dial_policy{WebTransportDialPolicy::PREFER};
+        bool m_wt_bulk{true};
         std::chrono::milliseconds m_wt_dial_timeout{
             WEBTRANSPORT_DISCOVERY_TIMEOUT};
         std::chrono::seconds m_wt_retry_after{WEBTRANSPORT_RETRY_AFTER};
@@ -1056,6 +1057,7 @@ public:
         m_p2p_port_websocket = connOptions.p2p_port_websocket;
         m_p2p_port_handshake_timeout = connOptions.p2p_port_handshake_timeout;
         m_wt_dial_policy = connOptions.m_wt_dial_policy;
+        m_wt_bulk = connOptions.m_wt_bulk;
         m_wt_dial_timeout = connOptions.m_wt_dial_timeout;
         m_wt_negative_cache.SetRetryAfter(connOptions.m_wt_retry_after);
     }
@@ -1466,6 +1468,7 @@ private:
     std::vector<NetKeyPermissions> vWhitelistedKeys;
     bool m_websocket_require_known_key{false};
     WebTransportDialPolicy m_wt_dial_policy{WebTransportDialPolicy::PREFER};
+    bool m_wt_bulk{true};
     std::chrono::milliseconds m_wt_dial_timeout{WEBTRANSPORT_DISCOVERY_TIMEOUT};
     WebTransportNegativeCache m_wt_negative_cache;
     // timeout, refused, unsupported, handshake; excludes shutdown/proxy skips.
