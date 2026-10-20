@@ -1588,4 +1588,99 @@ BOOST_AUTO_TEST_CASE(
     BOOST_CHECK(row["fields_truncated"].isNull());
 }
 
+BOOST_AUTO_TEST_CASE(actual_socket_failures_keep_errno_and_connection_levels) {
+    Format(BCLog::LogFormat::JSON);
+    // Override only the factory already provided by netbase for socket tests.
+    // INVALID_SOCKET is never used for OS I/O: these virtual methods are
+    // scripted.
+    struct RestoreFactory {
+        decltype(CreateSock) previous{CreateSock};
+        ~RestoreFactory() { CreateSock = std::move(previous); }
+    } restore;
+    enum class Failure { WAIT, SOCKOPT, CONNECT };
+    class FailedSocket final : public Sock {
+        const Failure failure;
+        static void LastError(int error) {
+#ifdef WIN32
+            WSASetLastError(error);
+#else
+            errno = error;
+#endif
+        }
+
+    public:
+        explicit FailedSocket(Failure selected)
+            : Sock(INVALID_SOCKET), failure(selected) {}
+        int Connect(const sockaddr *, socklen_t) const override {
+            LastError(failure == Failure::CONNECT ? WSAEINTR : WSAEINPROGRESS);
+            return SOCKET_ERROR;
+        }
+        bool Wait(std::chrono::milliseconds, Event,
+                  Event *occurred) const override {
+            if (failure == Failure::WAIT) {
+                LastError(WSAEINTR);
+                return false;
+            }
+            if (occurred) *occurred = Sock::SEND;
+            return true;
+        }
+        int GetSockOpt(int, int, void *, socklen_t *) const override {
+            LastError(WSAEINTR);
+            return SOCKET_ERROR;
+        }
+    };
+    const CService destination{LookupNumeric("127.0.0.1", 12345)};
+    const auto address{destination.ToStringAddrPort()};
+    const auto error{NetworkErrorString(WSAEINTR)};
+    for (const auto failure : {Failure::WAIT, Failure::SOCKOPT}) {
+        CreateSock = [failure](int, int, int) {
+            return std::make_unique<FailedSocket>(failure);
+        };
+        BOOST_CHECK(!ConnectDirectly(destination, true));
+        const auto row{Json()};
+        const bool wait{failure == Failure::WAIT};
+        BOOST_CHECK_EQUAL(row["event"].get_str(),
+                          wait ? "network_connect_wait_failed"
+                               : "network_connect_sockopt_failed");
+        BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
+        BOOST_CHECK_EQUAL(row["peer_address"].get_str(), address);
+        BOOST_CHECK_EQUAL(row["error"].get_str(), error);
+        BOOST_CHECK_EQUAL(
+            row["message"].get_str(),
+            (wait ? "wait for connect to " : "getsockopt() for ") + address +
+                " failed: " + error);
+        BOOST_CHECK(row["fields_truncated"].isNull());
+    }
+    CreateSock = [](int, int, int) {
+        return std::make_unique<FailedSocket>(Failure::CONNECT);
+    };
+    for (const bool manual : {true, false}) {
+        BOOST_CHECK(!ConnectDirectly(destination, manual));
+        const auto row{Json()};
+        BOOST_CHECK_EQUAL(row["event"].get_str(),
+                          manual ? "network_manual_connection_failed"
+                                 : "network_automatic_connection_failed");
+        BOOST_CHECK_EQUAL(row["level"].get_str(), manual ? "info" : "debug");
+        const auto text{"connect() to " + address + " failed: " + error};
+        BOOST_CHECK_EQUAL(row["error"].get_str(), text);
+        BOOST_CHECK_EQUAL(row["message"].get_str(), text);
+        BOOST_CHECK(row["fields_truncated"].isNull());
+    }
+    CNetAddr internal;
+    BOOST_REQUIRE(internal.SetInternal("logging-owned-invalid-destination"));
+    const CService unsupported{internal, 12345};
+    BOOST_CHECK(!ConnectDirectly(unsupported, true));
+    const auto row{Json()};
+    BOOST_CHECK_EQUAL(row["event"].get_str(),
+                      "network_destination_unsupported");
+    BOOST_CHECK_EQUAL(row["peer_address"].get_str(),
+                      unsupported.ToStringAddrPort());
+    BOOST_CHECK_EQUAL(row["message"].get_str(),
+                      "Cannot get sockaddr for " +
+                          unsupported.ToStringAddrPort() +
+                          ": unsupported network");
+    BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
+    BOOST_CHECK(row["fields_truncated"].isNull());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

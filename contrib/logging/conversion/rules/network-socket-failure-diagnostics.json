@@ -1,0 +1,197 @@
+{
+  "schema": 1,
+  "batch": "network-socket-failure-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/netbase.cpp",
+      "rules": [
+        {
+          "id": "socks5_initial_response_failed",
+          "old": "LogPrintf(\"Socks5() connect to %s:%d failed: InterruptibleRecv() \"\n                  \"timeout or other failure\\n\",\n                  strDest, port)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"socks5_initial_response_failed\", \"Socks5() connect to {peer_address}:{peer_port} failed: InterruptibleRecv() timeout or other failure\").Field(BCLog::LogField::PeerAddress, strDest).Field(BCLog::LogField::PeerPort, port)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Socks5() connect to %s:%d failed: InterruptibleRecv() timeout or other failure\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "strDest",
+              "port"
+            ]
+          },
+          "review_note": "Preserve exact Info text, socket/return/timeout/control flow and original host/port types. Numeric last-error snapshot precedes builder; formatting remains guarded. No network I/O changes or credentials introduced."
+        },
+        {
+          "id": "socks5_connection_refused",
+          "old": "LogPrintf(\"Socks5() connect to %s:%d failed: %s\\n\", strDest, port,\n                  Socks5ErrorString(pchRet2[1]))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"socks5_connection_refused\", \"Socks5() connect to {peer_address}:{peer_port} failed: {error}\").Field(BCLog::LogField::PeerAddress, strDest).Field(BCLog::LogField::PeerPort, port).Field(BCLog::LogField::Error, Socks5ErrorString(pchRet2[1]))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Socks5() connect to %s:%d failed: %s\n",
+            "specifiers": [
+              "%s",
+              "%d",
+              "%s"
+            ],
+            "arguments": [
+              "strDest",
+              "port",
+              "Socks5ErrorString(pchRet2[1])"
+            ]
+          },
+          "review_note": "Preserve exact Info text, socket/return/timeout/control flow and original host/port types. Numeric last-error snapshot precedes builder; formatting remains guarded. No network I/O changes or credentials introduced."
+        },
+        {
+          "id": "network_socket_nosigpipe_failed",
+          "old": "LogPrintf(\n            \"Error setting SO_NOSIGPIPE on socket: %s, continuing anyway\\n\",\n            NetworkErrorString(WSAGetLastError()))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"network_socket_nosigpipe_failed\", \"Error setting SO_NOSIGPIPE on socket: {error}, continuing anyway\").Field(BCLog::LogField::Error, NetworkErrorString(socket_error))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Error setting SO_NOSIGPIPE on socket: %s, continuing anyway\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "NetworkErrorString(WSAGetLastError())"
+            ]
+          },
+          "review_note": "Preserve exact Info text, socket/return/timeout/control flow and original host/port types. Numeric last-error snapshot precedes builder; formatting remains guarded. No network I/O changes or credentials introduced."
+        },
+        {
+          "id": "network_socket_nonblocking_failed",
+          "old": "LogPrintf(\"CreateSocket: Setting socket to non-blocking \"\n                  \"failed, error %s\\n\",\n                  NetworkErrorString(WSAGetLastError()))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"network_socket_nonblocking_failed\", \"CreateSocket: Setting socket to non-blocking failed, error {error}\").Field(BCLog::LogField::Error, NetworkErrorString(socket_error))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "CreateSocket: Setting socket to non-blocking failed, error %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "NetworkErrorString(WSAGetLastError())"
+            ]
+          },
+          "review_note": "Preserve exact Info text, socket/return/timeout/control flow and original host/port types. Numeric last-error snapshot precedes builder; formatting remains guarded. No network I/O changes or credentials introduced."
+        },
+        {
+          "id": "network_connect_wait_failed",
+          "old": "LogPrintf(\"wait for connect to %s failed: %s\\n\", dest_str,\n                          NetworkErrorString(WSAGetLastError()))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"network_connect_wait_failed\", \"wait for connect to {peer_address} failed: {error}\").Field(BCLog::LogField::PeerAddress, dest_str).Field(BCLog::LogField::Error, NetworkErrorString(socket_error))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "wait for connect to %s failed: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "dest_str",
+              "NetworkErrorString(WSAGetLastError())"
+            ]
+          },
+          "review_note": "Preserve exact Info text, socket/return/timeout/control flow and original host/port types. Numeric last-error snapshot precedes builder; formatting remains guarded. No network I/O changes or credentials introduced."
+        },
+        {
+          "id": "network_connect_sockopt_failed",
+          "old": "LogPrintf(\"getsockopt() for %s failed: %s\\n\", dest_str,\n                          NetworkErrorString(WSAGetLastError()))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"network_connect_sockopt_failed\", \"getsockopt() for {peer_address} failed: {error}\").Field(BCLog::LogField::PeerAddress, dest_str).Field(BCLog::LogField::Error, NetworkErrorString(socket_error))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "getsockopt() for %s failed: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "dest_str",
+              "NetworkErrorString(WSAGetLastError())"
+            ]
+          },
+          "review_note": "Preserve exact Info text, socket/return/timeout/control flow and original host/port types. Numeric last-error snapshot precedes builder; formatting remains guarded. No network I/O changes or credentials introduced."
+        },
+        {
+          "id": "network_destination_unsupported",
+          "old": "LogPrintf(\"Cannot get sockaddr for %s: unsupported network\\n\",\n                  dest.ToStringAddrPort())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"network_destination_unsupported\", \"Cannot get sockaddr for {peer_address}: unsupported network\").Field(BCLog::LogField::PeerAddress, dest.ToStringAddrPort())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Cannot get sockaddr for %s: unsupported network\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "dest.ToStringAddrPort()"
+            ]
+          },
+          "review_note": "Preserve exact Info text, socket/return/timeout/control flow and original host/port types. Numeric last-error snapshot precedes builder; formatting remains guarded. No network I/O changes or credentials introduced."
+        },
+        {
+          "id": "network_manual_connection_failed",
+          "old": "LogPrintf(\"%s\\n\", error_message)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"network_manual_connection_failed\", \"{error}\").Field(BCLog::LogField::Error, error_message)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "error_message"
+            ]
+          },
+          "review_note": "Existing helper already preformats its full failure text. Retain manual Info versus automatic NET/Debug, exact message and preformat timing; classify one error string without guessing inner fields."
+        },
+        {
+          "id": "network_automatic_connection_failed",
+          "old": "LogDebug(BCLog::NET, \"%s\\n\", error_message)",
+          "replacement": "LogEvent(BCLog::NET, \"network_automatic_connection_failed\", \"{error}\").Field(BCLog::LogField::Error, error_message)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "%s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "error_message"
+            ]
+          },
+          "review_note": "Existing helper already preformats its full failure text. Retain manual Info versus automatic NET/Debug, exact message and preformat timing; classify one error string without guessing inner fields."
+        }
+      ],
+      "support_adjustments": [
+        {
+          "purpose": "Save numeric errno/WSAerror before constructing event, while keeping readable error formatting inside the existing Info guard.",
+          "old": "LogInfoEvent(BCLog::ALL, \"network_socket_nosigpipe_failed\", \"Error setting SO_NOSIGPIPE on socket: {error}, continuing anyway\").Field(BCLog::LogField::Error, NetworkErrorString(socket_error));",
+          "new": "const int socket_error{WSAGetLastError()};\n        LogInfoEvent(BCLog::ALL, \"network_socket_nosigpipe_failed\", \"Error setting SO_NOSIGPIPE on socket: {error}, continuing anyway\").Field(BCLog::LogField::Error, NetworkErrorString(socket_error));"
+        },
+        {
+          "purpose": "Save numeric errno/WSAerror before constructing event, while keeping readable error formatting inside the existing Info guard.",
+          "old": "LogInfoEvent(BCLog::ALL, \"network_socket_nonblocking_failed\", \"CreateSocket: Setting socket to non-blocking failed, error {error}\").Field(BCLog::LogField::Error, NetworkErrorString(socket_error));",
+          "new": "const int socket_error{WSAGetLastError()};\n        LogInfoEvent(BCLog::ALL, \"network_socket_nonblocking_failed\", \"CreateSocket: Setting socket to non-blocking failed, error {error}\").Field(BCLog::LogField::Error, NetworkErrorString(socket_error));"
+        },
+        {
+          "purpose": "Save numeric errno/WSAerror before constructing event, while keeping readable error formatting inside the existing Info guard.",
+          "old": "LogInfoEvent(BCLog::ALL, \"network_connect_wait_failed\", \"wait for connect to {peer_address} failed: {error}\").Field(BCLog::LogField::PeerAddress, dest_str).Field(BCLog::LogField::Error, NetworkErrorString(socket_error));",
+          "new": "const int socket_error{WSAGetLastError()};\n        LogInfoEvent(BCLog::ALL, \"network_connect_wait_failed\", \"wait for connect to {peer_address} failed: {error}\").Field(BCLog::LogField::PeerAddress, dest_str).Field(BCLog::LogField::Error, NetworkErrorString(socket_error));"
+        },
+        {
+          "purpose": "Save numeric errno/WSAerror before constructing event, while keeping readable error formatting inside the existing Info guard.",
+          "old": "LogInfoEvent(BCLog::ALL, \"network_connect_sockopt_failed\", \"getsockopt() for {peer_address} failed: {error}\").Field(BCLog::LogField::PeerAddress, dest_str).Field(BCLog::LogField::Error, NetworkErrorString(socket_error));",
+          "new": "const int socket_error{WSAGetLastError()};\n        LogInfoEvent(BCLog::ALL, \"network_connect_sockopt_failed\", \"getsockopt() for {peer_address} failed: {error}\").Field(BCLog::LogField::PeerAddress, dest_str).Field(BCLog::LogField::Error, NetworkErrorString(socket_error));"
+        }
+      ]
+    }
+  ]
+}
