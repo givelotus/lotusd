@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "batch": "tls-client-certificate-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/tls_util.cpp",
+      "rules": [
+        {
+          "id": "tls_client_certificate_reload_failed",
+          "old": "LogPrintf(\"Not reloading TLS client certificate %s: %s\\n\",\n                  fs::PathToString(*m_cert), ErrorString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"tls_client_certificate_reload_failed\", \"Not reloading TLS client certificate {certificate_path}: {error}\").Field(BCLog::LogField::CertificatePath, fs::PathToString(*m_cert)).Field(BCLog::LogField::Error, ErrorString())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Not reloading TLS client certificate %s: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(*m_cert)",
+              "ErrorString()"
+            ]
+          },
+          "review_note": "Preserve Info, exact public certificate filename/error text, lock scope, one-second mtimecheck, TLS policy and retained prior valid context on failure. Log only existing path/error, never PEM/private-key contents. EventBuilder does not inspect the OpenSSL error queue; ErrorString remains inside the existing Info guard and original relative argument order."
+        },
+        {
+          "id": "tls_client_certificate_loaded",
+          "old": "LogPrintf(\"Loaded TLS client certificate %s\\n\", fs::PathToString(*m_cert))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"tls_client_certificate_loaded\", \"Loaded TLS client certificate {certificate_path}\").Field(BCLog::LogField::CertificatePath, fs::PathToString(*m_cert))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Loaded TLS client certificate %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(*m_cert)"
+            ]
+          },
+          "review_note": "Preserve Info, exact public certificate filename/error text, lock scope, one-second mtimecheck, TLS policy and retained prior valid context on failure. Log only existing path/error, never PEM/private-key contents. EventBuilder does not inspect the OpenSSL error queue; ErrorString remains inside the existing Info guard and original relative argument order."
+        }
+      ]
+    }
+  ]
+}
