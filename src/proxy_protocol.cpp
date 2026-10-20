@@ -27,6 +27,25 @@ std::optional<size_t> V2PayloadSize(Span<const uint8_t> fixed) {
     return len;
 }
 
+/** Whether v2 TLVs say the client used TLS (PP2_TYPE_SSL, PP2_CLIENT_SSL) */
+static bool ClientUsedTLS(Span<const uint8_t> tlvs) {
+    static constexpr uint8_t PP2_TYPE_SSL{0x20};
+    static constexpr uint8_t PP2_CLIENT_SSL{0x01};
+    while (tlvs.size() >= 3) {
+        const uint8_t type{tlvs[0]};
+        const size_t len{size_t(tlvs[1]) << 8 | tlvs[2]};
+        if (tlvs.size() < 3 + len) {
+            // Truncated: believe none of it.
+            return false;
+        }
+        if (type == PP2_TYPE_SSL && len >= 1 && (tlvs[3] & PP2_CLIENT_SSL)) {
+            return true;
+        }
+        tlvs = tlvs.subspan(3 + len);
+    }
+    return false;
+}
+
 std::optional<Header> ParseV2(Span<const uint8_t> header) {
     const auto len{V2PayloadSize(header)};
     if (!len || header.size() != V2_FIXED_SIZE + *len) {
@@ -48,13 +67,13 @@ std::optional<Header> ParseV2(Span<const uint8_t> header) {
         in_addr a;
         std::memcpy(&a, addrs.data(), 4);
         const uint16_t port{uint16_t((addrs[8] << 8) | addrs[9])};
-        return Header{CService{a, port}};
+        return Header{CService{a, port}, ClientUsedTLS(addrs.subspan(12))};
     }
     if (family == 0x21 && addrs.size() >= 36) {
         in6_addr a;
         std::memcpy(&a, addrs.data(), 16);
         const uint16_t port{uint16_t((addrs[32] << 8) | addrs[33])};
-        return Header{CService{a, port}};
+        return Header{CService{a, port}, ClientUsedTLS(addrs.subspan(36))};
     }
     return Header{};
 }

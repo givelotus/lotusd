@@ -1553,6 +1553,24 @@ CNode *CConnman::ConnectWebSocketNode(const std::string &url,
                   RedactWebSocketURL(url), onion ? "onion" : "wss");
         return nullptr;
     }
+    if (!parsed->tls && !onion) {
+        // Unencrypted ws:// is no more private than raw P2P over its IP
+        // network: -onlynet=wss alone (TLS only) does not allow it.
+        const std::optional<CNetAddr> literal{
+            LookupHost(parsed->host, /*fAllowLookup=*/false)};
+        const bool reachable{
+            literal && literal->IsIPv4() ? IsReachable(NET_IPV4)
+            : literal && literal->IsIPv6()
+                ? IsReachable(NET_IPV6)
+                : IsReachable(NET_IPV4) || IsReachable(NET_IPV6)};
+        if (!reachable) {
+            LogPrintf("Not connecting to %s: unencrypted ws:// needs network "
+                      "ipv4 or ipv6, which -onlynet does not allow (use "
+                      "wss://)\n",
+                      RedactWebSocketURL(url));
+            return nullptr;
+        }
+    }
     const WebSocketDialer dialer{GetWebSocketDialer()};
     if (!dialer) {
         LogPrintf("Cannot connect to %s: P2P over WebSocket is unavailable\n",
