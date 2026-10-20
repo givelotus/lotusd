@@ -5,11 +5,16 @@
 #include <consensus/merkle.h>
 
 #include <util/strencodings.h>
+#include <validation.h>
 
 #include <test/util/random.h>
 #include <test/util/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
+
+#include <functional>
+#include <thread>
+#include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(merkle_tests, TestingSetup)
 
@@ -375,4 +380,156 @@ BOOST_AUTO_TEST_CASE(merkle_test_LeftSubtreeRightSubtree) {
 
     BOOST_CHECK_EQUAL(root, rootOfLR);
 }
+namespace {
+//! Runs every task on the calling thread, in reverse order (any order must
+//! give the same result).
+void RunSerially(size_t n_tasks, const std::function<void(size_t)> &fn) {
+    for (size_t i = n_tasks; i-- > 0;) {
+        fn(i);
+    }
+}
+
+//! Runs the tasks on several real threads.
+void RunThreads(size_t n_tasks, const std::function<void(size_t)> &fn) {
+    std::vector<std::thread> threads;
+    for (size_t i = 0; i < n_tasks; ++i) {
+        threads.emplace_back([&fn, i] { fn(i); });
+    }
+    for (auto &t : threads) {
+        t.join();
+    }
+}
+
+void CheckChunkedMatches(const std::vector<uint256> &leaves, size_t chunk,
+                         const MerkleTaskRunner &run) {
+    bool mutated_seq{false}, mutated_par{true};
+    const uint256 seq{ComputeMerkleRoot(leaves, &mutated_seq)};
+    const uint256 par{ComputeMerkleRootChunked(
+        leaves.size(), [&](size_t i) { return leaves[i]; }, &mutated_par,
+        chunk, run)};
+    BOOST_CHECK_MESSAGE(seq == par, "n=" << leaves.size()
+                                         << " chunk=" << chunk);
+    BOOST_CHECK_MESSAGE(mutated_seq == mutated_par,
+                        "mutated n=" << leaves.size() << " chunk=" << chunk);
+    // Without a mutation flag requested, the root is the same.
+    BOOST_CHECK(ComputeMerkleRootChunked(
+                    leaves.size(), [&](size_t i) { return leaves[i]; },
+                    nullptr, chunk, run) == seq);
+}
+} // namespace
+
+BOOST_AUTO_TEST_CASE(merkle_chunked_matches_sequential) {
+    FastRandomContext rng{/*fDeterministic=*/true};
+    // Every leaf count up to 300 (odd and even, powers of two and their
+    // neighbours) with every chunk size up to 64, and some larger trees.
+    for (size_t n = 0; n <= 300; ++n) {
+        std::vector<uint256> leaves(n);
+        for (auto &l : leaves) {
+            l = rng.rand256();
+        }
+        for (size_t chunk = 1; chunk <= 64; chunk <<= 1) {
+            CheckChunkedMatches(leaves, chunk, RunSerially);
+        }
+    }
+    for (size_t n : {1023, 1024, 1025, 4097, 9001, 12345}) {
+        std::vector<uint256> leaves(n);
+        for (auto &l : leaves) {
+            l = rng.rand256();
+        }
+        for (size_t chunk : {128, 256, 1024, 2048}) {
+            CheckChunkedMatches(leaves, chunk, RunThreads);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(merkle_chunked_detects_mutation) {
+    FastRandomContext rng{/*fDeterministic=*/true};
+    // CVE-2012-2459: repeating the last leaves (here a whole subtree) gives
+    // the same root; both computations must flag it, wherever chunk
+    // boundaries fall relative to the duplicated pair or subtree.
+    for (size_t n = 2; n <= 160; ++n) {
+        std::vector<uint256> leaves(n);
+        for (auto &l : leaves) {
+            l = rng.rand256();
+        }
+        for (size_t dup : {size_t{1}, size_t{2}, size_t{4}, size_t{8}}) {
+            if (dup > n) {
+                continue;
+            }
+            // Duplicate the last `dup` leaves when they form an odd-level
+            // tail, as in the CVE example ([1..6] -> [1..6, 5, 6]).
+            std::vector<uint256> mutated_leaves{leaves};
+            mutated_leaves.insert(mutated_leaves.end(), leaves.end() - dup,
+                                  leaves.end());
+            for (size_t chunk = 1; chunk <= 32; chunk <<= 1) {
+                CheckChunkedMatches(mutated_leaves, chunk, RunSerially);
+            }
+        }
+        // An identical adjacent pair anywhere (pos even) is a mutation too.
+        for (size_t pos = 0; pos + 1 < n; pos += 7) {
+            std::vector<uint256> pair_leaves{leaves};
+            pair_leaves[pos + 1] = pair_leaves[pos];
+            for (size_t chunk = 1; chunk <= 32; chunk <<= 1) {
+                CheckChunkedMatches(pair_leaves, chunk, RunSerially);
+            }
+        }
+    }
+    // The explicit CVE example: [1..6] and [1..6, 5, 6] share their root,
+    // and only the second is flagged, at every chunk size.
+    std::vector<uint256> six(6);
+    for (auto &l : six) {
+        l = rng.rand256();
+    }
+    std::vector<uint256> eight{six};
+    eight.push_back(six[4]);
+    eight.push_back(six[5]);
+    for (size_t chunk = 1; chunk <= 8; chunk <<= 1) {
+        bool m6{true}, m8{false};
+        const uint256 r6{ComputeMerkleRootChunked(
+            6, [&](size_t i) { return six[i]; }, &m6, chunk, RunSerially)};
+        const uint256 r8{ComputeMerkleRootChunked(
+            8, [&](size_t i) { return eight[i]; }, &m8, chunk, RunSerially)};
+        BOOST_CHECK(r6 == r8);
+        BOOST_CHECK(!m6);
+        BOOST_CHECK(m8);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(block_merkle_root_parallel_matches) {
+    FastRandomContext rng{/*fDeterministic=*/true};
+    for (size_t n : {1, 2, 3, 15, 16, 17, 100, 1001, 3333}) {
+        CBlock block;
+        block.vtx.resize(n);
+        for (size_t j = 0; j < n; j++) {
+            CMutableTransaction mtx;
+            mtx.nLockTime = uint32_t(rng.rand32());
+            block.vtx[j] = MakeTransactionRef(std::move(mtx));
+        }
+        bool m_seq{true}, m_par{true}, m_val{true};
+        const uint256 seq{BlockMerkleRoot(block, &m_seq)};
+        for (size_t tasks : {1, 2, 3, 8, 64}) {
+            BOOST_CHECK(BlockMerkleRootParallel(block, &m_par, tasks,
+                                                RunThreads) == seq);
+            BOOST_CHECK_EQUAL(m_par, m_seq);
+        }
+        // The validation entry point, forced onto the worker pool at any
+        // size and with any thread count.
+        for (size_t threads : {1, 2, 4, 8}) {
+            BOOST_CHECK(ValidationBlockMerkleRoot(block, &m_val,
+                                                  /*min_parallel_txs=*/0,
+                                                  threads) == seq);
+            BOOST_CHECK_EQUAL(m_val, m_seq);
+        }
+        // A duplicated last transaction (odd count) is flagged the same way.
+        if (n % 2 == 1 && n > 1) {
+            CBlock dup{block};
+            dup.vtx.push_back(dup.vtx.back());
+            bool d_seq{false}, d_val{false};
+            BOOST_CHECK(BlockMerkleRoot(dup, &d_seq) ==
+                        ValidationBlockMerkleRoot(dup, &d_val, 0, 4));
+            BOOST_CHECK_EQUAL(d_seq, d_val);
+        }
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
