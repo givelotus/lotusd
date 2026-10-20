@@ -111,6 +111,22 @@ class ConversionTest(unittest.TestCase):
             new = 'LogInfoEvent(BCLog::ALL,"value","value={count}").Field(BCLog::LogField::Count,x)'
             self.assertEqual(convert.convert(old, [rule(old, new)])[0], new)
 
+    def test_character_requires_original_byte_snapshot(self):
+        old = 'LogError("key=(%c,%d)", DB_PREFIX, height)'
+        new = ('LogErrorEvent(BCLog::ALL,"key_error","key=({value},{height})")'
+               '.Field(BCLog::LogField::Value,BCLog::LogChar{DB_PREFIX})'
+               '.Field(BCLog::LogField::Height,height)')
+        self.assertEqual(convert.convert(old, [rule(old, new)])[0], new)
+        for changed in [new.replace('LogChar{DB_PREFIX}', 'LogChar{OTHER_PREFIX}'),
+                        new.replace('BCLog::LogChar{DB_PREFIX}', 'DB_PREFIX'),
+                        new.replace('BCLog::LogChar{DB_PREFIX}', 'sizeof(BCLog::LogChar{DB_PREFIX})')]:
+            with self.assertRaises(ValueError):
+                convert.convert(old, [rule(old, changed)])
+        for spec in ['%2c', '%lc']:
+            wide = old.replace('%c', spec)
+            with self.assertRaises(ValueError):
+                convert.convert(wide, [rule(wide, new)])
+
     def test_float_precision_is_exact(self):
         for spec in ["%f", "%g", "%.0f", "%.2f", "%.18g"]:
             old = 'LogPrintf("elapsed=' + spec + '", x)'
