@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "batch": "miner-template-summary",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/node/miner.cpp",
+      "rules": [
+        {
+          "id": "block_template_created",
+          "old": "LogPrintf(\n        \"CreateNewBlock(): total size: %u txs: %u fees: %ld sigChecks %d\\n\",\n        nSerializeSize, blockFitter.nBlockTx, blockFitter.nFees,\n        blockFitter.nBlockSigChecks)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_template_created\", \"CreateNewBlock(): total size: {bytes} txs: {count} fees: {amount_sats} sigChecks {sig_checks}\").Field(BCLog::LogField::Bytes, nSerializeSize).Field(BCLog::LogField::Count, blockFitter.nBlockTx).Field(BCLog::LogField::AmountSats, blockFitter.nFees / SATOSHI).Field(BCLog::LogField::SigChecks, blockFitter.nBlockSigChecks)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "CreateNewBlock(): total size: %u txs: %u fees: %ld sigChecks %d\n",
+            "specifiers": [
+              "%u",
+              "%u",
+              "%ld",
+              "%d"
+            ],
+            "arguments": [
+              "nSerializeSize",
+              "blockFitter.nBlockTx",
+              "blockFitter.nFees",
+              "blockFitter.nBlockSigChecks"
+            ]
+          },
+          "review_note": "Preserve Info, exact human summary, unsigned serialized-byte/transaction/sigcheck counters and signed integer base-unit fees. Amount ostream emits its stored int64 units, so /SATOSHI exposes exactly the old number without coin conversion. Preserve all blockfitter/reserved-resource/coinbase/merklix decisions and evaluation order. Signature-check count is uint64 despite old %d; never narrow."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Append unsigned signature-check count, matching BlockFitter uint64_t rather than legacy format spelling.",
+          "old": "    X(ClientVersion, client_version, STRING, \"\", \"\")\n",
+          "new": "    X(ClientVersion, client_version, STRING, \"\", \"\") \\\n    X(SigChecks, sig_checks, UINT, \"\", \"\")\n"
+        }
+      ]
+    }
+  ]
+}
