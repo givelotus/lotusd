@@ -167,6 +167,29 @@ bool StartNodeWebTransport(const ArgsManager &args, CConnman &connman,
         LogPrintf("P2P over WebTransport listening on UDP %s\n",
                   addr.ToStringAddrPort());
     }
+    // The service bit carries no path, token or alternate UDP port. Only
+    // advertise an endpoint peers can derive from an ordinary address.
+    const auto bound{g_engine->BoundAddresses()};
+    const auto has_port = [&](uint16_t port) {
+        return std::any_of(bound.begin(), bound.end(), [&](const CService &a) {
+            return a.GetPort() == port;
+        });
+    };
+    bool advertise{opts.wt_token.empty() &&
+                   opts.wt_path == P2P_WEBTRANSPORT_PATH &&
+                   has_port(GetListenPort())};
+    for (const auto &domain : args.GetArgs("-externaldomain")) {
+        uint16_t port{443};
+        std::string host;
+        advertise &= SplitHostPort(domain, port, host) && has_port(port);
+    }
+    for (const auto &bind : args.GetArgs("-publicbind")) {
+        const auto addr{Lookup(bind, GetListenPort(), false)};
+        advertise &= addr && has_port(addr->GetPort());
+    }
+    if (advertise) {
+        connman.AddLocalServices(NODE_WEBTRANSPORT);
+    }
     SetP2PWebTransportAcceptor(
         [&connman](std::unique_ptr<Sock> &&sock, const CAddress &addr,
                    const CAddress &addr_bind,

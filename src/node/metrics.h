@@ -159,6 +159,8 @@ struct NodeMetrics {
     // Serialized block messages (-blockmessagecache)
     metrics::Counter &p2p_block_message_cache_hits;
     metrics::Counter &p2p_block_message_cache_misses;
+    //! Failed automatic WT attempts: timeout, refused, unsupported, handshake.
+    metrics::Counter &webtransport_fallback;
 
     // Chain
     metrics::Gauge &tip_height;

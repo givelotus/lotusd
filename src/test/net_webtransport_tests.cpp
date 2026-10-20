@@ -5,6 +5,7 @@
 #include <net_webtransport.h>
 
 #include <net_websocket.h>
+#include <netbase.h>
 #include <protocol.h>
 #include <streams.h>
 #include <uint256.h>
@@ -18,6 +19,44 @@
 #include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(net_webtransport_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(discovery_service_flag_is_optional) {
+    BOOST_CHECK_EQUAL(serviceFlagsToStr(NODE_WEBTRANSPORT).front(),
+                      "WEBTRANSPORT");
+    BOOST_CHECK_EQUAL(GetDesirableServiceFlags(NODE_NETWORK),
+                      GetDesirableServiceFlags(
+                          ServiceFlags(NODE_NETWORK | NODE_WEBTRANSPORT)));
+}
+
+BOOST_AUTO_TEST_CASE(negative_cache_lru_ttl_and_success) {
+    const auto a{LookupNumeric("127.0.0.1", 443)};
+    const auto b{LookupNumeric("127.0.0.1", 444)};
+    const auto c{LookupNumeric("127.0.0.2", 443)};
+    const auto t{WebTransportNegativeCache::Clock::time_point{}};
+    WebTransportNegativeCache cache{2, std::chrono::seconds{10}};
+    cache.Record(a, t);
+    cache.Record(b, t);
+    BOOST_CHECK(cache.Contains(a, t + std::chrono::seconds{2}));
+    cache.Record(c, t + std::chrono::seconds{3});
+    BOOST_CHECK(!cache.Contains(b, t + std::chrono::seconds{3}));
+    BOOST_CHECK(cache.Contains(c, t + std::chrono::seconds{3}));
+    // An LRU lookup must not extend the original failure's TTL.
+    BOOST_CHECK(!cache.Contains(a, t + std::chrono::seconds{10}));
+    BOOST_CHECK_EQUAL(cache.Size(t + std::chrono::seconds{10}), 1U);
+    cache.Erase(c);
+    BOOST_CHECK_EQUAL(cache.Size(t + std::chrono::seconds{10}), 0U);
+    cache.Record(a, t);
+    cache.Record(a, t + std::chrono::seconds{5});
+    BOOST_CHECK(cache.Contains(a, t + std::chrono::seconds{10}));
+    BOOST_CHECK_EQUAL(cache.Size(t + std::chrono::seconds{15}), 0U);
+    cache.Record(a, t);
+    cache.SetRetryAfter(std::chrono::seconds{0});
+    cache.Record(b, t);
+    BOOST_CHECK_EQUAL(cache.Size(t), 0U);
+    WebTransportNegativeCache empty{0};
+    empty.Record(a, t);
+    BOOST_CHECK_EQUAL(empty.Size(t), 0U);
+}
 
 static std::vector<uint8_t> SerializeInv(const std::vector<CInv> &inv) {
     DataStream ss{};

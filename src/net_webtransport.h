@@ -9,16 +9,19 @@
 #include <netaddress.h>
 #include <protocol.h>
 #include <span.h>
+#include <sync.h>
 #include <util/sock.h>
 #include <util/threadinterrupt.h>
 
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <list>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -40,6 +43,44 @@ static const char *const P2P_WT_PROTOCOL_V1 = "p2p-v1";
 static constexpr uint16_t DEFAULT_WEBTRANSPORT_URL_PORT = 443;
 //! How long an outbound WebTransport dial may take (QUIC, HTTP/3, CONNECT)
 static constexpr std::chrono::milliseconds WEBTRANSPORT_DIAL_TIMEOUT{10000};
+//! Automatic discovery attempts are shorter than explicit wt:// dials.
+static constexpr std::chrono::milliseconds WEBTRANSPORT_DISCOVERY_TIMEOUT{3000};
+static constexpr std::chrono::seconds WEBTRANSPORT_RETRY_AFTER{3600};
+
+enum class WebTransportDialPolicy { OFF, PREFER, ONLY };
+
+/** Bounded, exact-address negative cache. Uses monotonic time so changes to
+ * network/mock wall time cannot retain failures indefinitely. Lookups refresh
+ * LRU position, not expiry; successful connections remove their old failure. */
+class WebTransportNegativeCache {
+public:
+    using Clock = std::chrono::steady_clock;
+    explicit WebTransportNegativeCache(
+        size_t capacity = 4096,
+        std::chrono::seconds retry_after = WEBTRANSPORT_RETRY_AFTER)
+        : m_capacity{capacity}, m_retry_after{retry_after} {}
+    void SetRetryAfter(std::chrono::seconds retry_after)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    bool Contains(const CService &addr, Clock::time_point now = Clock::now())
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    void Record(const CService &addr, Clock::time_point now = Clock::now())
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    void Erase(const CService &addr) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    size_t Size(Clock::time_point now = Clock::now())
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
+private:
+    struct Entry {
+        Clock::time_point expires;
+        std::list<CService>::iterator lru;
+    };
+    const size_t m_capacity;
+    Mutex m_mutex;
+    std::chrono::seconds m_retry_after GUARDED_BY(m_mutex);
+    std::list<CService> m_lru GUARDED_BY(m_mutex);
+    std::unordered_map<CService, Entry, CServiceHash>
+        m_entries GUARDED_BY(m_mutex);
+};
 
 /**
  * The bidirectional WebTransport stream a P2P message travels on. The
