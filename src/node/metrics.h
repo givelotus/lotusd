@@ -72,7 +72,7 @@ namespace metric_labels {
     const std::vector<std::string> &WebSocketCompressions();
     //! 0 = inbound, 1 = outbound
     const std::vector<std::string> &Directions();
-    //! 0 = tcp, 1 = ws (WebSocket), 2 = wss (WebSocket over TLS)
+    //! 0 = tcp, 1 = ws (WebSocket), 2 = wss, 3 = webtransport (WebSocket over TLS)
     const std::vector<std::string> &Transports();
     //! HTTP endpoint classes (see HTTPEndpoint)
     const std::vector<std::string> &HTTPEndpoints();
@@ -161,6 +161,16 @@ struct NodeMetrics {
     metrics::Counter &p2p_block_message_cache_misses;
     //! Failed automatic WT attempts: timeout, refused, unsupported, handshake.
     metrics::Counter &webtransport_fallback;
+    metrics::Gauge &webtransport_connections;
+    metrics::Counter &webtransport_handshakes;
+    metrics::Counter &webtransport_retry_sent;
+    metrics::Counter &webtransport_stateless_reset_sent;
+    metrics::Counter &webtransport_rejected;
+    metrics::Counter &webtransport_bytes;
+    metrics::Counter &webtransport_blocked;
+    metrics::Counter &webtransport_lost_packets;
+    metrics::EventHistogram &webtransport_rtt;
+    metrics::Counter &webtransport_split;
 
     // Chain
     metrics::Gauge &tip_height;
@@ -361,7 +371,7 @@ struct NodeMetrics {
     /** Label index of an RPC method ("other" if not in the set) */
     size_t RPCMethodIndex(std::string_view method) const noexcept;
 
-    /** transport: 0 = tcp, 1 = ws, 2 = wss (metric_labels::Transports) */
+    /** transport: 0 = tcp, 1 = ws, 2 = wss, 3 = webtransport (metric_labels::Transports) */
     size_t PeerSeries(bool inbound, size_t transport,
                       size_t network) const noexcept;
     /** Series of the direction x transport metrics */

@@ -24,21 +24,67 @@ std::vector<uint8_t> Message(const char *type, size_t payload = 0) {
 struct Peer {
     std::shared_ptr<QuicPeerChannel> channel;
     std::unique_ptr<QuicPeerSock> sock;
-    Peer() {
+    explicit Peer(uint64_t receive_limit = QuicPeerChannel::RX_QUEUE_LIMIT) {
         int fds[2];
         BOOST_REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
         channel = std::make_shared<QuicPeerChannel>(
-            fds[1], std::make_shared<QuicTransportInfo>(), [] {});
+            fds[1], std::make_shared<QuicTransportInfo>(), [] {},
+            receive_limit);
         sock = std::make_unique<QuicPeerSock>(fds[0], channel, false);
     }
     void Receive(StreamClass cls, const std::vector<uint8_t> &msg) {
-        channel->PushRx({cls, quic_frame::FLAG_RAW, msg,
-                         quic_frame::HEADER_SIZE + msg.size()});
+        BOOST_REQUIRE(channel->PushRx({cls, quic_frame::FLAG_RAW, msg,
+                                       quic_frame::HEADER_SIZE + msg.size()}));
     }
 };
 } // namespace
 
 BOOST_FIXTURE_TEST_SUITE(quic_peer_sock_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(configured_receive_threshold_and_frame_cap) {
+    Peer p{40};
+    p.Receive(StreamClass::CONTROL, Message("version"));
+    BOOST_CHECK(p.channel->RxHasRoom());
+    p.Receive(StreamClass::CONTROL, Message("verack"));
+    BOOST_CHECK(!p.channel->RxHasRoom());
+    BOOST_REQUIRE(p.channel->PopRx(true));
+    BOOST_CHECK(p.channel->RxHasRoom());
+    BOOST_CHECK(p.channel->credit_wanted);
+    Peer small{0};
+    BOOST_CHECK(small.channel->RxHasRoom());
+    small.Receive(StreamClass::CONTROL, Message("version"));
+    BOOST_CHECK(!small.channel->RxHasRoom());
+    BOOST_REQUIRE(small.channel->PopRx(true));
+    BOOST_CHECK(small.channel->RxHasRoom());
+
+    Peer bounded;
+    for (size_t i{0}; i < QuicPeerChannel::MAX_PENDING_RX_FRAMES; ++i) {
+        BOOST_REQUIRE(
+            bounded.channel->PushRx({StreamClass::CONTROL, 0, {}, 5}));
+    }
+    BOOST_CHECK(!bounded.channel->PushRx({StreamClass::CONTROL, 0, {}, 5}));
+    BOOST_CHECK_EQUAL(bounded.channel->RxBuffered(),
+                      5 * QuicPeerChannel::MAX_PENDING_RX_FRAMES);
+}
+
+BOOST_AUTO_TEST_CASE(large_frame_followed_by_fragmented_frame) {
+    StreamFramer encoder{false};
+    const auto first{Message("block", 1024 * 1024)};
+    const auto second{Message("ping", 8)};
+    auto bytes{encoder.Encode(StreamClass::BLOCK, first)};
+    const auto tail{encoder.Encode(StreamClass::CONTROL, second)};
+    bytes.insert(bytes.end(), tail.begin(), tail.begin() + 2);
+    FrameReassembler reassembler;
+    std::vector<FrameReassembler::Frame> frames;
+    BOOST_REQUIRE(reassembler.Feed(bytes, frames));
+    BOOST_REQUIRE_EQUAL(frames.size(), 1U);
+    BOOST_CHECK(frames[0].body == first);
+    BOOST_CHECK_EQUAL(reassembler.Buffered(), 2U);
+    BOOST_REQUIRE(reassembler.Feed(Span{tail}.subspan(2), frames));
+    BOOST_REQUIRE_EQUAL(frames.size(), 2U);
+    BOOST_CHECK(frames[1].body == second);
+    BOOST_CHECK_EQUAL(reassembler.Buffered(), 0U);
+}
 
 BOOST_AUTO_TEST_CASE(frame_roundtrips_and_fragmentation) {
     StreamFramer encoder, decoder;

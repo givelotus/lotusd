@@ -756,6 +756,12 @@ void H3Session::Respond(
 void H3Session::ServerHandleRequest(int64_t stream_id, bool fin) {
     const WtRequest r{m_requests[stream_id]};
     const auto reject{[&](int status, const char *why) {
+        const std::string_view reason{why};
+        m_conn->Engine().OnRejected(
+            reason == "origin"  ? QuicRejectReason::ORIGIN
+            : reason == "token" ? QuicRejectReason::TOKEN
+            : reason == "path"  ? QuicRejectReason::PATH
+                                : QuicRejectReason::SESSION);
         LogDebug(BCLog::WEBTRANSPORT,
                  "WebTransport request from %s refused (%d %s): %s %s\n",
                  m_conn->Remote().ToStringAddrPort(), status, why, r.method,
