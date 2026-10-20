@@ -14,7 +14,7 @@ class CryptoStartupLoggingTest(BitcoinTestFramework):
     num_nodes = 1
     setup_clean_chain = True
     wallet_names = []
-    extra_args = [["-logformat=json"]]
+    extra_args = [["-logformat=json", "-par=1"]]
 
     def run_test(self):
         node = self.nodes[0]
@@ -34,6 +34,14 @@ class CryptoStartupLoggingTest(BitcoinTestFramework):
         )
         assert_equal(selected["level"], "info")
         assert "fields_truncated" not in selected
+        workers = by_event["script_verification_workers"]
+        assert_equal(workers["script_worker_threads"], 0)
+        assert isinstance(workers["script_worker_threads"], int)
+        assert_equal(
+            workers["message"], "Script verification uses 0 additional threads"
+        )
+        assert_equal(workers["level"], "info")
+        assert "fields_truncated" not in workers
         # Architecture/capability guards are unchanged. These optional branches
         # are absent on macOS arm64, and this test does not force CPU features.
         for event, text in (
