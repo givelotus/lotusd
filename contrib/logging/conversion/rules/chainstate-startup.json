@@ -1,0 +1,143 @@
+{
+  "schema": 1,
+  "batch": "chainstate-startup",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/node/chainstate.cpp",
+      "rules": [
+        {
+          "id": "chainstate_initializing",
+          "old": "LogPrintf(\"Initializing chainstate %s\\n\", chainstate->ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chainstate_initializing\", \"Initializing chainstate {chainstate_description}\").Field(BCLog::LogField::ChainstateDescription, chainstate->ToString())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Initializing chainstate %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "chainstate->ToString()"
+            ]
+          },
+          "review_note": "Preserve Info, readable text, initialization/pruning/assumevalid branches and argument expressions. Full chainstate ToString is a description, not just role. Arithmetic chainwork remains its existing formatted hex string, not a cryptographic HASH; no extra formatting/clock/locking. Snapshot actual assumed-valid uint256 hash via existing adapter."
+        },
+        {
+          "id": "chainstate_assumed_valid_block",
+          "old": "LogPrintf(\"Assuming ancestors of block %s have valid signatures.\\n\",\n                  chainman.AssumedValidBlock().GetHex())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chainstate_assumed_valid_block\", \"Assuming ancestors of block {block_hash} have valid signatures.\").Field(BCLog::LogField::BlockHash, chainman.AssumedValidBlock())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Assuming ancestors of block %s have valid signatures.\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "chainman.AssumedValidBlock().GetHex()"
+            ]
+          },
+          "review_note": "Preserve Info, readable text, initialization/pruning/assumevalid branches and argument expressions. Full chainstate ToString is a description, not just role. Arithmetic chainwork remains its existing formatted hex string, not a cryptographic HASH; no extra formatting/clock/locking. Snapshot actual assumed-valid uint256 hash via existing adapter."
+        },
+        {
+          "id": "chainstate_minimum_work",
+          "old": "LogPrintf(\"Setting nMinimumChainWork=%s\\n\",\n              chainman.MinimumChainWork().GetHex())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chainstate_minimum_work\", \"Setting nMinimumChainWork={minimum_chain_work_hex}\").Field(BCLog::LogField::MinimumChainWorkHex, chainman.MinimumChainWork().GetHex())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Setting nMinimumChainWork=%s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "chainman.MinimumChainWork().GetHex()"
+            ]
+          },
+          "review_note": "Preserve Info, readable text, initialization/pruning/assumevalid branches and argument expressions. Full chainstate ToString is a description, not just role. Arithmetic chainwork remains its existing formatted hex string, not a cryptographic HASH; no extra formatting/clock/locking. Snapshot actual assumed-valid uint256 hash via existing adapter."
+        },
+        {
+          "id": "chainstate_minimum_work_below_default",
+          "old": "LogPrintf(\"Warning: nMinimumChainWork set below default value of %s\\n\",\n                  chainman.GetConsensus().nMinimumChainWork.GetHex())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chainstate_minimum_work_below_default\", \"Warning: nMinimumChainWork set below default value of {expected_minimum_chain_work_hex}\").Field(BCLog::LogField::ExpectedMinimumChainWorkHex, chainman.GetConsensus().nMinimumChainWork.GetHex())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Warning: nMinimumChainWork set below default value of %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "chainman.GetConsensus().nMinimumChainWork.GetHex()"
+            ]
+          },
+          "review_note": "Preserve Info, readable text, initialization/pruning/assumevalid branches and argument expressions. Full chainstate ToString is a description, not just role. Arithmetic chainwork remains its existing formatted hex string, not a cryptographic HASH; no extra formatting/clock/locking. Snapshot actual assumed-valid uint256 hash via existing adapter."
+        },
+        {
+          "id": "chainstate_prune_target",
+          "old": "LogPrintf(\"Prune configured to target %u MiB on disk for block and \"\n                  \"undo files.\\n\",\n                  chainman.m_blockman.GetPruneTarget() / 1024 / 1024)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chainstate_prune_target\", \"Prune configured to target {prune_target_mib} MiB on disk for block and undo files.\").Field(BCLog::LogField::PruneTargetMiB, chainman.m_blockman.GetPruneTarget() / 1024 / 1024)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Prune configured to target %u MiB on disk for block and undo files.\n",
+            "specifiers": [
+              "%u"
+            ],
+            "arguments": [
+              "chainman.m_blockman.GetPruneTarget() / 1024 / 1024"
+            ]
+          },
+          "review_note": "Preserve Info, readable text, initialization/pruning/assumevalid branches and argument expressions. Full chainstate ToString is a description, not just role. Arithmetic chainwork remains its existing formatted hex string, not a cryptographic HASH; no extra formatting/clock/locking. Snapshot actual assumed-valid uint256 hash via existing adapter."
+        }
+      ],
+      "support_adjustments": [
+        {
+          "purpose": "Include existing raw uint256 hash adapter explicitly.",
+          "old": "#include <kernel/caches.h>\n",
+          "new": "#include <kernel/caches.h>\n#include <logging/values.h>\n"
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Register full state description, arithmetic work hex strings, and unsigned MiB pruning budget without coercing them into unrelated hash/cache types.",
+          "old": "    X(StartupTime, startup_time, STRING, \"\", \"\")\n",
+          "new": "    X(StartupTime, startup_time, STRING, \"\", \"\") \\\n    X(ChainstateDescription, chainstate_description, STRING, \"\", \"\") \\\n    X(MinimumChainWorkHex, minimum_chain_work_hex, STRING, \"\", \"\") \\\n    X(ExpectedMinimumChainWorkHex, expected_minimum_chain_work_hex, STRING, \"\", \"\") \\\n    X(PruneTargetMiB, prune_target_mib, UINT, \"\", \"\")\n"
+        }
+      ]
+    },
+    {
+      "path": "src/validation.cpp",
+      "rules": [
+        {
+          "id": "chainstate_best_chain_loaded",
+          "old": "LogPrintf(\n        \"Loaded best chain: hashBestChain=%s height=%d date=%s progress=%f\\n\",\n        tip->GetBlockHash().ToString(), m_chain.Height(),\n        FormatISO8601DateTime(tip->GetBlockTime()),\n        GuessVerificationProgress(m_chainman.GetParams().TxData(), tip))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chainstate_best_chain_loaded\", \"Loaded best chain: hashBestChain={block_hash} height={height} date={block_time} progress={verification_progress:f}\").Field(BCLog::LogField::BlockHash, tip->GetBlockHash()).Field(BCLog::LogField::Height, m_chain.Height()).Field(BCLog::LogField::BlockTime, FormatISO8601DateTime(tip->GetBlockTime())).Field(BCLog::LogField::VerificationProgress, GuessVerificationProgress(m_chainman.GetParams().TxData(), tip))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Loaded best chain: hashBestChain=%s height=%d date=%s progress=%f\n",
+            "specifiers": [
+              "%s",
+              "%d",
+              "%s",
+              "%f"
+            ],
+            "arguments": [
+              "tip->GetBlockHash().ToString()",
+              "m_chain.Height()",
+              "FormatISO8601DateTime(tip->GetBlockTime())",
+              "GuessVerificationProgress(m_chainman.GetParams().TxData(), tip)"
+            ]
+          },
+          "review_note": "Keep the same load-tip branch, real hash/height/time/progress values, Info and text. Existing consumer :f means original default six-decimal %f; raw progress stays numeric. No added clock calls or changes to chainstate loading."
+        }
+      ]
+    }
+  ]
+}
