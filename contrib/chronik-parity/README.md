@@ -10,6 +10,8 @@ For example, A and B can be the same binary when validating the harness.
 | `parity_chain.py` | Runs the chain on two nodes, drives the corpus at checkpoints and writes the report |
 | `corpus.py` | Builds the HTTP and WebSocket request corpus from a run record; it can also run standalone against two running Chronik instances |
 | `compare.py` | Compares responses, WebSocket sessions and DB dumps; it can also compare two saved response files |
+| `bench_tx_reads.py` | Times script history pages and `/tx` lookups of one build on a cached multi-file regtest chain (see "Tx-read benchmark") |
+| `iocount.c` | Optional DYLD interposer (macOS) counting the benchmark's syscalls on `blocks/blk*.dat` and `blocks/rev*.dat` |
 
 ## Requirements
 
@@ -89,6 +91,27 @@ $PY contrib/chronik-parity/corpus.py --record RUN/records/h401-final.json \
 # Compare two saved response files
 $PY contrib/chronik-parity/compare.py DIR/cli.A.jsonl DIR/cli.B.jsonl --report r.json
 ```
+
+## Tx-read benchmark
+
+`bench_tx_reads.py` builds (once, with `--chain-cache`) a 3,000-block eCash
+regtest chain: 8 txs per block to 10 P2SH scripts plus a 45 KB OP_RETURN
+filler tx, so most txs are in a complete `blk00000.dat` and the last blocks
+in the file the node still writes. For one build it then times, with a warm
+page cache, every 200-tx history page of the 10 scripts and 3,000 `/tx`
+lookups, sequentially and with 8 clients, and hashes every response (the
+digests of different builds must be equal). Run one build per invocation:
+
+```
+cc -O2 -dynamiclib -o libiocount.dylib contrib/chronik-parity/iocount.c
+for b in rust=build/ecash-rust native=build/ecash-native; do
+    $PY contrib/chronik-parity/bench_tx_reads.py --build $b \
+        --chain-cache /path/to/chain --iocount libiocount.dylib \
+        --out bench-${b%%=*}.json
+done
+```
+
+Framework ports are kept in [20000, 25000).
 
 ## What a run covers
 
