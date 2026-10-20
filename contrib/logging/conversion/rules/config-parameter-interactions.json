@@ -1,0 +1,261 @@
+{
+  "schema": 1,
+  "batch": "config-parameter-interactions",
+  "review_note": "Fourteen explicitly reviewed parameter precedence diagnostics; no supplied option value disclosure.",
+  "files": [
+    {
+      "path": "src/init.cpp",
+      "rules": [
+        {
+          "id": "config_interaction_gui_server",
+          "old": "LogPrintf(\"%s: parameter interaction: -gui=1 -> setting \"\n                      \"-server=1\\n\",\n                      __func__)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"config_parameter_interaction\",\n                     \"{source_function}: parameter interaction: -gui=1 -> setting -server=1\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic(\"-gui\"))\n            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic(\"-server\"))\n            .Field(BCLog::LogField::ConfigEnabled, true)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: parameter interaction: -gui=1 -> setting -server=1\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve exact option-interaction message, ALL category and Info level. ConfigOption names the option the existing branch actually changes; ConfigEnabled is its literal boolean value. TriggerOption only names the triggering option, not its potentially sensitive supplied value. SourceFunction is the original __func__. No option values, conditionals, precedence or defaults change."
+        },
+        {
+          "id": "config_interaction_bind_listen",
+          "old": "LogPrintf(\n                \"%s: parameter interaction: -bind set -> setting -listen=1\\n\",\n                __func__)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"config_parameter_interaction\",\n                     \"{source_function}: parameter interaction: -bind set -> setting -listen=1\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic(\"-bind\"))\n            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic(\"-listen\"))\n            .Field(BCLog::LogField::ConfigEnabled, true)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: parameter interaction: -bind set -> setting -listen=1\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve exact option-interaction message, ALL category and Info level. ConfigOption names the option the existing branch actually changes; ConfigEnabled is its literal boolean value. TriggerOption only names the triggering option, not its potentially sensitive supplied value. SourceFunction is the original __func__. No option values, conditionals, precedence or defaults change."
+        },
+        {
+          "id": "config_interaction_whitebind_listen",
+          "old": "LogPrintf(\"%s: parameter interaction: -whitebind set -> setting \"\n                      \"-listen=1\\n\",\n                      __func__)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"config_parameter_interaction\",\n                     \"{source_function}: parameter interaction: -whitebind set -> setting -listen=1\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic(\"-whitebind\"))\n            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic(\"-listen\"))\n            .Field(BCLog::LogField::ConfigEnabled, true)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: parameter interaction: -whitebind set -> setting -listen=1\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve exact option-interaction message, ALL category and Info level. ConfigOption names the option the existing branch actually changes; ConfigEnabled is its literal boolean value. TriggerOption only names the triggering option, not its potentially sensitive supplied value. SourceFunction is the original __func__. No option values, conditionals, precedence or defaults change."
+        },
+        {
+          "id": "config_interaction_connect_dnsseed",
+          "old": "LogPrintf(\"%s: parameter interaction: -connect set -> setting \"\n                      \"-dnsseed=0\\n\",\n                      __func__)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"config_parameter_interaction\",\n                     \"{source_function}: parameter interaction: -connect set -> setting -dnsseed=0\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic(\"-connect\"))\n            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic(\"-dnsseed\"))\n            .Field(BCLog::LogField::ConfigEnabled, false)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: parameter interaction: -connect set -> setting -dnsseed=0\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve exact option-interaction message, ALL category and Info level. ConfigOption names the option the existing branch actually changes; ConfigEnabled is its literal boolean value. TriggerOption only names the triggering option, not its potentially sensitive supplied value. SourceFunction is the original __func__. No option values, conditionals, precedence or defaults change."
+        },
+        {
+          "id": "config_interaction_connect_listen",
+          "old": "LogPrintf(\"%s: parameter interaction: -connect set -> setting \"\n                      \"-listen=0\\n\",\n                      __func__)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"config_parameter_interaction\",\n                     \"{source_function}: parameter interaction: -connect set -> setting -listen=0\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic(\"-connect\"))\n            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic(\"-listen\"))\n            .Field(BCLog::LogField::ConfigEnabled, false)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: parameter interaction: -connect set -> setting -listen=0\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve exact option-interaction message, ALL category and Info level. ConfigOption names the option the existing branch actually changes; ConfigEnabled is its literal boolean value. TriggerOption only names the triggering option, not its potentially sensitive supplied value. SourceFunction is the original __func__. No option values, conditionals, precedence or defaults change."
+        },
+        {
+          "id": "config_interaction_proxy_listen",
+          "old": "LogPrintf(\n                \"%s: parameter interaction: -proxy set -> setting -listen=0\\n\",\n                __func__)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"config_parameter_interaction\",\n                     \"{source_function}: parameter interaction: -proxy set -> setting -listen=0\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic(\"-proxy\"))\n            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic(\"-listen\"))\n            .Field(BCLog::LogField::ConfigEnabled, false)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: parameter interaction: -proxy set -> setting -listen=0\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve exact option-interaction message, ALL category and Info level. ConfigOption names the option the existing branch actually changes; ConfigEnabled is its literal boolean value. TriggerOption only names the triggering option, not its potentially sensitive supplied value. SourceFunction is the original __func__. No option values, conditionals, precedence or defaults change."
+        },
+        {
+          "id": "config_interaction_proxy_natpmp",
+          "old": "LogPrintf(\n                \"%s: parameter interaction: -proxy set -> setting -natpmp=0\\n\",\n                __func__)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"config_parameter_interaction\",\n                     \"{source_function}: parameter interaction: -proxy set -> setting -natpmp=0\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic(\"-proxy\"))\n            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic(\"-natpmp\"))\n            .Field(BCLog::LogField::ConfigEnabled, false)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: parameter interaction: -proxy set -> setting -natpmp=0\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve exact option-interaction message, ALL category and Info level. ConfigOption names the option the existing branch actually changes; ConfigEnabled is its literal boolean value. TriggerOption only names the triggering option, not its potentially sensitive supplied value. SourceFunction is the original __func__. No option values, conditionals, precedence or defaults change."
+        },
+        {
+          "id": "config_interaction_proxy_discover",
+          "old": "LogPrintf(\"%s: parameter interaction: -proxy set -> setting \"\n                      \"-discover=0\\n\",\n                      __func__)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"config_parameter_interaction\",\n                     \"{source_function}: parameter interaction: -proxy set -> setting -discover=0\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic(\"-proxy\"))\n            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic(\"-discover\"))\n            .Field(BCLog::LogField::ConfigEnabled, false)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: parameter interaction: -proxy set -> setting -discover=0\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve exact option-interaction message, ALL category and Info level. ConfigOption names the option the existing branch actually changes; ConfigEnabled is its literal boolean value. TriggerOption only names the triggering option, not its potentially sensitive supplied value. SourceFunction is the original __func__. No option values, conditionals, precedence or defaults change."
+        },
+        {
+          "id": "config_interaction_listen_natpmp",
+          "old": "LogPrintf(\n                \"%s: parameter interaction: -listen=0 -> setting -natpmp=0\\n\",\n                __func__)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"config_parameter_interaction\",\n                     \"{source_function}: parameter interaction: -listen=0 -> setting -natpmp=0\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic(\"-listen\"))\n            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic(\"-natpmp\"))\n            .Field(BCLog::LogField::ConfigEnabled, false)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: parameter interaction: -listen=0 -> setting -natpmp=0\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve exact option-interaction message, ALL category and Info level. ConfigOption names the option the existing branch actually changes; ConfigEnabled is its literal boolean value. TriggerOption only names the triggering option, not its potentially sensitive supplied value. SourceFunction is the original __func__. No option values, conditionals, precedence or defaults change."
+        },
+        {
+          "id": "config_interaction_listen_discover",
+          "old": "LogPrintf(\n                \"%s: parameter interaction: -listen=0 -> setting -discover=0\\n\",\n                __func__)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"config_parameter_interaction\",\n                     \"{source_function}: parameter interaction: -listen=0 -> setting -discover=0\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic(\"-listen\"))\n            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic(\"-discover\"))\n            .Field(BCLog::LogField::ConfigEnabled, false)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: parameter interaction: -listen=0 -> setting -discover=0\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve exact option-interaction message, ALL category and Info level. ConfigOption names the option the existing branch actually changes; ConfigEnabled is its literal boolean value. TriggerOption only names the triggering option, not its potentially sensitive supplied value. SourceFunction is the original __func__. No option values, conditionals, precedence or defaults change."
+        },
+        {
+          "id": "config_interaction_listen_listenonion",
+          "old": "LogPrintf(\"%s: parameter interaction: -listen=0 -> setting \"\n                      \"-listenonion=0\\n\",\n                      __func__)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"config_parameter_interaction\",\n                     \"{source_function}: parameter interaction: -listen=0 -> setting -listenonion=0\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic(\"-listen\"))\n            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic(\"-listenonion\"))\n            .Field(BCLog::LogField::ConfigEnabled, false)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: parameter interaction: -listen=0 -> setting -listenonion=0\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve exact option-interaction message, ALL category and Info level. ConfigOption names the option the existing branch actually changes; ConfigEnabled is its literal boolean value. TriggerOption only names the triggering option, not its potentially sensitive supplied value. SourceFunction is the original __func__. No option values, conditionals, precedence or defaults change."
+        },
+        {
+          "id": "config_interaction_externalip_discover",
+          "old": "LogPrintf(\"%s: parameter interaction: -externalip set -> setting \"\n                      \"-discover=0\\n\",\n                      __func__)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"config_parameter_interaction\",\n                     \"{source_function}: parameter interaction: -externalip set -> setting -discover=0\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic(\"-externalip\"))\n            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic(\"-discover\"))\n            .Field(BCLog::LogField::ConfigEnabled, false)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: parameter interaction: -externalip set -> setting -discover=0\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve exact option-interaction message, ALL category and Info level. ConfigOption names the option the existing branch actually changes; ConfigEnabled is its literal boolean value. TriggerOption only names the triggering option, not its potentially sensitive supplied value. SourceFunction is the original __func__. No option values, conditionals, precedence or defaults change."
+        },
+        {
+          "id": "config_interaction_blocksonly_whitelistrelay",
+          "old": "LogPrintf(\"%s: parameter interaction: -blocksonly=1 -> setting \"\n                      \"-whitelistrelay=0\\n\",\n                      __func__)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"config_parameter_interaction\",\n                     \"{source_function}: parameter interaction: -blocksonly=1 -> setting -whitelistrelay=0\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic(\"-blocksonly\"))\n            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic(\"-whitelistrelay\"))\n            .Field(BCLog::LogField::ConfigEnabled, false)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: parameter interaction: -blocksonly=1 -> setting -whitelistrelay=0\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve exact option-interaction message, ALL category and Info level. ConfigOption names the option the existing branch actually changes; ConfigEnabled is its literal boolean value. TriggerOption only names the triggering option, not its potentially sensitive supplied value. SourceFunction is the original __func__. No option values, conditionals, precedence or defaults change."
+        },
+        {
+          "id": "config_interaction_whitelistforcerelay_whitelistrelay",
+          "old": "LogPrintf(\"%s: parameter interaction: -whitelistforcerelay=1 -> \"\n                      \"setting -whitelistrelay=1\\n\",\n                      __func__)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"config_parameter_interaction\",\n                     \"{source_function}: parameter interaction: -whitelistforcerelay=1 -> setting -whitelistrelay=1\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic(\"-whitelistforcerelay\"))\n            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic(\"-whitelistrelay\"))\n            .Field(BCLog::LogField::ConfigEnabled, true)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: parameter interaction: -whitelistforcerelay=1 -> setting -whitelistrelay=1\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve exact option-interaction message, ALL category and Info level. ConfigOption names the option the existing branch actually changes; ConfigEnabled is its literal boolean value. TriggerOption only names the triggering option, not its potentially sensitive supplied value. SourceFunction is the original __func__. No option values, conditionals, precedence or defaults change."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Declare typed option names and actual resulting boolean; no dynamic option values logged.",
+          "old": "    X(ProgressPercent, progress_percent, INT, \"\", \"\")",
+          "new": "    X(ProgressPercent, progress_percent, INT, \"\", \"\") \\\n    X(TriggerOption, trigger_option, STRING, \"\", \"\") \\\n    X(ConfigOption, config_option, STRING, \"\", \"\") \\\n    X(ConfigEnabled, config_enabled, BOOL, \"\", \"\")"
+        }
+      ]
+    }
+  ]
+}
