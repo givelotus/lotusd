@@ -639,6 +639,22 @@ impl WsTransport {
     }
 }
 
+/// Counts an open WebSocket connection in the node's /metrics while alive.
+struct WsConnectionMetric;
+
+impl WsConnectionMetric {
+    fn open() -> Self {
+        crate::metrics::add_ws_connections(1);
+        WsConnectionMetric
+    }
+}
+
+impl Drop for WsConnectionMetric {
+    fn drop(&mut self) {
+        crate::metrics::add_ws_connections(-1);
+    }
+}
+
 /// Future for a WS connection, which will run indefinitely until the WS will be
 /// closed. `peer_ip` is the client's address as seen by the server that
 /// accepted the connection; subscription limits are kept per address.
@@ -669,6 +685,7 @@ pub async fn handle_subscribe_socket(
         subscription_max_plugin_size: settings.subscription_max_plugin_size,
     };
     let mut last_msg = None;
+    let _connection_metric = WsConnectionMetric::open();
 
     loop {
         let sub_action = tokio::select! {
