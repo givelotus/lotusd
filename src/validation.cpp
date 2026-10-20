@@ -8622,9 +8622,11 @@ Chainstate &ChainstateManager::InitializeChainstate(CTxMemPool *mempool) {
         try {
             const bool existed{fs::remove(base_blockhash_path)};
             if (!existed) {
-                LogPrintf("[snapshot] snapshot chainstate dir being removed "
-                          "lacks %s file\n",
-                          fs::PathToString(node::SNAPSHOT_BLOCKHASH_FILENAME));
+                LogInfoEvent(
+                    BCLog::ALL, "snapshot_cleanup_base_hash_missing",
+                    "[snapshot] snapshot chainstate dir being removed lacks {path} file")
+                    .Field(BCLog::LogField::Path,
+                           fs::PathToString(node::SNAPSHOT_BLOCKHASH_FILENAME));
             }
         } catch (const fs::filesystem_error &e) {
             LogWarning("[snapshot] failed to remove file %s: %s\n",
@@ -8634,14 +8636,18 @@ Chainstate &ChainstateManager::InitializeChainstate(CTxMemPool *mempool) {
     }
 
     std::string path_str = fs::PathToString(db_path);
-    LogPrintf("Removing leveldb dir at %s\n", path_str);
+    LogInfoEvent(BCLog::ALL, "snapshot_database_directory_removing",
+                 "Removing leveldb dir at {directory}")
+        .Field(BCLog::LogField::Directory, path_str);
 
     // We have to destruct before this call leveldb::DB in order to release the
     // db lock, otherwise `DestroyDB` will fail. See `leveldb::~DBImpl()`.
     const bool destroyed = dbwrapper::DestroyDB(path_str, {}).ok();
 
     if (!destroyed) {
-        LogPrintf("error: leveldb DestroyDB call failed on %s\n", path_str);
+        LogInfoEvent(BCLog::ALL, "snapshot_database_directory_removal_failed",
+                     "error: leveldb DestroyDB call failed on {directory}")
+            .Field(BCLog::LogField::Directory, path_str);
     }
 
     // Datadir should be removed from filesystem; otherwise initialization may
@@ -8830,8 +8836,9 @@ util::Result<CBlockIndex *> ChainstateManager::ActivateSnapshot(
     m_active_chainstate = m_snapshot_chainstate.get();
     m_blockman.m_snapshot_height = this->GetSnapshotBaseHeight();
 
-    LogPrintf("[snapshot] successfully activated snapshot %s\n",
-              base_blockhash.ToString());
+    LogInfoEvent(BCLog::ALL, "snapshot_activated",
+                 "[snapshot] successfully activated snapshot {block_hash}")
+        .Field(BCLog::LogField::BlockHash, base_blockhash);
     LogPrintf("[snapshot] (%.2f MB)\n",
               m_snapshot_chainstate->CoinsTip().DynamicMemoryUsage() /
                   (1000 * 1000));
@@ -8884,8 +8891,10 @@ bool ChainstateManager::PopulateAndValidateSnapshot(
     if (!snapshot_start_block) {
         // Needed for ComputeUTXOStats to determine the
         // height and to avoid a crash when base_blockhash.IsNull()
-        LogPrintf("[snapshot] Did not find snapshot start blockheader %s\n",
-                  base_blockhash.ToString());
+        LogInfoEvent(
+            BCLog::ALL, "snapshot_start_header_missing",
+            "[snapshot] Did not find snapshot start blockheader {block_hash}")
+            .Field(BCLog::LogField::BlockHash, base_blockhash);
         return false;
     }
 
@@ -8893,9 +8902,10 @@ bool ChainstateManager::PopulateAndValidateSnapshot(
     const auto &maybe_au_data = GetParams().AssumeutxoForHeight(base_height);
 
     if (!maybe_au_data) {
-        LogPrintf("[snapshot] assumeutxo height in snapshot metadata not "
-                  "recognized (%d) - refusing to load snapshot\n",
-                  base_height);
+        LogInfoEvent(
+            BCLog::ALL, "snapshot_load_height_unrecognized",
+            "[snapshot] assumeutxo height in snapshot metadata not recognized ({height}) - refusing to load snapshot")
+            .Field(BCLog::LogField::Height, base_height);
         return false;
     }
 
@@ -8915,8 +8925,10 @@ bool ChainstateManager::PopulateAndValidateSnapshot(
     const uint64_t coins_count = metadata.m_coins_count;
     uint64_t coins_left = metadata.m_coins_count;
 
-    LogPrintf("[snapshot] loading %d coins from snapshot %s\n", coins_left,
-              base_blockhash.ToString());
+    LogInfoEvent(BCLog::ALL, "snapshot_coins_loading",
+                 "[snapshot] loading {count} coins from snapshot {block_hash}")
+        .Field(BCLog::LogField::Count, coins_left)
+        .Field(BCLog::LogField::BlockHash, base_blockhash);
     int64_t coins_processed{0};
 
     while (coins_left > 0) {
@@ -8942,15 +8954,19 @@ bool ChainstateManager::PopulateAndValidateSnapshot(
                 if (coin.GetHeight() > uint32_t(base_height) ||
                     outpoint.GetN() >=
                         std::numeric_limits<decltype(outpoint.GetN())>::max()) {
-                    LogPrintf("[snapshot] bad snapshot data after "
-                              "deserializing %d coins\n",
-                              coins_count - coins_left);
+                    LogInfoEvent(
+                        BCLog::ALL, "snapshot_coin_bounds_invalid",
+                        "[snapshot] bad snapshot data after deserializing {count} coins")
+                        .Field(BCLog::LogField::Count,
+                               coins_count - coins_left);
                     return false;
                 }
                 if (!MoneyRange(coin.GetTxOut().nValue)) {
-                    LogPrintf("[snapshot] bad snapshot data after "
-                              "deserializing %d coins - bad tx out value\n",
-                              coins_count - coins_left);
+                    LogInfoEvent(
+                        BCLog::ALL, "snapshot_coin_value_invalid",
+                        "[snapshot] bad snapshot data after deserializing {count} coins - bad tx out value")
+                        .Field(BCLog::LogField::Count,
+                               coins_count - coins_left);
                     return false;
                 }
                 coins_cache.EmplaceCoinInternalDANGER(std::move(outpoint),
@@ -8996,9 +9012,11 @@ bool ChainstateManager::PopulateAndValidateSnapshot(
                 }
             }
         } catch (const std::ios_base::failure &) {
-            LogPrintf("[snapshot] bad snapshot format or truncated snapshot "
-                      "after deserializing %d coins\n",
-                      coins_processed);
+            LogInfoEvent(
+                BCLog::ALL, "snapshot_coin_stream_invalid",
+                "[snapshot] bad snapshot format or truncated snapshot after deserializing {snapshot_coins_processed} coins")
+                .Field(BCLog::LogField::SnapshotCoinsProcessed,
+                       coins_processed);
             return false;
         }
     }
@@ -9019,9 +9037,10 @@ bool ChainstateManager::PopulateAndValidateSnapshot(
         out_of_coins = true;
     }
     if (!out_of_coins) {
-        LogPrintf("[snapshot] bad snapshot - coins left over after "
-                  "deserializing %d coins\n",
-                  coins_count);
+        LogInfoEvent(
+            BCLog::ALL, "snapshot_coins_remaining",
+            "[snapshot] bad snapshot - coins left over after deserializing {count} coins")
+            .Field(BCLog::LogField::Count, coins_count);
         return false;
     }
 
@@ -9060,9 +9079,13 @@ bool ChainstateManager::PopulateAndValidateSnapshot(
     // assumeutxo value.
     if (AssumeutxoHash{maybe_stats->hashSerialized} !=
         au_data.hash_serialized) {
-        LogPrintf("[snapshot] bad snapshot content hash: expected %s, got %s\n",
-                  au_data.hash_serialized.ToString(),
-                  maybe_stats->hashSerialized.ToString());
+        LogInfoEvent(
+            BCLog::ALL, "snapshot_content_hash_mismatch",
+            "[snapshot] bad snapshot content hash: expected {expected_snapshot_hash}, got {snapshot_hash}")
+            .Field(BCLog::LogField::ExpectedSnapshotHash,
+                   uint256{Span{au_data.hash_serialized.data(),
+                                au_data.hash_serialized.size()}})
+            .Field(BCLog::LogField::SnapshotHash, maybe_stats->hashSerialized);
         return false;
     }
 
@@ -9176,11 +9199,13 @@ SnapshotCompletionResult ChainstateManager::MaybeCompleteSnapshotValidation() {
     };
 
     if (index_new.GetBlockHash() != snapshot_blockhash) {
-        LogPrintf(
-            "[snapshot] supposed base block %s does not match the "
-            "snapshot base block %s (height %d). Snapshot is not valid.\n",
-            index_new.ToString(), snapshot_blockhash.ToString(),
-            snapshot_base_height);
+        LogInfoEvent(
+            BCLog::ALL, "snapshot_base_block_mismatch",
+            "[snapshot] supposed base block {block_index_description} does not match the snapshot base block {expected_block_hash} (height {height}). Snapshot is not valid.")
+            .Field(BCLog::LogField::BlockIndexDescription, index_new.ToString())
+            .Field(BCLog::LogField::ExpectedBlockHash, snapshot_blockhash)
+            .Field(BCLog::LogField::Height, snapshot_base_height)
+            .Field(BCLog::LogField::BlockHash, index_new.GetBlockHash());
         handle_invalid_snapshot();
         return SnapshotCompletionResult::BASE_BLOCKHASH_MISMATCH;
     }
@@ -9200,9 +9225,10 @@ SnapshotCompletionResult ChainstateManager::MaybeCompleteSnapshotValidation() {
     const auto &maybe_au_data =
         this->GetParams().AssumeutxoForHeight(curr_height);
     if (!maybe_au_data) {
-        LogPrintf("[snapshot] assumeutxo data not found for height "
-                  "(%d) - refusing to validate snapshot\n",
-                  curr_height);
+        LogInfoEvent(
+            BCLog::ALL, "snapshot_validation_height_unrecognized",
+            "[snapshot] assumeutxo data not found for height ({height}) - refusing to validate snapshot")
+            .Field(BCLog::LogField::Height, curr_height);
         handle_invalid_snapshot();
         return SnapshotCompletionResult::MISSING_CHAINPARAMS;
     }
@@ -9241,15 +9267,21 @@ SnapshotCompletionResult ChainstateManager::MaybeCompleteSnapshotValidation() {
     // hash for the snapshot when it's loaded in its chainstate's leveldb. We
     // could then reference that here for an additional check.
     if (AssumeutxoHash{ibd_stats.hashSerialized} != au_data.hash_serialized) {
-        LogPrintf("[snapshot] hash mismatch: actual=%s, expected=%s\n",
-                  ibd_stats.hashSerialized.ToString(),
-                  au_data.hash_serialized.ToString());
+        LogInfoEvent(
+            BCLog::ALL, "snapshot_validation_hash_mismatch",
+            "[snapshot] hash mismatch: actual={snapshot_hash}, expected={expected_snapshot_hash}")
+            .Field(BCLog::LogField::SnapshotHash, ibd_stats.hashSerialized)
+            .Field(BCLog::LogField::ExpectedSnapshotHash,
+                   uint256{Span{au_data.hash_serialized.data(),
+                                au_data.hash_serialized.size()}});
         handle_invalid_snapshot();
         return SnapshotCompletionResult::HASH_MISMATCH;
     }
 
-    LogPrintf("[snapshot] snapshot beginning at %s has been fully validated\n",
-              snapshot_blockhash.ToString());
+    LogInfoEvent(
+        BCLog::ALL, "snapshot_fully_validated",
+        "[snapshot] snapshot beginning at {block_hash} has been fully validated")
+        .Field(BCLog::LogField::BlockHash, snapshot_blockhash);
 
     m_ibd_chainstate->m_disabled = true;
     this->MaybeRebalanceCaches();
@@ -9402,8 +9434,10 @@ bool ChainstateManager::DetectSnapshotChainstate(CTxMemPool *mempool) {
     if (!base_blockhash) {
         return false;
     }
-    LogPrintf("[snapshot] detected active snapshot chainstate (%s) - loading\n",
-              fs::PathToString(*path));
+    LogInfoEvent(
+        BCLog::ALL, "snapshot_chainstate_detected",
+        "[snapshot] detected active snapshot chainstate ({directory}) - loading")
+        .Field(BCLog::LogField::Directory, fs::PathToString(*path));
 
     this->ActivateExistingSnapshot(*base_blockhash);
     return true;
@@ -9414,8 +9448,11 @@ ChainstateManager::ActivateExistingSnapshot(BlockHash base_blockhash) {
     assert(!m_snapshot_chainstate);
     m_snapshot_chainstate = std::make_unique<Chainstate>(nullptr, m_blockman,
                                                          *this, base_blockhash);
-    LogPrintf("[snapshot] switching active chainstate to %s\n",
-              m_snapshot_chainstate->ToString());
+    LogInfoEvent(
+        BCLog::ALL, "snapshot_active_chainstate_switching",
+        "[snapshot] switching active chainstate to {chainstate_description}")
+        .Field(BCLog::LogField::ChainstateDescription,
+               m_snapshot_chainstate->ToString());
 
     // Mempool is empty at this point because we're still in IBD.
     Assert(m_active_chainstate->m_mempool->size() == 0);
@@ -9447,8 +9484,11 @@ util::Result<void> Chainstate::InvalidateCoinsDBOnDisk() {
     auto invalid_path = snapshot_datadir + "_INVALID";
     std::string dbpath = fs::PathToString(snapshot_datadir);
     std::string target = fs::PathToString(invalid_path);
-    LogPrintf("[snapshot] renaming snapshot datadir %s to %s\n", dbpath,
-              target);
+    LogInfoEvent(
+        BCLog::ALL, "snapshot_invalid_directory_renaming",
+        "[snapshot] renaming snapshot datadir {source_path} to {destination_path}")
+        .Field(BCLog::LogField::SourcePath, dbpath)
+        .Field(BCLog::LogField::DestinationPath, target);
 
     // The invalid snapshot datadir is simply moved and not deleted because we
     // may want to do forensics later during issue investigation. The user is
@@ -9459,8 +9499,13 @@ util::Result<void> Chainstate::InvalidateCoinsDBOnDisk() {
         auto src_str = fs::PathToString(snapshot_datadir);
         auto dest_str = fs::PathToString(invalid_path);
 
-        LogPrintf("%s: error renaming file '%s' -> '%s': %s\n", __func__,
-                  src_str, dest_str, e.what());
+        LogInfoEvent(
+            BCLog::ALL, "snapshot_invalid_directory_rename_failed",
+            "{source_function}: error renaming file '{source_path}' -> '{destination_path}': {error}")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::SourcePath, src_str)
+            .Field(BCLog::LogField::DestinationPath, dest_str)
+            .Field(BCLog::LogField::Error, e.what());
         return util::Error{strprintf(_("Rename of '%s' -> '%s' failed. "
                                        "You should resolve this by manually "
                                        "moving or deleting the invalid "
@@ -9480,9 +9525,11 @@ bool ChainstateManager::DeleteSnapshotChainstate() {
     fs::path snapshot_datadir =
         Assert(node::FindSnapshotChainstateDir(m_options.datadir)).value();
     if (!DeleteCoinsDBFromDisk(snapshot_datadir, /*is_snapshot=*/true)) {
-        LogPrintf("Deletion of %s failed. Please remove it manually to "
-                  "continue reindexing.\n",
-                  fs::PathToString(snapshot_datadir));
+        LogInfoEvent(
+            BCLog::ALL, "snapshot_directory_removal_required",
+            "Deletion of {directory} failed. Please remove it manually to continue reindexing.")
+            .Field(BCLog::LogField::Directory,
+                   fs::PathToString(snapshot_datadir));
         return false;
     }
     m_active_chainstate = m_ibd_chainstate.get();
@@ -9563,16 +9610,22 @@ bool ChainstateManager::ValidatedSnapshotCleanup() {
     // No chainstates should be considered usable.
     assert(this->GetAll().size() == 0);
 
-    LogPrintf("[snapshot] deleting background chainstate directory (now "
-              "unnecessary) (%s)\n",
-              fs::PathToString(ibd_chainstate_path));
+    LogInfoEvent(
+        BCLog::ALL, "snapshot_background_directory_deleting",
+        "[snapshot] deleting background chainstate directory (now unnecessary) ({directory})")
+        .Field(BCLog::LogField::Directory,
+               fs::PathToString(ibd_chainstate_path));
 
     fs::path tmp_old{ibd_chainstate_path + "_todelete"};
 
     auto rename_failed_abort = [this](fs::path p_old, fs::path p_new,
                                       const fs::filesystem_error &err) {
-        LogPrintf("Error renaming path (%s) -> (%s): %s\n",
-                  fs::PathToString(p_old), fs::PathToString(p_new), err.what());
+        LogInfoEvent(
+            BCLog::ALL, "snapshot_background_directory_rename_failed",
+            "Error renaming path ({source_path}) -> ({destination_path}): {error}")
+            .Field(BCLog::LogField::SourcePath, fs::PathToString(p_old))
+            .Field(BCLog::LogField::DestinationPath, fs::PathToString(p_new))
+            .Field(BCLog::LogField::Error, err.what());
         GetNotifications().fatalError(strprintf(
             "Rename of '%s' -> '%s' failed. "
             "Cannot clean up the background chainstate leveldb directory.",
@@ -9586,10 +9639,13 @@ bool ChainstateManager::ValidatedSnapshotCleanup() {
         throw;
     }
 
-    LogPrintf("[snapshot] moving snapshot chainstate (%s) to "
-              "default chainstate directory (%s)\n",
-              fs::PathToString(snapshot_chainstate_path),
-              fs::PathToString(ibd_chainstate_path));
+    LogInfoEvent(
+        BCLog::ALL, "snapshot_directory_promoting",
+        "[snapshot] moving snapshot chainstate ({source_path}) to default chainstate directory ({destination_path})")
+        .Field(BCLog::LogField::SourcePath,
+               fs::PathToString(snapshot_chainstate_path))
+        .Field(BCLog::LogField::DestinationPath,
+               fs::PathToString(ibd_chainstate_path));
 
     try {
         fs::rename(snapshot_chainstate_path, ibd_chainstate_path);
@@ -9601,12 +9657,16 @@ bool ChainstateManager::ValidatedSnapshotCleanup() {
     if (!DeleteCoinsDBFromDisk(tmp_old, /*is_snapshot=*/false)) {
         // No need to FatalError because once the unneeded bg chainstate data is
         // moved, it will not interfere with subsequent initialization.
-        LogPrintf("Deletion of %s failed. Please remove it manually, as the "
-                  "directory is now unnecessary.\n",
-                  fs::PathToString(tmp_old));
+        LogInfoEvent(
+            BCLog::ALL, "snapshot_background_directory_removal_required",
+            "Deletion of {directory} failed. Please remove it manually, as the directory is now unnecessary.")
+            .Field(BCLog::LogField::Directory, fs::PathToString(tmp_old));
     } else {
-        LogPrintf("[snapshot] deleted background chainstate directory (%s)\n",
-                  fs::PathToString(ibd_chainstate_path));
+        LogInfoEvent(
+            BCLog::ALL, "snapshot_background_directory_deleted",
+            "[snapshot] deleted background chainstate directory ({directory})")
+            .Field(BCLog::LogField::Directory,
+                   fs::PathToString(ibd_chainstate_path));
     }
     return true;
 }

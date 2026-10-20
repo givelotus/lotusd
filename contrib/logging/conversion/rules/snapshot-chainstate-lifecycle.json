@@ -1,0 +1,512 @@
+{
+  "schema": 1,
+  "batch": "snapshot-chainstate-lifecycle",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/validation.cpp",
+      "rules": [
+        {
+          "id": "snapshot_cleanup_base_hash_missing",
+          "old": "LogPrintf(\"[snapshot] snapshot chainstate dir being removed \"\n                          \"lacks %s file\\n\",\n                          fs::PathToString(node::SNAPSHOT_BLOCKHASH_FILENAME))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_cleanup_base_hash_missing\", \"[snapshot] snapshot chainstate dir being removed lacks {path} file\").Field(BCLog::LogField::Path, fs::PathToString(node::SNAPSHOT_BLOCKHASH_FILENAME))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] snapshot chainstate dir being removed lacks %s file\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(node::SNAPSHOT_BLOCKHASH_FILENAME)"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_database_directory_removing",
+          "old": "LogPrintf(\"Removing leveldb dir at %s\\n\", path_str)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_database_directory_removing\", \"Removing leveldb dir at {directory}\").Field(BCLog::LogField::Directory, path_str)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Removing leveldb dir at %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "path_str"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_database_directory_removal_failed",
+          "old": "LogPrintf(\"error: leveldb DestroyDB call failed on %s\\n\", path_str)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_database_directory_removal_failed\", \"error: leveldb DestroyDB call failed on {directory}\").Field(BCLog::LogField::Directory, path_str)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "error: leveldb DestroyDB call failed on %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "path_str"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_activated",
+          "old": "LogPrintf(\"[snapshot] successfully activated snapshot %s\\n\",\n              base_blockhash.ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_activated\", \"[snapshot] successfully activated snapshot {block_hash}\").Field(BCLog::LogField::BlockHash, base_blockhash)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] successfully activated snapshot %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "base_blockhash.ToString()"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_start_header_missing",
+          "old": "LogPrintf(\"[snapshot] Did not find snapshot start blockheader %s\\n\",\n                  base_blockhash.ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_start_header_missing\", \"[snapshot] Did not find snapshot start blockheader {block_hash}\").Field(BCLog::LogField::BlockHash, base_blockhash)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] Did not find snapshot start blockheader %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "base_blockhash.ToString()"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_load_height_unrecognized",
+          "old": "LogPrintf(\"[snapshot] assumeutxo height in snapshot metadata not \"\n                  \"recognized (%d) - refusing to load snapshot\\n\",\n                  base_height)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_load_height_unrecognized\", \"[snapshot] assumeutxo height in snapshot metadata not recognized ({height}) - refusing to load snapshot\").Field(BCLog::LogField::Height, base_height)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] assumeutxo height in snapshot metadata not recognized (%d) - refusing to load snapshot\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "base_height"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_coins_loading",
+          "old": "LogPrintf(\"[snapshot] loading %d coins from snapshot %s\\n\", coins_left,\n              base_blockhash.ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_coins_loading\", \"[snapshot] loading {count} coins from snapshot {block_hash}\").Field(BCLog::LogField::Count, coins_left).Field(BCLog::LogField::BlockHash, base_blockhash)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] loading %d coins from snapshot %s\n",
+            "specifiers": [
+              "%d",
+              "%s"
+            ],
+            "arguments": [
+              "coins_left",
+              "base_blockhash.ToString()"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_coin_bounds_invalid",
+          "old": "LogPrintf(\"[snapshot] bad snapshot data after \"\n                              \"deserializing %d coins\\n\",\n                              coins_count - coins_left)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_coin_bounds_invalid\", \"[snapshot] bad snapshot data after deserializing {count} coins\").Field(BCLog::LogField::Count, coins_count - coins_left)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] bad snapshot data after deserializing %d coins\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "coins_count - coins_left"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_coin_value_invalid",
+          "old": "LogPrintf(\"[snapshot] bad snapshot data after \"\n                              \"deserializing %d coins - bad tx out value\\n\",\n                              coins_count - coins_left)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_coin_value_invalid\", \"[snapshot] bad snapshot data after deserializing {count} coins - bad tx out value\").Field(BCLog::LogField::Count, coins_count - coins_left)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] bad snapshot data after deserializing %d coins - bad tx out value\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "coins_count - coins_left"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_coin_stream_invalid",
+          "old": "LogPrintf(\"[snapshot] bad snapshot format or truncated snapshot \"\n                      \"after deserializing %d coins\\n\",\n                      coins_processed)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_coin_stream_invalid\", \"[snapshot] bad snapshot format or truncated snapshot after deserializing {snapshot_coins_processed} coins\").Field(BCLog::LogField::SnapshotCoinsProcessed, coins_processed)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] bad snapshot format or truncated snapshot after deserializing %d coins\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "coins_processed"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_coins_remaining",
+          "old": "LogPrintf(\"[snapshot] bad snapshot - coins left over after \"\n                  \"deserializing %d coins\\n\",\n                  coins_count)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_coins_remaining\", \"[snapshot] bad snapshot - coins left over after deserializing {count} coins\").Field(BCLog::LogField::Count, coins_count)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] bad snapshot - coins left over after deserializing %d coins\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "coins_count"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_content_hash_mismatch",
+          "old": "LogPrintf(\"[snapshot] bad snapshot content hash: expected %s, got %s\\n\",\n                  au_data.hash_serialized.ToString(),\n                  maybe_stats->hashSerialized.ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_content_hash_mismatch\", \"[snapshot] bad snapshot content hash: expected {expected_snapshot_hash}, got {snapshot_hash}\").Field(BCLog::LogField::ExpectedSnapshotHash, uint256{Span{au_data.hash_serialized.data(), au_data.hash_serialized.size()}}).Field(BCLog::LogField::SnapshotHash, maybe_stats->hashSerialized)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] bad snapshot content hash: expected %s, got %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "au_data.hash_serialized.ToString()",
+              "maybe_stats->hashSerialized.ToString()"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_base_block_mismatch",
+          "old": "LogPrintf(\n            \"[snapshot] supposed base block %s does not match the \"\n            \"snapshot base block %s (height %d). Snapshot is not valid.\\n\",\n            index_new.ToString(), snapshot_blockhash.ToString(),\n            snapshot_base_height)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_base_block_mismatch\", \"[snapshot] supposed base block {block_index_description} does not match the snapshot base block {expected_block_hash} (height {height}). Snapshot is not valid.\").Field(BCLog::LogField::BlockIndexDescription, index_new.ToString()).Field(BCLog::LogField::ExpectedBlockHash, snapshot_blockhash).Field(BCLog::LogField::Height, snapshot_base_height).Field(BCLog::LogField::BlockHash, index_new.GetBlockHash())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] supposed base block %s does not match the snapshot base block %s (height %d). Snapshot is not valid.\n",
+            "specifiers": [
+              "%s",
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "index_new.ToString()",
+              "snapshot_blockhash.ToString()",
+              "snapshot_base_height"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced. Preserve the description in text but additionally expose the actual index block hash; the expected snapshot block hash has a distinct existing key."
+        },
+        {
+          "id": "snapshot_validation_height_unrecognized",
+          "old": "LogPrintf(\"[snapshot] assumeutxo data not found for height \"\n                  \"(%d) - refusing to validate snapshot\\n\",\n                  curr_height)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_validation_height_unrecognized\", \"[snapshot] assumeutxo data not found for height ({height}) - refusing to validate snapshot\").Field(BCLog::LogField::Height, curr_height)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] assumeutxo data not found for height (%d) - refusing to validate snapshot\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "curr_height"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_validation_hash_mismatch",
+          "old": "LogPrintf(\"[snapshot] hash mismatch: actual=%s, expected=%s\\n\",\n                  ibd_stats.hashSerialized.ToString(),\n                  au_data.hash_serialized.ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_validation_hash_mismatch\", \"[snapshot] hash mismatch: actual={snapshot_hash}, expected={expected_snapshot_hash}\").Field(BCLog::LogField::SnapshotHash, ibd_stats.hashSerialized).Field(BCLog::LogField::ExpectedSnapshotHash, uint256{Span{au_data.hash_serialized.data(), au_data.hash_serialized.size()}})",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] hash mismatch: actual=%s, expected=%s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "ibd_stats.hashSerialized.ToString()",
+              "au_data.hash_serialized.ToString()"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_fully_validated",
+          "old": "LogPrintf(\"[snapshot] snapshot beginning at %s has been fully validated\\n\",\n              snapshot_blockhash.ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_fully_validated\", \"[snapshot] snapshot beginning at {block_hash} has been fully validated\").Field(BCLog::LogField::BlockHash, snapshot_blockhash)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] snapshot beginning at %s has been fully validated\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "snapshot_blockhash.ToString()"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_chainstate_detected",
+          "old": "LogPrintf(\"[snapshot] detected active snapshot chainstate (%s) - loading\\n\",\n              fs::PathToString(*path))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_chainstate_detected\", \"[snapshot] detected active snapshot chainstate ({directory}) - loading\").Field(BCLog::LogField::Directory, fs::PathToString(*path))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] detected active snapshot chainstate (%s) - loading\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(*path)"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_active_chainstate_switching",
+          "old": "LogPrintf(\"[snapshot] switching active chainstate to %s\\n\",\n              m_snapshot_chainstate->ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_active_chainstate_switching\", \"[snapshot] switching active chainstate to {chainstate_description}\").Field(BCLog::LogField::ChainstateDescription, m_snapshot_chainstate->ToString())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] switching active chainstate to %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "m_snapshot_chainstate->ToString()"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_invalid_directory_renaming",
+          "old": "LogPrintf(\"[snapshot] renaming snapshot datadir %s to %s\\n\", dbpath,\n              target)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_invalid_directory_renaming\", \"[snapshot] renaming snapshot datadir {source_path} to {destination_path}\").Field(BCLog::LogField::SourcePath, dbpath).Field(BCLog::LogField::DestinationPath, target)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] renaming snapshot datadir %s to %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "dbpath",
+              "target"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_invalid_directory_rename_failed",
+          "old": "LogPrintf(\"%s: error renaming file '%s' -> '%s': %s\\n\", __func__,\n                  src_str, dest_str, e.what())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_invalid_directory_rename_failed\", \"{source_function}: error renaming file '{source_path}' -> '{destination_path}': {error}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::SourcePath, src_str).Field(BCLog::LogField::DestinationPath, dest_str).Field(BCLog::LogField::Error, e.what())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: error renaming file '%s' -> '%s': %s\n",
+            "specifiers": [
+              "%s",
+              "%s",
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "src_str",
+              "dest_str",
+              "e.what()"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_directory_removal_required",
+          "old": "LogPrintf(\"Deletion of %s failed. Please remove it manually to \"\n                  \"continue reindexing.\\n\",\n                  fs::PathToString(snapshot_datadir))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_directory_removal_required\", \"Deletion of {directory} failed. Please remove it manually to continue reindexing.\").Field(BCLog::LogField::Directory, fs::PathToString(snapshot_datadir))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Deletion of %s failed. Please remove it manually to continue reindexing.\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(snapshot_datadir)"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_background_directory_deleting",
+          "old": "LogPrintf(\"[snapshot] deleting background chainstate directory (now \"\n              \"unnecessary) (%s)\\n\",\n              fs::PathToString(ibd_chainstate_path))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_background_directory_deleting\", \"[snapshot] deleting background chainstate directory (now unnecessary) ({directory})\").Field(BCLog::LogField::Directory, fs::PathToString(ibd_chainstate_path))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] deleting background chainstate directory (now unnecessary) (%s)\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(ibd_chainstate_path)"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_background_directory_rename_failed",
+          "old": "LogPrintf(\"Error renaming path (%s) -> (%s): %s\\n\",\n                  fs::PathToString(p_old), fs::PathToString(p_new), err.what())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_background_directory_rename_failed\", \"Error renaming path ({source_path}) -> ({destination_path}): {error}\").Field(BCLog::LogField::SourcePath, fs::PathToString(p_old)).Field(BCLog::LogField::DestinationPath, fs::PathToString(p_new)).Field(BCLog::LogField::Error, err.what())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Error renaming path (%s) -> (%s): %s\n",
+            "specifiers": [
+              "%s",
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(p_old)",
+              "fs::PathToString(p_new)",
+              "err.what()"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_directory_promoting",
+          "old": "LogPrintf(\"[snapshot] moving snapshot chainstate (%s) to \"\n              \"default chainstate directory (%s)\\n\",\n              fs::PathToString(snapshot_chainstate_path),\n              fs::PathToString(ibd_chainstate_path))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_directory_promoting\", \"[snapshot] moving snapshot chainstate ({source_path}) to default chainstate directory ({destination_path})\").Field(BCLog::LogField::SourcePath, fs::PathToString(snapshot_chainstate_path)).Field(BCLog::LogField::DestinationPath, fs::PathToString(ibd_chainstate_path))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] moving snapshot chainstate (%s) to default chainstate directory (%s)\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(snapshot_chainstate_path)",
+              "fs::PathToString(ibd_chainstate_path)"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_background_directory_removal_required",
+          "old": "LogPrintf(\"Deletion of %s failed. Please remove it manually, as the \"\n                  \"directory is now unnecessary.\\n\",\n                  fs::PathToString(tmp_old))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_background_directory_removal_required\", \"Deletion of {directory} failed. Please remove it manually, as the directory is now unnecessary.\").Field(BCLog::LogField::Directory, fs::PathToString(tmp_old))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Deletion of %s failed. Please remove it manually, as the directory is now unnecessary.\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(tmp_old)"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        },
+        {
+          "id": "snapshot_background_directory_deleted",
+          "old": "LogPrintf(\"[snapshot] deleted background chainstate directory (%s)\\n\",\n                  fs::PathToString(ibd_chainstate_path))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_background_directory_deleted\", \"[snapshot] deleted background chainstate directory ({directory})\").Field(BCLog::LogField::Directory, fs::PathToString(ibd_chainstate_path))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] deleted background chainstate directory (%s)\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(ibd_chainstate_path)"
+            ]
+          },
+          "review_note": "Preserve Info, original text and argument order, all snapshot validation/activation/cleanup decisions, locks, cache policy, serialized bytes and error returns. Block index descriptions remain complete strings, never mislabeled as hashes. Snapshot content commitments are separate from block hashes; AssumeutxoHash copies its original32 bytes without string parsing. This does not introduce a migration or modify snapshot consensus. Rare complete activation/background validation paths remain explicitly unforced."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Append signed processed-coin count, raw actual/expected snapshot commitments, and full block-index diagnostic description. Preserve all existing registry IDs.",
+          "old": "    X(SocketDescriptor, socket_descriptor, UINT, \"\", \"\")\n",
+          "new": "    X(SocketDescriptor, socket_descriptor, UINT, \"\", \"\") \\\n    X(SnapshotCoinsProcessed, snapshot_coins_processed, INT, \"\", \"\") \\\n    X(ExpectedSnapshotHash, expected_snapshot_hash, HASH, \"\", \"\") \\\n    X(SnapshotHash, snapshot_hash, HASH, \"\", \"\") \\\n    X(BlockIndexDescription, block_index_description, STRING, \"\", \"\")\n"
+        }
+      ]
+    }
+  ],
+  "explicitly_deferred": [
+    {
+      "line": 9921,
+      "reason": "Legacy floating specifier receives an integral decimal-MB quotient. Existing consumer float precision only accepts FLOAT. Preserve old bytes until dedicated integer/float renderer controls and API support are validated; never coerce integral source into invented decimals."
+    },
+    {
+      "line": 10049,
+      "reason": "Legacy floating specifier receives an integral decimal-MB quotient. Existing consumer float precision only accepts FLOAT. Preserve old bytes until dedicated integer/float renderer controls and API support are validated; never coerce integral source into invented decimals."
+    },
+    {
+      "line": 10114,
+      "reason": "Legacy floating specifier receives an integral decimal-MB quotient. Existing consumer float precision only accepts FLOAT. Preserve old bytes until dedicated integer/float renderer controls and API support are validated; never coerce integral source into invented decimals."
+    },
+    {
+      "line": 10186,
+      "reason": "Legacy floating specifier receives an integral decimal-MB quotient. Existing consumer float precision only accepts FLOAT. Preserve old bytes until dedicated integer/float renderer controls and API support are validated; never coerce integral source into invented decimals."
+    },
+    {
+      "original_line": 10244,
+      "source": "LogPrintf(\"[snapshot] !!! %s\\n\", user_error.original)",
+      "reason": "Known fixed fatal paragraph has626 format characters and minimum621 formatted characters, beyond entire448-byte structured payload. Existing plain logger spills complete long messages. Keep original text until static template decomposition with typed heights and package metadata is separately validated; no silent truncation or new spill API."
+    }
+  ]
+}

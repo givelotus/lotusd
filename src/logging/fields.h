@@ -193,7 +193,11 @@
     X(WaitSeconds, wait_seconds, INT, "", "") \
     X(NetworkActive, network_active, BOOL, "", "") \
     X(WaitMilliseconds, wait_milliseconds, INT, "", "") \
-    X(SocketDescriptor, socket_descriptor, UINT, "", "")
+    X(SocketDescriptor, socket_descriptor, UINT, "", "") \
+    X(SnapshotCoinsProcessed, snapshot_coins_processed, INT, "", "") \
+    X(ExpectedSnapshotHash, expected_snapshot_hash, HASH, "", "") \
+    X(SnapshotHash, snapshot_hash, HASH, "", "") \
+    X(BlockIndexDescription, block_index_description, STRING, "", "")
 
 namespace BCLog {
 
