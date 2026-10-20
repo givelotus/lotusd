@@ -111,6 +111,7 @@ add_executable(fuzz EXCLUDE_FROM_ALL
 if(ENABLE_WEBTRANSPORT)
 	target_sources(fuzz PRIVATE
 		wt_capsule.cpp
+		quic_stream_frame.cpp
 	)
 endif()
 
