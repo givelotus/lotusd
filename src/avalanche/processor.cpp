@@ -17,6 +17,7 @@
 #include <net.h>
 #include <netbase.h>
 #include <netmessagemaker.h>
+#include <node/metrics.h>
 #include <policy/block/stakingrewards.h>
 #include <scheduler.h>
 #include <txmempool.h>
@@ -452,6 +453,22 @@ static bool isNull(const AnyVoteItem &item) {
                       item);
 };
 
+/** A new vote record, timestamped when metrics are on */
+static VoteRecord NewVoteRecord(bool accepted) {
+    VoteRecord vr(accepted);
+    if (node::GetNodeMetrics()) {
+        vr.addedTime = std::chrono::steady_clock::now();
+    }
+    return vr;
+}
+
+/** Label index (node::metric_labels::AvalancheItemTypes) of an item */
+static size_t MetricItemType(const AnyVoteItem &item) {
+    static_assert(std::variant_size_v<AnyVoteItem> == 6,
+                  "update AvalancheItemTypes() in node/metrics.cpp");
+    return item.index();
+}
+
 bool Processor::addToReconcile(const AnyVoteItem &item) {
     if (isNull(item)) {
         return false;
@@ -466,7 +483,7 @@ bool Processor::addToReconcile(const AnyVoteItem &item) {
     const bool accepted = getLocalAcceptance(item);
 
     return voteRecords.getWriteView()
-        ->insert(std::make_pair(item, VoteRecord(accepted)))
+        ->insert(std::make_pair(item, NewVoteRecord(accepted)))
         .second;
 }
 
@@ -614,6 +631,12 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
     // Verify that the request and the vote are consistent.
     const std::vector<Vote> &votes = response.GetVotes();
     size_t size = invs.size();
+    if (auto *metrics{node::GetNodeMetrics()}) {
+        for (const Vote &v : votes) {
+            metrics->avalanche_votes_received.Add(
+                node::AvalancheVoteSeries(v.GetError()));
+        }
+    }
     if (votes.size() != size) {
         disconnect = true;
         error = "invalid-ava-response-size";
@@ -650,6 +673,17 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
         responseItems.insert(std::make_pair(std::move(item), votes[i]));
     }
 
+    auto *const metrics{node::GetNodeMetrics()};
+    const auto countItem{
+        [&](const AnyVoteItem &item, node::AvalancheItemOutcome outcome) {
+            if (metrics) {
+                const std::array<size_t, 2> idx{MetricItemType(item),
+                                                size_t(outcome)};
+                metrics->avalanche_items.Add(
+                    metrics->avalanche_items.SeriesIndex(idx));
+            }
+        }};
+
     {
         auto voteRecordsWriteView = voteRecords.getWriteView();
 
@@ -683,6 +717,7 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
 
             if (!voteRegistered) {
                 if (vr.isStale(staleVoteThreshold, staleVoteFactor)) {
+                    countItem(item, node::AvalancheItemOutcome::STALE);
                     updates.emplace_back(std::move(item), VoteStatus::Stale);
 
                     // Just drop stale votes. If we see this item again, we'll
@@ -712,6 +747,15 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
 
             // We just finalized a vote. If it is valid, then let the caller
             // know. Either way, remove the item from the map.
+            countItem(item, vr.isAccepted()
+                                ? node::AvalancheItemOutcome::FINALIZED
+                                : node::AvalancheItemOutcome::INVALIDATED);
+            if (metrics && vr.isAccepted() &&
+                vr.addedTime != std::chrono::steady_clock::time_point{}) {
+                metrics->avalanche_finalization_seconds.RecordDuration(
+                    std::chrono::steady_clock::now() - vr.addedTime,
+                    MetricItemType(item));
+            }
             updates.emplace_back(std::move(item), vr.isAccepted()
                                                       ? VoteStatus::Finalized
                                                       : VoteStatus::Invalid);
@@ -892,6 +936,16 @@ void Processor::avaproofsSent(NodeId nodeid) {
  * Returns a bool indicating whether we have a usable Avalanche quorum enabling
  * us to take decisions based on polls.
  */
+bool Processor::isQuorumLatched() const {
+    return quorumIsEstablished.load() &&
+           peerManager->getQuorumMetrics().nodeCount >= 8;
+}
+
+Processor::QuorumFigures Processor::getQuorumFigures() const {
+    const auto quorum{peerManager->getQuorumMetrics()};
+    return {quorum.nodeCount, quorum.totalScore, quorum.connectedScore};
+}
+
 bool Processor::isQuorumEstablished() {
     AssertLockNotHeld(cs_main);
     const auto quorum = peerManager->getQuorumMetrics();
@@ -1578,8 +1632,10 @@ bool Processor::registerMempoolBatch(const MempoolBatchAnnouncement &batch,
             auto w = voteRecords.getWriteView();
             auto it = w->find(item);
             if (it != w.end() && it->second.getConfidence() == 0) {
+                VoteRecord vr(true);
+                vr.addedTime = it->second.addedTime;
                 w->erase(it);
-                w->insert(std::make_pair(item, VoteRecord(true)));
+                w->insert(std::make_pair(item, vr));
             }
         }
     }
@@ -1603,8 +1659,10 @@ bool Processor::setMempoolBatchAccepted(const uint256 &batchId, bool accepted) {
     auto w = voteRecords.getWriteView();
     auto it = w->find(item);
     if (it != w.end() && it->second.getConfidence() == 0) {
+        VoteRecord vr(accepted);
+        vr.addedTime = it->second.addedTime;
         w->erase(it);
-        w->insert(std::make_pair(item, VoteRecord(accepted)));
+        w->insert(std::make_pair(item, vr));
     }
     return true;
 }
@@ -2076,6 +2134,10 @@ void Processor::runEventLoop() {
                     }
 
                     pnode->invsPolled(invs.size());
+                    if (auto *metrics{node::GetNodeMetrics()}) {
+                        metrics->avalanche_polls_sent.Inc();
+                        metrics->avalanche_poll_items_sent.Add(0, invs.size());
+                    }
 
                     // Send the query to the node.
                     connman->PushMessage(

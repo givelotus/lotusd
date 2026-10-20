@@ -10,6 +10,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 
 /**
@@ -70,6 +71,10 @@ private:
     std::array<uint16_t, 8> nodeFilter{{0, 0, 0, 0, 0, 0, 0, 0}};
 
 public:
+    //! When the item was registered for polling, if metrics are on (for the
+    //! finalization latency metric); the epoch otherwise.
+    std::chrono::steady_clock::time_point addedTime{};
+
     explicit VoteRecord(bool accepted)
         : VoteRecord(accepted, FastRandomContext().rand<uint32_t>()) {}
 
@@ -83,7 +88,7 @@ public:
         : confidence(other.confidence), votes(other.votes),
           consider(other.consider), inflight(other.inflight.load()),
           seed(other.seed), successfulVotes(other.successfulVotes),
-          nodeFilter(other.nodeFilter) {}
+          nodeFilter(other.nodeFilter), addedTime(other.addedTime) {}
 
     /**
      * Vote accounting facilities.
