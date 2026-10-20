@@ -1,0 +1,181 @@
+{
+  "schema": 1,
+  "batch": "tor-control-static-lifecycle",
+  "review_note": "Reviewed:13 static Tor-control Info diagnostic consumers; no registry/API additions. Preserve dynamic and continuation sites for separate reviewed schemas. Run diff-only clang-format after application with BreakStringLiterals:false. Native validation remains a separate pending gate.",
+  "files": [
+    {
+      "path": "src/torcontrol.cpp",
+      "rules": [
+        {
+          "id": "tor_control_line_limit_disconnect",
+          "old": "LogPrintf(\"tor: Disconnecting because MAX_LINE_LENGTH exceeded\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"tor_control_line_limit_disconnect\", \"tor: Disconnecting because MAX_LINE_LENGTH exceeded\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "tor: Disconnecting because MAX_LINE_LENGTH exceeded\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Reviewed static Tor control diagnostic only. Preserve existing Info severity/ALL category and exact human wording, including existing Error text, nonce length specification and option names. No password, nonce, key, hostname or address values added. No Tor protocol, authentication, cleanup, callback or timing changes. The ADD_ONION reply detail continuation remains separately deferred; do not claim the whole Tor subsystem converted."
+        },
+        {
+          "id": "tor_add_onion_parameters_invalid",
+          "old": "LogPrintf(\"tor: Error parsing ADD_ONION parameters:\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"tor_add_onion_parameters_invalid\", \"tor: Error parsing ADD_ONION parameters:\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "tor: Error parsing ADD_ONION parameters:\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Reviewed static Tor control diagnostic only. Preserve existing Info severity/ALL category and exact human wording, including existing Error text, nonce length specification and option names. No password, nonce, key, hostname or address values added. No Tor protocol, authentication, cleanup, callback or timing changes. The ADD_ONION reply detail continuation remains separately deferred; do not claim the whole Tor subsystem converted."
+        },
+        {
+          "id": "tor_add_onion_command_unsupported",
+          "old": "LogPrintf(\"tor: Add onion failed with unrecognized command (You \"\n                  \"probably need to upgrade Tor)\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"tor_add_onion_command_unsupported\", \"tor: Add onion failed with unrecognized command (You probably need to upgrade Tor)\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "tor: Add onion failed with unrecognized command (You probably need to upgrade Tor)\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Reviewed static Tor control diagnostic only. Preserve existing Info severity/ALL category and exact human wording, including existing Error text, nonce length specification and option names. No password, nonce, key, hostname or address values added. No Tor protocol, authentication, cleanup, callback or timing changes. The ADD_ONION reply detail continuation remains separately deferred; do not claim the whole Tor subsystem converted."
+        },
+        {
+          "id": "tor_authentication_failed",
+          "old": "LogPrintf(\"tor: Authentication failed\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"tor_authentication_failed\", \"tor: Authentication failed\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "tor: Authentication failed\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Reviewed static Tor control diagnostic only. Preserve existing Info severity/ALL category and exact human wording, including existing Error text, nonce length specification and option names. No password, nonce, key, hostname or address values added. No Tor protocol, authentication, cleanup, callback or timing changes. The ADD_ONION reply detail continuation remains separately deferred; do not claim the whole Tor subsystem converted."
+        },
+        {
+          "id": "tor_authchallenge_server_nonce_size_invalid",
+          "old": "LogPrintf(\n                    \"tor: ServerNonce is not 32 bytes, as required by spec\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"tor_authchallenge_server_nonce_size_invalid\", \"tor: ServerNonce is not 32 bytes, as required by spec\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "tor: ServerNonce is not 32 bytes, as required by spec\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Reviewed static Tor control diagnostic only. Preserve existing Info severity/ALL category and exact human wording, including existing Error text, nonce length specification and option names. No password, nonce, key, hostname or address values added. No Tor protocol, authentication, cleanup, callback or timing changes. The ADD_ONION reply detail continuation remains separately deferred; do not claim the whole Tor subsystem converted."
+        },
+        {
+          "id": "tor_authchallenge_reply_invalid",
+          "old": "LogPrintf(\"tor: Invalid reply to AUTHCHALLENGE\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"tor_authchallenge_reply_invalid\", \"tor: Invalid reply to AUTHCHALLENGE\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "tor: Invalid reply to AUTHCHALLENGE\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Reviewed static Tor control diagnostic only. Preserve existing Info severity/ALL category and exact human wording, including existing Error text, nonce length specification and option names. No password, nonce, key, hostname or address values added. No Tor protocol, authentication, cleanup, callback or timing changes. The ADD_ONION reply detail continuation remains separately deferred; do not claim the whole Tor subsystem converted."
+        },
+        {
+          "id": "tor_safecookie_challenge_failed",
+          "old": "LogPrintf(\"tor: SAFECOOKIE authentication challenge failed\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"tor_safecookie_challenge_failed\", \"tor: SAFECOOKIE authentication challenge failed\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "tor: SAFECOOKIE authentication challenge failed\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Reviewed static Tor control diagnostic only. Preserve existing Info severity/ALL category and exact human wording, including existing Error text, nonce length specification and option names. No password, nonce, key, hostname or address values added. No Tor protocol, authentication, cleanup, callback or timing changes. The ADD_ONION reply detail continuation remains separately deferred; do not claim the whole Tor subsystem converted."
+        },
+        {
+          "id": "tor_password_authentication_unsupported",
+          "old": "LogPrintf(\"tor: Password provided with -torpassword, but \"\n                          \"HASHEDPASSWORD authentication is not available\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"tor_password_authentication_unsupported\", \"tor: Password provided with -torpassword, but HASHEDPASSWORD authentication is not available\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "tor: Password provided with -torpassword, but HASHEDPASSWORD authentication is not available\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Reviewed static Tor control diagnostic only. Preserve existing Info severity/ALL category and exact human wording, including existing Error text, nonce length specification and option names. No password, nonce, key, hostname or address values added. No Tor protocol, authentication, cleanup, callback or timing changes. The ADD_ONION reply detail continuation remains separately deferred; do not claim the whole Tor subsystem converted."
+        },
+        {
+          "id": "tor_authentication_password_missing",
+          "old": "LogPrintf(\"tor: The only supported authentication mechanism left \"\n                      \"is password, but no password provided with \"\n                      \"-torpassword\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"tor_authentication_password_missing\", \"tor: The only supported authentication mechanism left is password, but no password provided with -torpassword\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "tor: The only supported authentication mechanism left is password, but no password provided with -torpassword\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Reviewed static Tor control diagnostic only. Preserve existing Info severity/ALL category and exact human wording, including existing Error text, nonce length specification and option names. No password, nonce, key, hostname or address values added. No Tor protocol, authentication, cleanup, callback or timing changes. The ADD_ONION reply detail continuation remains separately deferred; do not claim the whole Tor subsystem converted."
+        },
+        {
+          "id": "tor_authentication_methods_unsupported",
+          "old": "LogPrintf(\"tor: No supported authentication method\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"tor_authentication_methods_unsupported\", \"tor: No supported authentication method\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "tor: No supported authentication method\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Reviewed static Tor control diagnostic only. Preserve existing Info severity/ALL category and exact human wording, including existing Error text, nonce length specification and option names. No password, nonce, key, hostname or address values added. No Tor protocol, authentication, cleanup, callback or timing changes. The ADD_ONION reply detail continuation remains separately deferred; do not claim the whole Tor subsystem converted."
+        },
+        {
+          "id": "tor_protocol_info_failed",
+          "old": "LogPrintf(\"tor: Requesting protocol info failed\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"tor_protocol_info_failed\", \"tor: Requesting protocol info failed\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "tor: Requesting protocol info failed\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Reviewed static Tor control diagnostic only. Preserve existing Info severity/ALL category and exact human wording, including existing Error text, nonce length specification and option names. No password, nonce, key, hostname or address values added. No Tor protocol, authentication, cleanup, callback or timing changes. The ADD_ONION reply detail continuation remains separately deferred; do not claim the whole Tor subsystem converted."
+        },
+        {
+          "id": "tor_protocol_info_send_failed",
+          "old": "LogPrintf(\"tor: Error sending initial protocolinfo command\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"tor_protocol_info_send_failed\", \"tor: Error sending initial protocolinfo command\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "tor: Error sending initial protocolinfo command\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Reviewed static Tor control diagnostic only. Preserve existing Info severity/ALL category and exact human wording, including existing Error text, nonce length specification and option names. No password, nonce, key, hostname or address values added. No Tor protocol, authentication, cleanup, callback or timing changes. The ADD_ONION reply detail continuation remains separately deferred; do not claim the whole Tor subsystem converted."
+        },
+        {
+          "id": "tor_control_thread_interrupted",
+          "old": "LogPrintf(\"tor: Thread interrupt\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"tor_control_thread_interrupted\", \"tor: Thread interrupt\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "tor: Thread interrupt\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Reviewed static Tor control diagnostic only. Preserve existing Info severity/ALL category and exact human wording, including existing Error text, nonce length specification and option names. No password, nonce, key, hostname or address values added. No Tor protocol, authentication, cleanup, callback or timing changes. The ADD_ONION reply detail continuation remains separately deferred; do not claim the whole Tor subsystem converted."
+        }
+      ]
+    }
+  ]
+}
