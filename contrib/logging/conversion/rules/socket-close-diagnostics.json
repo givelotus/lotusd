@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "batch": "socket-close-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/util/sock.cpp",
+      "rules": [
+        {
+          "id": "network_socket_close_failed",
+          "old": "LogPrintf(\"Error closing socket %d: %s\\n\", m_socket,\n                  NetworkErrorString(WSAGetLastError()))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"network_socket_close_failed\", \"Error closing socket {socket_descriptor}: {error}\").Field(BCLog::LogField::SocketDescriptor, m_socket).Field(BCLog::LogField::Error, NetworkErrorString(socket_error))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Error closing socket %d: %s\n",
+            "specifiers": [
+              "%d",
+              "%s"
+            ],
+            "arguments": [
+              "m_socket",
+              "NetworkErrorString(WSAGetLastError())"
+            ]
+          },
+          "review_note": "Preserve Info, exact close descriptor/error text, closesocket/close call, INVALID_SOCKET guard/reset and destructor behavior. SOCKET is unsigned on POSIX and UINT_PTR on Windows; preserve full bits despite legacy %d. Numeric last-error snapshot precedes builder, stringrendering remains guarded."
+        }
+      ],
+      "support_adjustments": [
+        {
+          "purpose": "Save numeric errno/WSAerror immediately after failed close before logger can touch it.",
+          "old": "LogInfoEvent(BCLog::ALL, \"network_socket_close_failed\", \"Error closing socket {socket_descriptor}: {error}\").Field(BCLog::LogField::SocketDescriptor, m_socket).Field(BCLog::LogField::Error, NetworkErrorString(socket_error));",
+          "new": "const int socket_error{WSAGetLastError()};\n        LogInfoEvent(BCLog::ALL, \"network_socket_close_failed\", \"Error closing socket {socket_descriptor}: {error}\").Field(BCLog::LogField::SocketDescriptor, m_socket).Field(BCLog::LogField::Error, NetworkErrorString(socket_error));"
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Full unsigned native socket descriptor without narrowing or treating it as a peer ID.",
+          "old": "    X(WaitMilliseconds, wait_milliseconds, INT, \"\", \"\")\n",
+          "new": "    X(WaitMilliseconds, wait_milliseconds, INT, \"\", \"\") \\\n    X(SocketDescriptor, socket_descriptor, UINT, \"\", \"\")\n"
+        }
+      ]
+    }
+  ]
+}

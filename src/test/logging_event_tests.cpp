@@ -1727,4 +1727,32 @@ BOOST_AUTO_TEST_CASE(actual_tls_client_reload_keeps_the_last_valid_context) {
     BOOST_CHECK(row.write().find("BEGIN CERTIFICATE") == std::string::npos);
 }
 
+BOOST_AUTO_TEST_CASE(
+    actual_posix_socket_close_failure_keeps_unsigned_descriptor) {
+#ifndef WIN32
+    Format(BCLog::LogFormat::JSON);
+    // -2 is always an invalid POSIX fd, distinct from INVALID_SOCKET (-1).
+    // No owned or foreign live descriptor is closed or raced for reuse.
+    const auto descriptor{static_cast<SOCKET>(-2)};
+    {
+        Sock invalid{descriptor};
+    }
+    const auto row{Json()};
+    BOOST_CHECK_EQUAL(row["event"].get_str(), "network_socket_close_failed");
+    BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
+    BOOST_CHECK(row["socket_descriptor"].isNum());
+    BOOST_CHECK_EQUAL(row["socket_descriptor"].getInt<uint64_t>(),
+                      static_cast<uint64_t>(descriptor));
+    const auto error{NetworkErrorString(EBADF)};
+    BOOST_CHECK_EQUAL(row["error"].get_str(), error);
+    BOOST_CHECK_EQUAL(
+        row["message"].get_str(),
+        strprintf("Error closing socket %d: %s", descriptor, error));
+    BOOST_CHECK(row["fields_truncated"].isNull());
+#else
+    BOOST_TEST_MESSAGE(
+        "POSIX invalid-fd control is not a Windows socket-handle test");
+#endif
+}
+
 BOOST_AUTO_TEST_SUITE_END()
