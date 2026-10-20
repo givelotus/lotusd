@@ -140,6 +140,19 @@ class ConversionTest(unittest.TestCase):
             changed = old.replace('false', 'true')
             convert.convert(changed, [rule(changed, new)])
 
+    def test_filesystem_quoting_requires_old_ast_contract(self):
+        old = 'LogPrintf("path=(%s)\\n", fs::quoted(fs::PathToString(path)))'
+        new = 'LogInfoEvent(BCLog::ALL,"path_loaded","path=({path:fsq})").Field(BCLog::LogField::Path,fs::PathToString(path))'
+        self.assertEqual(convert.convert(old, [rule(old, new)])[0], new)
+        self.assertEqual(convert.convert(new, [rule(old, new)])[0], new)
+        with self.assertRaises(ValueError):
+            changed = new.replace(":fsq", "")
+            convert.convert(old, [rule(old, changed)])
+        for plain in ['LogPrintf("path=(%s)\\n", fs::PathToString(path))',
+                      'LogPrintf("path=(%s)\\n", other::quoted(path))']:
+            with self.assertRaises(ValueError):
+                convert.convert(plain, [rule(plain, new)])
+
     def test_all_catalog_rules_and_idempotence(self):
         for path in sorted((Path(__file__).parent / "rules").glob("*.json")):
             catalog = json.loads(path.read_text())

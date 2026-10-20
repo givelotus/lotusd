@@ -51,6 +51,16 @@ unsupported. Formatting uses the original printf backend on the consumer.
 Structured JSON keeps the original finite number, independently of rounded
 message text; NaN and infinities use JSON `null`.
 
+Copied and static STRING fields accept `{path:fsq}` to preserve existing
+`fs::quoted` diagnostics. This surrounds the human value with double quotes
+and escapes embedded quotes and ampersands with `&`; backslashes are unchanged.
+The structured field remains the original unquoted string. This format does
+not apply to numbers, hashes or custom adapters, and does not infer quoting
+from a `Path` key. Conversion rules require an exact old `fs::quoted(...)` AST
+argument. `fs::PathToString` may still run where it did before; only quotation
+and escaping move to the consumer. The existing fixed-record snapshot and
+omission/`fields_truncated` rules remain unchanged.
+
 Scope conventions are enforced by `check-log-events`: `peer_*` carries PeerId,
 `rpc_call_*` carries Method, `mempool_tx_*` carries TxId, and `block_connect_*`
 carries BlockHash. Global listener/server events use names that do not imply

@@ -144,8 +144,14 @@ def validate_mapping(old, event):
     description = describe(old)
     # Decimal integer length modifiers preserve decimal text. Explicit float
     # precision uses the separately tested consumer rendering contract.
-    def rendering(spec):
-        if spec == "%s" or re.fullmatch(r"%(?:ll|l|z|t|j)?[diu]", spec):
+    def rendering(spec, value=None):
+        if spec == "%s":
+            if (value is not None and value.kind() == "call_expression"
+                    and value.field("function").text() == "fs::quoted"
+                    and len(args(value)) == 1):
+                return "fsq"
+            return None
+        if re.fullmatch(r"%(?:ll|l|z|t|j)?[diu]", spec):
             return None
         if re.fullmatch(r"%(?:0(?:[1-9]|1[0-6]))?x", spec):
             return spec[1:]
@@ -200,7 +206,10 @@ def validate_mapping(old, event):
             if cursor >= len(placeholders):
                 raise ValueError("missing message placeholder")
             placeholder = placeholders[cursor]
-            format_spec = rendering(spec)
+            # The old AST, not a label or regex, establishes fs::quoted's
+            # nonstandard '&' escaping. A plain %s must not gain this format.
+            value = oldargs[len(oldargs) - len(description["arguments"]) + cursor]
+            format_spec = rendering(spec, value)
             suffix = ":" + format_spec + "}" if format_spec is not None else None
             if (suffix is not None and not placeholder.endswith(suffix)) or (
                 suffix is None and ":" in placeholder
