@@ -15,7 +15,7 @@ import re
 import unittest
 from typing import Any, Dict, List, Optional, Tuple
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 PASSED = "passed"
 FAILED = "failed"
@@ -62,6 +62,8 @@ class JobResult:
     tmpdir: str = ""
     framework_log: str = ""
     node_logs: List[str] = dataclasses.field(default_factory=list)
+    # Path of the test's timeline.jsonl (schema 2), when one was written
+    timeline: str = ""
     stdout_tail: str = ""
     stderr_tail: str = ""
     stderr_nonempty: bool = False
