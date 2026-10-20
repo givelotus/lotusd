@@ -31,6 +31,15 @@ static const char *const HTTP_TLS_KEY_FILENAME = "node_tls_key.pem";
 static const size_t HTTP_ZSTD_MIN_REPLY_SIZE = 512;
 //! Offer HTTP/2 (ALPN h2) on TLS listeners, in builds with HTTP/2
 static const bool DEFAULT_HTTP2 = true;
+//! HTTP/2 per-connection limits (see doc/http2.md)
+static const int64_t DEFAULT_HTTP2_MAX_STREAMS = 100;
+static const int64_t DEFAULT_HTTP2_MAX_HEADER_LIST_SIZE = 16384;
+static const int64_t DEFAULT_HTTP2_MAX_FRAME_SIZE = 16384;
+static const int64_t DEFAULT_HTTP2_STREAM_WINDOW = 1 << 20;
+static const int64_t DEFAULT_HTTP2_CONNECTION_WINDOW = 8 << 20;
+static const int64_t DEFAULT_HTTP2_RESET_BURST = 200;
+static const int64_t DEFAULT_HTTP2_RESET_RATE = 33;
+static const int64_t DEFAULT_HTTP2_MAX_CONTINUATIONS = 8;
 //! Serve /chronik/* (incl. /chronik/ws) on the RPC port when Chronik is on.
 static const bool DEFAULT_CHRONIK_PUBLIC_ON_RPC_PORT = true;
 

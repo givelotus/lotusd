@@ -45,7 +45,10 @@ using Headers = std::vector<std::pair<std::string, std::string>>;
 //! ALPN protocol identifier of HTTP/2 over TLS
 inline constexpr std::string_view ALPN_PROTOCOL{"h2"};
 
-/** Per-connection resource limits (see doc/http2.md) */
+/**
+ * Per-connection resource limits (see doc/http2.md). The node sets them from
+ * its -http2* options (defaults in httpserver.h, equal to these).
+ */
 struct Limits {
     //! SETTINGS_MAX_CONCURRENT_STREAMS
     uint32_t max_concurrent_streams{100};

@@ -83,6 +83,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <list>
 #include <rpc/async_waiter.h>
 
@@ -2132,6 +2133,9 @@ private:
                          "HTTP/2 request from %s timed out (stream %d)\n",
                          self->m_conn.peer.ToStringAddrPort(), id);
                 self->m_session.Reset(id, NGHTTP2_CANCEL);
+                // The connection is idle from now on, not before: an idle
+                // GOAWAY in the same tick would cancel the reset.
+                self->m_last_activity = now;
                 self->Wake();
             }
             const bool busy{self->m_handlers_running > 0};
@@ -2889,7 +2893,45 @@ bool InitHTTPServer(Config &config) {
 
 #ifdef ENABLE_HTTP2
     g_http2_enabled = gArgs.GetBoolArg("-http2", DEFAULT_HTTP2);
-    g_http2_limits = http2::Limits{};
+    {
+        bool ok{true};
+        const auto arg = [&](const char *name, int64_t def, int64_t min,
+                             int64_t max) {
+            const int64_t v{gArgs.GetIntArg(name, def)};
+            if (v < min || v > max) {
+                LogPrintf("Error: %s=%d is out of range (%d-%d)\n", name, v,
+                          min, max);
+                ok = false;
+            }
+            return v;
+        };
+        http2::Limits l;
+        l.max_concurrent_streams = uint32_t(
+            arg("-http2maxstreams", DEFAULT_HTTP2_MAX_STREAMS, 1, 10000));
+        l.max_header_list_size =
+            uint32_t(arg("-http2maxheaderlistsize",
+                         DEFAULT_HTTP2_MAX_HEADER_LIST_SIZE, 1024, 1 << 20));
+        l.max_frame_size =
+            uint32_t(arg("-http2maxframesize", DEFAULT_HTTP2_MAX_FRAME_SIZE,
+                         16384, (1 << 24) - 1));
+        l.stream_window =
+            uint32_t(arg("-http2streamwindow", DEFAULT_HTTP2_STREAM_WINDOW,
+                         65535, std::numeric_limits<int32_t>::max()));
+        l.connection_window =
+            uint32_t(arg("-http2connwindow", DEFAULT_HTTP2_CONNECTION_WINDOW,
+                         65535, std::numeric_limits<int32_t>::max()));
+        l.reset_burst = uint64_t(
+            arg("-http2resetburst", DEFAULT_HTTP2_RESET_BURST, 1, 1000000));
+        l.reset_rate = uint64_t(
+            arg("-http2resetrate", DEFAULT_HTTP2_RESET_RATE, 1, 1000000));
+        l.max_continuations =
+            size_t(arg("-http2maxcontinuations",
+                       DEFAULT_HTTP2_MAX_CONTINUATIONS, 0, 1000));
+        if (!ok) {
+            return false;
+        }
+        g_http2_limits = l;
+    }
     if (g_http2_enabled) {
         LogPrintf("HTTP/2 offered on TLS listeners (nghttp2 %s)\n",
                   nghttp2_version(0)->version_str);
