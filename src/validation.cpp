@@ -8839,9 +8839,11 @@ util::Result<CBlockIndex *> ChainstateManager::ActivateSnapshot(
     LogInfoEvent(BCLog::ALL, "snapshot_activated",
                  "[snapshot] successfully activated snapshot {block_hash}")
         .Field(BCLog::LogField::BlockHash, base_blockhash);
-    LogPrintf("[snapshot] (%.2f MB)\n",
-              m_snapshot_chainstate->CoinsTip().DynamicMemoryUsage() /
-                  (1000 * 1000));
+    LogInfoEvent(BCLog::ALL, "snapshot_activated_cache",
+                 "[snapshot] ({snapshot_cache_mb:.2f} MB)")
+        .Field(BCLog::LogField::SnapshotCacheMB,
+               m_snapshot_chainstate->CoinsTip().DynamicMemoryUsage() /
+                   (1000 * 1000));
 
     this->MaybeRebalanceCaches();
     // The manager identity is unchanged, but RPC readers must observe the
@@ -8976,11 +8978,17 @@ bool ChainstateManager::PopulateAndValidateSnapshot(
                 ++coins_processed;
 
                 if (coins_processed % 1000000 == 0) {
-                    LogPrintf("[snapshot] %d coins loaded (%.2f%%, %.2f MB)\n",
-                              coins_processed,
-                              static_cast<float>(coins_processed) * 100 /
-                                  static_cast<float>(coins_count),
-                              coins_cache.DynamicMemoryUsage() / (1000 * 1000));
+                    LogInfoEvent(
+                        BCLog::ALL, "snapshot_coins_load_progress",
+                        "[snapshot] {snapshot_coins_processed} coins loaded ({snapshot_progress_percent:.2f}%, {snapshot_cache_mb:.2f} MB)")
+                        .Field(BCLog::LogField::SnapshotCoinsProcessed,
+                               coins_processed)
+                        .Field(BCLog::LogField::SnapshotProgressPercent,
+                               static_cast<float>(coins_processed) * 100 /
+                                   static_cast<float>(coins_count))
+                        .Field(BCLog::LogField::SnapshotCacheMB,
+                               coins_cache.DynamicMemoryUsage() /
+                                   (1000 * 1000));
                 }
 
                 // Batch write and flush (if we need to) every so often.
@@ -9044,9 +9052,13 @@ bool ChainstateManager::PopulateAndValidateSnapshot(
         return false;
     }
 
-    LogPrintf("[snapshot] loaded %d (%.2f MB) coins from snapshot %s\n",
-              coins_count, coins_cache.DynamicMemoryUsage() / (1000 * 1000),
-              base_blockhash.ToString());
+    LogInfoEvent(
+        BCLog::ALL, "snapshot_coins_loaded",
+        "[snapshot] loaded {count} ({snapshot_cache_mb:.2f} MB) coins from snapshot {block_hash}")
+        .Field(BCLog::LogField::Count, coins_count)
+        .Field(BCLog::LogField::SnapshotCacheMB,
+               coins_cache.DynamicMemoryUsage() / (1000 * 1000))
+        .Field(BCLog::LogField::BlockHash, base_blockhash);
 
     // No need to acquire cs_main since this chainstate isn't being used yet.
     FlushSnapshotToDisk(coins_cache, /*snapshot_loaded=*/true);
@@ -9120,8 +9132,10 @@ bool ChainstateManager::PopulateAndValidateSnapshot(
     index->m_chain_tx_count = au_data.m_chain_tx_count;
     snapshot_chainstate.setBlockIndexCandidates.insert(snapshot_start_block);
 
-    LogPrintf("[snapshot] validated snapshot (%.2f MB)\n",
-              coins_cache.DynamicMemoryUsage() / (1000 * 1000));
+    LogInfoEvent(BCLog::ALL, "snapshot_cache_validated",
+                 "[snapshot] validated snapshot ({snapshot_cache_mb:.2f} MB)")
+        .Field(BCLog::LogField::SnapshotCacheMB,
+               coins_cache.DynamicMemoryUsage() / (1000 * 1000));
     return true;
 }
 
