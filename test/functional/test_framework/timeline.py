@@ -41,6 +41,7 @@ import glob
 import heapq
 import itertools
 import json
+import logging
 import os
 import random
 import re
@@ -611,7 +612,8 @@ def short_lines(event: Event, first_only: bool = False) -> List[str]:
     message = event.message
     category = event.fields.get("category")
     tag = ""
-    if event.source != "test" and category:
+    # (A node's uncategorized records have category "none")
+    if event.source != "test" and category and category != "none":
         tag = f"[{category}] "
     if event.level in ("warning", "error"):
         tag = f"{event.level.upper()} " + tag
@@ -1025,6 +1027,197 @@ def failure_excerpt(
     return (lines[-excerpt_lines:] if excerpt_lines else []), found
 
 
+# The file of a test's structured timeline, in its directory
+TIMELINE_FILE = "timeline.jsonl"
+# Keys every timeline.jsonl record has
+TIMELINE_KEYS = ("time", "source", "level", "message")
+
+
+def to_record(event: Event) -> Dict[str, Any]:
+    """An event as a timeline.jsonl record: "time" (RFC 3339, microseconds)
+    and "source" first, then the record's fields in their order, with
+    "level" and "message" always present. A node's JSON record keeps its
+    fields (its registry names) as they are, except that its source
+    location object, "source", becomes "source_location", since "source"
+    names where the record came from. A text line's parsed fields
+    (category, thread, mocktime, source_location) are kept the same way."""
+    record: Dict[str, Any] = {"time": event.time, "source": event.source}
+    if not event.is_json:
+        record["level"] = event.level or "info"
+        record["message"] = event.message
+    for key, value in event.fields.items():
+        if key == "source":
+            key = "source_location"
+        if key in record or key in ("@timestamp", "time"):
+            continue
+        record[key] = value
+    record.setdefault("level", event.level or "info")
+    record.setdefault("message", event.message)
+    return record
+
+
+def record_line(event: Event) -> bytes:
+    """An event as a line of timeline.jsonl (compact JSON)."""
+    return json.dumps(to_record(event), separators=(",", ":")).encode()
+
+
+# Where the timestamp is in a JSON line: {"time":"<27 bytes>"
+JSON_KEY = slice(9, 36)
+JSON_START = b'{"time":"'
+# What follows the timestamp in a node's (and the framework's) records
+JSON_AFTER_TIME = b'Z","level":"'
+
+
+def _json_lines_fast(lines: List[bytes], source: bytes) -> bool:
+    """Whether converted lines (see _convert_json_block) all start with the
+    fixed prefix {"time":"<timestamp with microseconds>","source":"<source>",
+    "level":". Checked with one slice per line, then column by column on
+    their concatenation."""
+    head = JSON_START + b"0" * 27 + b'","source":"' + source + b'","level":"'
+    width = len(head)
+    n = len(lines)
+    blob = b"".join(map(itemgetter(slice(0, width)), lines))
+    if len(blob) != width * n:
+        return False
+    for i, c in enumerate(head):
+        if 9 <= i < 36:
+            continue  # The timestamp
+        if blob[i::width] != bytes((c,)) * n:
+            return False
+    stamps = [blob[i::width] for i in range(9, 36)]
+    return (
+        stamps[26] == b"Z" * n
+        and stamps[19] == b"." * n
+        and stamps[16] == b":" * n
+        and stamps[13] == b":" * n
+        and stamps[10] == b"T" * n
+        and stamps[7] == b"-" * n
+        and stamps[4] == b"-" * n
+        and all(stamps[i].isdigit() for i in (0, 1, 2, 3, 5, 6, 8, 9))
+        and all(stamps[i].isdigit() for i in (11, 12, 14, 15, 17, 18))
+        and all(stamps[i].isdigit() for i in range(20, 26))
+    )
+
+
+def _convert_json_block(block: bytes, source: bytes) -> bytes:
+    """Insert the source after the time and rename the node's source
+    location object. A JSON string cannot contain an unescaped quote, so
+    these byte sequences only occur as keys. Each record has one "level"
+    key, directly after "time" (the node's encoder writes it once; the
+    framework's formatter does not let extra fields replace it); a block
+    where that is not so fails _json_lines_fast and is parsed instead."""
+    return block.replace(
+        JSON_AFTER_TIME, b'Z","source":"' + source + b'","level":"'
+    ).replace(b',"source":{', b',"source_location":{')
+
+
+def _json_batches(source: str, path: str, order: int) -> Iterator[List[bytes]]:
+    """A JSON-lines log as lists of timeline.jsonl lines, in file order."""
+    name = source.encode()
+    # A record without a time takes its predecessor's, also across blocks
+    last: List[Optional[int]] = [None]
+
+    def previous() -> int:
+        return last[0] if last[0] is not None else _file_mtime_micros(path)
+
+    for block in _blocks(path):
+        lines = _convert_json_block(block[:-1], name).split(b"\n")
+        if _json_lines_fast(lines, name):
+            last[0] = parse_time(lines[-1][JSON_KEY].decode())
+            yield lines
+            continue
+        # Other lines (another writer, spaces, a partial record): parse
+        text = block[:-1].decode("utf-8", "replace").split("\n")
+        events = list(json_line_events(source, text, order, previous))
+        if events:
+            last[0] = events[-1].micros
+        yield [record_line(e) for e in events]
+
+
+def _event_record_batches(source: str, path: str, order: int) -> Iterator[List[bytes]]:
+    """A text log as lists of timeline.jsonl lines (parsed event by event)."""
+    batch: List[bytes] = []
+    for event in text_events(source, path, order):
+        batch.append(record_line(event))
+        if len(batch) >= 10000:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
+
+
+def write_timeline(testdir: str, path: Optional[str] = None) -> str:
+    """Write <testdir>/timeline.jsonl, the test's events from every source
+    as JSON lines sorted by time; returns its path. JSON logs are merged in
+    blocks (see _json_records_fast); text logs are parsed."""
+    path = path or os.path.join(testdir, TIMELINE_FILE)
+    sources = []
+    for order, (source, log, kind) in enumerate(log_sources(testdir)):
+        reader = _json_batches if kind == "json" else _event_record_batches
+        sources.append(reader(source, log, order))
+    _write_batches(merge_batches(sources, JSON_KEY), path)
+    return path
+
+
+def timeline_records_slow(testdir: str) -> List[Dict[str, Any]]:
+    """timeline.jsonl's records built event by event (the reference that
+    the fast path is tested against)."""
+    return [to_record(e) for e in read_timeline(testdir)]
+
+
+def check_timeline(path: str) -> int:
+    """Check a timeline.jsonl file: every line a JSON object with the
+    required keys, in time order. Returns the number of records; raises
+    AssertionError on the first problem."""
+    count = 0
+    last = None
+    with open(path, encoding="utf-8") as f:
+        for number, line in enumerate(f, 1):
+            record = json.loads(line)
+            assert isinstance(record, dict), f"line {number}: not an object"
+            missing = [k for k in TIMELINE_KEYS if k not in record]
+            assert not missing, f"line {number}: missing {missing}"
+            micros = parse_time(record["time"])
+            assert micros is not None, f"line {number}: bad time {record['time']}"
+            assert last is None or micros >= last, f"line {number}: out of order"
+            last = micros
+            count += 1
+    return count
+
+
+class JsonFormatter(logging.Formatter):
+    """Formats the framework's log records as JSON lines with the same core
+    fields as a node's JSON records: time, level, category (the logger's
+    name), thread, message, source_location (file, line, function), plus
+    "exception" with the traceback, and any fields passed as
+    `extra={"fields": {...}}`."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        out: Dict[str, Any] = {
+            "time": format_time(int(record.created * 1_000_000)),
+            "level": normalize_level(record.levelname),
+            "category": record.name,
+            "thread": record.threadName,
+            "message": record.getMessage(),
+            "source_location": {
+                "file": os.path.basename(record.pathname),
+                "line": record.lineno,
+                "function": record.funcName,
+            },
+        }
+        if record.exc_info:
+            out["exception"] = self.formatException(record.exc_info)
+        elif record.exc_text:
+            out["exception"] = record.exc_text
+        fields = getattr(record, "fields", None)
+        if isinstance(fields, dict):
+            for key, value in fields.items():
+                out.setdefault(key, value)
+        # Compact, with "time" first: every JSON log then starts with the
+        # same fixed prefix (see _json_records_fast)
+        return json.dumps(out, default=str, separators=(",", ":"))
+
+
 class TestTimeline(unittest.TestCase):
     T = "2026-10-19T12:00:0{}.{:06d}Z"
 
@@ -1407,3 +1600,164 @@ class TestTimeline(unittest.TestCase):
                             break
                         offset += len(line) + 1
                     self.assertEqual(at, expected, (micro, strict))
+
+    def framework_json_log(self):
+        """Log through the framework's JSON formatter, as a test does."""
+        logger = logging.getLogger("TimelineUnit")
+        logger.propagate = False
+        handler = logging.FileHandler(
+            os.path.join(self.dir, FRAMEWORK_JSON_LOG), encoding="utf-8"
+        )
+        handler.setFormatter(JsonFormatter())
+        logger.addHandler(handler)
+        self.addCleanup(logger.removeHandler, handler)
+        self.addCleanup(handler.close)
+        return logger
+
+    def test_framework_json_log(self):
+        logger = self.framework_json_log()
+        logger.setLevel(logging.DEBUG)
+        logger.info("Send a transaction", extra={"fields": {"txid": "ab" * 32}})
+        try:
+            raise AssertionError("boom")
+        except AssertionError:
+            logger.exception("Unexpected exception")
+        # The text log is ignored when the JSON one exists
+        self.framework([f"{self.t(1)} TestFramework (INFO): text"])
+        events = list(read_timeline(self.dir))
+        self.assertEqual(
+            [e.message for e in events], ["Send a transaction", "Unexpected exception"]
+        )
+        self.assertEqual(events[0].fields["category"], "TimelineUnit")
+        self.assertEqual(events[0].fields["txid"], "ab" * 32)
+        self.assertEqual(events[0].fields["thread"], "MainThread")
+        self.assertEqual(events[0].fields["source_location"]["file"], "timeline.py")
+        self.assertIn("txid=abababababababab…", short_lines(events[0])[0])
+        self.assertTrue(is_failure(events[1]))
+        self.assertIn("AssertionError: boom", events[1].fields["exception"])
+        # The excerpt shows the failure's first line only; timeline.jsonl
+        # has the traceback
+        excerpt, found = failure_excerpt(self.dir)
+        self.assertTrue(found)
+        self.assertTrue(excerpt[-1].endswith("ERROR Unexpected exception"))
+        self.assertEqual((excerpt, found), self.slow_excerpt(40))
+        with open(write_timeline(self.dir), encoding="utf-8") as f:
+            self.assertIn("AssertionError: boom", f.read())
+        # Compact, "time" first: the prefix the fast path relies on
+        with open(os.path.join(self.dir, FRAMEWORK_JSON_LOG), "rb") as f:
+            for line in f:
+                self.assertEqual(line[:9], JSON_START)
+                self.assertEqual(line[35:47], JSON_AFTER_TIME)
+
+    def test_timeline_jsonl(self):
+        logger = self.framework_json_log()
+        logger.setLevel(logging.INFO)
+        logger.info("start")
+        sidecar = {
+            "time": "2000-01-01T00:00:00.000001Z",
+            "level": "debug",
+            "category": "net",
+            "thread": "msghand",
+            "message": "received: inv",
+            "event": "p2p_message",
+            "peer_id": 0,
+            "msg_type": "inv",
+            "source": {"file": "net_processing.cpp", "line": 5, "function": "F"},
+            "mocktime": "2030-01-01T00:00:00Z",
+        }
+        self.node(0, [json.dumps(sidecar)], name=NODE_JSON_LOG)
+        self.node(1, ["2000-01-01T00:00:00.000002Z [validation] text line"])
+        path = write_timeline(self.dir)
+        self.assertEqual(path, os.path.join(self.dir, TIMELINE_FILE))
+        self.assertEqual(check_timeline(path), 3)
+        with open(path, encoding="utf-8") as f:
+            records = [json.loads(line) for line in f]
+        node0, node1, test = records
+        self.assertEqual(list(node0)[:3], ["time", "source", "level"])
+        self.assertEqual(node0["source"], "node0")
+        self.assertEqual(node0["source_location"]["file"], "net_processing.cpp")
+        for key in ("event", "peer_id", "msg_type", "mocktime", "thread"):
+            self.assertEqual(node0[key], sidecar[key])
+        self.assertEqual(
+            node1,
+            {
+                "time": "2000-01-01T00:00:00.000002Z",
+                "source": "node1",
+                "level": "debug",
+                "message": "text line",
+                "category": "validation",
+            },
+        )
+        self.assertEqual(test["source"], "test")
+        self.assertEqual(test["category"], "TimelineUnit")
+        self.assertEqual(test["level"], "info")
+
+    def test_check_timeline(self):
+        path = os.path.join(self.dir, TIMELINE_FILE)
+        good = {"time": self.t(1), "source": "test", "level": "info", "message": ""}
+        for lines, error in (
+            ([good, dict(good, time=self.t(0))], "out of order"),
+            ([{"time": self.t(1)}], "missing"),
+            ([dict(good, time="soon")], "bad time"),
+        ):
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("".join(json.dumps(r) + "\n" for r in lines))
+            with self.assertRaisesRegex(AssertionError, error):
+                check_timeline(path)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("not json\n")
+        with self.assertRaises(ValueError):
+            check_timeline(path)
+
+    def random_json_logs(self, rng):
+        """JSON logs as the nodes and the framework write them, with equal
+        timestamps across and within sources, plus lines the fast path must
+        not take: a record without "level" after the time, a partial line,
+        a blank line, and spaced JSON."""
+        logger = self.framework_json_log()
+        logger.setLevel(logging.DEBUG)
+        for i in range(rng.randrange(20, 60)):
+            logger.info(f"step {i}", extra={"fields": {"txid": "ab" * 32}})
+        for n in (0, 1):
+            lines = []
+            t = 0
+            for i in range(rng.randrange(200, 600)):
+                t += rng.choice([0, 1, 1000, 2500])
+                stamp = f"2000-01-01T00:00:{t // 1_000_000:02d}.{t % 1_000_000:06d}Z"
+                record = {
+                    "time": stamp,
+                    "level": "debug",
+                    "category": "net",
+                    "thread": "msghand",
+                    "message": f'quote " and \\ and ,"source":{{ m{i}',
+                    "event": "peer_message_sent",
+                    "peer_id": i % 5,
+                    "source": {"file": "net.cpp", "line": i, "function": "F"},
+                }
+                if rng.random() < 0.02:
+                    lines.append(json.dumps(record))  # spaced
+                elif rng.random() < 0.02:
+                    lines.append("")
+                else:
+                    lines.append(json.dumps(record, separators=(",", ":")))
+            if n == 1:
+                lines.append('{"time":"2000-01-01T00:59:59.000000Z","lev')
+            self.node(n, lines, name=NODE_JSON_LOG)
+
+    def test_fast_timeline_matches_slow(self):
+        rng = random.Random(3)
+        for block_size in (None, 500):
+            for _ in range(4):
+                shutil.rmtree(self.dir)
+                os.makedirs(self.dir)
+                if block_size:
+                    self.small_blocks()
+                self.random_json_logs(rng)
+                path = write_timeline(self.dir)
+                with open(path, encoding="utf-8") as f:
+                    fast = [json.loads(line) for line in f]
+                slow = timeline_records_slow(self.dir)
+                self.assertEqual(fast, slow)
+                # Same key order as well
+                self.assertEqual([list(r) for r in fast], [list(r) for r in slow])
+                self.assertEqual(check_timeline(path), len(slow))

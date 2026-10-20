@@ -23,7 +23,7 @@ import unittest
 from enum import Enum
 from typing import AbstractSet, Any, Dict, List, Optional, Sequence, Tuple, Union
 
-from . import coverage
+from . import coverage, p2p, timeline
 from .address import ADDRESS_ECREG_P2SH_OP_TRUE, ADDRESS_ECREG_UNSPENDABLE
 from .authproxy import JSONRPCException
 from .avatools import get_proof_ids
@@ -227,6 +227,9 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         # Outcome details, filled in by main() (see also self.success)
         self.skip_reason = None
         self.failure = None
+        # Set by test_runner.py's worker, which writes a failed test's
+        # timeline itself once the test's processes have stopped
+        self.runner_writes_timeline = False
         # Set up properly by setup(); here so that a failure early in setup()
         # is still reported (see main() and shutdown())
         self.success = TestStatus.FAILED
@@ -325,6 +328,17 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             default=False,
             action="store_true",
             help="Leave bitcoinds and test.* datadir on exit or error",
+        )
+        parser.add_argument(
+            "--timeline",
+            default=False,
+            action="store_true",
+            help=(
+                "Write timeline.jsonl in the test directory (every log record of"
+                " the test and its nodes, sorted by time) also when the test"
+                " passes, and keep it when the directory is cleaned up. A failed"
+                " test always gets one."
+            ),
         )
         parser.add_argument(
             "--cachedir",
@@ -667,6 +681,16 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             )
             self.log.error("")
             exit_code = TEST_EXIT_FAILED
+        # The test's timeline: when asked, or for a failure (unless the test
+        # runner writes it, once the test's processes are gone)
+        if self.options.timeline or (
+            self.success == TestStatus.FAILED and not self.runner_writes_timeline
+        ):
+            try:
+                path = timeline.write_timeline(self.options.tmpdir)
+                self.log.info(f"Timeline written to {path}")
+            except OSError as e:
+                self.log.warning(f"Could not write the timeline: {e}")
         # Logging.shutdown will not remove stream- and filehandlers, so we must
         # do it explicitly. Handlers are removed so the next test run can apply
         # different log handler settings.
@@ -681,7 +705,17 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             rpc_logger.removeHandler(h)
         if cleanup_tree_on_exit:
             with self._phase("cleanup"):
-                shutil.rmtree(self.options.tmpdir)
+                if self.options.timeline:
+                    # Keep only the timeline
+                    for entry in os.listdir(self.options.tmpdir):
+                        if entry != timeline.TIMELINE_FILE:
+                            path = os.path.join(self.options.tmpdir, entry)
+                            if os.path.isdir(path) and not os.path.islink(path):
+                                shutil.rmtree(path)
+                            else:
+                                os.remove(path)
+                else:
+                    shutil.rmtree(self.options.tmpdir)
 
         self._write_phases(exit_code)
         self.nodes.clear()
@@ -1216,6 +1250,14 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             f"{self.options.tmpdir}/test_framework.log", encoding="utf-8"
         )
         fh.setLevel(logging.DEBUG)
+        # The same records as JSON lines, for the test's timeline (see
+        # test_framework/timeline.py)
+        jh = logging.FileHandler(
+            os.path.join(self.options.tmpdir, timeline.FRAMEWORK_JSON_LOG),
+            encoding="utf-8",
+        )
+        jh.setLevel(logging.DEBUG)
+        jh.setFormatter(timeline.JsonFormatter())
         # Create console handler to log messages to stderr. By default this
         # logs only error messages, but can be configured with --loglevel.
         ch = logging.StreamHandler(sys.stdout)
@@ -1238,6 +1280,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         ch.setFormatter(formatter)
         # add the handlers to the logger
         self.log.addHandler(fh)
+        self.log.addHandler(jh)
         self.log.addHandler(ch)
 
         if self.options.trace_rpc:

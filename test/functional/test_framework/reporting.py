@@ -50,8 +50,10 @@ def failure_timeline(result: JobResult) -> Tuple[List[str], str, bool]:
     """The end of the test's merged log timeline, up to the failure (the
     framework's logged exception, when the test failed with one), read from
     the end of each log; then the whole timeline written to
-    <tmpdir>/combined.log. Returns the excerpt's lines, the log's path (""
-    if it could not be written), and whether the failure was found."""
+    <tmpdir>/combined.log (text) and <tmpdir>/timeline.jsonl (JSON lines;
+    its path goes in result.timeline). Returns the excerpt's lines, the
+    text log's path ("" if it could not be written), and whether the
+    failure was found."""
     if not result.tmpdir or not os.path.isdir(result.tmpdir):
         return [], "", False
     stop = bool((result.failure or {}).get("traceback"))
@@ -62,13 +64,23 @@ def failure_timeline(result: JobResult) -> Tuple[List[str], str, bool]:
         path = timeline.write_combined_log(result.tmpdir)
     except OSError:
         path = ""
+    try:
+        result.timeline = timeline.write_timeline(result.tmpdir)
+    except OSError:
+        pass
     return lines, path, found
 
 
-def failure_block(result: JobResult, tests_dir: str) -> str:
+def failure_block(
+    result: JobResult,
+    tests_dir: str,
+    details: Optional[Tuple[List[str], str, bool]] = None,
+) -> str:
     """What a developer needs to look into a failed test: the traceback, the
     end of the merged log timeline (framework and nodes, by time) up to the
-    failure, and how to rerun it. Writes <tmpdir>/combined.log."""
+    failure, and how to rerun it. `details` is what failure_timeline()
+    returned; without it, failure_timeline() is called (and writes the
+    timeline files)."""
     out = [f"✖ {result.name} {result.status} after {result.duration:.0f} s"]
     failure = result.failure or {}
     if failure.get("traceback"):
@@ -77,7 +89,7 @@ def failure_block(result: JobResult, tests_dir: str) -> str:
         out += ["", failure["message"]]
     if result.stderr_tail and failure.get("type") != "stderr":
         out += ["", "stderr (last lines):"] + result.stderr_tail.splitlines()[-40:]
-    lines, combined_log, found = failure_timeline(result)
+    lines, combined_log, found = details or failure_timeline(result)
     if lines:
         where = "up to the failure" if found else "at the end"
         out += ["", f"Log timeline, last {len(lines)} lines {where}:"] + lines
@@ -85,6 +97,8 @@ def failure_block(result: JobResult, tests_dir: str) -> str:
     out += [f"Rerun: {rerun_command(result, tests_dir)}"]
     if combined_log:
         out += [f"Log:   {combined_log}"]
+    if result.timeline:
+        out += [f"       {result.timeline}"]
     return "\n".join(out)
 
 
@@ -301,6 +315,9 @@ class TestReporting(unittest.TestCase):
             text = f.read()
         self.assertIn("TB again", text)
         self.assertIn("after the failure", text)
+        self.assertEqual(result.timeline, os.path.join(tmpdir, "timeline.jsonl"))
+        self.assertIn(f"       {result.timeline}", block)
+        self.assertGreater(timeline.check_timeline(result.timeline), 100)
         # Without a traceback (e.g. a timeout): the end of the timeline
         result.failure = {"type": "timeout", "message": "stopped", "traceback": ""}
         block = failure_block(result, "/tests")
@@ -361,4 +378,5 @@ class TestReporting(unittest.TestCase):
             event = json.loads(f.readline())
         self.assertEqual(event["event"], "finish")
         self.assertEqual(event["schema"], 1)
+        self.assertEqual(event["result"]["schema"], 2)
         self.assertEqual(JobResult.from_dict(event["result"]).name, "x_test.py --opt")

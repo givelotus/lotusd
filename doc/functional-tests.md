@@ -202,6 +202,10 @@ When a test fails under `test_runner.py`, the runner merges
 `<test data directory>/combined.log`, and prints the last lines of that
 timeline up to the failure (see
 [README-runner-output.md](../test/functional/README-runner-output.md)).
+It also writes `<test data directory>/timeline.jsonl`: every log record of
+the test and its nodes, with their structured fields, sorted by time. Pass
+`--timeline` (to the runner, or to a test run directly) to also write it for
+passing tests; their cleanup then keeps that one file.
 
 `test_framework.log` and bitcoind `debug.log`s can also be combined into a
 single aggregate log by running the `combine_logs.py` script. The output can
