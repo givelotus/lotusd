@@ -205,7 +205,12 @@
     X(ClientName, client_name, STRING, "", "") \
     X(ClientVersion, client_version, STRING, "", "") \
     X(SigChecks, sig_checks, UINT, "", "") \
-    X(FeeDelta, fee_delta, STRING, "", "")
+    X(FeeDelta, fee_delta, STRING, "", "") \
+    X(VoteOutcome, vote_outcome, STRING, "", "") \
+    X(VoteItemType, vote_item_type, STRING, "", "") \
+    X(VoteItemId, vote_item_id, HASH, "", "") \
+    X(PeerAddressSuffix, peer_address_suffix, STRING, "", "") \
+    X(TipAgeSeconds, tip_age_seconds, INT, "", "")
 
 namespace BCLog {
 
