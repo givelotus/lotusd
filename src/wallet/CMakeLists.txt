@@ -32,6 +32,7 @@ add_library(wallet
 	rpc/encrypt.cpp
 	rpc/signmessage.cpp
 	rpc/util.cpp
+	rpc/native_psbt.cpp
 	scriptpubkeyman.cpp
 	spend.cpp
 	sqlite.cpp
@@ -48,7 +49,7 @@ add_library(wallet
 # https://github.com/bitcoin/bitcoin/pull/14437#discussion_r226237048
 # This dependency can be dropped after the mempool_ancestors_descendants
 # statistics is removed
-target_link_libraries(wallet server bitcoinconsensus univalue ${SQLITE3_IMPORTED_TARGET} lotus_v2_validation)
+target_link_libraries(wallet server bitcoinconsensus univalue ${SQLITE3_IMPORTED_TARGET} lotus_v2_validation lotus_v2_psbt)
 
 # wallet-tool library
 add_library(wallet-tool wallettool.cpp)
