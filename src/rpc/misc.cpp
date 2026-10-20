@@ -798,13 +798,7 @@ static RPCHelpMan getcurrencyinfo() {
                     HelpExampleRpc("getcurrencyinfo", "")},
         [&](const RPCHelpMan &self, const Config &config,
             const JSONRPCRequest &request) -> UniValue {
-            const Currency &currency = Currency::get();
-
-            UniValue res(UniValue::VOBJ);
-            res.pushKV("ticker", Currency::getTicker());
-            res.pushKV("satoshisperunit", currency.baseunit / SATOSHI);
-            res.pushKV("decimals", currency.decimals);
-            return res;
+            return CurrencyInfoToJSON();
         },
     };
 }
