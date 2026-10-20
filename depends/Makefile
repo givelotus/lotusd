@@ -38,6 +38,7 @@ NO_OPENSSL ?=
 NO_QR ?=
 NO_WALLET ?=
 NO_ZMQ ?=
+NO_HTTP2 ?=
 NO_JEMALLOC ?=
 BUILD_CPYTHON ?=
 FALLBACK_DOWNLOAD_PATH ?= https://download.bitcoinabc.org/depends-sources
@@ -146,6 +147,8 @@ wallet_packages_$(NO_WALLET) = $(bdb_packages_) $(sqlite_packages_)
 
 zmq_packages_$(NO_ZMQ) = $(zmq_packages)
 
+http2_packages_$(NO_HTTP2) = $(http2_packages)
+
 protobuf_packages_$(NO_PROTOBUF) = $(protobuf_packages)
 
 openssl_packages_$(NO_OPENSSL) = $(openssl_packages)
@@ -168,6 +171,10 @@ endif
 
 ifneq ($(zmq_packages_),)
 packages += $(zmq_packages)
+endif
+
+ifneq ($(http2_packages_),)
+packages += $(http2_packages)
 endif
 
 ifneq ($(jemalloc_packages_),)
