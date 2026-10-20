@@ -8038,8 +8038,11 @@ void ChainstateManager::LoadExternalBlockFile(
         GetNotifications().fatalError(std::string("System error: ") + e.what());
     }
 
-    LogPrintf("Loaded %i blocks from external file in %dms\n", nLoaded,
-              GetTimeMillis() - nStart);
+    LogInfoEvent(
+        BCLog::ALL, "block_file_external_import_completed",
+        "Loaded {imported_block_count} blocks from external file in {elapsed_milliseconds}ms")
+        .Field(BCLog::LogField::ImportedBlockCount, nLoaded)
+        .Field(BCLog::LogField::ElapsedMilliseconds, GetTimeMillis() - nStart);
 }
 
 bool ChainstateManager::ShouldCheckBlockIndex() const {

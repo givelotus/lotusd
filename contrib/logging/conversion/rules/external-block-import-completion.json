@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "batch": "external-block-import-completion",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/validation.cpp",
+      "rules": [
+        {
+          "id": "block_file_external_import_completed",
+          "old": "LogPrintf(\"Loaded %i blocks from external file in %dms\\n\", nLoaded,\n              GetTimeMillis() - nStart)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_file_external_import_completed\", \"Loaded {imported_block_count} blocks from external file in {elapsed_milliseconds}ms\").Field(BCLog::LogField::ImportedBlockCount, nLoaded).Field(BCLog::LogField::ElapsedMilliseconds, GetTimeMillis() - nStart)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Loaded %i blocks from external file in %dms\n",
+            "specifiers": [
+              "%i",
+              "%d"
+            ],
+            "arguments": [
+              "nLoaded",
+              "GetTimeMillis() - nStart"
+            ]
+          },
+          "review_note": "Preserve Info, signed int loaded-block count and signed wall-clock milliseconds including possible clock rollback. No integer-to-double coercion, timer substitution, import accounting, interrupt/exception or block-validation change. Existing real owned reindex fixture will check actual fields; this is not a benchmark."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Preserve exact signed original counter and elapsed-millisecond types without repurposing unsigned Count or floating ElapsedMs. Append IDs only.",
+          "old": "    X(SnapshotProgressPercent, snapshot_progress_percent, FLOAT, \"\", \"\")\n",
+          "new": "    X(SnapshotProgressPercent, snapshot_progress_percent, FLOAT, \"\", \"\") \\\n    X(ImportedBlockCount, imported_block_count, INT, \"\", \"\") \\\n    X(ElapsedMilliseconds, elapsed_milliseconds, INT, \"\", \"\")\n"
+        }
+      ]
+    }
+  ]
+}
