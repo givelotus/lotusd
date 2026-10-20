@@ -284,6 +284,7 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		transaction_tests.cpp
 		translation_tests.cpp
 		txindex_tests.cpp
+		txadmission_queue_tests.cpp
 		txpackage_tests.cpp
 		txpool_tests.cpp
 		txrelay_tests.cpp
