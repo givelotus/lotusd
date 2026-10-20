@@ -162,7 +162,8 @@
     X(CoinsTipCacheBudgetMiB, coins_tip_cache_budget_mib, FLOAT, "", "") \
     X(BugReportURL, bug_report_url, STRING, "", "") \
     X(ExpectedChainTxCount, expected_chain_tx_count, UINT, "", "") \
-    X(SHA256Implementation, sha256_implementation, STRING, "", "")
+    X(SHA256Implementation, sha256_implementation, STRING, "", "") \
+    X(ScriptWorkerThreads, script_worker_threads, INT, "", "")
 
 namespace BCLog {
 

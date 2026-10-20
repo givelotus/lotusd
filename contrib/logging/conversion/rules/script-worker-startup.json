@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "batch": "script-worker-startup",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/checkqueue.h",
+      "rules": [
+        {
+          "id": "script_verification_workers",
+          "old": "LogInfo(\"Script verification uses %d additional threads\\n\",\n                worker_threads_num)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"script_verification_workers\", \"Script verification uses {script_worker_threads} additional threads\").Field(BCLog::LogField::ScriptWorkerThreads, worker_threads_num)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogInfo",
+            "format": "Script verification uses %d additional threads\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "worker_threads_num"
+            ]
+          },
+          "review_note": "Original signed additional-worker count and Info/readable text. Do not change clamping, thread creation, condition variables, checks or queue behavior."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Actual additional script worker count retains signed int semantics.",
+          "old": "    X(SHA256Implementation, sha256_implementation, STRING, \"\", \"\")\n",
+          "new": "    X(SHA256Implementation, sha256_implementation, STRING, \"\", \"\") \\\n    X(ScriptWorkerThreads, script_worker_threads, INT, \"\", \"\")\n"
+        }
+      ]
+    }
+  ]
+}
