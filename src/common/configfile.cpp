@@ -120,8 +120,10 @@ bool ArgsManager::ReadConfigStream(std::istream &stream,
             m_settings.ro_config[key.section][key.name].push_back(*value);
         } else {
             if (ignore_invalid_keys) {
-                LogPrintf("Ignoring unknown configuration value %s\n",
-                          option.first);
+                LogInfoEvent(
+                    BCLog::ALL, "config_unknown_option_ignored",
+                    "Ignoring unknown configuration value {config_option}")
+                    .Field(BCLog::LogField::ConfigOption, option.first);
             } else {
                 error = strprintf("Invalid configuration value %s",
                                   option.first.c_str());
@@ -198,8 +200,9 @@ bool ArgsManager::ReadConfigFiles(std::string &error,
                                           error, ignore_invalid_keys)) {
                         return false;
                     }
-                    LogPrintf("Included configuration file %s\n",
-                              conf_file_name);
+                    LogInfoEvent(BCLog::ALL, "config_include_loaded",
+                                 "Included configuration file {name}")
+                        .Field(BCLog::LogField::Name, conf_file_name);
                 } else {
                     error = "Failed to include configuration file " +
                             conf_file_name;
