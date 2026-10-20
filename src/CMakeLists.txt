@@ -800,10 +800,17 @@ endif()
 # API (OpenSSL >= 3.5); nghttp3 must carry the depends patch adding
 # nghttp3_conn_set_extra_settings() (FindNghttp3 rejects a stock build).
 if(ENABLE_WEBTRANSPORT)
+	if(WIN32)
+		# The QUIC engine uses POSIX sockets, poll() and socketpair().
+		message(FATAL_ERROR "ENABLE_WEBTRANSPORT is not supported on Windows")
+	endif()
 	find_package(OpenSSL 3.5 REQUIRED)
 	find_package(Nghttp3 1.18.0 REQUIRED COMPONENTS nghttp3)
 	find_package(Ngtcp2 1.25.0 REQUIRED COMPONENTS ngtcp2 crypto_ossl)
 	target_sources(server PRIVATE
+		net_quic/quic_connection.cpp
+		net_quic/quic_engine.cpp
+		net_quic/udp_socket.cpp
 		net_quic/version_check.cpp
 	)
 	# Search these headers first, for this directory and the tests below
