@@ -8,6 +8,7 @@
 
 #include <chainparams.h>
 #include <common/args.h>
+#include <config.h>
 #include <key_io.h>
 #include <protocol.h>
 #include <serialize.h>
@@ -53,6 +54,16 @@ const std::string WATCHMETA{"watchmeta"};
 const std::string WATCHS{"watchs"};
 } // namespace DBKeys
 
+namespace {
+std::string AddressBookKey(const CTxDestination &address) {
+    // Preserve legacy database keys; native destinations have their own
+    // canonical encoding and must never collapse to an empty legacy key.
+    return std::holds_alternative<NativeDestination>(address)
+               ? EncodeDestination(address, GetConfig())
+               : EncodeLegacyAddr(address, Params());
+}
+} // namespace
+
 //
 // WalletBatch
 //
@@ -62,9 +73,8 @@ bool WalletBatch::WriteName(const CTxDestination &address,
     if (!IsValidDestination(address)) {
         return false;
     }
-    return WriteIC(
-        std::make_pair(DBKeys::NAME, EncodeLegacyAddr(address, Params())),
-        strName);
+    return WriteIC(std::make_pair(DBKeys::NAME, AddressBookKey(address)),
+                   strName);
 }
 
 bool WalletBatch::EraseName(const CTxDestination &address) {
@@ -74,8 +84,7 @@ bool WalletBatch::EraseName(const CTxDestination &address) {
     if (!IsValidDestination(address)) {
         return false;
     }
-    return EraseIC(
-        std::make_pair(DBKeys::NAME, EncodeLegacyAddr(address, Params())));
+    return EraseIC(std::make_pair(DBKeys::NAME, AddressBookKey(address)));
 }
 
 bool WalletBatch::WritePurpose(const CTxDestination &address,
@@ -83,17 +92,15 @@ bool WalletBatch::WritePurpose(const CTxDestination &address,
     if (!IsValidDestination(address)) {
         return false;
     }
-    return WriteIC(
-        std::make_pair(DBKeys::PURPOSE, EncodeLegacyAddr(address, Params())),
-        strPurpose);
+    return WriteIC(std::make_pair(DBKeys::PURPOSE, AddressBookKey(address)),
+                   strPurpose);
 }
 
 bool WalletBatch::ErasePurpose(const CTxDestination &address) {
     if (!IsValidDestination(address)) {
         return false;
     }
-    return EraseIC(
-        std::make_pair(DBKeys::PURPOSE, EncodeLegacyAddr(address, Params())));
+    return EraseIC(std::make_pair(DBKeys::PURPOSE, AddressBookKey(address)));
 }
 
 bool WalletBatch::WriteTx(const CWalletTx &wtx) {
@@ -1080,11 +1087,9 @@ bool WalletBatch::WriteDestData(const CTxDestination &address,
     if (!IsValidDestination(address)) {
         return false;
     }
-    return WriteIC(
-        std::make_pair(
-            DBKeys::DESTDATA,
-            std::make_pair(EncodeLegacyAddr(address, Params()), key)),
-        value);
+    return WriteIC(std::make_pair(DBKeys::DESTDATA,
+                                  std::make_pair(AddressBookKey(address), key)),
+                   value);
 }
 
 bool WalletBatch::EraseDestData(const CTxDestination &address,
@@ -1093,8 +1098,7 @@ bool WalletBatch::EraseDestData(const CTxDestination &address,
         return false;
     }
     return EraseIC(std::make_pair(
-        DBKeys::DESTDATA,
-        std::make_pair(EncodeLegacyAddr(address, Params()), key)));
+        DBKeys::DESTDATA, std::make_pair(AddressBookKey(address), key)));
 }
 
 bool WalletBatch::WriteHDChain(const CHDChain &chain) {
