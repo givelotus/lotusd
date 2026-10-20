@@ -163,6 +163,40 @@ namespace metric_labels {
             "exempt_manual"};
         return labels;
     }
+    const std::vector<std::string> &ChronikEndpoints() {
+        // Route families of chronik-http's router (server.rs), by first
+        // path segment, then not_found (no route) and other.
+        static const std::vector<std::string> labels{"blockchain_info",
+                                                     "block",
+                                                     "block_header",
+                                                     "block_txs",
+                                                     "blocks",
+                                                     "block_headers",
+                                                     "unconfirmed_txs",
+                                                     "chronik_info",
+                                                     "tx",
+                                                     "token",
+                                                     "raw_tx",
+                                                     "validate_tx",
+                                                     "broadcast_tx",
+                                                     "broadcast_txs",
+                                                     "script_batch",
+                                                     "script",
+                                                     "token_id",
+                                                     "lokad_id",
+                                                     "plugin",
+                                                     "ws",
+                                                     "pause",
+                                                     "resume",
+                                                     "not_found",
+                                                     "other"};
+        return labels;
+    }
+    const std::vector<std::string> &ChronikCodeClasses() {
+        static const std::vector<std::string> labels{"2xx", "4xx", "5xx",
+                                                     "other"};
+        return labels;
+    }
     const std::vector<std::string> &HTTPCodeClasses() {
         static const std::vector<std::string> labels{"1xx", "2xx", "3xx",
                                                      "4xx", "5xx", "other"};
@@ -283,6 +317,47 @@ size_t MetricDatabaseIndex(const std::string &path) noexcept {
         return 0;
     }
     return 5;
+}
+
+size_t ChronikEndpointIndex(std::string_view route) noexcept {
+    const auto &labels{L::ChronikEndpoints()};
+    const auto index_of{[&](std::string_view name) {
+        for (size_t i = 0; i < labels.size(); ++i) {
+            if (labels[i] == name) {
+                return i;
+            }
+        }
+        return labels.size() - 1;
+    }};
+    if (route.empty()) {
+        return index_of("not_found");
+    }
+    if (route.starts_with("/script/batch/")) {
+        return index_of("script_batch");
+    }
+    // First path segment, with '-' as '_'
+    std::string segment;
+    for (size_t i = route.starts_with('/') ? 1 : 0;
+         i < route.size() && route[i] != '/'; ++i) {
+        segment += route[i] == '-' ? '_' : route[i];
+    }
+    const size_t i{index_of(segment)};
+    // The two catch-alls are not route families
+    return labels[i] == "not_found" ? labels.size() - 1 : i;
+}
+
+void RecordChronikRequest(std::string_view route, uint16_t status,
+                          uint64_t nanos) noexcept {
+    if (auto *m{GetNodeMetrics()}) {
+        const size_t endpoint{ChronikEndpointIndex(route)};
+        const size_t code{status >= 200 && status < 300   ? 0U
+                          : status >= 400 && status < 500 ? 1U
+                          : status >= 500 && status < 600 ? 2U
+                                                          : 3U};
+        const std::array<size_t, 2> idx{endpoint, code};
+        m->chronik_requests.Add(m->chronik_requests.SeriesIndex(idx));
+        m->chronik_request_seconds.Record(nanos, endpoint);
+    }
 }
 
 void RecordTxPoolRemovals(std::string_view pool_kind, unsigned expired,
@@ -742,6 +817,32 @@ NodeMetrics::NodeMetrics(std::vector<std::string> rpc_methods)
           registry, MetricName("p2p_misbehavior_total"),
           "Peer misbehavior events, by reason class.",
           std::vector<LabelDim>{{"reason", L::MisbehaviorReasons()}})},
+      chronik_requests{Add<Counter>(
+          registry, MetricName("chronik_requests_total"),
+          "Requests to Chronik's HTTP server, by endpoint (route family) "
+          "and status class.",
+          std::vector<LabelDim>{{"endpoint", L::ChronikEndpoints()},
+                                {"code", L::ChronikCodeClasses()}})},
+      chronik_request_seconds{Add<EventHistogram>(
+          registry, MetricName("chronik_request_duration_seconds"),
+          "Time for Chronik's HTTP server to answer a request, by endpoint.",
+          REQUEST_BUCKETS, /*divisor=*/1e9,
+          std::vector<LabelDim>{{"endpoint", L::ChronikEndpoints()}})},
+      chronik_ws_connections{Add<Gauge>(registry,
+                                        MetricName("chronik_ws_connections"),
+                                        "Open Chronik WebSocket connections.")},
+      chronik_ws_subscriptions{Add<Gauge>(
+          registry, MetricName("chronik_ws_subscriptions"),
+          "Active Chronik WebSocket subscriptions (scripts, token ids, "
+          "blocks, ...), over all connections.")},
+      chronik_indexed_height{
+          Add<Gauge>(registry, MetricName("chronik_indexed_height"),
+                     "Height of the last block Chronik indexed (absent without "
+                     "Chronik: 0).")},
+      chronik_lag{Add<Gauge>(
+          registry, MetricName("chronik_lag_blocks"),
+          "Blocks Chronik's index is behind the chain tip, at scrape time "
+          "(0 without Chronik).")},
       m_rpc_methods{SortedWithOther(std::move(rpc_methods))} {
     build_info.Set(1);
     registry.Add(std::make_unique<metrics::FunctionCounter>(
@@ -755,6 +856,10 @@ NodeMetrics::NodeMetrics(std::vector<std::string> rpc_methods)
         [] { return LogInstance().JournalFailures(); }));
     initial_block_download.Set(1);
     registry.AddCollector([this] {
+        if (chronik_indexed_height_known.load(std::memory_order_relaxed)) {
+            chronik_lag.Set(std::max(0.0, tip_height.Value() -
+                                              chronik_indexed_height.Value()));
+        }
         const double tip{tip_timestamp.Value()};
         if (tip > 0) {
             tip_age.Set(double(TicksSinceEpoch<std::chrono::seconds>(

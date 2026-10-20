@@ -8,12 +8,14 @@
 #include <config.h>
 #include <logging.h>
 #include <node/context.h>
+#include <node/metrics.h>
 #include <node/ui_interface.h>
 #include <script/script.h>
 #include <util/chaintype.h>
 #include <util/result.h>
 #include <util/time.h>
 #include <util/translation.h>
+#include <validation.h>
 
 #include <chronik-cpp/chronik.h>
 #include <chronik-cpp/chronik_inprocess.h>
@@ -226,7 +228,15 @@ bool Start(const ArgsManager &args, const Config &config,
     if (!params) {
         return InitError(ErrorString(params));
     }
-    return chronik_bridge::setup_chronik(*params, node);
+    if (!chronik_bridge::setup_chronik(*params, node)) {
+        return false;
+    }
+    // Chronik synced to the tip it found before indexing new blocks
+    if (node.chainman) {
+        node::SetChronikIndexedHeight(
+            WITH_LOCK(::cs_main, return node.chainman->ActiveHeight()));
+    }
+    return true;
 }
 
 void Interrupt() {
