@@ -48,6 +48,7 @@ add_executable(fuzz EXCLUDE_FROM_ALL
 	golomb_rice.cpp
 	hex.cpp
 	http_request.cpp
+	http2_server.cpp
 	integer.cpp
 	key.cpp
 	key_io.cpp

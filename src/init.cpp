@@ -1841,6 +1841,56 @@ void SetupServerArgs(NodeContext &node) {
                   "(default: %u)",
                   DEFAULT_HTTP2),
         ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
+    argsman.AddArg("-http2maxstreams=<n>",
+                   strprintf("HTTP/2: concurrent streams per connection "
+                             "(SETTINGS_MAX_CONCURRENT_STREAMS, 1-10000, "
+                             "default: %d)",
+                             DEFAULT_HTTP2_MAX_STREAMS),
+                   ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
+    argsman.AddArg(
+        "-http2maxheaderlistsize=<bytes>",
+        strprintf("HTTP/2: largest request header list, counted as in RFC "
+                  "9113 (name + value + 32 bytes per field); larger requests "
+                  "get 431 (1024-1048576, default: %d)",
+                  DEFAULT_HTTP2_MAX_HEADER_LIST_SIZE),
+        ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
+    argsman.AddArg("-http2maxframesize=<bytes>",
+                   strprintf("HTTP/2: largest frame payload accepted "
+                             "(SETTINGS_MAX_FRAME_SIZE, 16384-16777215, "
+                             "default: %d)",
+                             DEFAULT_HTTP2_MAX_FRAME_SIZE),
+                   ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
+    argsman.AddArg(
+        "-http2streamwindow=<bytes>",
+        strprintf("HTTP/2: bytes a client may send on one stream before the "
+                  "node has consumed them (SETTINGS_INITIAL_WINDOW_SIZE, "
+                  "65535-2147483647, default: %d)",
+                  DEFAULT_HTTP2_STREAM_WINDOW),
+        ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
+    argsman.AddArg("-http2connwindow=<bytes>",
+                   strprintf("HTTP/2: the same for the whole connection "
+                             "(65535-2147483647, default: %d)",
+                             DEFAULT_HTTP2_CONNECTION_WINDOW),
+                   ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
+    argsman.AddArg(
+        "-http2resetburst=<n>",
+        strprintf("HTTP/2: stream resets (RST_STREAM) a client may send in a "
+                  "burst before the connection is closed, against HTTP/2 "
+                  "Rapid Reset (CVE-2023-44487) (default: %d)",
+                  DEFAULT_HTTP2_RESET_BURST),
+        ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
+    argsman.AddArg("-http2resetrate=<n>",
+                   strprintf("HTTP/2: stream resets per second regained "
+                             "after a burst (default: %d)",
+                             DEFAULT_HTTP2_RESET_RATE),
+                   ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
+    argsman.AddArg(
+        "-http2maxcontinuations=<n>",
+        strprintf("HTTP/2: CONTINUATION frames allowed after a HEADERS "
+                  "frame, against CONTINUATION floods (CVE-2024-28182) "
+                  "(0-1000, default: %d)",
+                  DEFAULT_HTTP2_MAX_CONTINUATIONS),
+        ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
     argsman.AddArg(
         "-tlsmutual",
         strprintf("Request (but do not require) TLS client certificates on "
