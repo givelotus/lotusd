@@ -102,7 +102,7 @@ class HTTPMetricsTest(BitcoinTestFramework):
                     self.scrape(),
                     m("peers"),
                     direction="inbound",
-                    transport="websocket",
+                    transport="ws",
                 )
                 == 1
             )
@@ -119,12 +119,22 @@ class HTTPMetricsTest(BitcoinTestFramework):
         samples = self.scrape()
         assert_equal(self.total(samples, m("p2p_websocket_peers")), 1)
         assert_equal(self.total(samples, m("p2p_websocket_peers"), tls="false"), 1)
+        # The WebSocket peer's handshake is timed under transport="ws"
+        assert (
+            self.total(
+                samples,
+                m("p2p_handshake_seconds_count"),
+                direction="inbound",
+                transport="ws",
+            )
+            >= 1
+        )
         assert_equal(
             self.total(
                 samples,
                 m("p2p_connections_total"),
                 direction="inbound",
-                transport="websocket",
+                transport="ws",
             ),
             1,
         )

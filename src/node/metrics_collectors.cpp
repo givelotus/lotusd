@@ -4,8 +4,10 @@
 
 #include <node/metrics_collectors.h>
 
+#include <addrman.h>
 #include <avalanche/peermanager.h>
 #include <avalanche/processor.h>
+#include <banman.h>
 #include <feerate.h>
 #include <lotus_v2/fee_hysteresis.h>
 #include <net/v2_protocol_handler.h>
@@ -110,6 +112,23 @@ namespace {
                 c.HasCompleteAdaptiveHistory() ? 1 : 0);
         }));
     }
+    void AddPeersCollector(NodeMetrics &m, const AddrMan *addrman,
+                           BanMan *banman) {
+        g_collectors.push_back(m.registry.AddCollector([&m, addrman, banman] {
+            if (addrman) {
+                // addrman's own mutex, briefly
+                const auto [new_count, tried_count]{addrman->NewTriedCounts()};
+                m.addrman_addresses.Set(double(new_count), 0);
+                m.addrman_addresses.Set(double(tried_count), 1);
+            }
+            if (banman) {
+                // The ban list's mutex, for a copy (as listbanned)
+                banmap_t banned;
+                banman->GetBanned(banned);
+                m.p2p_banned.Set(double(banned.size()));
+            }
+        }));
+    }
 } // namespace
 
 void StartNodeMetricsCollectors(NodeContext &node) {
@@ -130,6 +149,7 @@ void StartNodeMetricsCollectors(NodeContext &node) {
         }
     }
     AddAdaptiveCapacityCollector(*m);
+    AddPeersCollector(*m, node.addrman.get(), node.banman.get());
 }
 
 void StopNodeMetricsCollectors() {
