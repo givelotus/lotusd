@@ -234,8 +234,11 @@ std::shared_ptr<SSL_CTX> ReloadingClientContext::Get() {
     }
     auto ctx{NewContext(/*server=*/false, m_offer_h2)};
     if (!ctx || !UseCertificateFiles(ctx.get(), *m_cert, *m_key)) {
-        LogPrintf("Not reloading TLS client certificate %s: %s\n",
-                  fs::PathToString(*m_cert), ErrorString());
+        LogInfoEvent(
+            BCLog::ALL, "tls_client_certificate_reload_failed",
+            "Not reloading TLS client certificate {certificate_path}: {error}")
+            .Field(BCLog::LogField::CertificatePath, fs::PathToString(*m_cert))
+            .Field(BCLog::LogField::Error, ErrorString());
         return m_context;
     }
     SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_NONE, nullptr);
@@ -243,7 +246,9 @@ std::shared_ptr<SSL_CTX> ReloadingClientContext::Get() {
     m_loaded = true;
     m_cert_mtime = cert_mtime;
     m_key_mtime = key_mtime;
-    LogPrintf("Loaded TLS client certificate %s\n", fs::PathToString(*m_cert));
+    LogInfoEvent(BCLog::ALL, "tls_client_certificate_loaded",
+                 "Loaded TLS client certificate {certificate_path}")
+        .Field(BCLog::LogField::CertificatePath, fs::PathToString(*m_cert));
     return m_context;
 }
 
