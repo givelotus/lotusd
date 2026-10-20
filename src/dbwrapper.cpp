@@ -4,6 +4,8 @@
 
 #include <dbwrapper.h>
 
+#include <logging/values.h>
+
 #include <leveldb/cache.h>
 #include <leveldb/db.h>
 #include <leveldb/env.h>
@@ -82,7 +84,8 @@ void HandleLevelDBError(const leveldb::Status &status) {
         return;
     }
     const std::string errmsg = "Fatal LevelDB error: " + status.ToString();
-    LogPrintf("%s\n", errmsg);
+    LogInfoEvent(BCLog::ALL, "database_fatal_error", "{error}")
+        .Field(BCLog::LogField::Error, errmsg);
     throw dbwrapper_error(errmsg);
 }
 
@@ -144,8 +147,11 @@ void SetMaxOpenFiles(leveldb::Options *options) {
         options->max_open_files = 64;
     }
 #endif
-    LogDebug(BCLog::LEVELDB, "LevelDB using max_open_files=%d (default=%d)\n",
-             options->max_open_files, default_open_files);
+    LogEvent(
+        BCLog::LEVELDB, "database_open_file_limit",
+        "LevelDB using max_open_files={max_open_files} (default={default_open_files})")
+        .Field(BCLog::LogField::MaxOpenFiles, options->max_open_files)
+        .Field(BCLog::LogField::DefaultOpenFiles, default_open_files);
 }
 
 leveldb::Options GetLevelDBOptions(size_t nCacheSize) {
@@ -171,8 +177,9 @@ void MigrateFromLevelDBIfPresent(MDBX_env *env, MDBX_dbi dbi,
     if (!std::filesystem::exists(dir / "CURRENT", ec)) {
         return;
     }
-    LogPrintf("Migrating LevelDB database in %s to libmdbx...\n",
-              fs::PathToString(dir));
+    LogInfoEvent(BCLog::ALL, "database_migration_started",
+                 "Migrating LevelDB database in {path} to libmdbx...")
+        .Field(BCLog::LogField::Path, fs::PathToString(dir));
 
     leveldb::Options ldb_opts = GetLevelDBOptions(cache_bytes);
     ldb_opts.create_if_missing = false;
@@ -279,8 +286,11 @@ void MigrateFromLevelDBIfPresent(MDBX_env *env, MDBX_dbi dbi,
 
     // Move legacy LevelDB files to leveldb.bak now that migration is committed.
     MoveLevelDBFilesToBackup(dir);
-    LogPrintf("Migrated %zu keys from LevelDB to libmdbx in %s (backed up LevelDB to leveldb.bak)\n",
-              total_keys, fs::PathToString(dir));
+    LogInfoEvent(
+        BCLog::ALL, "database_migration_finished",
+        "Migrated {count} keys from LevelDB to libmdbx in {path} (backed up LevelDB to leveldb.bak)")
+        .Field(BCLog::LogField::Count, total_keys)
+        .Field(BCLog::LogField::Path, fs::PathToString(dir));
 }
 } // namespace
 
@@ -315,8 +325,9 @@ CDBWrapper::CDBWrapper(const DBParams &params)
     } else {
         m_active_path = params.path;
         if (params.wipe_data) {
-            LogPrintf("Wiping libmdbx in %s\n",
-                      fs::PathToString(m_active_path));
+            LogInfoEvent(BCLog::ALL, "database_wipe_started",
+                         "Wiping libmdbx in {path}")
+                .Field(BCLog::LogField::Path, fs::PathToString(m_active_path));
             WipeMdbxFilesInDir(m_active_path);
         }
         TryCreateDirectories(m_active_path);
@@ -345,7 +356,9 @@ CDBWrapper::CDBWrapper(const DBParams &params)
                 }
             }
         }
-        LogPrintf("Opening libmdbx in %s\n", fs::PathToString(m_active_path));
+        LogInfoEvent(BCLog::ALL, "database_open_started",
+                     "Opening libmdbx in {path}")
+            .Field(BCLog::LogField::Path, fs::PathToString(m_active_path));
     }
 
     int rc = mdbx_env_create(&m_env);
@@ -409,7 +422,8 @@ CDBWrapper::CDBWrapper(const DBParams &params)
             std::ofstream lock_marker(m_active_path / "LOCK",
                                       std::ios::out | std::ios::trunc);
         }
-        LogPrintf("Opened libmdbx successfully\n");
+        LogInfoEvent(BCLog::ALL, "database_open_finished",
+                     "Opened libmdbx successfully");
     }
 
     // The base-case obfuscation key, which is a noop.
@@ -426,12 +440,17 @@ CDBWrapper::CDBWrapper(const DBParams &params)
         Write(OBFUSCATE_KEY_KEY, new_key);
         obfuscate_key = new_key;
 
-        LogPrintf("Wrote new obfuscate key for %s: %s\n",
-                  fs::PathToString(params.path), HexStr(obfuscate_key));
+        LogInfoEvent(BCLog::ALL, "database_obfuscation_key_created",
+                     "Wrote new obfuscate key for {path}: {obfuscation_key}")
+            .Field(BCLog::LogField::Path, fs::PathToString(params.path))
+            .Field(BCLog::LogField::ObfuscationKey,
+                   BCLog::LogHex{obfuscate_key});
     }
 
-    LogPrintf("Using obfuscation key for %s: %s\n",
-              fs::PathToString(params.path), HexStr(obfuscate_key));
+    LogInfoEvent(BCLog::ALL, "database_obfuscation_key_selected",
+                 "Using obfuscation key for {path}: {obfuscation_key}")
+        .Field(BCLog::LogField::Path, fs::PathToString(params.path))
+        .Field(BCLog::LogField::ObfuscationKey, BCLog::LogHex{obfuscate_key});
 }
 
 CDBWrapper::~CDBWrapper() {
@@ -459,8 +478,11 @@ CDBWrapper::~CDBWrapper() {
         if (!m_is_memory) {
             const int rc = mdbx_env_sync_ex(m_env, true, false);
             if (rc != MDBX_SUCCESS && rc != MDBX_RESULT_TRUE) {
-                LogPrintf("Error synchronizing MDBX database %s at shutdown: %s\n",
-                          m_name, mdbx_strerror(rc));
+                LogInfoEvent(
+                    BCLog::ALL, "database_shutdown_sync_failed",
+                    "Error synchronizing MDBX database {name} at shutdown: {error}")
+                    .Field(BCLog::LogField::Name, m_name)
+                    .Field(BCLog::LogField::Error, mdbx_strerror(rc));
             }
         }
         mdbx_env_close_ex(m_env, m_is_memory);
@@ -859,7 +881,8 @@ void HandleError(int rc, const char *context) {
     const std::string errmsg = strprintf(
         "Fatal libmdbx error (%s): [%d] %s", context, rc,
         errstr ? errstr : "unknown");
-    LogPrintf("%s\n", errmsg);
+    LogInfoEvent(BCLog::ALL, "database_fatal_error", "{error}")
+        .Field(BCLog::LogField::Error, errmsg);
     throw dbwrapper_error(errmsg);
 }
 
