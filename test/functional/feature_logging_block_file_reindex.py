@@ -40,6 +40,17 @@ class BlockFileReindexLoggingTest(BitcoinTestFramework):
         assert_equal(reindex["message"], "Reindexing block file blk00000.dat...")
         assert_equal(reindex["level"], "info")
         assert "fields_truncated" not in reindex
+        imported = events["block_file_external_import_completed"]
+        count = imported["imported_block_count"]
+        elapsed = imported["elapsed_milliseconds"]
+        assert type(count) is int
+        assert type(elapsed) is int
+        assert_equal(
+            imported["message"],
+            f"Loaded {count} blocks from external file in {elapsed}ms",
+        )
+        assert_equal(imported["level"], "info")
+        assert "fields_truncated" not in imported
 
 
 if __name__ == "__main__":
