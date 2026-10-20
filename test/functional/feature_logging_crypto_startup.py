@@ -19,13 +19,55 @@ class CryptoStartupLoggingTest(BitcoinTestFramework):
     def run_test(self):
         node = self.nodes[0]
         assert_equal(node.getblockcount(), 0)
+        cookie_path = node.chain_path / ".cookie"
+        cookie = cookie_path.read_text()
+        assert cookie.startswith("__cookie__:")
         self.stop_node(0)
-        rows = [
-            json.loads(line)
-            for line in node.debug_log_path.read_text().splitlines()
-            if line.strip()
-        ]
+        # These paths and marker belong only to this isolated test datadir.
+        missing_cookie = node.chain_path / "missing-cookie-parent" / "auth"
+        init_error = "Error: Unable to start HTTP server. See debug log for details."
+        node.assert_start_raises_init_error(
+            extra_args=[*self.extra_args[0], f"-rpccookiefile={missing_cookie}"],
+            expected_msg=init_error,
+            timeout=5,
+        )
+        blocked_cookie = node.chain_path / "cookie-destination-directory"
+        blocked_cookie.mkdir()
+        (blocked_cookie / "owned-marker").write_text("keep this directory nonempty")
+        node.assert_start_raises_init_error(
+            extra_args=[*self.extra_args[0], f"-rpccookiefile={blocked_cookie}"],
+            expected_msg=init_error,
+            timeout=5,
+        )
+        log = node.debug_log_path.read_text()
+        assert cookie not in log
+        assert "__cookie__:" not in log
+        rows = [json.loads(line) for line in log.splitlines() if line.strip()]
         by_event = {row.get("event"): row for row in rows}
+        generated = by_event["rpc_cookie_generated"]
+        assert_equal(generated["path"], str(cookie_path))
+        assert_equal(
+            generated["message"], f"Generated RPC authentication cookie {cookie_path}"
+        )
+        opened = by_event["rpc_cookie_open_failed"]
+        assert_equal(opened["path"], str(missing_cookie) + ".tmp")
+        assert_equal(
+            opened["message"],
+            f"Unable to open cookie authentication file {missing_cookie}.tmp for writing",
+        )
+        renamed = by_event["rpc_cookie_rename_failed"]
+        assert_equal(renamed["source_path"], str(blocked_cookie) + ".tmp")
+        assert_equal(renamed["destination_path"], str(blocked_cookie))
+        assert "path" not in renamed
+        assert_equal(
+            renamed["message"],
+            f"Unable to rename cookie authentication file {blocked_cookie}.tmp to {blocked_cookie}",
+        )
+        for row in (generated, opened, renamed):
+            assert_equal(row["level"], "info")
+            assert "fields_truncated" not in row
+            assert "cookie" not in row
+            assert "password" not in row
         selected = by_event["sha256_implementation_selected"]
         implementation = selected["sha256_implementation"]
         assert isinstance(implementation, str) and implementation
