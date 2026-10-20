@@ -38,18 +38,21 @@ class P2PWebSocketClient:
         net="regtest",
         timeout=30,
         header=None,
+        ws=None,
     ):
-        import websocket
+        """Connect to `url`, or use `ws`, an already open WebSocket with the
+        same methods (e.g. test_framework.http2.H2WebSocket)."""
         import zstandard
 
-        sslopt = {"cert_reqs": ssl.CERT_NONE} if url.startswith("wss") else None
-        self.ws = websocket.create_connection(
-            url,
-            subprotocols=subprotocols,
-            sslopt=sslopt,
-            timeout=timeout,
-            header=header,
-        )
+        if ws is not None:
+            self.ws = ws
+        else:
+            import websocket
+
+            sslopt = {"cert_reqs": ssl.CERT_NONE} if url.startswith("wss") else None
+            self.ws = websocket.create_connection(
+                url, subprotocols=subprotocols, sslopt=sslopt, timeout=timeout, header=header
+            )
         self.subprotocol = self.ws.getsubprotocol()
         self.magic = NET_MAGIC_BYTES[net]
         self.recvbuf = b""
