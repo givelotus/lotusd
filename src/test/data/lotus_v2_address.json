@@ -206,11 +206,6 @@
    "note": "space inside the body"
   },
   {
-   "address": "xpi1p80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseqcrgtu6th",
-   "reason": "unknown version",
-   "note": "version 1 with a correct checksum"
-  },
-  {
    "address": "xpi1l80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseqq5cyk4p9",
    "reason": "unknown version",
    "note": "version 31 with a correct checksum"
@@ -234,6 +229,11 @@
    "address": "xpi1q80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseqqknycqhxe",
    "reason": "bad length",
    "note": "53 payload symbols with a correct checksum"
+  },
+  {
+   "address": "xpi1pqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqy55tqxnq",
+   "reason": "bad checksum",
+   "note": "corrupted type1 checksum"
   }
  ]
 }
