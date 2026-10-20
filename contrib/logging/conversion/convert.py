@@ -7,6 +7,7 @@ includes every argument and format token, so changed inputs fail closed. Use
 --apply only after reviewing the dry-run inventory and diff.
 """
 import argparse
+from collections import Counter
 import difflib
 import hashlib
 import importlib.metadata
@@ -151,6 +152,8 @@ def validate_mapping(old, event):
                     and len(args(value)) == 1):
                 return "fsq"
             return None
+        if spec == "%c":
+            return None  # Exact LogChar snapshot contract checked below.
         if re.fullmatch(r"%(?:ll|l|z|t|j)?[diu]", spec):
             return None
         if re.fullmatch(r"%(?:0(?:[1-9]|1[0-6]))?x", spec):
@@ -162,6 +165,30 @@ def validate_mapping(old, event):
     for spec in description["specifiers"]:
         rendering(spec)
     oldargs, newargs = args(old), args(event)
+    # %c must snapshot its original argument directly in a STRING Field via
+    # LogChar. An integer field or a rewritten byte must not silently replace it.
+    source_values = oldargs[len(oldargs) - len(description["arguments"]):]
+    required_chars = Counter()
+    for spec, value in zip(description["specifiers"], source_values):
+        if spec == "%c":
+            expected = parse("auto snapshot = BCLog::LogChar{" + value.text() + "};")
+            required_chars[fingerprint(expected.find(kind="compound_literal_expression"))] += 1
+    actual_chars = Counter()
+    for value in outer_event(event).find_all(kind="compound_literal_expression"):
+        type_node = value.field("type")
+        if type_node is None or type_node.text() != "BCLog::LogChar":
+            continue
+        arguments = value.parent()
+        call = arguments.parent() if arguments else None
+        function = call.field("function") if call and call.kind() == "call_expression" else None
+        field = function.field("field") if function and function.kind() == "field_expression" else None
+        if (arguments.kind() != "argument_list" or field is None
+                or field.text() != "Field" or len(args(call)) != 2
+                or args(call)[1].text() != value.text()):
+            raise ValueError("character snapshot must be a direct Field argument")
+        actual_chars[fingerprint(value)] += 1
+    if required_chars != actual_chars:
+        raise ValueError("character formatting requires an exact LogChar snapshot")
     macro = description["macro"]
     category = (
         oldargs[0].text()
