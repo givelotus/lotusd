@@ -458,4 +458,21 @@ BOOST_AUTO_TEST_CASE(block_labels) {
                       size_t(node::BlockParkReason::REQUESTED) + 1);
 }
 
+BOOST_AUTO_TEST_CASE(database_labels) {
+    const auto label{[](const std::string &path) {
+        return node::metric_labels::Databases()[node::MetricDatabaseIndex(
+            path)];
+    }};
+    BOOST_CHECK_EQUAL(label("/d/regtest/chainstate"), "chainstate");
+    BOOST_CHECK_EQUAL(label("/d/regtest/chainstate_snapshot"), "chainstate");
+    BOOST_CHECK_EQUAL(label("/d/regtest/blocks/index"), "block_index");
+    BOOST_CHECK_EQUAL(label("/d/regtest/indexes/txindex"), "txindex");
+    BOOST_CHECK_EQUAL(label("/d/regtest/indexes/blockfilter/basic/db"),
+                      "blockfilterindex");
+    BOOST_CHECK_EQUAL(label("/d/regtest/indexes/coinstats/db"),
+                      "coinstatsindex");
+    BOOST_CHECK_EQUAL(label("/tmp/test_x"), "other");
+    BOOST_CHECK_EQUAL(label(""), "other");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -97,6 +97,8 @@ namespace metric_labels {
     const std::vector<std::string> &BlockStages();
     //! Index = BlockParkReason
     const std::vector<std::string> &BlockParkReasons();
+    //! Databases, index = MetricDatabaseIndex()
+    const std::vector<std::string> &Databases();
 } // namespace metric_labels
 
 enum class HTTPEndpoint : size_t {
@@ -207,6 +209,10 @@ struct NodeMetrics {
     //! By BlockParkReason
     metrics::Counter &blocks_parked;
 
+    // Storage (MDBX), by database (MetricDatabaseIndex)
+    metrics::Gauge &db_size;
+    metrics::EventHistogram &db_commit_seconds;
+
     /** Label index of an RPC method ("other" if not in the set) */
     size_t RPCMethodIndex(std::string_view method) const noexcept;
 
@@ -313,6 +319,13 @@ inline void CountValidationCacheLookup(bool script_execution,
                                         (hit ? 0 : 1));
     }
 }
+
+/**
+ * Label index (metric_labels::Databases) of a database from its path:
+ * chainstate, block_index, txindex, blockfilterindex, coinstatsindex,
+ * other.
+ */
+size_t MetricDatabaseIndex(const std::string &path) noexcept;
 
 /** Count a transaction pool's (orphans, conflicting) removals */
 void RecordTxPoolRemovals(std::string_view pool_kind, unsigned expired,
