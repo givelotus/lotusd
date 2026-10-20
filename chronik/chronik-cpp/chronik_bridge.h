@@ -144,6 +144,13 @@ rust::String client_name();
 
 rust::String format_full_version();
 
+/** Count a Chronik HTTP request in the node's metrics (no-op without) */
+void metrics_chronik_request(rust::Str route, uint16_t status, uint64_t nanos);
+/** Add delta to the open Chronik WebSocket connections metric */
+void metrics_chronik_ws_connections(int32_t delta);
+/** Add delta to the active Chronik WebSocket subscriptions metric */
+void metrics_chronik_ws_subscriptions(int32_t delta);
+
 } // namespace chronik_bridge
 
 #endif // BITCOIN_CHRONIK_CPP_CHRONIK_BRIDGE_H

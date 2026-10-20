@@ -519,4 +519,48 @@ BOOST_AUTO_TEST_CASE(misbehavior_reasons) {
     BOOST_CHECK_EQUAL(node::metric_labels::Transports().size(), 3U);
 }
 
+BOOST_AUTO_TEST_CASE(chronik_endpoints) {
+    const auto label{[](std::string_view route) {
+        return node::metric_labels::ChronikEndpoints()
+            [node::ChronikEndpointIndex(route)];
+    }};
+    // Every route of chronik-http's router
+    const std::vector<std::pair<std::string, std::string>> routes{
+        {"/blockchain-info", "blockchain_info"},
+        {"/block/:hash_or_height", "block"},
+        {"/block-header/:hash_or_height", "block_header"},
+        {"/block-txs/:hash_or_height", "block_txs"},
+        {"/blocks/:start/:end", "blocks"},
+        {"/block-headers/:start/:end", "block_headers"},
+        {"/unconfirmed-txs", "unconfirmed_txs"},
+        {"/chronik-info", "chronik_info"},
+        {"/tx/:txid", "tx"},
+        {"/token/:txid", "token"},
+        {"/validate-tx", "validate_tx"},
+        {"/broadcast-tx", "broadcast_tx"},
+        {"/broadcast-txs", "broadcast_txs"},
+        {"/raw-tx/:txid", "raw_tx"},
+        {"/script/batch/utxos", "script_batch"},
+        {"/script/batch/summary", "script_batch"},
+        {"/script/:type/:payload/confirmed-txs", "script"},
+        {"/script/:type/:payload/history", "script"},
+        {"/script/:type/:payload/unconfirmed-txs", "script"},
+        {"/script/:type/:payload/utxos", "script"},
+        {"/token-id/:token_id/history", "token_id"},
+        {"/lokad-id/:lokad_id/confirmed-txs", "lokad_id"},
+        {"/plugin/:plugin_name/:group_hex/utxos", "plugin"},
+        {"/plugin/:plugin_name/groups", "plugin"},
+        {"/ws", "ws"},
+        {"/pause", "pause"},
+        {"/resume", "resume"},
+        {"", "not_found"},
+        {"/something-new/:x", "other"},
+        {"/not-found", "other"},
+        {"/other", "other"},
+    };
+    for (const auto &[route, expected] : routes) {
+        BOOST_CHECK_EQUAL(label(route), expected);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

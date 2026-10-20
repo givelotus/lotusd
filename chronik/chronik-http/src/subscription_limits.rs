@@ -106,6 +106,7 @@ impl SubscriptionLimiter {
         }
         per_client.insert(key, client_count + 1);
         self.total.fetch_add(1, Ordering::Relaxed);
+        crate::metrics::add_ws_subscriptions(1);
         Ok(SubscriptionGuard {
             limiter: Arc::clone(self),
             key,
@@ -124,6 +125,7 @@ impl SubscriptionLimiter {
             per_client.remove(&key);
         }
         self.total.fetch_sub(1, Ordering::Relaxed);
+        crate::metrics::add_ws_subscriptions(-1);
     }
 
     /// Current global subscription count (test helper).

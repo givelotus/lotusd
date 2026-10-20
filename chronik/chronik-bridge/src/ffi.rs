@@ -391,6 +391,19 @@ mod ffi_inner {
 
         /// Calls FormatFullVersion from clientversion.cpp
         fn format_full_version() -> String;
+
+        /// Count a Chronik HTTP request in the node's /metrics: axum's
+        /// matched route template ("" if none matched), the response status
+        /// and the time taken. No-op when the node's metrics are off.
+        fn metrics_chronik_request(route: &str, status: u16, nanos: u64);
+
+        /// Add `delta` to the node's open Chronik WebSocket connections
+        /// metric.
+        fn metrics_chronik_ws_connections(delta: i32);
+
+        /// Add `delta` to the node's active Chronik WebSocket subscriptions
+        /// metric.
+        fn metrics_chronik_ws_subscriptions(delta: i32);
     }
 }
 
