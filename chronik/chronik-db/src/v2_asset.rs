@@ -7,11 +7,49 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::{
     v2_branch::{Error, ReadSnapshot},
-    v2_explorer::{native_serde, ResolvedCreation},
+    v2_explorer::native_serde,
 };
 
 type Result<T> = std::result::Result<T, Error>;
 const MAX_RECORD_BYTES: usize = 512;
+
+/// Asset facts of a consumed coin: its flags, value and token, as recorded by
+/// the index when the coin was created. The branches and paths of the output
+/// are not needed for asset accounting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpentCoin {
+    /// Consumed output identity.
+    pub outpoint: OutPoint,
+    /// Native output flags (`1` token, `2` burn).
+    pub flags: u8,
+    /// Native output value.
+    pub value: u64,
+    /// Token identity, zero when the output carries no token.
+    pub token_id: Hash32,
+}
+impl SpentCoin {
+    /// Asset facts of `output` at `outpoint`.
+    pub fn from_output(outpoint: OutPoint, output: &Output) -> Self {
+        SpentCoin {
+            outpoint,
+            flags: output.flags,
+            value: output.value,
+            token_id: output.token_id,
+        }
+    }
+    /// Whether the output carries a token.
+    pub fn has_token(&self) -> bool {
+        self.flags & 1 != 0
+    }
+    /// Whether the output is a burn commitment.
+    pub fn is_burn(&self) -> bool {
+        self.flags & 2 != 0
+    }
+    fn valid(&self) -> bool {
+        self.flags & !3 == 0
+            && self.has_token() == (self.token_id != Hash32::default())
+    }
+}
 
 /// Immutable facts resolved by the authoritative transition owner before spending.
 #[derive(Clone, Copy, Debug)]
@@ -21,7 +59,7 @@ pub struct AssetTxView<'a> {
     /// All outputs, including native outputs, zero units, and burns.
     pub outputs: &'a [Output],
     /// Frozen prior creations; not the runtime's current UTXO view.
-    pub resolved_spends: &'a [ResolvedCreation],
+    pub resolved_spends: &'a [SpentCoin],
     /// One selector per mint input; duplicates must remain visible.
     pub mint_token_ids: &'a [Hash32],
 }
@@ -78,17 +116,14 @@ pub fn derive_asset_events(view: AssetTxView<'_>) -> Result<Vec<AssetEvent>> {
     let mut totals = BTreeMap::<Hash32, (u128, u128, u128)>::new();
     let mut spent = BTreeSet::new();
     for coin in view.resolved_spends {
-        if !spent.insert(coin.outpoint) || coin.output.is_burn() {
+        if !spent.insert(coin.outpoint) || coin.is_burn() {
             return Err(Error::Invalid("duplicate or burned asset spend"));
         }
-        coin.output
-            .validate()
-            .map_err(|_| Error::Invalid("asset spend output"))?;
-        if coin.output.has_token() {
-            add(
-                &mut totals.entry(coin.output.token_id).or_default().0,
-                coin.output.value,
-            )?;
+        if !coin.valid() {
+            return Err(Error::Invalid("asset spend output"));
+        }
+        if coin.has_token() {
+            add(&mut totals.entry(coin.token_id).or_default().0, coin.value)?;
         }
     }
     for output in view.outputs {
