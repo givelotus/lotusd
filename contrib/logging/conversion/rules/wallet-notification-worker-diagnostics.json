@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "batch": "wallet-notification-worker-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/node/interfaces.cpp",
+      "rules": [
+        {
+          "id": "wallet_notification_worker_failed",
+          "old": "LogPrintf(\"FATAL: wallet notification worker failed; shutting \"\n                      \"down. The wallet rescans from its last flushed best \"\n                      \"block on restart.\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_notification_worker_failed\", \"FATAL: wallet notification worker failed; shutting down. The wallet rescans from its last flushed best block on restart.\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "FATAL: wallet notification worker failed; shutting down. The wallet rescans from its last flushed best block on restart.\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve Info despite FATAL/exception words, callback catch/rethrow behavior, m_failed ordering, shutdown request, queue/flush accounting and rescan promises. No transaction/wallet serialization or worker-recovery fix. Static failure text fits the bounded record; arbitrary exception text uses existing bounded Error contract and truncation flag. Rare actual callback/failure paths not newly injected."
+        },
+        {
+          "id": "wallet_notification_callback_exception",
+          "old": "LogPrintf(\"Wallet notification callback exception: %s\\n\", e.what())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_notification_callback_exception\", \"Wallet notification callback exception: {error}\").Field(BCLog::LogField::Error, e.what())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Wallet notification callback exception: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "e.what()"
+            ]
+          },
+          "review_note": "Preserve Info despite FATAL/exception words, callback catch/rethrow behavior, m_failed ordering, shutdown request, queue/flush accounting and rescan promises. No transaction/wallet serialization or worker-recovery fix. Static failure text fits the bounded record; arbitrary exception text uses existing bounded Error contract and truncation flag. Rare actual callback/failure paths not newly injected."
+        },
+        {
+          "id": "wallet_notification_callback_unknown_exception",
+          "old": "LogPrintf(\"Wallet notification callback exception: unknown exception\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_notification_callback_unknown_exception\", \"Wallet notification callback exception: unknown exception\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Wallet notification callback exception: unknown exception\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve Info despite FATAL/exception words, callback catch/rethrow behavior, m_failed ordering, shutdown request, queue/flush accounting and rescan promises. No transaction/wallet serialization or worker-recovery fix. Static failure text fits the bounded record; arbitrary exception text uses existing bounded Error contract and truncation flag. Rare actual callback/failure paths not newly injected."
+        }
+      ]
+    }
+  ]
+}
