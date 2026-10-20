@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "batch": "headers-presync-rejections",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/headerssync.cpp",
+      "rules": [
+        {
+          "id": "headers_presync_difficulty_invalid",
+          "old": "LogPrintf(\"Initial headers sync aborted with peer=%d: invalid \"\n                  \"difficulty transition at height=%i (presync phase)\\n\",\n                  m_id, next_height)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"headers_presync_difficulty_invalid\", \"Initial headers sync aborted with peer={peer_id}: invalid difficulty transition at height={height} (presync phase)\").Field(BCLog::LogField::PeerId, m_id).Field(BCLog::LogField::Height, next_height)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Initial headers sync aborted with peer=%d: invalid difficulty transition at height=%i (presync phase)\n",
+            "specifiers": [
+              "%d",
+              "%i"
+            ],
+            "arguments": [
+              "m_id",
+              "next_height"
+            ]
+          },
+          "review_note": "Preserve Info despite abnormal peer behavior; exact peer signed ID and next height, no classification, protocol, commitment bounds, failure returns or control flow changes."
+        },
+        {
+          "id": "headers_presync_commitments_exceeded",
+          "old": "LogPrintf(\"Initial headers sync aborted with peer=%d: exceeded max \"\n                      \"commitments at height=%i (presync phase)\\n\",\n                      m_id, next_height)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"headers_presync_commitments_exceeded\", \"Initial headers sync aborted with peer={peer_id}: exceeded max commitments at height={height} (presync phase)\").Field(BCLog::LogField::PeerId, m_id).Field(BCLog::LogField::Height, next_height)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Initial headers sync aborted with peer=%d: exceeded max commitments at height=%i (presync phase)\n",
+            "specifiers": [
+              "%d",
+              "%i"
+            ],
+            "arguments": [
+              "m_id",
+              "next_height"
+            ]
+          },
+          "review_note": "Preserve Info despite abnormal peer behavior; exact peer signed ID and next height, no classification, protocol, commitment bounds, failure returns or control flow changes."
+        }
+      ]
+    }
+  ]
+}
