@@ -485,6 +485,13 @@ public:
     //! Series of the peer gauges this node was counted in (metrics on at
     //! construction), so that its destruction removes exactly that.
     std::optional<std::pair<size_t, std::optional<size_t>>> m_metrics_series;
+    //! When the connection was created, if metrics were on (handshake time)
+    std::chrono::steady_clock::time_point m_metrics_connected_at{};
+
+    /** Transport label index: 0 = tcp, 1 = ws, 2 = wss */
+    size_t MetricTransport() const {
+        return m_websocket_info ? (m_websocket_info->tls ? 2 : 1) : 0;
+    }
 
     /** Move all messages from the received queue to the processing queue. */
     void MarkReceivedMsgsForProcessing()

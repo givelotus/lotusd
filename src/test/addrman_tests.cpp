@@ -148,6 +148,23 @@ BOOST_AUTO_TEST_CASE(addrman_simple) {
     BOOST_CHECK(addrman->size() >= 1);
 }
 
+BOOST_AUTO_TEST_CASE(addrman_new_tried_counts) {
+    auto addrman = std::make_unique<AddrManTest>();
+    const CNetAddr source = ResolveIP("252.2.2.2");
+    BOOST_CHECK(addrman->NewTriedCounts() ==
+                std::make_pair(size_t{0}, size_t{0}));
+    const CService addr1 = ResolveService("250.1.1.1", 8333);
+    const CService addr2 = ResolveService("250.1.1.2", 8333);
+    BOOST_CHECK(addrman->Add({CAddress(addr1, NODE_NONE)}, source));
+    BOOST_CHECK(addrman->Add({CAddress(addr2, NODE_NONE)}, source));
+    BOOST_CHECK(addrman->NewTriedCounts() ==
+                std::make_pair(size_t{2}, size_t{0}));
+    addrman->Good(CAddress(addr1, NODE_NONE));
+    BOOST_CHECK(addrman->NewTriedCounts() ==
+                std::make_pair(size_t{1}, size_t{1}));
+    BOOST_CHECK_EQUAL(addrman->size(), 2U);
+}
+
 BOOST_AUTO_TEST_CASE(addrman_ports) {
     AddrManTest addrman;
 

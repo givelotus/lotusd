@@ -475,4 +475,48 @@ BOOST_AUTO_TEST_CASE(database_labels) {
     BOOST_CHECK_EQUAL(label(""), "other");
 }
 
+BOOST_AUTO_TEST_CASE(misbehavior_reasons) {
+    using R = node::MisbehaviorReason;
+    // Every fixed message net_processing passes to Misbehaving()
+    const std::vector<std::pair<std::string, R>> cases{
+        {"Ignoring invalid timestamp in version message", R::HANDSHAKE},
+        {"non-version message before version handshake", R::HANDSHAKE},
+        {"non-verack message before version handshake", R::HANDSHAKE},
+        {"addr message size = 1001", R::OVERSIZED_MESSAGE},
+        {"inv message size = 50001", R::OVERSIZED_MESSAGE},
+        {"getdata message size = 50001", R::OVERSIZED_MESSAGE},
+        {"too-many-headers: headers message size = 2001", R::OVERSIZED_MESSAGE},
+        {"too-many-ava-poll: poll message size = 17", R::OVERSIZED_MESSAGE},
+        {"header with invalid proof of work", R::INVALID_HEADER},
+        {"non-continuous headers sequence", R::INVALID_HEADER},
+        {"mutated block", R::INVALID_BLOCK},
+        {"cmpctblock-bad-indexes", R::INVALID_COMPACT_BLOCK},
+        {"invalid compact block", R::INVALID_COMPACT_BLOCK},
+        {"invalid compact block/non-matching block transactions",
+         R::INVALID_COMPACT_BLOCK},
+        {"getblocktxn with out-of-bounds tx indices", R::INVALID_COMPACT_BLOCK},
+        {"malformed coalesced TX message", R::INVALID_TX},
+        {"too-large bloom filter", R::BLOOM_FILTER},
+        {"bad filteradd message", R::BLOOM_FILTER},
+        {"malformed-ava-response", R::AVALANCHE},
+        {"invalid-ava-response-signature", R::AVALANCHE},
+        {"unexpected-ava-response", R::AVALANCHE},
+        {"invalid-ava-response-size", R::AVALANCHE},
+        {"invalid-delegation", R::AVALANCHE},
+        {"invalid-avahello-signature", R::AVALANCHE},
+        {"avahello-max-elements-too-low", R::AVALANCHE},
+        {"avaproofs-bad-indexes", R::AVALANCHE_PROOF},
+        {"too-many-invalid-avaproofs", R::AVALANCHE_PROOF},
+        {"", R::OTHER},
+        {"something new", R::OTHER},
+    };
+    for (const auto &[message, reason] : cases) {
+        BOOST_CHECK_MESSAGE(node::ClassifyMisbehavior(message) == reason,
+                            message);
+    }
+    BOOST_CHECK_EQUAL(node::metric_labels::MisbehaviorReasons().size(),
+                      size_t(R::OTHER) + 1);
+    BOOST_CHECK_EQUAL(node::metric_labels::Transports().size(), 3U);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
