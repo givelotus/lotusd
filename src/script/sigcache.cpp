@@ -90,9 +90,12 @@ SignatureCache::SignatureCache(const size_t max_size_bytes)
         total_elems += num_elems;
         total_approx_bytes += approx_size_bytes;
     }
-    LogPrintf("Using %zu MiB out of %zu MiB requested for signature cache, "
-              "able to store %zu elements\n",
-              total_approx_bytes >> 20, max_size_bytes >> 20, total_elems);
+    LogInfoEvent(
+        BCLog::ALL, "signature_cache_initialized",
+        "Using {cache_allocated_mib} MiB out of {cache_requested_mib} MiB requested for signature cache, able to store {cache_capacity} elements")
+        .Field(BCLog::LogField::CacheAllocatedMiB, total_approx_bytes >> 20)
+        .Field(BCLog::LogField::CacheRequestedMiB, max_size_bytes >> 20)
+        .Field(BCLog::LogField::CacheCapacity, total_elems);
 }
 
 void SignatureCache::ComputeEntry(uint256 &entry, const uint256 &hash,
