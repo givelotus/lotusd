@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "batch": "rpc-cookie-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/rpc/request.cpp",
+      "rules": [
+        {
+          "id": "rpc_cookie_open_failed",
+          "old": "LogPrintf(\"Unable to open cookie authentication file %s for writing\\n\",\n                  fs::PathToString(filepath_tmp))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"rpc_cookie_open_failed\", \"Unable to open cookie authentication file {path} for writing\").Field(BCLog::LogField::Path, fs::PathToString(filepath_tmp))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Unable to open cookie authentication file %s for writing\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(filepath_tmp)"
+            ]
+          },
+          "review_note": "Only existing absolute filesystem paths are recorded, never cookie bytes or random password. Preserve Info, exact text, file open/write/close/rename, permissions, outputs and returns. Separate source and destination paths without duplicate file.path mappings."
+        },
+        {
+          "id": "rpc_cookie_rename_failed",
+          "old": "LogPrintf(\"Unable to rename cookie authentication file %s to %s\\n\",\n                  fs::PathToString(filepath_tmp), fs::PathToString(filepath))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"rpc_cookie_rename_failed\", \"Unable to rename cookie authentication file {source_path} to {destination_path}\").Field(BCLog::LogField::SourcePath, fs::PathToString(filepath_tmp)).Field(BCLog::LogField::DestinationPath, fs::PathToString(filepath))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Unable to rename cookie authentication file %s to %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(filepath_tmp)",
+              "fs::PathToString(filepath)"
+            ]
+          },
+          "review_note": "Only existing absolute filesystem paths are recorded, never cookie bytes or random password. Preserve Info, exact text, file open/write/close/rename, permissions, outputs and returns. Separate source and destination paths without duplicate file.path mappings."
+        },
+        {
+          "id": "rpc_cookie_generated",
+          "old": "LogPrintf(\"Generated RPC authentication cookie %s\\n\",\n              fs::PathToString(filepath))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"rpc_cookie_generated\", \"Generated RPC authentication cookie {path}\").Field(BCLog::LogField::Path, fs::PathToString(filepath))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Generated RPC authentication cookie %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(filepath)"
+            ]
+          },
+          "review_note": "Only existing absolute filesystem paths are recorded, never cookie bytes or random password. Preserve Info, exact text, file open/write/close/rename, permissions, outputs and returns. Separate source and destination paths without duplicate file.path mappings."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Two absolute filesystem path roles must remain distinct; neither carries cookie contents.",
+          "old": "    X(ScriptWorkerThreads, script_worker_threads, INT, \"\", \"\")\n",
+          "new": "    X(ScriptWorkerThreads, script_worker_threads, INT, \"\", \"\") \\\n    X(SourcePath, source_path, STRING, \"\", \"\") \\\n    X(DestinationPath, destination_path, STRING, \"\", \"\")\n"
+        }
+      ]
+    }
+  ]
+}

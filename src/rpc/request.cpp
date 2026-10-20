@@ -93,8 +93,10 @@ bool GenerateAuthCookie(std::string *cookie_out) {
     fs::path filepath_tmp = GetAuthCookieFile(true);
     file.open(filepath_tmp);
     if (!file.is_open()) {
-        LogPrintf("Unable to open cookie authentication file %s for writing\n",
-                  fs::PathToString(filepath_tmp));
+        LogInfoEvent(
+            BCLog::ALL, "rpc_cookie_open_failed",
+            "Unable to open cookie authentication file {path} for writing")
+            .Field(BCLog::LogField::Path, fs::PathToString(filepath_tmp));
         return false;
     }
     file << cookie;
@@ -102,12 +104,17 @@ bool GenerateAuthCookie(std::string *cookie_out) {
 
     fs::path filepath = GetAuthCookieFile(false);
     if (!RenameOver(filepath_tmp, filepath)) {
-        LogPrintf("Unable to rename cookie authentication file %s to %s\n",
-                  fs::PathToString(filepath_tmp), fs::PathToString(filepath));
+        LogInfoEvent(
+            BCLog::ALL, "rpc_cookie_rename_failed",
+            "Unable to rename cookie authentication file {source_path} to {destination_path}")
+            .Field(BCLog::LogField::SourcePath, fs::PathToString(filepath_tmp))
+            .Field(BCLog::LogField::DestinationPath,
+                   fs::PathToString(filepath));
         return false;
     }
-    LogPrintf("Generated RPC authentication cookie %s\n",
-              fs::PathToString(filepath));
+    LogInfoEvent(BCLog::ALL, "rpc_cookie_generated",
+                 "Generated RPC authentication cookie {path}")
+        .Field(BCLog::LogField::Path, fs::PathToString(filepath));
 
     if (cookie_out) {
         *cookie_out = cookie;

@@ -163,7 +163,9 @@
     X(BugReportURL, bug_report_url, STRING, "", "") \
     X(ExpectedChainTxCount, expected_chain_tx_count, UINT, "", "") \
     X(SHA256Implementation, sha256_implementation, STRING, "", "") \
-    X(ScriptWorkerThreads, script_worker_threads, INT, "", "")
+    X(ScriptWorkerThreads, script_worker_threads, INT, "", "") \
+    X(SourcePath, source_path, STRING, "", "") \
+    X(DestinationPath, destination_path, STRING, "", "")
 
 namespace BCLog {
 
