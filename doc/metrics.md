@@ -91,14 +91,26 @@ one `_bucket` per bound plus `+Inf`, a `_sum` and a `_count`.
 
 | Name | Type | Labels | Max series | Meaning |
 |---|---|---|---|---|
-| `fullnode_peers` | gauge | `direction` (2), `transport` (2), `peer_network` (8) | 32 | Connected peers. |
-| `fullnode_p2p_connections_total` | counter | `direction` (2), `transport` (2) | 4 | Connections established. |
+| `fullnode_peers` | gauge | `direction` (2), `transport` (`tcp`, `ws`, `wss`), `peer_network` (8) | 48 | Connected peers. |
+| `fullnode_p2p_connections_total` | counter | `direction` (2), `transport` (3) | 6 | Connections established. |
 | `fullnode_p2p_websocket_peers` | gauge | `compression` (4), `tls` (2) | 8 | Connected P2P WebSocket peers. |
 | `fullnode_p2p_received_bytes_total` | counter | `type` (55 message types + `other`) | 56 | Bytes received (header and payload). |
 | `fullnode_p2p_sent_bytes_total` | counter | `type` | 56 | Bytes queued for sending. |
 | `fullnode_p2p_received_messages_total` | counter | `type` | 56 | Messages received. |
 | `fullnode_p2p_sent_messages_total` | counter | `type` | 56 | Messages queued for sending. |
 | `fullnode_p2p_message_handling_seconds` | histogram | `type` | 56 | Time to process a received message (1 in 16 sampled; `_count` is a sample). |
+
+### P2P health
+
+| Name | Type | Labels | Max series | Meaning |
+|---|---|---|---|---|
+| `fullnode_p2p_handshake_seconds` | histogram | `direction` (2), `transport` (3) | 6 | Time from a connection's creation to its verack. For outbound WebSocket peers, the TCP, TLS and upgrade happen before and are not included. |
+| `fullnode_p2p_ping_seconds` | histogram | `transport` (3) | 3 | Ping round trips (ping to matching pong). |
+| `fullnode_addrman_addresses` | gauge | `table` (`new`, `tried`) | 2 | Addresses in the address manager's tables. |
+| `fullnode_p2p_bans_total` | counter | | 1 | Subnets banned. |
+| `fullnode_p2p_banned_subnets` | gauge | | 1 | Subnets on the ban list. |
+| `fullnode_p2p_discouragements_total` | counter | `outcome` (`discouraged`, `disconnected_local`, `exempt_noban`, `exempt_manual`) | 4 | Peers punished for misbehaving, by what happened. |
+| `fullnode_p2p_misbehavior_total` | counter | `reason` (10) | 10 | Misbehavior events by class: `handshake`, `oversized_message`, `invalid_header`, `invalid_block`, `invalid_compact_block`, `invalid_tx`, `bloom_filter`, `avalanche`, `avalanche_proof`, `other`. |
 
 ### Chain
 
