@@ -81,7 +81,18 @@
     X(DatabaseVersion, database_version, STRING, "", "")                       \
     X(ErrorCode, error_code, INT, "", "") \
     X(FeeRate, fee_rate, STRING, "", "") \
-    X(ElapsedMs, elapsed_ms, FLOAT, "", "")
+    X(ElapsedMs, elapsed_ms, FLOAT, "", "") \
+    X(LogPrefix, log_prefix, STRING, "", "") \
+    X(SourceFunction, source_function, STRING, "", "") \
+    X(Log2Work, log2_work, FLOAT, "", "") \
+    X(ChainTxCount, chain_tx_count, UINT, "", "") \
+    X(BlockTime, block_time, STRING, "", "") \
+    X(BlockTimeSeconds, block_time_seconds, INT, "", "") \
+    X(VerificationProgress, verification_progress, FLOAT, "", "") \
+    X(UTXOCacheMiB, utxo_cache_mib, FLOAT, "", "") \
+    X(UTXOCacheCoins, utxo_cache_coins, UINT, "", "") \
+    X(UTXOCacheBytes, utxo_cache_bytes, UINT, "", "") \
+    X(ChainstateRole, chainstate_role, STRING, "", "")
 
 namespace BCLog {
 
