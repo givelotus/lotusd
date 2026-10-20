@@ -118,7 +118,8 @@
     X(DatabaseOperationMs, database_operation_ms, INT, "", "") \
     X(MaxOpenFiles, max_open_files, INT, "", "") \
     X(DefaultOpenFiles, default_open_files, INT, "", "") \
-    X(ObfuscationKey, obfuscation_key, STRING, "", "")
+    X(ObfuscationKey, obfuscation_key, STRING, "", "") \
+    X(ConfigSectionPrefix, config_section_prefix, STRING, "", "")
 
 namespace BCLog {
 
