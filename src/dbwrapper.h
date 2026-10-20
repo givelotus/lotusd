@@ -274,6 +274,9 @@ private:
     //! whether or not the database resides in memory
     bool m_is_memory;
 
+    //! Label index of this database in the metrics (MetricDatabaseIndex)
+    size_t m_metric_db;
+
     bool ReadRaw(Span<const uint8_t> key, std::vector<uint8_t> &value) const;
     bool ExistsRaw(Span<const uint8_t> key) const;
     size_t EstimateSizeBytes(Span<const uint8_t> key_begin,

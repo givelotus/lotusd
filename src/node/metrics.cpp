@@ -114,6 +114,12 @@ namespace metric_labels {
             "policy", "finalization_conflict", "deep_reorg", "requested"};
         return labels;
     }
+    const std::vector<std::string> &Databases() {
+        static const std::vector<std::string> labels{
+            "chainstate",       "block_index",    "txindex",
+            "blockfilterindex", "coinstatsindex", "other"};
+        return labels;
+    }
     const std::vector<std::string> &HTTPCodeClasses() {
         static const std::vector<std::string> labels{"1xx", "2xx", "3xx",
                                                      "4xx", "5xx", "other"};
@@ -160,6 +166,12 @@ namespace {
     const std::vector<double> COUNT_BUCKETS{
         1,   2,    4,    8,    16,   32,    64,    128,   256,
         512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072};
+    //! Seconds; database commits, from a small index write to a large
+    //! UTXO flush with fsync
+    const std::vector<double> DB_COMMIT_BUCKETS{
+        0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005,
+        0.01,    0.025,  0.05,    0.1,    0.25,  0.5,    1,
+        2.5,     5,      10,      30,     120};
     //! Blocks
     const std::vector<double> REORG_DEPTH_BUCKETS{1, 2,  3,  4,  5,   6,
                                                   8, 10, 20, 50, 100, 1000};
@@ -193,6 +205,31 @@ namespace {
         return reg.Add(std::make_unique<T>(std::forward<Args>(args)...));
     }
 } // namespace
+
+size_t MetricDatabaseIndex(const std::string &path) noexcept {
+    const auto has{[&](std::string_view part) {
+        return path.find(part) != std::string::npos;
+    }};
+    if (has("indexes/txindex")) {
+        return 2;
+    }
+    if (has("indexes/blockfilter")) {
+        return 3;
+    }
+    if (has("indexes/coinstats")) {
+        return 4;
+    }
+    if (path.ends_with("blocks/index") || path.ends_with("blocks/index/")) {
+        return 1;
+    }
+    const size_t slash{path.find_last_of('/', path.size() - 2)};
+    const std::string_view last{std::string_view{path}.substr(
+        slash == std::string::npos ? 0 : slash + 1)};
+    if (last.starts_with("chainstate")) {
+        return 0;
+    }
+    return 5;
+}
 
 void RecordTxPoolRemovals(std::string_view pool_kind, unsigned expired,
                           unsigned evicted) noexcept {
@@ -532,6 +569,17 @@ NodeMetrics::NodeMetrics(std::vector<std::string> rpc_methods)
           "deep_reorg (-parkdeepreorg), requested (parkblock, or an "
           "Avalanche rejection).",
           std::vector<LabelDim>{{"reason", L::BlockParkReasons()}})},
+      db_size{Add<Gauge>(
+          registry, MetricName("db_size_bytes"),
+          "Size of each MDBX database (its data file's current geometry), "
+          "as of its last commit.",
+          std::vector<LabelDim>{{"db", L::Databases()}})},
+      db_commit_seconds{Add<EventHistogram>(
+          registry, MetricName("db_commit_seconds"),
+          "Time to write and commit a batch to an MDBX database (and sync "
+          "it when asked), by database. _count is the number of commits.",
+          DB_COMMIT_BUCKETS, /*divisor=*/1e9,
+          std::vector<LabelDim>{{"db", L::Databases()}})},
       m_rpc_methods{SortedWithOther(std::move(rpc_methods))} {
     build_info.Set(1);
     registry.Add(std::make_unique<metrics::FunctionCounter>(

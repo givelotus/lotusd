@@ -10,12 +10,14 @@
 #include <leveldb/filter_policy.h>
 #include <leveldb/write_batch.h>
 #include <mdbx.h>
+#include <node/metrics.h>
 #include <random.h>
 #include <tinyformat.h>
 #include <util/fs_helpers.h>
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -297,7 +299,8 @@ Status DestroyDB(const std::string &path_str, const DestroyOptions &) {
 
 CDBWrapper::CDBWrapper(const DBParams &params)
     : m_name{fs::PathToString(params.path.stem())}, m_path{params.path},
-      m_is_memory{params.memory_only} {
+      m_is_memory{params.memory_only},
+      m_metric_db{node::MetricDatabaseIndex(fs::PathToString(params.path))} {
     if (m_is_memory) {
         const uint64_t id = ++g_mem_db_counter;
         m_active_path =
@@ -637,6 +640,10 @@ void CDBWrapper::WriteBatch(CDBBatch &batch, bool fSync) {
                          });
     }
 
+    auto *const metrics{node::GetNodeMetrics()};
+    const auto start{metrics ? std::chrono::steady_clock::now()
+                             : std::chrono::steady_clock::time_point{}};
+
     MDBX_txn *txn = nullptr;
     int rc = mdbx_txn_begin(m_env, nullptr, MDBX_TXN_READWRITE, &txn);
     dbwrapper_private::HandleError(rc, "mdbx_txn_begin(write)");
@@ -681,6 +688,16 @@ void CDBWrapper::WriteBatch(CDBBatch &batch, bool fSync) {
 
     if (fSync) {
         Sync();
+    }
+
+    if (metrics) {
+        metrics->db_commit_seconds.RecordDuration(
+            std::chrono::steady_clock::now() - start, m_metric_db);
+        MDBX_envinfo info{};
+        if (mdbx_env_info_ex(m_env, nullptr, &info, sizeof(info)) ==
+            MDBX_SUCCESS) {
+            metrics->db_size.Set(double(info.mi_geo.current), m_metric_db);
+        }
     }
 }
 
