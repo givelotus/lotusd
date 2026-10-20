@@ -16,6 +16,7 @@ from test_framework.blocktools import (
     GENESIS_CB_TXID,
     create_block,
 )
+from test_framework.chronik.test_data import GENESIS_NATIVE_OUTPUT
 from test_framework.hash import hex_be_sha256
 from test_framework.messages import XEC, CTransaction, FromHex, ToHex
 from test_framework.p2p import P2PDataStore
@@ -24,7 +25,8 @@ from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal
 from test_framework.wallet import MiniWallet, MiniWalletMode
 
-GENESIS_CB_SCRIPTHASH = hex_be_sha256(GENESIS_CB_SCRIPT_PUBKEY)
+GENESIS_CB_SCRIPTHASH = hex_be_sha256(GENESIS_NATIVE_OUTPUT)
+LEGACY_GENESIS_CB_SCRIPTHASH = hex_be_sha256(GENESIS_CB_SCRIPT_PUBKEY)
 SCRIPTHASH_P2SH_OP_TRUE_HEX = hex_be_sha256(P2SH_OP_TRUE)
 
 
@@ -95,6 +97,18 @@ class ChronikScriptHashTest(BitcoinTestFramework):
                 pb.TxHistoryPage(),
             )
 
+        # The native leaf commits to P2PK but is a distinct indexed script.
+        assert_equal(
+            self.chronik.script("p2pk", GENESIS_CB_PK).confirmed_txs().ok(),
+            pb.TxHistoryPage(),
+        )
+        assert_equal(
+            self.chronik.script("scripthash", LEGACY_GENESIS_CB_SCRIPTHASH)
+            .history()
+            .ok(),
+            pb.TxHistoryPage(),
+        )
+
         expected_cb_history = pb.TxHistoryPage(
             txs=[genesis_cb_tx()], num_pages=1, num_txs=1
         )
@@ -111,7 +125,7 @@ class ChronikScriptHashTest(BitcoinTestFramework):
         assert_equal(
             self.chronik.script("scripthash", GENESIS_CB_SCRIPTHASH).utxos().ok(),
             pb.ScriptUtxos(
-                script=bytes.fromhex(f"41{GENESIS_CB_PK}ac"),
+                script=GENESIS_NATIVE_OUTPUT,
                 utxos=[
                     pb.ScriptUtxo(
                         outpoint=pb.OutPoint(
@@ -444,7 +458,9 @@ class ChronikScriptHashTest(BitcoinTestFramework):
         self.log.info("Restarting with chronikscripthashindex=1 restores the index")
         self.restart_node(0, ["-chronik", "-chronikscripthashindex=1"])
         assert_equal(
-            self.chronik.script("p2pk", GENESIS_CB_PK).confirmed_txs().ok(),
+            self.chronik.script("other", GENESIS_NATIVE_OUTPUT.hex())
+            .confirmed_txs()
+            .ok(),
             self.chronik.script("scripthash", GENESIS_CB_SCRIPTHASH)
             .confirmed_txs()
             .ok(),
