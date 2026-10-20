@@ -718,6 +718,7 @@ add_library(server
 	rpc/misc.cpp
 	rpc/net.cpp
 	rpc/rawtransaction.cpp
+	rpc/native_psbt.cpp
 	rpc/server.cpp
 	rpc/server_util.cpp
 	rpc/txoutproof.cpp
@@ -1108,4 +1109,4 @@ target_sources(server PRIVATE net/txrelay_index.cpp)
 target_sources(server PRIVATE avalanche/preconsensus.cpp)
 
 # Native chainstate/transport callers require the native validation implementation.
-target_link_libraries(server lotus_v2_validation)
+target_link_libraries(server lotus_v2_validation lotus_v2_psbt)

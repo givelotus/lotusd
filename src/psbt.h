@@ -362,6 +362,10 @@ struct PartiallySignedTransaction {
 
     template <typename Stream> inline void Serialize(Stream &s) const {
         // magic bytes
+        if (!tx || tx->nVersion == 7) {
+            throw std::ios_base::failure(
+                "Native v7 requires an explicit native PSBT container");
+        }
         s << PSBT_MAGIC_BYTES;
 
         // unsigned tx flag
@@ -432,6 +436,11 @@ struct PartiallySignedTransaction {
                     }
                     CMutableTransaction mtx;
                     UnserializeFromVector(s, mtx);
+                    if (mtx.nVersion == 7) {
+                        throw std::ios_base::failure(
+                            "Native v7 requires an explicit native PSBT "
+                            "container");
+                    }
                     tx = std::move(mtx);
                     // Make sure that all scriptSigs are empty.
                     for (const CTxIn &txin : tx->vin) {
