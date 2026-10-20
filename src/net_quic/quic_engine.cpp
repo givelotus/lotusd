@@ -14,11 +14,12 @@
 
 #include <logging.h>
 #include <netbase.h>
-#include <util/strencodings.h>
+#include <node/metrics.h>
 #include <random.h>
 #include <sync.h>
 #include <tinyformat.h>
 #include <tls_util.h>
+#include <util/strencodings.h>
 #include <util/thread.h>
 #include <util/threadnames.h>
 
@@ -49,6 +50,7 @@ namespace {
 constexpr size_t QUIC_SCID_LEN = 18;
 //! Datagrams read per socket per loop pass
 constexpr size_t RECV_BATCH = 64;
+constexpr uint64_t MAX_RECEIVE_WINDOW = 32 * 1024 * 1024;
 //! Address validation tokens: Retry valid for 10 s, NEW_TOKEN for 1 h
 constexpr uint64_t RETRY_TOKEN_TIMEOUT = 10 * NGTCP2_SECONDS;
 constexpr uint64_t REGULAR_TOKEN_TIMEOUT = 3600 * NGTCP2_SECONDS;
@@ -279,12 +281,13 @@ struct DialState {
 class P2PSessionHandler final : public WtSessionHandler {
 public:
     P2PSessionHandler(std::shared_ptr<EngineWaker> waker, bool compress,
+                      uint64_t receive_limit,
                       std::shared_ptr<DialState> dial = nullptr,
                       std::optional<std::vector<unsigned char>> spki_pin = {},
                       std::optional<std::vector<unsigned char>> cert_pin = {})
         : m_waker{std::move(waker)}, m_compress{compress},
-          m_dial{std::move(dial)}, m_spki_pin{std::move(spki_pin)},
-          m_cert_pin{std::move(cert_pin)},
+          m_receive_limit{receive_limit}, m_dial{std::move(dial)},
+          m_spki_pin{std::move(spki_pin)}, m_cert_pin{std::move(cert_pin)},
           m_info{std::make_shared<QuicTransportInfo>()} {}
 
     bool OnHandshake(H3Session &session, QuicConnection &conn) override {
@@ -346,6 +349,7 @@ public:
     }
 
     void OnSessionReady(H3Session &session) override {
+        if (m_receive_closed) return;
         QuicConnection &conn{*session.Conn()};
         int sv[2];
         if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
@@ -361,11 +365,16 @@ public:
         m_info->draft = session.PeerDraftSetting();
         m_info->origin = session.Request().origin;
         m_channel = std::make_shared<QuicPeerChannel>(
-            sv[1], m_info, [waker = m_waker] { waker->Wake(); });
+            sv[1], m_info, [waker = m_waker] { waker->Wake(); },
+            m_receive_limit);
         // QUIC may deliver CONTROL data before the other four stream
         // prefixes. Retain it until the session has its node socket.
         for (auto &frame : m_early_rx) {
-            m_channel->PushRx(std::move(frame));
+            if (!m_channel->PushRx(std::move(frame))) {
+                ::close(sv[0]);
+                RejectReceiveLimit(session);
+                return;
+            }
         }
         m_early_rx.clear();
         auto sock{std::make_unique<QuicPeerSock>(static_cast<SOCKET>(sv[0]),
@@ -389,6 +398,21 @@ public:
 
     void OnClassData(H3Session &session, StreamClass cls, const uint8_t *data,
                      size_t len, bool) override {
+        if (m_receive_closed) return;
+        uint64_t buffered{m_channel ? m_channel->RxBuffered() : 0};
+        for (const auto &partial : m_reassembler)
+            buffered += partial.Buffered();
+        for (const auto &early : m_early_rx)
+            buffered += early.wire_size;
+        // A large legitimate message must finish before it can be consumed.
+        // Include already granted QUIC window credit, but bound aggregate
+        // partial frames so five streams cannot each retain a max-size frame.
+        const uint64_t limit{m_receive_limit + quic_frame::MaxFrameLength() +
+                             4 + MAX_RECEIVE_WINDOW};
+        if (buffered > limit || len > limit - buffered) {
+            RejectReceiveLimit(session);
+            return;
+        }
         std::vector<FrameReassembler::Frame> frames;
         if (!m_reassembler[StreamClassIndex(cls)].Feed({data, len}, frames)) {
             LogDebug(BCLog::WEBTRANSPORT,
@@ -405,8 +429,16 @@ public:
             rx.body = std::move(f.body);
             rx.wire_size = f.wire_size;
             if (m_channel) {
-                m_channel->PushRx(std::move(rx));
+                if (!m_channel->PushRx(std::move(rx))) {
+                    RejectReceiveLimit(session);
+                    return;
+                }
             } else {
+                if (m_early_rx.size() >=
+                    QuicPeerChannel::MAX_PENDING_RX_FRAMES) {
+                    RejectReceiveLimit(session);
+                    return;
+                }
                 m_early_rx.push_back(std::move(rx));
             }
         }
@@ -462,6 +494,7 @@ public:
 
     void OnSessionClosed(H3Session &session, uint32_t code,
                          const std::string &reason) override {
+        m_receive_closed = true;
         if (m_channel) {
             LogDebug(BCLog::WEBTRANSPORT,
                      "WebTransport session with %s ended: code %u (%s)\n",
@@ -476,8 +509,15 @@ public:
     }
 
 private:
+    void RejectReceiveLimit(H3Session &session) {
+        m_receive_closed = true;
+        session.Conn()->Engine().OnRejected(QuicRejectReason::CAPACITY);
+        session.CloseSession(wt::WT_P2P_BAD_STREAM, "receive buffer limit");
+    }
     const std::shared_ptr<EngineWaker> m_waker;
     const bool m_compress;
+    const uint64_t m_receive_limit;
+    bool m_receive_closed{false};
     const std::shared_ptr<DialState> m_dial;
     const std::optional<std::vector<unsigned char>> m_spki_pin;
     const std::optional<std::vector<unsigned char>> m_cert_pin;
@@ -509,7 +549,9 @@ int SelectH3Alpn(SSL *, const unsigned char **out, unsigned char *outlen,
 
 class QuicEngine::Impl final : public QuicEngineCore {
 public:
-    explicit Impl(const QuicEngineOptions &options) : m_opts{options} {
+    explicit Impl(const QuicEngineOptions &options)
+        : m_opts{options},
+          m_admission{options.max_per_ip, options.max_handshaking} {
         GetStrongRandBytes(m_reset_secret);
         GetStrongRandBytes(m_token_secret[0]);
         m_token_secret[1] = m_token_secret[0];
@@ -520,6 +562,12 @@ public:
     ~Impl() override { Stop(); }
 
     bool Init(std::string &error) {
+        if (m_opts.max_per_ip == 0 || m_opts.max_handshaking == 0 ||
+            m_opts.max_handshaking > QuicAdmission::MAX_BUCKETS ||
+            m_opts.receive_buffer == 0 || m_opts.receive_buffer > UINT32_MAX) {
+            error = "invalid QUIC admission or receive-buffer limits";
+            return false;
+        }
         static std::once_flag once;
         std::call_once(once, [] { ngtcp2_crypto_ossl_init(); });
         int sv[2];
@@ -630,6 +678,8 @@ public:
             errors += l->SendErrors();
         }
         out.send_errors = errors;
+        for (size_t i{0}; i < out.rejected.size(); ++i)
+            out.rejected[i] = m_stats.rejected[i];
         return out;
     }
 
@@ -684,8 +734,8 @@ public:
             h3.authority = url.authority;
             conn->SetApp(std::make_unique<H3Session>(
                 h3, std::make_unique<P2PSessionHandler>(
-                        m_waker, m_opts.compress, state, url.spki_pin,
-                        url.cert_sha256)));
+                        m_waker, m_opts.compress, m_opts.receive_buffer, state,
+                        url.spki_pin, url.cert_sha256)));
         });
         const auto deadline{std::chrono::steady_clock::now() + timeout};
         while (future.wait_for(std::chrono::milliseconds{50}) !=
@@ -766,7 +816,7 @@ public:
         ngtcp2_settings_default(&settings);
         settings.initial_ts = now;
         settings.cc_algo = m_opts.bbr ? NGTCP2_CC_ALGO_BBR : NGTCP2_CC_ALGO_CUBIC;
-        settings.max_window = 32 * 1024 * 1024;
+        settings.max_window = MAX_RECEIVE_WINDOW;
         settings.max_stream_window = 16 * 1024 * 1024;
         settings.handshake_timeout =
             static_cast<ngtcp2_duration>(m_opts.handshake_timeout.count()) *
@@ -792,6 +842,9 @@ public:
     }
     void OnHandshakeDone(QuicConnection &conn) override {
         ++m_stats.handshakes_completed;
+        if (conn.IsServer()) m_admission.HandshakeDone();
+        if (auto *metrics{node::GetNodeMetrics()})
+            metrics->webtransport_handshakes.Add(0);
         if (!conn.IsServer() && m_opts.keep_alive.count() > 0) {
             ngtcp2_conn_set_keep_alive_timeout(
                 conn.Conn(),
@@ -801,6 +854,25 @@ public:
     }
     void OnIdleClose(QuicConnection &) override {
         ++m_stats.idle_closed;
+    }
+    void OnRejected(QuicRejectReason reason) override {
+        static constexpr std::array<std::string_view, QUIC_REJECT_REASONS>
+            names{"per_ip", "handshaking", "banned",  "origin",
+                  "token",  "path",        "session", "capacity"};
+        LogEvent(BCLog::WEBTRANSPORT, "quic_rejected",
+                 "QUIC/WT request rejected: {reason}")
+            .Field(BCLog::LogField::Reason, names[size_t(reason)])
+            .Field(BCLog::LogField::Transport,
+                   BCLog::LogStatic("webtransport"));
+        ++m_stats.rejected[size_t(reason)];
+        if (auto *metrics{node::GetNodeMetrics()})
+            metrics->webtransport_rejected.Add(size_t(reason));
+    }
+    void OnStreamBlocked(uint64_t class_tag) override {
+        if (class_tag >= 1 && class_tag <= NUM_STREAM_CLASSES) {
+            if (auto *metrics{node::GetNodeMetrics()})
+                metrics->webtransport_blocked.Add(class_tag - 1);
+        }
     }
 
 private:
@@ -1034,6 +1106,8 @@ private:
                          reinterpret_cast<const sockaddr *>(&d.remote),
                          d.remote_len, &d.local, d.local_len)) {
             ++m_stats.retry_sent;
+            if (auto *metrics{node::GetNodeMetrics()})
+                metrics->webtransport_retry_sent.Inc();
         }
     }
 
@@ -1068,6 +1142,8 @@ private:
                          reinterpret_cast<const sockaddr *>(&d.remote),
                          d.remote_len, &d.local, d.local_len)) {
             ++m_stats.stateless_reset_sent;
+            if (auto *metrics{node::GetNodeMetrics()})
+                metrics->webtransport_stateless_reset_sent.Inc();
         }
     }
 
@@ -1107,10 +1183,6 @@ private:
         return false;
     }
 
-    bool WantRetry(const UdpDatagram &) const {
-        return m_opts.retry == QuicRetryMode::ALWAYS;
-    }
-
     /** A packet for no known connection on a listener */
     void Accept(UdpSocket &sock, UdpDatagram &d,
                 const ngtcp2_version_cid &vc, uint64_t now) {
@@ -1122,6 +1194,18 @@ private:
                 d.data.size() >= 1 + QUIC_SCID_LEN + 21) {
                 SendStatelessReset(sock, d, vc.dcid, vc.dcidlen);
             }
+            return;
+        }
+        CService remote;
+        if (!remote.SetSockAddr(reinterpret_cast<const sockaddr *>(&d.remote),
+                                d.remote_len))
+            return;
+        if (m_opts.is_banned && m_opts.is_banned(remote)) {
+            OnRejected(QuicRejectReason::BANNED);
+            return;
+        }
+        if (m_admission.Active() >= m_opts.max_inbound) {
+            OnRejected(QuicRejectReason::CAPACITY);
             return;
         }
         ngtcp2_cid ocid;
@@ -1144,10 +1228,20 @@ private:
         } else {
             hd.token = nullptr;
             hd.tokenlen = 0;
-            if (WantRetry(d)) {
-                SendRetry(sock, d, hd);
-                return;
-            }
+        }
+        const auto decision{m_admission.Inspect(
+            remote, token_type != NGTCP2_TOKEN_TYPE_UNKNOWN, m_opts.retry)};
+        if (decision == QuicAdmission::Decision::RETRY) {
+            SendRetry(sock, d, hd);
+            return;
+        }
+        if (decision != QuicAdmission::Decision::ACCEPT) {
+            OnRejected(decision == QuicAdmission::Decision::PER_IP
+                           ? QuicRejectReason::PER_IP
+                       : decision == QuicAdmission::Decision::HANDSHAKING
+                           ? QuicRejectReason::HANDSHAKING
+                           : QuicRejectReason::CAPACITY);
+            return;
         }
         sockaddr_storage local{};
         socklen_t local_len{0};
@@ -1180,13 +1274,14 @@ private:
                 std::unique_ptr<WtSessionHandler> handler;
                 if (!m_opts.wt_echo) {
                     handler = std::make_unique<P2PSessionHandler>(
-                        m_waker, m_opts.compress);
+                        m_waker, m_opts.compress, m_opts.receive_buffer);
                 }
                 conn->SetApp(std::make_unique<H3Session>(h3, std::move(handler)));
                 break;
             }
         }
         QuicConnection &c{*conn};
+        m_admission.Started(remote);
         LogDebug(BCLog::WEBTRANSPORT, "QUIC connection from %s%s\n",
                  c.Remote().ToStringAddrPort(),
                  token_type == NGTCP2_TOKEN_TYPE_RETRY ? " (after Retry)" : "");
@@ -1247,6 +1342,8 @@ private:
 
     void CollectGarbage(uint64_t now) {
         uint64_t inbound{0}, outbound{0}, handshaking{0};
+        std::array<size_t, 6> metric_connections{};
+        auto *metrics{node::GetNodeMetrics()};
         for (auto it = m_conns.begin(); it != m_conns.end();) {
             QuicConnection &c{**it};
             if (c.CancelFlag() && *c.CancelFlag() && c.IsOpen()) {
@@ -1254,14 +1351,41 @@ private:
             }
             const bool gone{c.GetState() == QuicConnection::State::DEAD ||
                             (!c.IsOpen() && now >= c.CloseDeadline())};
+            if (metrics) {
+                ngtcp2_conn_info ci;
+                ngtcp2_conn_get_conn_info2(c.Conn(), &ci);
+                auto &[lost, next_rtt]{m_metric_state[&c]};
+                if (ci.pkt_lost > lost)
+                    metrics->webtransport_lost_packets.Add(0,
+                                                           ci.pkt_lost - lost);
+                lost = ci.pkt_lost;
+                if (c.GetState() == QuicConnection::State::ESTABLISHED &&
+                    now >= next_rtt && ci.smoothed_rtt > 0 &&
+                    ci.smoothed_rtt != UINT64_MAX) {
+                    metrics->webtransport_rtt.Record(ci.smoothed_rtt);
+                    next_rtt = now + NGTCP2_SECONDS;
+                }
+                if (!gone) {
+                    const size_t state{
+                        c.GetState() == QuicConnection::State::HANDSHAKING ? 0U
+                        : c.GetState() == QuicConnection::State::ESTABLISHED
+                            ? 1U
+                            : 2U};
+                    ++metric_connections[(c.IsServer() ? 0U : 1U) * 3 + state];
+                }
+            }
             if (gone) {
                 if (!c.HandshakeDone()) {
                     ++m_stats.handshakes_failed;
+                    if (metrics) metrics->webtransport_handshakes.Add(1);
                     LogDebug(BCLog::WEBTRANSPORT,
                              "QUIC connection with %s ended before its "
                              "handshake completed\n",
                              c.Remote().ToStringAddrPort());
                 }
+                if (c.IsServer())
+                    m_admission.Closed(c.Remote(), c.HandshakeDone());
+                m_metric_state.erase(&c);
                 ForgetCids(c);
                 it = m_conns.erase(it);
                 continue;
@@ -1278,6 +1402,10 @@ private:
         m_stats.inbound = inbound;
         m_stats.outbound = outbound;
         m_stats.handshaking = handshaking;
+        if (metrics) {
+            for (size_t i{0}; i < metric_connections.size(); ++i)
+                metrics->webtransport_connections.Set(metric_connections[i], i);
+        }
     }
 
     void ThreadMain() EXCLUSIVE_LOCKS_REQUIRED(!m_tasks_mutex) {
@@ -1354,9 +1482,15 @@ private:
         }
         m_conns.clear();
         m_by_cid.clear();
+        m_metric_state.clear();
+        if (auto *metrics{node::GetNodeMetrics()}) {
+            for (size_t i{0}; i < 6; ++i)
+                metrics->webtransport_connections.Set(0, i);
+        }
     }
 
     const QuicEngineOptions m_opts;
+    QuicAdmission m_admission;
     //! Only the engine thread invokes TLS callbacks, including on reload.
     size_t m_observer_records{0};
     size_t m_observer_bytes{0};
@@ -1375,12 +1509,15 @@ private:
             retry_sent{0}, retry_token_rejected{0}, stateless_reset_sent{0},
             version_negotiation_sent{0}, idle_closed{0}, packets_recv{0},
             packets_sent{0}, bytes_recv{0}, bytes_sent{0};
+        std::array<std::atomic<uint64_t>, QUIC_REJECT_REASONS> rejected{};
     } m_stats;
 
     // Engine thread only below.
     std::vector<std::unique_ptr<UdpSocket>> m_listeners;
     std::unique_ptr<UdpSocket> m_client4, m_client6;
     std::list<std::unique_ptr<QuicConnection>> m_conns;
+    std::unordered_map<QuicConnection *, std::pair<uint64_t, uint64_t>>
+        m_metric_state;
     std::unordered_map<std::string, QuicConnection *> m_by_cid;
     std::array<uint8_t, SECRET_LEN> m_reset_secret;
     std::array<std::array<uint8_t, SECRET_LEN>, 2> m_token_secret;
