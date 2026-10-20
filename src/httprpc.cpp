@@ -729,11 +729,16 @@ static boost::asio::awaitable<bool> HandlePoolJobsHTTPAsync(
 
     try {
         node::NodeContext &node = EnsureAnyNodeContext(context);
-        auto &pool = node.mining_pool ? *node.mining_pool
-                                      : node::GetGlobalMiningPool();
-        if (!pool.IsEnabled(node.args)) {
+        auto pool = node::GetMiningPool(node);
+        const bool disabled =
+            node.args &&
+            !node.args->GetBoolArg(
+                "-miningpool", lotus::v2::node::DEFAULT_MINING_POOL_ENABLED);
+        if (disabled || !pool || !pool->IsEnabled()) {
             req->WriteReply(HTTP_SERVICE_UNAVAILABLE,
-                            "{\"error\":\"mining-pool-disabled\"}\n");
+                            disabled
+                                ? "{\"error\":\"mining-pool-disabled\"}\n"
+                                : "{\"error\":\"mining-pool-unavailable\"}\n");
             co_return false;
         }
 
@@ -777,7 +782,7 @@ static boost::asio::awaitable<bool> HandlePoolJobsHTTPAsync(
         }
 
         const UniValue job_json =
-            pool.GetMiningJobJSON(config, node, worker_id);
+            pool->GetMiningJobJSON(config, node, worker_id);
 
         bool use_sse = false;
         const auto accept_hdr = req->GetHeader("Accept");
@@ -835,11 +840,16 @@ static boost::asio::awaitable<bool> HandlePoolSubmitHTTPAsync(
 
     try {
         node::NodeContext &node = EnsureAnyNodeContext(context);
-        auto &pool = node.mining_pool ? *node.mining_pool
-                                      : node::GetGlobalMiningPool();
-        if (!pool.IsEnabled(node.args)) {
+        auto pool = node::GetMiningPool(node);
+        const bool disabled =
+            node.args &&
+            !node.args->GetBoolArg(
+                "-miningpool", lotus::v2::node::DEFAULT_MINING_POOL_ENABLED);
+        if (disabled || !pool || !pool->IsEnabled()) {
             req->WriteReply(HTTP_SERVICE_UNAVAILABLE,
-                            "{\"error\":\"mining-pool-disabled\"}\n");
+                            disabled
+                                ? "{\"error\":\"mining-pool-disabled\"}\n"
+                                : "{\"error\":\"mining-pool-unavailable\"}\n");
             co_return false;
         }
 
@@ -882,8 +892,8 @@ static boost::asio::awaitable<bool> HandlePoolSubmitHTTPAsync(
             ntime_opt = parsed_time;
         }
 
-        const auto res = pool.SubmitShare(config, node, job_id, worker_id,
-                                          ntime_opt, nonce);
+        const auto res = pool->SubmitShare(config, node, job_id, worker_id,
+                                           ntime_opt, nonce);
         req->WriteHeader("Content-Type", "application/json");
         req->WriteReply(HTTP_OK, res.ToUniValue().write() + "\n");
         co_return true;
@@ -912,8 +922,18 @@ static boost::asio::awaitable<bool> HandlePoolStatsHTTPAsync(
 
     try {
         node::NodeContext &node = EnsureAnyNodeContext(context);
-        auto &pool = node.mining_pool ? *node.mining_pool
-                                      : node::GetGlobalMiningPool();
+        auto pool = node::GetMiningPool(node);
+        const bool disabled =
+            node.args &&
+            !node.args->GetBoolArg(
+                "-miningpool", lotus::v2::node::DEFAULT_MINING_POOL_ENABLED);
+        if (disabled || !pool || !pool->IsEnabled()) {
+            req->WriteReply(HTTP_SERVICE_UNAVAILABLE,
+                            disabled
+                                ? "{\"error\":\"mining-pool-disabled\"}\n"
+                                : "{\"error\":\"mining-pool-unavailable\"}\n");
+            co_return false;
+        }
 
         const auto qparams = ParseURIQueryParams(req->GetURI());
         std::string worker_id;
@@ -925,10 +945,10 @@ static boost::asio::awaitable<bool> HandlePoolStatsHTTPAsync(
 
         req->WriteHeader("Content-Type", "application/json");
         if (!worker_id.empty()) {
-            const UniValue stats = pool.GetWorkerStatsJSON(worker_id);
+            const UniValue stats = pool->GetWorkerStatsJSON(worker_id);
             req->WriteReply(HTTP_OK, stats.write() + "\n");
         } else {
-            const UniValue info = pool.GetPoolInfoJSON();
+            const UniValue info = pool->GetPoolInfoJSON();
             req->WriteReply(HTTP_OK, info.write() + "\n");
         }
         co_return true;
