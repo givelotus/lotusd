@@ -76,8 +76,11 @@ std::vector<fs::path> ListWalletDir() {
     for (auto it = fs::recursive_directory_iterator(wallet_dir, ec);
          it != fs::recursive_directory_iterator(); it.increment(ec)) {
         if (ec) {
-            LogPrintf("%s: %s %s\n", __func__, ec.message(),
-                      fs::PathToString(it->path()));
+            LogInfoEvent(BCLog::ALL, "wallet_directory_iteration_failed",
+                         "{source_function}: {error} {path}")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::Error, ec.message())
+                .Field(BCLog::LogField::Path, fs::PathToString(it->path()));
             continue;
         }
 
@@ -111,8 +114,11 @@ std::vector<fs::path> ListWalletDir() {
                 }
             }
         } catch (const std::exception &e) {
-            LogPrintf("%s: Error scanning %s: %s\n", __func__,
-                      it->path().string(), e.what());
+            LogInfoEvent(BCLog::ALL, "wallet_directory_scan_exception",
+                         "{source_function}: Error scanning {path}: {error}")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::Path, it->path().string())
+                .Field(BCLog::LogField::Error, e.what());
             it.disable_recursion_pending();
         }
     }
