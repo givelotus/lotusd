@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <common/args.h>
 #include <logging.h>
 #include <logging/values.h>
 #include <netbase.h>
@@ -26,6 +27,7 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -833,6 +835,119 @@ BOOST_AUTO_TEST_CASE(fee_rate_value_is_snapshot_and_preserves_text) {
     const auto record{Json()};
     BOOST_CHECK_EQUAL(record["fee_rate"].get_str(), expected);
     BOOST_CHECK_EQUAL(record["message"].get_str(), "rate=" + expected);
+}
+
+BOOST_AUTO_TEST_CASE(config_argument_fields_keep_redaction_and_section_text) {
+    Format(BCLog::LogFormat::JSON);
+    struct ConfigArgs : ArgsManager {
+        using ArgsManager::ReadConfigStream;
+    };
+    ConfigArgs args;
+    for (const char *option : {"-visible", "-boolean"}) {
+        args.AddArg(option, "", ArgsManager::ALLOW_ANY,
+                    OptionsCategory::OPTIONS);
+    }
+    args.AddArg("-secret", "", ArgsManager::ALLOW_ANY | ArgsManager::SENSITIVE,
+                OptionsCategory::OPTIONS);
+    const char *argv[]{
+        "logging-fixture", "-noboolean=0",
+        "-visible=wss://example.invalid/p2p?token=url-canary-a962&x=1",
+        "-secret=private-canary-891a"};
+    std::string error;
+    BOOST_REQUIRE(args.ParseParameters(std::size(argv), argv, error));
+    std::istringstream config{"[regtest]\nvisible=configured\n"};
+    BOOST_REQUIRE(args.ReadConfigStream(config, "fixture.conf", error));
+    args.SelectConfigNetwork("regtest");
+    args.LogArgs();
+    const auto lines{Lines()};
+    BOOST_REQUIRE_EQUAL(lines.size(), 5U);
+    bool found_double_negative{false}, found_section{false},
+        found_secret{false}, found_url{false};
+    for (const auto &line : lines) {
+        BOOST_CHECK(line.find("url-canary-a962") == std::string::npos);
+        BOOST_CHECK(line.find("private-canary-891a") == std::string::npos);
+        UniValue record;
+        BOOST_REQUIRE(record.read(line));
+        BOOST_CHECK_EQUAL(record["level"].get_str(), "info");
+        BOOST_CHECK(record["config_option"].isStr());
+        BOOST_CHECK(record["value"].isStr());
+        const auto event{record["event"].get_str()};
+        if (event == "config_double_negative_interpreted") {
+            found_double_negative = true;
+            BOOST_CHECK_EQUAL(record["config_option"].get_str(), "boolean");
+            BOOST_CHECK_EQUAL(record["value"].get_str(), "0");
+            BOOST_CHECK_EQUAL(
+                record["message"].get_str(),
+                "Warning: parsed potentially confusing double-negative -boolean=0");
+            continue;
+        }
+        BOOST_CHECK_EQUAL(event, "config_argument_displayed");
+        const auto option{record["config_option"].get_str()};
+        const auto value{record["value"].get_str()};
+        BOOST_CHECK_EQUAL(record["message"].get_str(),
+                          record["log_prefix"].get_str() + " " +
+                              record["config_section_prefix"].get_str() +
+                              option + "=" + value);
+        if (record["log_prefix"].get_str() == "Config file arg:") {
+            found_section = true;
+            BOOST_CHECK_EQUAL(record["config_section_prefix"].get_str(),
+                              "[regtest] ");
+            BOOST_CHECK_EQUAL(value, "\"configured\"");
+        } else if (option == "secret") {
+            found_secret = true;
+            BOOST_CHECK_EQUAL(value, "****");
+        } else if (option == "visible") {
+            found_url = true;
+            BOOST_CHECK_EQUAL(value,
+                              "\"wss://example.invalid/p2p?token=***&x=1\"");
+        }
+    }
+    BOOST_CHECK(found_double_negative && found_section && found_secret &&
+                found_url);
+}
+
+BOOST_AUTO_TEST_CASE(
+    config_settings_fields_keep_unknown_keys_and_parser_errors) {
+    Format(BCLog::LogFormat::JSON);
+    ArgsManager args;
+    for (const char *option : {"-datadir", "-settings"}) {
+        args.AddArg(option, "", ArgsManager::ALLOW_ANY,
+                    OptionsCategory::OPTIONS);
+    }
+    args.ForceSetArg("-datadir", fs::PathToString(m_args.GetDataDirBase()));
+    const auto settings{m_args.GetDataDirBase() /
+                        "logging-fixture-settings.json"};
+    args.ForceSetArg("-settings", fs::PathToString(settings));
+    std::ofstream{settings} << R"({"unknown-logging-fixture":"safe"})";
+    BOOST_REQUIRE(args.ReadSettingsFile());
+    args.LogArgs();
+    const auto lines{Lines()};
+    BOOST_REQUIRE_EQUAL(lines.size(), 2U);
+    UniValue unknown, displayed;
+    BOOST_REQUIRE(unknown.read(lines[0]));
+    BOOST_REQUIRE(displayed.read(lines[1]));
+    BOOST_CHECK_EQUAL(unknown["event"].get_str(),
+                      "config_settings_option_unknown");
+    BOOST_CHECK_EQUAL(unknown["config_option"].get_str(),
+                      "unknown-logging-fixture");
+    BOOST_CHECK_EQUAL(
+        unknown["message"].get_str(),
+        "Ignoring unknown rw_settings value unknown-logging-fixture");
+    BOOST_CHECK_EQUAL(displayed["event"].get_str(),
+                      "config_settings_argument_displayed");
+    BOOST_CHECK_EQUAL(displayed["config_option"].get_str(),
+                      "unknown-logging-fixture");
+    BOOST_CHECK_EQUAL(displayed["value"].get_str(), "\"safe\"");
+    BOOST_CHECK_EQUAL(displayed["message"].get_str(),
+                      "Setting file arg: unknown-logging-fixture = \"safe\"");
+    std::ofstream{settings} << "{";
+    BOOST_CHECK(!args.ReadSettingsFile());
+    const auto failure{Json()};
+    BOOST_CHECK_EQUAL(failure["event"].get_str(), "config_settings_error");
+    BOOST_CHECK(failure["error"].isStr());
+    BOOST_CHECK(!failure["error"].get_str().empty());
+    BOOST_CHECK_EQUAL(failure["message"].get_str(), failure["error"].get_str());
+    BOOST_CHECK_EQUAL(failure["level"].get_str(), "info");
 }
 
 BOOST_AUTO_TEST_CASE(hex_value_is_snapshot_and_preserves_hexstr_output) {
