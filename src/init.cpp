@@ -48,6 +48,7 @@
 #include <net_permissions.h>
 #include <net_processing.h>
 #include <net_websocket_dialer.h>
+#include <net_zstd_independent.h>
 #include <netbase.h>
 #include <node/blockmanager_args.h>
 #include <node/blockstorage.h>
@@ -1156,6 +1157,23 @@ void SetupServerArgs(NodeContext &node) {
                   DEFAULT_P2P_WEBSOCKET_OFFER),
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
         OptionsCategory::CONNECTION);
+    argsman.AddArg(
+        "-p2pcompressoncethreshold=<bytes>",
+        strprintf("Send block messages of at least this size (P2P header "
+                  "included) to zstd WebSocket peers as independent zstd "
+                  "frames, compressed once and shared by all of them. 0 "
+                  "keeps every message in the connection's zstd stream; "
+                  "independent frames from peers are still accepted (0 or at "
+                  "least 64, default: %d)",
+                  DEFAULT_P2P_COMPRESS_ONCE_THRESHOLD),
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
+        "-p2pcompressoncecache=<n>",
+        strprintf("Keep up to <n> MiB of compressed block frames for "
+                  "-p2pcompressoncethreshold, at most %u blocks (default: %d)",
+                  P2P_COMPRESS_ONCE_CACHE_ENTRIES,
+                  DEFAULT_P2P_COMPRESS_ONCE_CACHE_MB),
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg(
         "-p2pwebsocketpin=<host>=<pin>",
         "Only connect to wss:// peers at <host> (dialed URLs and advertised "
@@ -3807,6 +3825,25 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
 
     connOptions.m_i2p_accept_incoming =
         args.GetBoolArg("-i2pacceptincoming", true);
+
+    {
+        // Compress-once block frames for zstd WebSocket peers.
+        const int64_t threshold{args.GetIntArg(
+            "-p2pcompressoncethreshold", DEFAULT_P2P_COMPRESS_ONCE_THRESHOLD)};
+        if (threshold != 0 && (threshold < 64 || threshold > UINT32_MAX)) {
+            return InitError(Untranslated(
+                "Invalid -p2pcompressoncethreshold (0, or 64 to 4294967295 "
+                "bytes)"));
+        }
+        g_p2p_compress_once_threshold = size_t(threshold);
+        const int64_t cache_mb{args.GetIntArg(
+            "-p2pcompressoncecache", DEFAULT_P2P_COMPRESS_ONCE_CACHE_MB)};
+        if (cache_mb < 0 || cache_mb > 65536) {
+            return InitError(
+                Untranslated("Invalid -p2pcompressoncecache (0 to 65536 MiB)"));
+        }
+        GetP2PIndependentFrameCache().SetMaxBytes(size_t(cache_mb) << 20);
+    }
 
     {
         // Outbound ws:// and wss:// peers. Present our TLS certificate, if
