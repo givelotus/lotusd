@@ -521,6 +521,14 @@ NodeMetrics::NodeMetrics(std::vector<std::string> rpc_methods)
       p2p_compress_once_encodes{Add<Counter>(
           registry, MetricName("p2p_compress_once_encodes_total"),
           "Independent frames compressed (each cached block once).")},
+      p2p_block_message_cache_hits{Add<Counter>(
+          registry, MetricName("p2p_block_message_cache_hits_total"),
+          "Block messages served from the serialized block message cache "
+          "(no disk read, serialization or checksum).")},
+      p2p_block_message_cache_misses{Add<Counter>(
+          registry, MetricName("p2p_block_message_cache_misses_total"),
+          "Block messages of cacheable size read or serialized and "
+          "checksummed, then kept for the next peers.")},
       tip_height{Add<Gauge>(registry, MetricName("chain_tip_height"),
                             "Height of the active chain tip.")},
       tip_timestamp{
