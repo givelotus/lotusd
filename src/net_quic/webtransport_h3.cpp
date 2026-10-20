@@ -224,6 +224,12 @@ bool H3Session::InitH3(QuicConnection &conn) {
 }
 
 int H3Session::OnHandshakeCompleted(QuicConnection &conn) {
+    m_conn = &conn;
+    if (m_handler && !m_handler->OnHandshake(*this, conn)) {
+        SessionEnded(0, "peer refused at handshake");
+        conn.CloseApp(H3_NO_ERROR, "refused");
+        return 0;
+    }
     return InitH3(conn) ? 0 : NGTCP2_ERR_CALLBACK_FAILURE;
 }
 
