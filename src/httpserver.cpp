@@ -372,6 +372,8 @@ static std::chrono::seconds g_server_timeout{DEFAULT_HTTP_SERVER_TIMEOUT};
 static constexpr std::chrono::seconds CLOSE_NOTIFY_TIMEOUT{5};
 //! Set by InterruptHTTPServer: reject new requests with 503
 static std::atomic<bool> g_reject_requests{false};
+//! -p2prequiretls: P2P WebSocket peers must have used TLS
+static bool g_p2p_require_tls{false};
 //! How long a P2P port connection has to finish its WebSocket upgrade
 static std::chrono::seconds g_p2p_port_handshake_timeout{
     DEFAULT_P2P_PORT_HANDSHAKE_TIMEOUT};
@@ -668,6 +670,11 @@ struct HTTPConnectionInfo {
     bool is_tls{false};
     //! Whether the original TCP peer is a -trustedproxy
     bool tcp_peer_trusted{false};
+    //! A trusted proxy's PROXY v2 header said the client used TLS
+    bool proxy_tls{false};
+    //! HTTP comes from a trusted proxy (after any PROXY header): its
+    //! X-Forwarded-* headers are believed
+    bool from_trusted_proxy{false};
     std::string client_cert_fingerprint_hex;
     //! base64url SHA-256 of the client certificate's public key, if any
     std::string client_cert_spki;
@@ -1373,11 +1380,39 @@ static bool HasP2PWebSocketToken(const BeastRequest &req) {
  * configured, one without a valid token is not: it is handled as a request
  * for any other path would be, so the endpoint cannot be probed for.
  */
-static bool IsP2PWebSocketRequest(const BeastRequest &req) {
+/**
+ * Whether the client used TLS: to us, or to a trusted proxy that says so
+ * (a PROXY v2 SSL TLV, or "X-Forwarded-Proto: https" as set by the nearest
+ * proxy, i.e. the last value, from a connection by a trusted proxy).
+ * Nothing an untrusted client sends is believed.
+ */
+static bool ClientUsedTLS(const BeastRequest &req,
+                          const HTTPConnectionInfo &conn) {
+    if (conn.is_tls || conn.proxy_tls) {
+        return true;
+    }
+    if (!conn.from_trusted_proxy) {
+        return false;
+    }
+    std::string last;
+    const auto [first, end] = req.equal_range("X-Forwarded-Proto");
+    for (auto f = first; f != end; ++f) {
+        for (const std::string &proto : util::SplitString(f->value(), ',')) {
+            last = util::TrimString(proto);
+        }
+    }
+    return beast::iequals(last, "https");
+}
+
+static bool IsP2PWebSocketRequest(const BeastRequest &req,
+                                  const HTTPConnectionInfo &conn) {
     return g_p2p_websocket_enabled &&
            URIHasPathPrefix(req.target(), g_p2p_websocket_path) &&
            (g_p2p_websocket_token_hashes.empty() ||
-            (websocket::is_upgrade(req) && HasP2PWebSocketToken(req)));
+            (websocket::is_upgrade(req) && HasP2PWebSocketToken(req))) &&
+           // Without TLS (-p2prequiretls), the endpoint answers like any
+           // unserved path, so a probe cannot tell it exists.
+           (!g_p2p_require_tls || ClientUsedTLS(req, conn));
 }
 
 /**
@@ -1390,7 +1425,7 @@ TryHandleWebSocketUpgrade(Stream &stream, beast::flat_buffer &buffer,
                           const BeastRequest &req,
                           const HTTPConnectionInfo &conn) {
     const std::string_view target{req.target()};
-    if (IsP2PWebSocketRequest(req)) {
+    if (IsP2PWebSocketRequest(req, conn)) {
         co_await AcceptP2PWebSocket(stream, buffer, req, conn);
         co_return true;
     }
@@ -1478,9 +1513,10 @@ static asio::awaitable<void> PumpBytes(From &from, To &to) {
  * Whether a public listener serves this request itself: a P2P WebSocket
  * upgrade we accept, or a Chronik path. Decided from the header alone.
  */
-static bool ServedPublicly(const BeastRequest &req) {
+static bool ServedPublicly(const BeastRequest &req,
+                           const HTTPConnectionInfo &conn) {
     const std::string_view target{req.target()};
-    if (websocket::is_upgrade(req) && IsP2PWebSocketRequest(req)) {
+    if (websocket::is_upgrade(req) && IsP2PWebSocketRequest(req, conn)) {
         return true;
     }
     return IsPublicPath(target) &&
@@ -1488,8 +1524,9 @@ static bool ServedPublicly(const BeastRequest &req) {
 }
 
 /** Whether the P2P port serves this request itself (from the header alone) */
-static bool ServedOnP2PPort(const BeastRequest &req) {
-    return websocket::is_upgrade(req) && IsP2PWebSocketRequest(req);
+static bool ServedOnP2PPort(const BeastRequest &req,
+                            const HTTPConnectionInfo &conn) {
+    return websocket::is_upgrade(req) && IsP2PWebSocketRequest(req, conn);
 }
 
 /**
@@ -1672,8 +1709,8 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
         }
         if (conn.public_only && g_public_fallback.enabled &&
             !g_reject_requests.load() &&
-            !(conn.p2p_port ? ServedOnP2PPort(header)
-                            : ServedPublicly(header))) {
+            !(conn.p2p_port ? ServedOnP2PPort(header, client)
+                            : ServedPublicly(header, client))) {
             // Not ours: the fallback site answers (body and all).
             if (conn.disarm_deadline) {
                 conn.disarm_deadline();
@@ -1724,11 +1761,11 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
         // on RPC listeners only for -rpcallowip clients. Other requests go
         // to DispatchRequest, which applies the same rules.
         // On the P2P port, only the P2P WebSocket endpoint.
-        const bool endpoint_allowed{conn.p2p_port ? IsP2PWebSocketRequest(req)
-                                    : conn.public_only
-                                        ? IsPublicPath(req.target()) ||
-                                              IsP2PWebSocketRequest(req)
-                                        : ClientAllowed(client.peer)};
+        const bool endpoint_allowed{
+            conn.p2p_port      ? IsP2PWebSocketRequest(req, client)
+            : conn.public_only ? IsPublicPath(req.target()) ||
+                                     IsP2PWebSocketRequest(req, client)
+                               : ClientAllowed(client.peer)};
 
         // Handlers may take arbitrarily long (e.g. long polling), as may
         // WebSocket sessions.
@@ -1923,7 +1960,11 @@ HandleConnection(tcp::socket socket, bool public_only, bool p2p_port = false) {
             if (proxied->source) {
                 conn.peer = *proxied->source;
             }
+            conn.proxy_tls = proxied->client_tls;
         }
+
+        // The peer speaking HTTP: a proxy we trust, or anyone else.
+        conn.from_trusted_proxy = conn.tcp_peer_trusted;
 
         if (p2p_port && !plain_prefetched) {
             // Raw P2P (the network magic) is not ours: it is classified
@@ -2408,6 +2449,8 @@ bool InitHTTPServer(Config &config) {
                                             !gArgs.IsArgSet("-publicfallback"));
     g_p2p_websocket_force_bridge =
         gArgs.GetBoolArg("-p2pwebsocketbridge", false);
+    g_p2p_require_tls =
+        gArgs.GetBoolArg("-p2prequiretls", DEFAULT_P2P_REQUIRE_TLS);
     g_p2p_port_handshake_timeout = std::chrono::seconds{std::max<int64_t>(
         gArgs.GetIntArg("-p2pporthandshaketimeout",
                         DEFAULT_P2P_PORT_HANDSHAKE_TIMEOUT.count()),

@@ -35,6 +35,8 @@ static_assert(std::string_view{"/p2p/ws"} == P2P_WSS_DEFAULT_PATH);
 //! Accept P2P connections over WebSocket (-p2pwslisten): on the P2P port,
 //! -publicbind listeners and the RPC/HTTP port
 static const bool DEFAULT_P2P_WEBSOCKET = true;
+//! -p2prequiretls default: accept WebSocket P2P peers without TLS too
+static const bool DEFAULT_P2P_REQUIRE_TLS = false;
 //! -p2pporthandshaketimeout default: how long a connection on the P2P port
 //! has to show what it speaks and, for WebSocket, to finish its upgrade
 static constexpr std::chrono::seconds DEFAULT_P2P_PORT_HANDSHAKE_TIMEOUT{10};
