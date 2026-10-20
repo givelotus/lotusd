@@ -1,8 +1,8 @@
 # P2P over WebSocket
 
-Besides the normal P2P port, a node can carry P2P connections over WebSocket
-(`ws://`) or WebSocket over TLS (`wss://`), on the same port as its HTTP
-server. On the network, a `wss://` peer connection looks like a browser
+A node can carry P2P connections over WebSocket (`ws://`) or WebSocket over
+TLS (`wss://`): on its P2P port, beside raw P2P, on `-publicbind` listeners
+and on its RPC port. On the network, a `wss://` peer connection looks like a browser
 talking to a web site: TCP to port 443 (or whichever you choose), a TLS
 handshake with ALPN `http/1.1`, an HTTP upgrade, then encrypted traffic.
 
@@ -13,13 +13,110 @@ This is useful to:
 - make a node harder to find and block (see
   [Privacy and censorship](#privacy-and-censorship)).
 
-Plain TCP P2P is unchanged, and the two can be used together.
+Raw P2P ("raw" means plain P2P, the ordinary non-WebSocket protocol) is
+unchanged, and the two can be used together or separately.
+
+## Listening: which transports, on which port
+
+`-listen` stays the master switch for inbound peers, with its usual default
+(1 unless `-proxy` or `-connect`) and interactions. Two switches select what
+it accepts:
+
+| `-listen` | `-p2prawlisten` | `-p2pwslisten` | Accepted inbound | P2P port |
+|---|---|---|---|---|
+| 0 | any | any | nothing, on any transport | not bound |
+| 1 | 1 (default) | 1 (default) | raw P2P and WebSocket | bound |
+| 1 | 0 | 1 | WebSocket only | bound (raw P2P closed) |
+| 1 | 1 | 0 | raw P2P only, like stock Bitcoin ABC | bound |
+| 1 | 0 | 0 | nothing (a warning says so) | not bound |
+
+With `-listen=0`, `/p2p/ws` answers 503 and accepts no peer.
+
+### One port for raw P2P, `ws://` and `wss://`
+
+With the defaults, the P2P port (`-port`, `-bind`, `-whitebind`) accepts
+WebSocket peers as well as raw ones. Each connection is classified from
+its first bytes, which are only peeked at:
+
+- `0x16 0x03` (a TLS ClientHello) is `wss://`;
+- `GET ` (an HTTP request line) is `ws://`;
+- anything else is raw P2P. Stock peers start with the network magic,
+  whose first byte can start neither, so they are recognized at once and
+  proceed exactly as with stock Bitcoin ABC.
+
+Over HTTP or TLS, the P2P port serves **only** the P2P WebSocket endpoint
+(`-p2pwebsocketpath`, with `-p2pwebsockettoken` rules). Everything else gets
+404, or the `-publicfallback` site when it is set: never JSON-RPC, REST,
+wallet, Chronik or health checks. A plain-text request other than `GET` is
+not HTTP to the P2P port at all: raw P2P rejects it. TLS uses the same
+certificates as `-publicbind` (`-tlscert`/`-tlskey` or `-tlsephemeral`,
+reloaded live). `-whitebind` permissions apply to WebSocket peers on that
+listener too. WebSocket needs the HTTP server (`-server`, on by default for
+ecashd); without it the P2P port is raw P2P only.
+
+With the defaults, the public P2P port therefore accepts WebSocket peers as
+well as stock raw peers. With `-p2pwslisten=0` it speaks raw P2P only, like
+stock Bitcoin ABC.
+
+Limits:
+
+- With raw P2P on, every connection is an ordinary inbound peer until it
+  shows HTTP or TLS (same slots, bans, eviction and timeouts; a silent
+  client stays a raw peer). It is then handed over without anything being
+  read; such a peer uses a second node id.
+- With raw P2P off, bans, discouragement and a full node are checked first,
+  then the HTTP server classifies the connection and closes raw P2P.
+- A connection has `-p2pporthandshaketimeout` seconds (debug option,
+  default 10) to classify and, for WebSocket, to complete its upgrade.
+  At most 64 connections (8 per address) may be between classification and
+  upgrade; others are closed.
+- Trusted PROXY protocol headers are read on `-publicbind` and the RPC
+  port. On the shared P2P port they work only with `-p2prawlisten=0`:
+  with raw P2P enabled, the classifier treats the PROXY signature as raw
+  P2P before it can reach the HTTP server. Use `-publicbind` for a load
+  balancer that must work with either raw-listen setting.
+
+Advertisement does not change: raw P2P addresses are advertised when raw P2P
+is accepted, `NET_WSS` addresses only with `-externaldomain`. A peer that
+knows only a node's IP address could reach its WebSocket endpoint at
+`wss://<ip>:<port>/p2p/ws` on the same port, but nodes do not try this by
+themselves; use it with `-addnode`/`-connect`.
+
+### `-p2prawlisten=0`
+
+- Raw P2P connections on the P2P port are closed. The port stays bound
+  while `-p2pwslisten=1`.
+- No raw P2P address is learned or advertised: not `-externalip` (refused),
+  interface discovery, NAT-PMP mappings, nor the address peers see us at.
+  Only `-externaldomain` (`NET_WSS`) is advertised.
+- `-listenonion=1`, onion binds (`-bind=...=onion`) and
+  `-i2pacceptincoming=1` serve raw P2P over Tor or I2P, so they are
+  refused; by default they are turned off. A Tor hidden service would
+  forward to the onion bind, a raw P2P listener.
+- Outbound connections are not affected: use `-onlynet=wss`.
+
+### `-p2prequiretls`
+
+With `-p2prequiretls=1`, WebSocket peers must use TLS wherever WebSocket is
+accepted (P2P port, `-publicbind`, RPC port). A `ws://` upgrade gets the
+same answer as any unserved request (404, or `-publicfallback`), so probes
+cannot tell the endpoint exists. Raw P2P is controlled by `-p2prawlisten`.
+
+Behind a TLS-terminating proxy, a connection from a `-trustedproxy` address
+counts as TLS when the proxy says the client used it: `X-Forwarded-Proto:
+https` as set by the nearest proxy (the last value), or the SSL TLV of a
+PROXY v2 header. Headers from untrusted addresses are never believed.
+Behind a layer-4 balancer sending PROXY v2, only its TLV counts, since the
+HTTP then comes from the client itself.
 
 ## Serving
 
 | Option | Effect |
 |---|---|
-| `-p2pwebsocket` (default on) | Accept P2P upgrades at `/p2p/ws`. Needs `-listen` and `-server`. |
+| `-p2pwslisten` (default on) | Accept P2P upgrades at `/p2p/ws`, on the P2P port, `-publicbind` and the RPC port. Needs `-listen` and `-server`. |
+| `-p2prawlisten` (default on) | Accept raw P2P on the P2P port. See [above](#-p2prawlisten0). |
+| `-p2prequiretls` (default off) | Accept WebSocket peers only over TLS. See [above](#-p2prequiretls). |
+| P2P port | Serves P2P WebSocket to anyone, beside raw P2P, and nothing else over HTTP. |
 | `-publicbind=<addr>:<port>` | An extra listener for anyone, serving **only** P2P WebSocket and Chronik (`/chronik`). JSON-RPC, wallet and REST are refused there whatever the client address. Expose this port, never the RPC port. Not advertised. |
 | RPC port | Also serves P2P WebSocket, but only to `-rpcallowip` clients. |
 | `-tlscert`, `-tlskey` | Certificate chain and key for TLS. New inbound handshakes and outbound `wss://` dials pick up replaced files (e.g. an ACME renewal) without a restart, checking mtimes at most once a second. The certificate/key pair must load and match before replacing the context. Failed replacements keep the previous identity; established connections are unaffected. |
@@ -27,12 +124,12 @@ Plain TCP P2P is unchanged, and the two can be used together.
 | `-externaldomain=<domain>[:port]` | Advertise `wss://<domain>:<port><path>` (default port 443; the path is `-p2pwebsocketpath`, else `/p2p/ws`) to peers that support ADDRv2 (BIP155), so they can find and dial it. |
 | `-p2pwebsocketpath=<path>` | Serve the upgrade at another path. |
 | `-p2pwebsockettoken=<token>` | Require a token (repeatable). Without it, the endpoint answers like any unknown path. |
-| `-publicfallback=<host>:<port>` | Hand everything else on `-publicbind` (pages, probes, upgrades without the token) to a plain-HTTP web server, which then answers that connection byte for byte. |
+| `-publicfallback=<host>:<port>` | Hand everything else on `-publicbind` and the P2P port (pages, probes, upgrades without the token or, with `-p2prequiretls`, without TLS) to a plain-HTTP web server, which then answers that connection byte for byte. |
 | `-p2pwebsocketpeer=[permissions@]<pin>` | Recognize inbound peers by their TLS client key and grant them permissions, as `-whitelist` does. Turns on `-tlsmutual`. |
-| `-p2pwebsocketrequirecert` | Only accept WebSocket peers whose client key is listed with `-p2pwebsocketpeer`. Plain TCP peers are not affected. |
+| `-p2pwebsocketrequirecert` | Only accept WebSocket peers whose client key is listed with `-p2pwebsocketpeer`. Raw P2P peers are not affected. |
 | `-trustedproxy=<ip\|subnet>` | Load balancers and reverse proxies whose client addresses are believed: a PROXY protocol v1/v2 header at the start of a connection (layer-4 balancers such as AWS NLB, HAProxy), and `X-Forwarded-For` on each request (HTTP proxies such as AWS ALB, nginx), walked from the right while hops are trusted. The address found is used for `-rpcallowip`, P2P peers (bans, eviction, addrman) and logs. Repeatable. |
 | `-p2pwebsockettrustforwardedfor` | Shorthand for trusting a proxy on this host (`127.0.0.0/8`, `::1`). |
-| `-httphealth` | `/livez` (the server runs), `/readyz` and `/healthz` (out of initial block download, with peers; else 503 and the reason), for health checks. On by default, off with `-p2pwebsockettoken` or `-publicfallback`, where they would reveal the node to probes. |
+| `-httphealth` | `/livez` (the server runs), `/readyz` and `/healthz` (out of initial block download, with peers; else 503 and the reason), for health checks (not on the P2P port). On by default, off with `-p2pwebsockettoken` or `-publicfallback`, where they would reveal the node to probes. |
 
 TLS is detected on each connection, so one port serves `ws://`, `wss://`,
 HTTP and HTTPS.
@@ -70,7 +167,10 @@ authenticate the peer (the same as plain TCP P2P).
 When `-proxy` is set, WebSocket dials go through it, and the host *name* is
 passed to the proxy, so there is no local DNS lookup. `.onion` hosts use
 `-onion`. A dial never falls back to a direct connection when the proxy
-fails. `-onlynet` without `wss` refuses WebSocket dials.
+fails. `-onlynet` without `wss` refuses WebSocket dials. `wss` means
+WebSocket over TLS: with `-onlynet=wss` alone, unencrypted `ws://` dials
+(except to `.onion`) are refused, and so are manual raw P2P connections
+(`-addnode`, `-connect`), local and private addresses included.
 
 `getpeerinfo` reports `transport` (`tcp`, `ws` or `wss`) and, for WebSocket
 peers, a `websocket` object with the compression in use, payload and wire
@@ -149,6 +249,43 @@ fixedseeds=0
 connect=<peer or bridge URL>
 proxy=127.0.0.1:<socks port>   # Xray or Tor, see contrib/censorship
 ```
+
+### WebSocket-only node
+
+Accepts and makes WebSocket connections only, while keeping its usual P2P
+port (shared by `ws://` and `wss://`):
+
+```
+p2prawlisten=0      # close raw P2P on the P2P port; advertise no raw address
+onlynet=wss         # dial WebSocket over TLS only: no raw P2P, no ws://
+externaldomain=node.example.org   # optional: let peers find wss://node.example.org
+```
+
+- `-p2prawlisten=0` stops raw P2P inbound. The P2P port stays bound for
+  WebSocket, and `-publicbind` and the RPC port keep their WebSocket
+  handling.
+- `-onlynet=wss` stops raw P2P and unencrypted WebSocket outbound.
+  `-p2prawlisten` alone does not change who the node dials.
+- Peers reach it with `wss://<host>:<P2P port>/p2p/ws` (or
+  `-externaldomain`). Stock nodes, which speak raw P2P only, cannot.
+
+### TLS-only node
+
+Every P2P connection, in and out, is encrypted:
+
+```
+p2prawlisten=0      # no raw P2P inbound
+p2prequiretls=1     # no ws:// inbound: 404 (or -publicfallback) instead
+onlynet=wss         # outbound wss:// only
+```
+
+Behind a TLS-terminating proxy or CDN, also list it with `-trustedproxy`:
+the proxy-to-node hop may then be plain `ws://`, and the node accepts it
+because the proxy says (`X-Forwarded-Proto: https`, or a PROXY v2 SSL TLV)
+that the client used TLS. That hop itself is not encrypted: keep it on the
+same host or a private network, and trust only proxies that set or
+overwrite the header. A proxy that passes a client's own
+`X-Forwarded-Proto` through makes the requirement meaningless.
 
 ### Client of a private bridge
 
