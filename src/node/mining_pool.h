@@ -72,7 +72,7 @@ struct PoolJob {
 struct PoolWorker {
     std::string worker_id;
     uint32_t nonce_prefix{0};
-    CScript payout_script;
+    CTxOut payout;
     bool is_newsletter_subscriber{false};
     uint256 share_target;
     uint64_t accepted_shares{0};
@@ -89,7 +89,7 @@ struct PoolWorker {
  */
 struct PPLNSShare {
     std::string worker_id;
-    CScript payout_script;
+    CTxOut payout;
     double weight{1.0};
     bool is_newsletter_subscriber{false};
 };
@@ -186,11 +186,13 @@ private:
     size_t m_active_operations{0};
     bool m_stopping{false};
     bool m_staking_rewards{false};
+    bool m_treasury_rewards{true};
     uint256 m_initial_share_target;
     bool m_configured{false};
     bool m_enabled{DEFAULT_MINING_POOL_ENABLED};
     std::string m_pool_address_arg;
-    CScript m_fallback_payout_script;
+    std::optional<CTxOut> m_fallback_payout;
+    std::string m_payout_error;
     size_t m_pplns_window_size{DEFAULT_POOL_PPLNS_WINDOW};
     int64_t m_target_spacing_sec{DEFAULT_POOL_TARGET_SPACING_SEC};
 
@@ -207,10 +209,10 @@ private:
 
     PoolWorker &GetOrCreateWorkerLocked(const std::string &worker_id,
                                         const Config &config);
-    CScript ResolveWorkerPayoutScriptLocked(const std::string &worker_id,
+    CTxOut ResolveWorkerPayoutLocked(const std::string &worker_id,
                                             const Config &config,
                                             bool &is_newsletter_out) const;
-    CScript GetFallbackPayoutScriptLocked(const Config &config) const;
+    CTxOut GetFallbackPayoutLocked() const;
     static uint256 GetInitialShareTarget(const Consensus::Params &params);
     static double ComputeShareDifficulty(const uint256 &share_target,
                                          const uint256 &pow_limit);
