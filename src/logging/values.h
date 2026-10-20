@@ -25,6 +25,25 @@
  */
 namespace BCLog {
 
+/** Snapshot one existing diagnostic byte (for example an ASCII DB-key prefix).
+ * This preserves %c's byte representation; it is not Unicode transcoding.
+ */
+struct LogChar {
+    uint8_t value;
+};
+
+template <> struct LogValue<LogChar> {
+    static constexpr size_t MAX_SIZE{1};
+    static size_t Pack(const LogChar &value, std::span<std::byte> out) {
+        std::memcpy(out.data(), &value.value, 1);
+        return 1;
+    }
+    static void Render(std::span<const std::byte> in, std::string &out) {
+        assert(in.size() == 1);
+        out.append(reinterpret_cast<const char *>(in.data()), in.size());
+    }
+};
+
 /** A byte view copied into the record and hex-encoded on the consumer.
  * The view need only remain valid until Field() returns. Oversized values are
  * omitted as a whole by EventBuilder, never rendered as a misleading prefix.
