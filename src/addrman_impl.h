@@ -126,6 +126,8 @@ public:
     void Unserialize(Stream &s_) EXCLUSIVE_LOCKS_REQUIRED(!cs);
 
     size_t size() const EXCLUSIVE_LOCKS_REQUIRED(!cs);
+    std::pair<size_t, size_t> NewTriedCounts() const
+        EXCLUSIVE_LOCKS_REQUIRED(!cs);
 
     bool Add(const std::vector<CAddress> &vAddr, const CNetAddr &source,
              std::chrono::seconds time_penalty) EXCLUSIVE_LOCKS_REQUIRED(!cs);

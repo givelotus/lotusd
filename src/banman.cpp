@@ -7,6 +7,7 @@
 
 #include <logging.h>
 #include <netaddress.h>
+#include <node/metrics.h>
 #include <node/ui_interface.h>
 #include <util/time.h>
 #include <util/translation.h>
@@ -120,6 +121,9 @@ void BanMan::Discourage(const CNetAddr &net_addr) {
 
 void BanMan::Ban(const CSubNet &sub_net, int64_t ban_time_offset,
                  bool since_unix_epoch) {
+    if (auto *metrics{node::GetNodeMetrics()}) {
+        metrics->p2p_bans.Inc();
+    }
     CBanEntry ban_entry(GetTime());
 
     int64_t normalized_ban_time_offset = ban_time_offset;

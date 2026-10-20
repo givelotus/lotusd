@@ -3618,12 +3618,11 @@ CNode::CNode(NodeId idIn, std::shared_ptr<Sock> sock, const CAddress &addrIn,
         const bool inbound{IsInboundConn()};
         const bool websocket{m_websocket_info != nullptr};
         const size_t peer{metrics->PeerSeries(
-            inbound, websocket, size_t(ConnectedThroughNetwork()))};
+            inbound, MetricTransport(), size_t(ConnectedThroughNetwork()))};
         metrics->peers.Add(1, peer);
-        const std::array<size_t, 2> conn{inbound ? 0U : 1U,
-                                         websocket ? 1U : 0U};
         metrics->p2p_connections.Add(
-            metrics->p2p_connections.SeriesIndex(conn));
+            metrics->DirectionTransportSeries(inbound, MetricTransport()));
+        m_metrics_connected_at = std::chrono::steady_clock::now();
         std::optional<size_t> ws;
         if (websocket) {
             const std::array<size_t, 2> idx{

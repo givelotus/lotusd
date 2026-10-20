@@ -1183,6 +1183,11 @@ size_t AddrManImpl::size() const {
     return vRandom.size();
 }
 
+std::pair<size_t, size_t> AddrManImpl::NewTriedCounts() const {
+    LOCK(cs);
+    return {size_t(nNew), size_t(nTried)};
+}
+
 bool AddrManImpl::Add(const std::vector<CAddress> &vAddr,
                       const CNetAddr &source,
                       std::chrono::seconds time_penalty) {
@@ -1285,6 +1290,10 @@ template void AddrMan::Unserialize(HashVerifier<DataStream> &s);
 
 size_t AddrMan::size() const {
     return m_impl->size();
+}
+
+std::pair<size_t, size_t> AddrMan::NewTriedCounts() const {
+    return m_impl->NewTriedCounts();
 }
 
 bool AddrMan::Add(const std::vector<CAddress> &vAddr, const CNetAddr &source,
