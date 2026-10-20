@@ -299,6 +299,87 @@ BOOST_AUTO_TEST_CASE(positional_merkle_root_and_syndromes) {
     BOOST_CHECK(spec_a.GetUtxoRootDigest() == eager_layer.GetUtxoRootDigest());
 }
 
+BOOST_AUTO_TEST_CASE(batched_inserts_match_serial_inserts_while_growing) {
+    // Many small batches into a growing overlay must give exactly the state
+    // of inserting the same transactions one at a time, in both UTXO-root
+    // modes. This covers the arena and map growth between batches.
+    for (const bool commit_state_root : {false, true}) {
+        FastRandomContext rng(/*fDeterministic=*/true);
+        auto random_hash = [&] {
+            lotus::v2::Hash h;
+            const uint256 r = rng.rand256();
+            std::copy(r.begin(), r.end(), h.begin());
+            return h;
+        };
+        std::vector<lotus::v2::OverlayTxEntry> all;
+        std::vector<lotus::v2::Outpoint> unspent_created;
+        for (size_t i = 0; i < 3000; ++i) {
+            lotus::v2::OverlayTxEntry e;
+            e.tx_id = random_hash();
+            e.tx_hash = random_hash();
+            e.linear_cost = 200 + i % 50;
+            e.fee_sats = 300 + int64_t(i % 7);
+            e.sigchecks = 1 + int64_t(i % 3);
+            if (!unspent_created.empty() && i % 2 == 0) {
+                // Spend an output created by an earlier transaction, which
+                // may sit in the same batch or in an earlier one.
+                const size_t pick = rng.randrange(unspent_created.size());
+                e.spent_outpoints.push_back(unspent_created[pick]);
+                unspent_created.erase(unspent_created.begin() + pick);
+            } else {
+                e.spent_outpoints.push_back({random_hash(), 0});
+            }
+            for (uint32_t n = 0; n < 2; ++n) {
+                lotus::v2::Coin coin;
+                coin.outpoint = {e.tx_id, n};
+                coin.output.value = 1000 + n;
+                coin.creation_height = 200;
+                e.created_coins.push_back(coin);
+                unspent_created.push_back(coin.outpoint);
+            }
+            all.push_back(std::move(e));
+        }
+
+        const lotus::v2::Hash parent{};
+        lotus::v2::MempoolOverlayLayer serial(
+            parent, nullptr, lotus::v2::GetInitialV2MonetaryState(), 200,
+            1700000100);
+        lotus::v2::MempoolOverlayLayer batched(
+            parent, nullptr, lotus::v2::GetInitialV2MonetaryState(), 200,
+            1700000100);
+        serial.SetCommitStateRootInHeader(commit_state_root);
+        batched.SetCommitStateRootInHeader(commit_state_root);
+        for (const auto &e : all) {
+            BOOST_CHECK(serial.AddTransaction(
+                e.tx_id, e.tx_hash, e.linear_cost, e.spent_outpoints,
+                e.created_coins, e.fee_sats, e.sigchecks));
+        }
+        size_t pos = 0;
+        while (pos < all.size()) {
+            const size_t n = std::min<size_t>(all.size() - pos,
+                                              17 + rng.randrange(64));
+            std::vector<lotus::v2::OverlayTxEntry> batch(
+                all.begin() + pos, all.begin() + pos + n);
+            BOOST_CHECK_EQUAL(batched.AddTransactionBatch(batch), n);
+            pos += n;
+        }
+        BOOST_CHECK_EQUAL(serial.GetTxCount(), batched.GetTxCount());
+        BOOST_CHECK(serial.GetSubtreeARoot() == batched.GetSubtreeARoot());
+        BOOST_CHECK(serial.GetUtxoRootDigest() ==
+                    batched.GetUtxoRootDigest());
+        BOOST_CHECK_EQUAL(serial.GetTotalFeesSats(),
+                          batched.GetTotalFeesSats());
+        BOOST_CHECK_EQUAL(serial.GetTotalSigChecks(),
+                          batched.GetTotalSigChecks());
+        BOOST_CHECK_EQUAL(serial.GetSumNonCbEffectiveCost(),
+                          batched.GetSumNonCbEffectiveCost());
+        BOOST_CHECK(serial.GetNetErasedOutpoints() ==
+                    batched.GetNetErasedOutpoints());
+        BOOST_CHECK_EQUAL(serial.GetNetInsertedCoins().size(),
+                          batched.GetNetInsertedCoins().size());
+    }
+}
+
 
 BOOST_AUTO_TEST_CASE(transaction_subtree_span_partition_matches_arena) {
     using namespace lotus::v2;
