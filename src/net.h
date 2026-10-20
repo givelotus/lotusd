@@ -464,6 +464,10 @@ public:
     // Used only by SocketHandler thread
     const std::unique_ptr<TransportDeserializer> m_deserializer;
     const std::unique_ptr<const TransportSerializer> m_serializer;
+    //! The last wait asked for RECV in place of SEND because the socket's
+    //! transport blocked sending (Sock::SendBlockedByTransport()).
+    //! Used only by SocketHandler thread.
+    bool m_send_wait_on_recv{false};
 
     const NetPermissionFlags m_permission_flags{NetPermissionFlags::None};
 

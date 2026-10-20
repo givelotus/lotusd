@@ -2071,12 +2071,21 @@ Sock::EventsPerSock CConnman::GenerateWaitSockets(Span<CNode *const> nodes) {
             WITH_LOCK(pnode->cs_vSend, return !pnode->vSendMsg.empty());
 
         LOCK(pnode->m_sock_mutex);
+        pnode->m_send_wait_on_recv = false;
         if (pnode->m_sock) {
             // Data the socket implementation buffered itself must make
             // progress even when CConnman has nothing queued.
             const Sock::Event pending{pnode->m_sock->PendingEvents()};
-            Sock::Event event = (select_send ? Sock::SEND : 0) |
-                                (select_recv ? Sock::RECV : 0) | pending;
+            // A user-space transport that blocked sending signals RECV once
+            // it can take more: waiting for SEND could spin.
+            if (select_send && pnode->m_sock->SendBlockedByTransport()) {
+                select_send = false;
+                pnode->m_send_wait_on_recv = true;
+            }
+            Sock::Event event =
+                (select_send ? Sock::SEND : 0) |
+                (select_recv || pnode->m_send_wait_on_recv ? Sock::RECV : 0) |
+                pending;
             if (event != 0) {
                 events_per_sock.emplace(pnode->m_sock, Sock::Events{event});
             }
@@ -2169,6 +2178,7 @@ void CConnman::SocketHandlerConnected(
         bool recvSet = false;
         bool sendSet = false;
         bool errorSet = false;
+        bool send_unblocked = false;
         {
             LOCK(pnode->m_sock_mutex);
             if (!pnode->m_sock) {
@@ -2189,11 +2199,20 @@ void CConnman::SocketHandlerConnected(
                     }
                 }
             }
+            // The transport that blocked sending can take more: send first
+            // (below), receiving only what fPauseRecv allows.
+            send_unblocked = pnode->m_send_wait_on_recv &&
+                             it != events_per_sock.end() &&
+                             (it->second.occurred & Sock::RECV) &&
+                             !pnode->m_sock->SendBlockedByTransport();
             // The OS socket being readable was only requested on behalf of
-            // FlushPending(): don't read past fPauseRecv.
+            // FlushPending() or a blocked send: don't read past fPauseRecv.
             if (pnode->fPauseRecv && !errorSet) {
                 recvSet = false;
             }
+        }
+        if (send_unblocked && !sendSet) {
+            sendSet = WITH_LOCK(pnode->cs_vSend, return !pnode->vSendMsg.empty());
         }
 
         if (sendSet) {
