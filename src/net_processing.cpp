@@ -935,6 +935,9 @@ private:
      * its address discouraged.
      */
     void Misbehaving(Peer &peer, const std::string &message);
+    /** As above, with the metrics' reason class given (else classified) */
+    void Misbehaving(Peer &peer, node::MisbehaviorReason reason,
+                     const std::string &message);
 
     /**
      * Potentially mark a node discouraged based on the contents of a
@@ -2785,6 +2788,14 @@ void PeerManagerImpl::AddToCompactExtraTransactions(const CTransactionRef &tx) {
 }
 
 void PeerManagerImpl::Misbehaving(Peer &peer, const std::string &message) {
+    Misbehaving(peer, node::ClassifyMisbehavior(message), message);
+}
+
+void PeerManagerImpl::Misbehaving(Peer &peer, node::MisbehaviorReason reason,
+                                  const std::string &message) {
+    if (auto *metrics{node::GetNodeMetrics()}) {
+        metrics->p2p_misbehavior.Add(size_t(reason));
+    }
     LOCK(peer.m_misbehavior_mutex);
 
     const std::string message_prefixed =
@@ -2811,7 +2822,8 @@ void PeerManagerImpl::MaybePunishNodeForBlock(NodeId nodeid,
         case BlockValidationResult::BLOCK_MUTATED:
             if (!via_compact_block) {
                 if (peer) {
-                    Misbehaving(*peer, message);
+                    Misbehaving(*peer, node::MisbehaviorReason::INVALID_BLOCK,
+                                message);
                 }
                 return;
             }
@@ -2828,7 +2840,8 @@ void PeerManagerImpl::MaybePunishNodeForBlock(NodeId nodeid,
             // protected from discouragement.
             if (!via_compact_block && !node_state->m_is_inbound) {
                 if (peer) {
-                    Misbehaving(*peer, message);
+                    Misbehaving(*peer, node::MisbehaviorReason::INVALID_BLOCK,
+                                message);
                 }
                 return;
             }
@@ -2838,13 +2851,15 @@ void PeerManagerImpl::MaybePunishNodeForBlock(NodeId nodeid,
         case BlockValidationResult::BLOCK_CHECKPOINT:
         case BlockValidationResult::BLOCK_INVALID_PREV:
             if (peer) {
-                Misbehaving(*peer, message);
+                Misbehaving(*peer, node::MisbehaviorReason::INVALID_HEADER,
+                            message);
             }
             return;
         // Conflicting (but not necessarily invalid) data or different policy:
         case BlockValidationResult::BLOCK_MISSING_PREV:
             if (peer) {
-                Misbehaving(*peer, message);
+                Misbehaving(*peer, node::MisbehaviorReason::INVALID_HEADER,
+                            message);
             }
             return;
         case BlockValidationResult::BLOCK_TIME_FUTURE:
@@ -2865,7 +2880,8 @@ void PeerManagerImpl::MaybePunishNodeForTx(NodeId nodeid,
         // The node is providing invalid data:
         case TxValidationResult::TX_CONSENSUS:
             if (peer) {
-                Misbehaving(*peer, message);
+                Misbehaving(*peer, node::MisbehaviorReason::INVALID_TX,
+                            message);
             }
             return;
         // Conflicting (but not necessarily invalid) data or different policy:
@@ -5799,6 +5815,14 @@ void PeerManagerImpl::ProcessMessage(
                                gArgs.GetBoolArg("-highbandwidthtx", false) &&
                                !pfrom.IsBlockOnlyConn());
 
+        if (auto *metrics{node::GetNodeMetrics()};
+            metrics && pfrom.m_metrics_connected_at !=
+                           std::chrono::steady_clock::time_point{}) {
+            metrics->p2p_handshake_seconds.RecordDuration(
+                std::chrono::steady_clock::now() - pfrom.m_metrics_connected_at,
+                metrics->DirectionTransportSeries(pfrom.IsInboundConn(),
+                                                  pfrom.MetricTransport()));
+        }
         pfrom.fSuccessfullyConnected = true;
         return;
     }
@@ -8322,6 +8346,10 @@ void PeerManagerImpl::ProcessMessage(
                     if (ping_time.count() >= 0) {
                         // Let connman know about this successful ping-pong
                         pfrom.PongReceived(ping_time);
+                        if (auto *metrics{node::GetNodeMetrics()}) {
+                            metrics->p2p_ping_seconds.RecordDuration(
+                                ping_time, pfrom.MetricTransport());
+                        }
                     } else {
                         // This should never happen
                         sProblem = "Timing mishap";
@@ -8505,6 +8533,12 @@ void PeerManagerImpl::ProcessMessage(
     return;
 }
 
+static void CountDiscouragement(node::DiscourageOutcome outcome) {
+    if (auto *metrics{node::GetNodeMetrics()}) {
+        metrics->p2p_discouragements.Add(size_t(outcome));
+    }
+}
+
 bool PeerManagerImpl::MaybeDiscourageAndDisconnect(CNode &pnode, Peer &peer) {
     {
         LOCK(peer.m_misbehavior_mutex);
@@ -8521,6 +8555,7 @@ bool PeerManagerImpl::MaybeDiscourageAndDisconnect(CNode &pnode, Peer &peer) {
         // We never disconnect or discourage peers for bad behavior if they have
         // NetPermissionFlags::NoBan permission
         LogPrintf("Warning: not punishing noban peer %d!\n", peer.m_id);
+        CountDiscouragement(node::DiscourageOutcome::EXEMPT_NOBAN);
         return false;
     }
 
@@ -8528,6 +8563,7 @@ bool PeerManagerImpl::MaybeDiscourageAndDisconnect(CNode &pnode, Peer &peer) {
         // We never disconnect or discourage manual peers for bad behavior
         LogPrintf("Warning: not punishing manually connected peer %d!\n",
                   peer.m_id);
+        CountDiscouragement(node::DiscourageOutcome::EXEMPT_MANUAL);
         return false;
     }
 
@@ -8537,6 +8573,7 @@ bool PeerManagerImpl::MaybeDiscourageAndDisconnect(CNode &pnode, Peer &peer) {
         LogDebug(BCLog::NET,
                  "Warning: disconnecting but not discouraging %s peer %d!\n",
                  pnode.m_inbound_onion ? "inbound onion" : "local", peer.m_id);
+        CountDiscouragement(node::DiscourageOutcome::DISCONNECTED_LOCAL);
         pnode.fDisconnect = true;
         return true;
     }
@@ -8545,6 +8582,7 @@ bool PeerManagerImpl::MaybeDiscourageAndDisconnect(CNode &pnode, Peer &peer) {
     // address
     LogDebug(BCLog::NET, "Disconnecting and discouraging peer %d!\n",
              peer.m_id);
+    CountDiscouragement(node::DiscourageOutcome::DISCOURAGED);
     if (m_banman) {
         m_banman->Discourage(pnode.addr);
     }
@@ -10191,7 +10229,8 @@ bool PeerManagerImpl::ReceivedAvalancheProof(CNode &node, Peer &peer,
     if (state.GetResult() == avalanche::ProofRegistrationResult::INVALID) {
         m_avalanche->withPeerManager(
             [&](avalanche::PeerManager &pm) { pm.setInvalid(proofid); });
-        Misbehaving(peer, state.GetRejectReason());
+        Misbehaving(peer, node::MisbehaviorReason::AVALANCHE_PROOF,
+                    state.GetRejectReason());
         return false;
     }
 

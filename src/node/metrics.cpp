@@ -49,7 +49,7 @@ namespace metric_labels {
         return labels;
     }
     const std::vector<std::string> &Transports() {
-        static const std::vector<std::string> labels{"tcp", "websocket"};
+        static const std::vector<std::string> labels{"tcp", "ws", "wss"};
         return labels;
     }
     const std::vector<std::string> &HTTPEndpoints() {
@@ -144,6 +144,25 @@ namespace metric_labels {
                                                      "max_generated", "ema"};
         return labels;
     }
+    const std::vector<std::string> &MisbehaviorReasons() {
+        static const std::vector<std::string> labels{"handshake",
+                                                     "oversized_message",
+                                                     "invalid_header",
+                                                     "invalid_block",
+                                                     "invalid_compact_block",
+                                                     "invalid_tx",
+                                                     "bloom_filter",
+                                                     "avalanche",
+                                                     "avalanche_proof",
+                                                     "other"};
+        return labels;
+    }
+    const std::vector<std::string> &DiscourageOutcomes() {
+        static const std::vector<std::string> labels{
+            "discouraged", "disconnected_local", "exempt_noban",
+            "exempt_manual"};
+        return labels;
+    }
     const std::vector<std::string> &HTTPCodeClasses() {
         static const std::vector<std::string> labels{"1xx", "2xx", "3xx",
                                                      "4xx", "5xx", "other"};
@@ -202,6 +221,11 @@ namespace {
         0.000005, 0.00001, 0.000025, 0.00005, 0.0001, 0.00025, 0.0005,
         0.001,    0.0025,  0.005,    0.01,    0.025,  0.05,    0.1,
         0.25,     0.5,     1,        2.5,     5,      10};
+    //! Seconds; P2P handshakes and ping round trips, from loopback to
+    //! slow links (and peers slow to answer)
+    const std::vector<double> NETWORK_BUCKETS{
+        0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05,
+        0.1,    0.25,    0.5,    1,     2.5,    5,     10,   30,    60};
     //! Blocks
     const std::vector<double> REORG_DEPTH_BUCKETS{1, 2,  3,  4,  5,   6,
                                                   8, 10, 20, 50, 100, 1000};
@@ -685,6 +709,39 @@ NodeMetrics::NodeMetrics(std::vector<std::string> rpc_methods)
           registry, MetricName("adaptive_block_size_history_complete"),
           "1 once the adaptive block capacity has a complete history of "
           "blocks, else 0.")},
+      p2p_handshake_seconds{Add<EventHistogram>(
+          registry, MetricName("p2p_handshake_seconds"),
+          "Time from a P2P connection's creation to its verack (version "
+          "handshake), by direction and transport. For outbound WebSocket "
+          "peers the TCP, TLS and upgrade precede the connection's creation "
+          "and are not included.",
+          NETWORK_BUCKETS, /*divisor=*/1e9,
+          std::vector<LabelDim>{{"direction", L::Directions()},
+                                {"transport", L::Transports()}})},
+      p2p_ping_seconds{Add<EventHistogram>(
+          registry, MetricName("p2p_ping_seconds"),
+          "Round trip of P2P pings (ping to matching pong), by transport.",
+          NETWORK_BUCKETS, /*divisor=*/1e9,
+          std::vector<LabelDim>{{"transport", L::Transports()}})},
+      addrman_addresses{
+          Add<Gauge>(registry, MetricName("addrman_addresses"),
+                     "Addresses in the address manager's new and tried tables.",
+                     std::vector<LabelDim>{{"table", {"new", "tried"}}})},
+      p2p_bans{Add<Counter>(registry, MetricName("p2p_bans_total"),
+                            "Subnets banned (setban, or a ban by the node).")},
+      p2p_banned{Add<Gauge>(registry, MetricName("p2p_banned_subnets"),
+                            "Subnets currently on the ban list.")},
+      p2p_discouragements{Add<Counter>(
+          registry, MetricName("p2p_discouragements_total"),
+          "Peers punished for misbehaving: discouraged (disconnected, and "
+          "their address discouraged), disconnected_local (local or onion "
+          "peers, not discouraged), or exempt (noban permission, manual "
+          "connection).",
+          std::vector<LabelDim>{{"outcome", L::DiscourageOutcomes()}})},
+      p2p_misbehavior{Add<Counter>(
+          registry, MetricName("p2p_misbehavior_total"),
+          "Peer misbehavior events, by reason class.",
+          std::vector<LabelDim>{{"reason", L::MisbehaviorReasons()}})},
       m_rpc_methods{SortedWithOther(std::move(rpc_methods))} {
     build_info.Set(1);
     registry.Add(std::make_unique<metrics::FunctionCounter>(
@@ -711,12 +768,54 @@ size_t NodeMetrics::RPCMethodIndex(std::string_view method) const noexcept {
     return SortedIndex(m_rpc_methods, method);
 }
 
-size_t NodeMetrics::PeerSeries(bool inbound, bool websocket,
+size_t NodeMetrics::PeerSeries(bool inbound, size_t transport,
                                size_t network) const noexcept {
     const std::array<size_t, 3> idx{
-        inbound ? 0U : 1U, websocket ? 1U : 0U,
+        inbound ? 0U : 1U, std::min(transport, L::Transports().size() - 1),
         std::min(network, L::Networks().size() - 1)};
     return peers.SeriesIndex(idx);
+}
+
+size_t NodeMetrics::DirectionTransportSeries(bool inbound,
+                                             size_t transport) const noexcept {
+    const std::array<size_t, 2> idx{
+        inbound ? 0U : 1U, std::min(transport, L::Transports().size() - 1)};
+    return p2p_connections.SeriesIndex(idx);
+}
+
+MisbehaviorReason ClassifyMisbehavior(std::string_view message) noexcept {
+    using R = MisbehaviorReason;
+    const auto has{[&](std::string_view s) {
+        return message.find(s) != std::string_view::npos;
+    }};
+    if (has("handshake") || has("version message")) {
+        return R::HANDSHAKE;
+    }
+    if (has("message size =")) {
+        return R::OVERSIZED_MESSAGE;
+    }
+    if (has("header")) {
+        return R::INVALID_HEADER;
+    }
+    if (has("cmpctblock") || has("compact block") || has("getblocktxn")) {
+        return R::INVALID_COMPACT_BLOCK;
+    }
+    if (has("block")) {
+        return R::INVALID_BLOCK;
+    }
+    if (has("TX message")) {
+        return R::INVALID_TX;
+    }
+    if (has("bloom filter") || has("filteradd")) {
+        return R::BLOOM_FILTER;
+    }
+    if (has("avaproof")) {
+        return R::AVALANCHE_PROOF;
+    }
+    if (has("ava") || has("delegation")) {
+        return R::AVALANCHE;
+    }
+    return R::OTHER;
 }
 
 util::Result<NodeMetrics *> StartNodeMetrics(

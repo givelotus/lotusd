@@ -72,7 +72,7 @@ namespace metric_labels {
     const std::vector<std::string> &WebSocketCompressions();
     //! 0 = inbound, 1 = outbound
     const std::vector<std::string> &Directions();
-    //! 0 = tcp, 1 = websocket
+    //! 0 = tcp, 1 = ws (WebSocket), 2 = wss (WebSocket over TLS)
     const std::vector<std::string> &Transports();
     //! HTTP endpoint classes (see HTTPEndpoint)
     const std::vector<std::string> &HTTPEndpoints();
@@ -107,6 +107,10 @@ namespace metric_labels {
     const std::vector<std::string> &SnapshotSyncStates();
     //! Index = AdaptiveLimit
     const std::vector<std::string> &AdaptiveLimits();
+    //! Index = MisbehaviorReason
+    const std::vector<std::string> &MisbehaviorReasons();
+    //! Index = DiscourageOutcome
+    const std::vector<std::string> &DiscourageOutcomes();
 } // namespace metric_labels
 
 enum class HTTPEndpoint : size_t {
@@ -248,11 +252,29 @@ struct NodeMetrics {
     metrics::Gauge &adaptive_block_size;
     metrics::Gauge &adaptive_block_size_history_complete;
 
+    // P2P health
+    //! By direction x transport: connection to verack
+    metrics::EventHistogram &p2p_handshake_seconds;
+    //! By transport
+    metrics::EventHistogram &p2p_ping_seconds;
+    //! By table: 0 = new, 1 = tried
+    metrics::Gauge &addrman_addresses;
+    metrics::Counter &p2p_bans;
+    metrics::Gauge &p2p_banned;
+    //! By DiscourageOutcome
+    metrics::Counter &p2p_discouragements;
+    //! By MisbehaviorReason
+    metrics::Counter &p2p_misbehavior;
+
     /** Label index of an RPC method ("other" if not in the set) */
     size_t RPCMethodIndex(std::string_view method) const noexcept;
 
-    size_t PeerSeries(bool inbound, bool websocket,
+    /** transport: 0 = tcp, 1 = ws, 2 = wss (metric_labels::Transports) */
+    size_t PeerSeries(bool inbound, size_t transport,
                       size_t network) const noexcept;
+    /** Series of the direction x transport metrics */
+    size_t DirectionTransportSeries(bool inbound,
+                                    size_t transport) const noexcept;
 
 private:
     //! Sorted, then "other"
@@ -394,6 +416,31 @@ inline void RecordSnapshotPublication(
         }
     }
 }
+
+enum class MisbehaviorReason : size_t {
+    HANDSHAKE,
+    OVERSIZED_MESSAGE,
+    INVALID_HEADER,
+    INVALID_BLOCK,
+    INVALID_COMPACT_BLOCK,
+    INVALID_TX,
+    BLOOM_FILTER,
+    AVALANCHE,
+    AVALANCHE_PROOF,
+    OTHER,
+};
+enum class DiscourageOutcome : size_t {
+    DISCOURAGED,
+    DISCONNECTED_LOCAL,
+    EXEMPT_NOBAN,
+    EXEMPT_MANUAL,
+};
+
+/**
+ * The reason class of a Misbehaving() message, from the fixed set of
+ * messages net_processing uses (OTHER for anything else).
+ */
+MisbehaviorReason ClassifyMisbehavior(std::string_view message) noexcept;
 
 /** Count a transaction pool's (orphans, conflicting) removals */
 void RecordTxPoolRemovals(std::string_view pool_kind, unsigned expired,
