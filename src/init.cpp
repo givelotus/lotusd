@@ -263,7 +263,9 @@ void Shutdown(NodeContext &node) {
     if (!lock_shutdown) {
         return;
     }
-    LogPrintf("%s: In progress...\n", __func__);
+    LogInfoEvent(BCLog::ALL, "node_shutdown_started",
+                 "{source_function}: In progress...")
+        .Field(BCLog::LogField::SourceFunction, __func__);
     Assert(node.args);
 
     /// Note: Shutdown() must be able to handle cases in which initialization
@@ -439,15 +441,21 @@ void Shutdown(NodeContext &node) {
 
     try {
         if (!fs::remove(GetPidFile(*node.args))) {
-            LogPrintf("%s: Unable to remove PID file: File does not exist\n",
-                      __func__);
+            LogInfoEvent(
+                BCLog::ALL, "node_shutdown_pid_file_missing",
+                "{source_function}: Unable to remove PID file: File does not exist")
+                .Field(BCLog::LogField::SourceFunction, __func__);
         }
     } catch (const fs::filesystem_error &e) {
-        LogWarning("%s: Unable to remove PID file: %s\n", __func__,
-                   e.code().message());
+        LogWarningEvent(BCLog::ALL, "node_shutdown_pid_file_remove_failed",
+                        "{source_function}: Unable to remove PID file: {error}")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::Error, e.code().message());
     }
 
-    LogPrintf("%s: done\n", __func__);
+    LogInfoEvent(BCLog::ALL, "node_shutdown_completed",
+                 "{source_function}: done")
+        .Field(BCLog::LogField::SourceFunction, __func__);
     LogInstance().Flush();
 }
 
@@ -492,7 +500,7 @@ static void OnRPCStopped() {
     rpc_notify_block_change_connection.disconnect();
     RPCNotifyBlockChange(nullptr);
     g_best_block_cv.notify_all();
-    LogDebug(BCLog::RPC, "RPC stopped.\n");
+    LogEvent(BCLog::RPC, "rpc_service_stopped", "RPC stopped.");
 }
 
 void SetupServerArgs(NodeContext &node) {
