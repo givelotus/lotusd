@@ -108,6 +108,12 @@ add_executable(fuzz EXCLUDE_FROM_ALL
 	websocket_codec.cpp
 )
 
+if(ENABLE_WEBTRANSPORT)
+	target_sources(fuzz PRIVATE
+		wt_capsule.cpp
+	)
+endif()
+
 # Get the link options for this target and reuse them for checking if a
 # main() is needed.
 get_target_property(CMAKE_REQUIRED_LINK_OPTIONS fuzz LINK_OPTIONS)
