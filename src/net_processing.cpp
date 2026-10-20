@@ -863,6 +863,24 @@ public:
     std::vector<CTransactionRef>
     ResolveRelayShortIds(const uint256 &context_id,
                          const std::vector<uint64_t> &short_ids) const override;
+    std::optional<std::vector<CTransactionRef>>
+    RelayReconSet(const uint256 &context_id) const override;
+    void AddRelayShortIdAnnouncements(
+        const CNode &node, const uint256 &epoch_id,
+        const std::vector<uint64_t> &short_ids) override {
+        const auto now{GetTime<std::chrono::microseconds>()};
+        LOCK(cs_main);
+        for (const uint64_t short_id : short_ids) {
+            AddTxAnnouncement(
+                node, TxId{txrelay::ShortIdRequestKey(epoch_id, short_id)}, now,
+                SHORTID_REQUEST_PARAMS);
+        }
+    }
+    bool HaveRelayShortId(const uint256 &context_id,
+                          uint64_t short_id) const override {
+        return m_txrelay_index.Find(context_id, short_id) ==
+               txrelay::TxRelayIndex::Lookup::HAVE;
+    }
     std::vector<CTransactionRef> FilterRequestedShortTxResponse(
         NodeId peer_id, const uint256 &epoch_id,
         std::span<const CTransactionRef> txs,
@@ -1409,6 +1427,9 @@ private:
         uint64_t features{0};
         if (m_opts.txrelay_shortids) {
             features |= txrelay::TXRELAY_INVSHORT;
+            if (m_opts.txrecon_interval > 0ms) {
+                features |= txrelay::TXRELAY_RECON;
+            }
         }
         const bool disabled_for_test =
             Params().GetChainType() == ChainType::REGTEST &&
@@ -1418,6 +1439,13 @@ private:
         }
         return features;
     }
+    /** Continuous reconciliation: when the next round is due, the last
+     * peer reconciled with (round robin by id) */
+    std::chrono::microseconds m_next_recon GUARDED_BY(g_msgproc_mutex){0};
+    NodeId m_last_recon_peer GUARDED_BY(g_msgproc_mutex){-1};
+    /** Send a reconciliation summary to the next peer when one is due */
+    void MaybeReconcile()
+        EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !m_peer_mutex);
     /** Re-key the relay index if the chain tip changed (or on first use) */
     void UpdateRelayEpoch();
     void UpdateRelayEpochTo(const BlockHash &tip, int height);
@@ -3630,6 +3658,86 @@ std::vector<CTransactionRef> PeerManagerImpl::ResolveRelayShortIds(
         }
     }
     return txs;
+}
+
+std::optional<std::vector<CTransactionRef>>
+PeerManagerImpl::RelayReconSet(const uint256 &context_id) const {
+    if (!m_txrelay_index.FindEpoch(context_id)) {
+        return std::nullopt;
+    }
+    // Leave out the newest transactions (two intervals): they are usually
+    // still on their way to the peer by announcement, and would only be
+    // differences that cost bucket drill-down.
+    const auto now{GetTime<std::chrono::microseconds>()};
+    const auto txids{m_txrelay_index.AdmittedSince(
+        now - std::chrono::microseconds{m_opts.txrecon_window},
+        now - 2 * std::chrono::microseconds{m_opts.txrecon_interval})};
+    std::vector<CTransactionRef> txs;
+    txs.reserve(txids.size());
+    LOCK(m_mempool.cs);
+    for (const TxId &txid : txids) {
+        if (auto tx{m_mempool.get(txid)}) {
+            txs.push_back(std::move(tx));
+        }
+    }
+    return txs;
+}
+
+void PeerManagerImpl::MaybeReconcile() {
+    if (m_opts.txrecon_interval <= 0ms || !m_opts.txrelay_shortids) {
+        return;
+    }
+    const auto tick_now{RelayTickNow()};
+    if (tick_now < m_next_recon) {
+        return;
+    }
+    m_next_recon = tick_now + m_opts.txrecon_interval;
+    if (m_chainman.IsInitialBlockDownload()) {
+        return;
+    }
+    const auto epoch{m_txrelay_index.Current()};
+    if (!epoch) {
+        return;
+    }
+    // Next negotiating peer after the last one, by id (round robin).
+    NodeId next{-1};
+    {
+        LOCK(m_peer_mutex);
+        NodeId first{-1};
+        for (const auto &[id, peer] : m_peer_map) {
+            if (!(peer->m_txrelay_features & txrelay::TXRELAY_RECON)) {
+                continue;
+            }
+            if (first < 0) {
+                first = id;
+            }
+            if (id > m_last_recon_peer) {
+                next = id;
+                break;
+            }
+        }
+        if (next < 0) {
+            next = first;
+        }
+    }
+    if (next < 0) {
+        return;
+    }
+    m_last_recon_peer = next;
+    const auto summary{m_v2_protocol_handler.BuildSyncSummary(
+        lotus::v2::net::ReconScope::LIVE_MEMPOOL, epoch->epoch_id, epoch->k0,
+        epoch->k1)};
+    m_connman.ForNode(next, [&](CNode *node) {
+        if (!node->fSuccessfullyConnected || node->fDisconnect) {
+            return false;
+        }
+        MakeAndPushMessage(*node, NetMsgType::MERKLIXSYNC, summary);
+        return true;
+    });
+    // Window entries older than the window are no longer needed.
+    m_txrelay_index.PruneWindow(
+        GetTime<std::chrono::microseconds>() -
+        2 * std::chrono::microseconds{m_opts.txrecon_window});
 }
 
 std::vector<CTransactionRef> PeerManagerImpl::FilterRequestedShortTxResponse(
@@ -9926,6 +10034,7 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
     // At each relay tick, the first peer to get here moves the relay queue
     // into the chosen peers' inventory, so all peers send at this tick.
     MaybeDrainRelayQueue();
+    MaybeReconcile();
 
     const auto current_time{GetTime<std::chrono::microseconds>()};
     m_v2_protocol_handler.CheckFastSyncTimeouts(pto->GetId(), current_time);

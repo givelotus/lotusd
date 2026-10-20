@@ -75,6 +75,15 @@ void ApplyArgsManOptions(const ArgsManager &argsman,
             unsigned(std::clamp<int64_t>(*value, 1, 64));
     }
 
+    if (auto value{argsman.GetIntArg("-txreconinterval")}) {
+        options.txrecon_interval = std::chrono::milliseconds{
+            std::clamp<int64_t>(*value, 0, 3'600'000)};
+    }
+    if (auto value{argsman.GetIntArg("-txreconwindow")}) {
+        options.txrecon_window =
+            std::chrono::seconds{std::clamp<int64_t>(*value, 1, 86'400)};
+    }
+
     if (auto value{argsman.GetIntArg("-avacooldown")}) {
         options.avalanche_cooldown = std::max(int64_t{0}, *value);
     }

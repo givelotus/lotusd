@@ -358,6 +358,8 @@ struct V2ProtocolHandlerStats {
     uint64_t swarm_corrupted_undo_rejected{0};
     uint64_t swarm_shards_verified{0};
     uint64_t swarm_blocks_peeled{0};
+    //! Relay-epoch reconciliation: short ids found missing and requested
+    uint64_t recon_relay_missing{0};
 };
 
 enum class FastSyncSwarmState : uint8_t {
@@ -409,6 +411,16 @@ public:
     virtual std::vector<CTransactionRef>
     ResolveRelayShortIds(const uint256 &context_id,
                          const std::vector<uint64_t> &short_ids) const = 0;
+    /**
+     * The reconciliation set of a relay epoch: transactions admitted within
+     * the reconciliation window that are still in the mempool. nullopt if
+     * context_id is not a relay epoch.
+     */
+    virtual std::optional<std::vector<CTransactionRef>>
+    RelayReconSet(const uint256 &context_id) const = 0;
+    /** Whether we have a transaction with this short id in this epoch */
+    virtual bool HaveRelayShortId(const uint256 &context_id,
+                                  uint64_t short_id) const = 0;
 };
 
 /**
@@ -457,6 +469,11 @@ public:
      */
     uint64_t ScopedShortId(ReconScope scope, const uint256 &context_id,
                            uint64_t k0, uint64_t k1, const TxId &txid) const;
+    /** Drop short ids of a relay epoch that we already have */
+    void FilterRelayHave(CNode &pfrom, ReconScope scope,
+                         const uint256 &context_id, uint64_t k0, uint64_t k1,
+                         std::vector<uint64_t> &short_ids) const
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
     void SetSnapSyncEnabled(std::optional<bool> enabled)
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
     void SetReverseSyncEnabled(std::optional<bool> enabled)
