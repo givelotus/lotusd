@@ -677,10 +677,16 @@ bool HasValidProofOfWork(const std::vector<CBlockHeader> &headers,
 bool IsBlockMutated(const CBlock &block);
 
 //! Blocks with at least this many transactions have their Merkle root
-//! computed on several threads (see ValidationBlockMerkleRoot).
-static constexpr size_t PARALLEL_MERKLE_MIN_TXS{10000};
-//! Threads used for a parallel Merkle root (the caller included).
+//! computed on several threads (see ValidationBlockMerkleRoot). Measured
+//! with bench_bitcoin MerkleRootThreads_*: threading loses at 1,000
+//! transactions and wins about 2.5x at 2,500.
+static constexpr size_t PARALLEL_MERKLE_MIN_TXS{2500};
+//! Threads for a parallel Merkle root (the caller included); from
+//! PARALLEL_MERKLE_LARGE_TXS on, PARALLEL_MERKLE_THREADS_LARGE (8 threads
+//! wake slower than they pay off below about 10,000 transactions).
 static constexpr size_t PARALLEL_MERKLE_THREADS{4};
+static constexpr size_t PARALLEL_MERKLE_LARGE_TXS{10000};
+static constexpr size_t PARALLEL_MERKLE_THREADS_LARGE{8};
 
 /**
  * Run fn(0) ... fn(n_tasks - 1) on up to max_threads threads of the
@@ -693,12 +699,12 @@ void RunOnValidationWorkers(size_t max_threads, size_t n_tasks,
 /**
  * The block's Merkle root and mutation flag, bit-identical to
  * BlockMerkleRoot: computed by BlockMerkleRoot below min_parallel_txs
- * transactions, else as subtrees on up to `threads` threads.
+ * transactions, else as subtrees on up to `threads` threads (0: by block
+ * size, see PARALLEL_MERKLE_THREADS).
  */
 uint256 ValidationBlockMerkleRoot(
     const CBlock &block, bool *mutated,
-    size_t min_parallel_txs = PARALLEL_MERKLE_MIN_TXS,
-    size_t threads = PARALLEL_MERKLE_THREADS);
+    size_t min_parallel_txs = PARALLEL_MERKLE_MIN_TXS, size_t threads = 0);
 
 /**
  * Return the sum of the claimed work on a given set of headers. No verification
