@@ -3359,19 +3359,31 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         CalculateCacheSizes(args, g_enabled_filter_types.size());
 
     LogInfoEvent(BCLog::ALL, "cache_configuration", "Cache configuration:");
-    LogInfo("* Using %.1f MiB for block index database\n",
-            kernel_cache_sizes.block_tree_db * (1.0 / 1024 / 1024));
+    LogInfoEvent(
+        BCLog::ALL, "cache_block_index_budget",
+        "* Using {database_cache_mib:.1f} MiB for block index database")
+        .Field(BCLog::LogField::DatabaseCacheMiB,
+               kernel_cache_sizes.block_tree_db * (1.0 / 1024 / 1024));
     if (args.GetBoolArg("-txindex", DEFAULT_TXINDEX)) {
-        LogInfo("* Using %.1f MiB for transaction index database\n",
-                index_cache_sizes.tx_index * (1.0 / 1024 / 1024));
+        LogInfoEvent(
+            BCLog::ALL, "cache_transaction_index_budget",
+            "* Using {database_cache_mib:.1f} MiB for transaction index database")
+            .Field(BCLog::LogField::DatabaseCacheMiB,
+                   index_cache_sizes.tx_index * (1.0 / 1024 / 1024));
     }
     for (BlockFilterType filter_type : g_enabled_filter_types) {
-        LogInfo("* Using %.1f MiB for %s block filter index database\n",
-                index_cache_sizes.filter_index * (1.0 / 1024 / 1024),
-                BlockFilterTypeName(filter_type));
+        LogInfoEvent(
+            BCLog::ALL, "cache_block_filter_index_budget",
+            "* Using {database_cache_mib:.1f} MiB for {name} block filter index database")
+            .Field(BCLog::LogField::DatabaseCacheMiB,
+                   index_cache_sizes.filter_index * (1.0 / 1024 / 1024))
+            .Field(BCLog::LogField::Name, BlockFilterTypeName(filter_type));
     }
-    LogInfo("* Using %.1f MiB for chain state database\n",
-            kernel_cache_sizes.coins_db * (1.0 / 1024 / 1024));
+    LogInfoEvent(
+        BCLog::ALL, "cache_chainstate_database_budget",
+        "* Using {database_cache_mib:.1f} MiB for chain state database")
+        .Field(BCLog::LogField::DatabaseCacheMiB,
+               kernel_cache_sizes.coins_db * (1.0 / 1024 / 1024));
 
     assert(!node.mempool);
     assert(!node.chainman);
@@ -3397,10 +3409,13 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         return InitError(strprintf(_("-maxmempool must be at least %d MB"),
                                    std::ceil(nMempoolSizeMin / 1000000.0)));
     }
-    LogInfo("* Using %.1f MiB for in-memory UTXO set (plus up to %.1f MiB of "
-            "unused mempool space)\n",
-            kernel_cache_sizes.coins * (1.0 / 1024 / 1024),
-            mempool_opts.max_size_bytes * (1.0 / 1024 / 1024));
+    LogInfoEvent(
+        BCLog::ALL, "cache_utxo_memory_budget",
+        "* Using {utxo_cache_mib:.1f} MiB for in-memory UTXO set (plus up to {unused_mempool_cache_mib:.1f} MiB of unused mempool space)")
+        .Field(BCLog::LogField::UTXOCacheMiB,
+               kernel_cache_sizes.coins * (1.0 / 1024 / 1024))
+        .Field(BCLog::LogField::UnusedMempoolCacheMiB,
+               mempool_opts.max_size_bytes * (1.0 / 1024 / 1024));
 
     bool do_reindex{args.GetBoolArg("-reindex", false)};
     const bool do_reindex_chainstate{

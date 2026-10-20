@@ -1,0 +1,112 @@
+{
+  "schema": 1,
+  "batch": "node-cache-budgets",
+  "review_note": "Reviewed shared startup cache budget diagnostics; exact existing MiB expressions, .1f text and Info severity, actual residency not inferred.",
+  "files": [
+    {
+      "path": "src/init.cpp",
+      "rules": [
+        {
+          "id": "cache_block_index_budget",
+          "old": "LogInfo(\"* Using %.1f MiB for block index database\\n\",\n            kernel_cache_sizes.block_tree_db * (1.0 / 1024 / 1024))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"cache_block_index_budget\", \"* Using {database_cache_mib:.1f} MiB for block index database\").Field(BCLog::LogField::DatabaseCacheMiB, kernel_cache_sizes.block_tree_db * (1.0 / 1024 / 1024))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogInfo",
+            "format": "* Using %.1f MiB for block index database\n",
+            "specifiers": [
+              "%.1f"
+            ],
+            "arguments": [
+              "kernel_cache_sizes.block_tree_db * (1.0 / 1024 / 1024)"
+            ]
+          },
+          "review_note": "Preserve Info/ALL level/category, exact existing .1f MiB human rendering and original computed budget expression. Raw fields remain numeric MiB, not bytes; no new measurement or workload overhead. Database cache value is qualified by stable event identity; block filter Name snapshots existing BlockFilterTypeName. This is configured memory budget, not observed resident use. UTXO memory uses existing UTXOCacheMiB. Add only2append-only FLOAT keys, existing IDs unchanged."
+        },
+        {
+          "id": "cache_transaction_index_budget",
+          "old": "LogInfo(\"* Using %.1f MiB for transaction index database\\n\",\n                index_cache_sizes.tx_index * (1.0 / 1024 / 1024))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"cache_transaction_index_budget\", \"* Using {database_cache_mib:.1f} MiB for transaction index database\").Field(BCLog::LogField::DatabaseCacheMiB, index_cache_sizes.tx_index * (1.0 / 1024 / 1024))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogInfo",
+            "format": "* Using %.1f MiB for transaction index database\n",
+            "specifiers": [
+              "%.1f"
+            ],
+            "arguments": [
+              "index_cache_sizes.tx_index * (1.0 / 1024 / 1024)"
+            ]
+          },
+          "review_note": "Preserve Info/ALL level/category, exact existing .1f MiB human rendering and original computed budget expression. Raw fields remain numeric MiB, not bytes; no new measurement or workload overhead. Database cache value is qualified by stable event identity; block filter Name snapshots existing BlockFilterTypeName. This is configured memory budget, not observed resident use. UTXO memory uses existing UTXOCacheMiB. Add only2append-only FLOAT keys, existing IDs unchanged."
+        },
+        {
+          "id": "cache_block_filter_index_budget",
+          "old": "LogInfo(\"* Using %.1f MiB for %s block filter index database\\n\",\n                index_cache_sizes.filter_index * (1.0 / 1024 / 1024),\n                BlockFilterTypeName(filter_type))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"cache_block_filter_index_budget\", \"* Using {database_cache_mib:.1f} MiB for {name} block filter index database\").Field(BCLog::LogField::DatabaseCacheMiB, index_cache_sizes.filter_index * (1.0 / 1024 / 1024)).Field(BCLog::LogField::Name, BlockFilterTypeName(filter_type))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogInfo",
+            "format": "* Using %.1f MiB for %s block filter index database\n",
+            "specifiers": [
+              "%.1f",
+              "%s"
+            ],
+            "arguments": [
+              "index_cache_sizes.filter_index * (1.0 / 1024 / 1024)",
+              "BlockFilterTypeName(filter_type)"
+            ]
+          },
+          "review_note": "Preserve Info/ALL level/category, exact existing .1f MiB human rendering and original computed budget expression. Raw fields remain numeric MiB, not bytes; no new measurement or workload overhead. Database cache value is qualified by stable event identity; block filter Name snapshots existing BlockFilterTypeName. This is configured memory budget, not observed resident use. UTXO memory uses existing UTXOCacheMiB. Add only2append-only FLOAT keys, existing IDs unchanged."
+        },
+        {
+          "id": "cache_chainstate_database_budget",
+          "old": "LogInfo(\"* Using %.1f MiB for chain state database\\n\",\n            kernel_cache_sizes.coins_db * (1.0 / 1024 / 1024))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"cache_chainstate_database_budget\", \"* Using {database_cache_mib:.1f} MiB for chain state database\").Field(BCLog::LogField::DatabaseCacheMiB, kernel_cache_sizes.coins_db * (1.0 / 1024 / 1024))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogInfo",
+            "format": "* Using %.1f MiB for chain state database\n",
+            "specifiers": [
+              "%.1f"
+            ],
+            "arguments": [
+              "kernel_cache_sizes.coins_db * (1.0 / 1024 / 1024)"
+            ]
+          },
+          "review_note": "Preserve Info/ALL level/category, exact existing .1f MiB human rendering and original computed budget expression. Raw fields remain numeric MiB, not bytes; no new measurement or workload overhead. Database cache value is qualified by stable event identity; block filter Name snapshots existing BlockFilterTypeName. This is configured memory budget, not observed resident use. UTXO memory uses existing UTXOCacheMiB. Add only2append-only FLOAT keys, existing IDs unchanged."
+        },
+        {
+          "id": "cache_utxo_memory_budget",
+          "old": "LogInfo(\"* Using %.1f MiB for in-memory UTXO set (plus up to %.1f MiB of \"\n            \"unused mempool space)\\n\",\n            kernel_cache_sizes.coins * (1.0 / 1024 / 1024),\n            mempool_opts.max_size_bytes * (1.0 / 1024 / 1024))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"cache_utxo_memory_budget\", \"* Using {utxo_cache_mib:.1f} MiB for in-memory UTXO set (plus up to {unused_mempool_cache_mib:.1f} MiB of unused mempool space)\").Field(BCLog::LogField::UTXOCacheMiB, kernel_cache_sizes.coins * (1.0 / 1024 / 1024)).Field(BCLog::LogField::UnusedMempoolCacheMiB, mempool_opts.max_size_bytes * (1.0 / 1024 / 1024))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogInfo",
+            "format": "* Using %.1f MiB for in-memory UTXO set (plus up to %.1f MiB of unused mempool space)\n",
+            "specifiers": [
+              "%.1f",
+              "%.1f"
+            ],
+            "arguments": [
+              "kernel_cache_sizes.coins * (1.0 / 1024 / 1024)",
+              "mempool_opts.max_size_bytes * (1.0 / 1024 / 1024)"
+            ]
+          },
+          "review_note": "Preserve Info/ALL level/category, exact existing .1f MiB human rendering and original computed budget expression. Raw fields remain numeric MiB, not bytes; no new measurement or workload overhead. Database cache value is qualified by stable event identity; block filter Name snapshots existing BlockFilterTypeName. This is configured memory budget, not observed resident use. UTXO memory uses existing UTXOCacheMiB. Add only2append-only FLOAT keys, existing IDs unchanged."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Append only two FLOAT budget-in-MiB registry keys at the actual registry tail. Existing field IDs stay unchanged; parallel field additions require explicit anchor review.",
+          "old": "    X(MempoolDumpSeconds, mempool_dump_seconds, FLOAT, \"\", \"\")\n\nnamespace BCLog {",
+          "new": "    X(MempoolDumpSeconds, mempool_dump_seconds, FLOAT, \"\", \"\") \\\n    X(DatabaseCacheMiB, database_cache_mib, FLOAT, \"\", \"\") \\\n    X(UnusedMempoolCacheMiB, unused_mempool_cache_mib, FLOAT, \"\", \"\")\n\nnamespace BCLog {"
+        }
+      ]
+    }
+  ]
+}
