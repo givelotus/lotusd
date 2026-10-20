@@ -5,6 +5,7 @@
 #include <addrman.h>
 #include <chain.h>
 #include <chainparams.h>
+#include <coins.h>
 #include <common/args.h>
 #include <flatfile.h>
 #include <headerssync.h>
@@ -27,6 +28,7 @@
 #include <util/fs_helpers.h>
 #include <util/strencodings.h>
 #include <util/translation.h>
+#include <validation.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -1509,6 +1511,32 @@ BOOST_AUTO_TEST_CASE(
         strprintf(
             "Initial headers sync aborted with peer=%d: exceeded max commitments at height=%i (presync phase)",
             8, height));
+    BOOST_CHECK(row["fields_truncated"].isNull());
+}
+
+BOOST_AUTO_TEST_CASE(
+    transaction_missing_input_preserves_hash_kind_and_nullopt) {
+    Format(BCLog::LogFormat::JSON);
+    CMutableTransaction mutable_tx;
+    mutable_tx.nVersion = 2; // The shared owner remains applicable to ABC.
+    mutable_tx.vin.resize(1);
+    mutable_tx.vin[0].prevout = COutPoint{TxId{SomeHash()}, 0};
+    const auto tx{MakeTransactionRef(std::move(mutable_tx))};
+    CBlockIndex tip{Params().GenesisBlock()};
+    const CCoinsView empty;
+    BOOST_CHECK(!CalculateLockPointsAtTip(&tip, empty, *tx).has_value());
+    const auto row{Json()};
+    BOOST_CHECK_EQUAL(row["event"].get_str(), "transaction_input_missing");
+    BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
+    BOOST_CHECK_EQUAL(row["source_function"].get_str(), "CalculatePrevHeights");
+    BOOST_CHECK(row["input_index"].isNum());
+    BOOST_CHECK_EQUAL(row["input_index"].getInt<uint64_t>(), 0U);
+    BOOST_CHECK_EQUAL(row["tx_hash"].get_str(), tx->GetHash().GetHex());
+    BOOST_CHECK(row["txid"].isNull());
+    BOOST_CHECK_EQUAL(
+        row["message"].get_str(),
+        strprintf("ERROR: %s: Missing input %d in transaction '%s'",
+                  "CalculatePrevHeights", 0, tx->GetHash().GetHex()));
     BOOST_CHECK(row["fields_truncated"].isNull());
 }
 
