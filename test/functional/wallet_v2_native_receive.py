@@ -38,6 +38,18 @@ class NativeReceiveTest(BitcoinTestFramework):
         node = self.nodes[0]
         wallet = node.get_wallet_rpc(self.default_wallet_name)
         address = wallet.getnewaddress("native receive", "native")
+        discovery = node.getchainconfig()
+        assert_equal(
+            discovery["wallet"]["native_receiving"],
+            {
+                "available": True,
+                "address_type": "native",
+                "format": "xpiaddr",
+                "template": "keyhash",
+            },
+        )
+        assert_equal(discovery["address"]["nativehrp"], "rxpi")
+        assert "xpiaddr" in discovery["address"]["acceptedformats"]
         info = wallet.getaddressinfo(address)
         assert_equal(info["native"], True)
         assert_equal(info["type"], 1)
