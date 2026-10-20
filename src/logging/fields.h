@@ -151,7 +151,9 @@
     X(RequestedConnectionLimit, requested_connection_limit, INT, "", "") \
     X(ConnectionLimit, connection_limit, INT, "", "") \
     X(FileDescriptorLimit, file_descriptor_limit, INT, "", "") \
-    X(DataDirectoryArgument, data_directory_argument, STRING, "", "")
+    X(DataDirectoryArgument, data_directory_argument, STRING, "", "") \
+    X(InputIndex, input_index, UINT, "", "") \
+    X(TxHash, tx_hash, HASH, "", "")
 
 namespace BCLog {
 
