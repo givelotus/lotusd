@@ -45,6 +45,10 @@ struct WtRequest {
 class WtSessionHandler {
 public:
     virtual ~WtSessionHandler() = default;
+    //! The TLS handshake completed: check the peer (pins); false closes
+    virtual bool OnHandshake(H3Session &session, QuicConnection &conn) {
+        return true;
+    }
     //! Server: the request passed the path/token/origin checks; return the
     //! status to answer (200 accepts, 503 when nobody takes sessions)
     virtual int OnConnect(H3Session &session, const WtRequest &request) {

@@ -86,6 +86,7 @@ endif()
 if(ENABLE_WEBTRANSPORT)
 	set(BITCOIN_WEBTRANSPORT_TESTS
 		net_quic_tests.cpp
+		quic_peer_sock_tests.cpp
 	)
 endif()
 
