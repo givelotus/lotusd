@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "batch": "flatfile-open-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/flatfile.cpp",
+      "rules": [
+        {
+          "id": "flatfile_open_failed",
+          "old": "LogPrintf(\"Unable to open file %s\\n\", fs::PathToString(path))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"flatfile_open_failed\", \"Unable to open file {path}\").Field(BCLog::LogField::Path, fs::PathToString(path))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Unable to open file %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(path)"
+            ]
+          },
+          "review_note": "Preserve Info, original plain path text (not fs::quoted), unsigned offset, fopen/fseek/close ordering and nullptr returns. Add no errno reads or pointer fields."
+        },
+        {
+          "id": "flatfile_seek_failed",
+          "old": "LogPrintf(\"Unable to seek to position %u of %s\\n\", pos.nPos,\n                  fs::PathToString(path))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"flatfile_seek_failed\", \"Unable to seek to position {file_offset} of {path}\").Field(BCLog::LogField::FileOffset, pos.nPos).Field(BCLog::LogField::Path, fs::PathToString(path))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Unable to seek to position %u of %s\n",
+            "specifiers": [
+              "%u",
+              "%s"
+            ],
+            "arguments": [
+              "pos.nPos",
+              "fs::PathToString(path)"
+            ]
+          },
+          "review_note": "Preserve Info, original plain path text (not fs::quoted), unsigned offset, fopen/fseek/close ordering and nullptr returns. Add no errno reads or pointer fields."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "File byte position is a UINT offset, not a byte-count or file number.",
+          "old": "    X(ASMapHash, asmap_hash, HASH, \"\", \"\")\n",
+          "new": "    X(ASMapHash, asmap_hash, HASH, \"\", \"\") \\\n    X(FileOffset, file_offset, UINT, \"\", \"\")\n"
+        }
+      ]
+    }
+  ]
+}

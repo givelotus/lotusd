@@ -146,7 +146,8 @@
     X(ExpectedMinimumChainWorkHex, expected_minimum_chain_work_hex, STRING, "", "") \
     X(PruneTargetMiB, prune_target_mib, UINT, "", "") \
     X(ASMapLengthBytes, asmap_length_bytes, INT, "", "") \
-    X(ASMapHash, asmap_hash, HASH, "", "")
+    X(ASMapHash, asmap_hash, HASH, "", "") \
+    X(FileOffset, file_offset, UINT, "", "")
 
 namespace BCLog {
 
