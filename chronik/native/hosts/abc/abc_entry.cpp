@@ -181,10 +181,21 @@ ParseChronikParams(const ArgsManager &args, const Config &config, bool fWipe) {
                        .c_str())}};
     }
 
+    // Lotus V2 nodes do not index SLP/ALP tokens (user decision 2026-10-19),
+    // as in the Rust Chronik: the token index defaults to off and cannot be
+    // enabled.
+    const bool enable_token_index =
+        args.GetBoolArg("-chroniktokenindex", !kLotusV2Node);
+    if (kLotusV2Node && enable_token_index) {
+        return {{_("-chroniktokenindex=1 is not supported: Lotus V2 nodes do "
+                   "not index SLP/ALP tokens. Remove it or use "
+                   "-chroniktokenindex=0.")}};
+    }
+
     native::ServiceParams out;
     out.indexer.datadir_net = args.GetDataDirNet();
     out.indexer.wipe = fWipe;
-    out.indexer.token_index = args.GetBoolArg("-chroniktokenindex", true);
+    out.indexer.token_index = enable_token_index;
     out.indexer.lokad_id_index = args.GetBoolArg("-chroniklokadidindex", true);
     // Without Electrum, the scripthash index defaults to off (as in Rust).
     out.indexer.scripthash_index =
