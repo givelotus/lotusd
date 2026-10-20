@@ -360,8 +360,35 @@ public:
             fn(0);
             return;
         }
-        std::function<void(size_t)> task_fn(std::forward<Fn>(fn));
         std::unique_lock<std::mutex> dispatch_lock(m_dispatch_mutex);
+        RunLocked(dispatch_lock, num_workers, std::forward<Fn>(fn));
+    }
+
+    /**
+     * As Run, but returns false without running anything if another caller
+     * is using the pool (e.g. ConnectBlock's script checks), instead of
+     * waiting for it. Must not be called from a pool task.
+     */
+    template <typename Fn>
+    bool TryRun(size_t num_workers, Fn &&fn) {
+        if (num_workers <= 1) {
+            fn(0);
+            return true;
+        }
+        std::unique_lock<std::mutex> dispatch_lock(m_dispatch_mutex,
+                                                   std::try_to_lock);
+        if (!dispatch_lock.owns_lock()) {
+            return false;
+        }
+        RunLocked(dispatch_lock, num_workers, std::forward<Fn>(fn));
+        return true;
+    }
+
+private:
+    template <typename Fn>
+    void RunLocked(std::unique_lock<std::mutex> &dispatch_lock,
+                   size_t num_workers, Fn &&fn) {
+        std::function<void(size_t)> task_fn(std::forward<Fn>(fn));
         EnsureWorkers(num_workers - 1);
         const size_t active = std::min(num_workers - 1, m_threads.size());
         if (active == 0) {
@@ -387,7 +414,6 @@ public:
         }
     }
 
-private:
     ParallelScriptWorkerPool() = default;
     ~ParallelScriptWorkerPool() {
         {
@@ -5711,13 +5737,45 @@ static bool CheckBlockHeader(const CBlockHeader &block,
     return true;
 }
 
+void RunOnValidationWorkers(size_t max_threads, size_t n_tasks,
+                            const std::function<void(size_t)> &fn) {
+    std::atomic<size_t> next{0};
+    auto work = [&](size_t) {
+        for (size_t i; (i = next.fetch_add(1, std::memory_order_relaxed)) <
+                       n_tasks;) {
+            fn(i);
+        }
+    };
+    const size_t threads{std::min(max_threads, n_tasks)};
+    // Never wait for the pool: while ConnectBlock (or a mempool batch) uses
+    // it, do the work on this thread, as before.
+    if (!ParallelScriptWorkerPool::Instance().TryRun(threads, work)) {
+        work(0);
+    }
+}
+
+uint256 ValidationBlockMerkleRoot(const CBlock &block, bool *mutated,
+                                  size_t min_parallel_txs, size_t threads) {
+    threads = std::min<size_t>(
+        threads, std::max(1u, std::thread::hardware_concurrency()));
+    if (block.vtx.size() < min_parallel_txs || threads <= 1) {
+        return BlockMerkleRoot(block, mutated);
+    }
+    // Two subtrees per thread, handed out dynamically, absorb uneven speed.
+    return BlockMerkleRootParallel(
+        block, mutated, 2 * threads,
+        [threads](size_t n_tasks, const std::function<void(size_t)> &fn) {
+            RunOnValidationWorkers(threads, n_tasks, fn);
+        });
+}
+
 static bool CheckMerkleRoot(const CBlock &block, BlockValidationState &state) {
     if (block.m_checked_merkle_root) {
         return true;
     }
 
     bool mutated;
-    uint256 merkle_root = BlockMerkleRoot(block, &mutated);
+    uint256 merkle_root = ValidationBlockMerkleRoot(block, &mutated);
     if (block.hashMerkleRoot != merkle_root) {
         return state.Invalid(
             /*result=*/BlockValidationResult::BLOCK_MUTATED,
