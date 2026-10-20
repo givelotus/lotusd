@@ -6,6 +6,7 @@
 #include <common/args.h>
 #include <dbwrapper.h>
 #include <index/blockfilterindex.h>
+#include <logging/values.h>
 #include <node/blockstorage.h>
 #include <primitives/blockhash.h>
 #include <util/fs_helpers.h>
@@ -132,9 +133,11 @@ bool BlockFilterIndex::CustomInit(
         // exist. Any other errors indicate database corruption or a disk
         // failure, and starting the index would cause further corruption.
         if (m_db->Exists(DB_FILTER_POS)) {
-            LogError(
-                "%s: Cannot read current %s state; index may be corrupted\n",
-                __func__, GetName());
+            LogErrorEvent(
+                BCLog::ALL, "block_filter_state_read_failed",
+                "{source_function}: Cannot read current {name} state; index may be corrupted")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::Name, GetName());
             return false;
         }
 
@@ -152,11 +155,19 @@ bool BlockFilterIndex::CustomCommit(CDBBatch &batch) {
     // Flush current filter file to disk.
     AutoFile file{m_filter_fileseq->Open(pos)};
     if (file.IsNull()) {
-        LogError("%s: Failed to open filter file %d\n", __func__, pos.nFile);
+        LogErrorEvent(
+            BCLog::ALL, "block_filter_commit_open_failed",
+            "{source_function}: Failed to open filter file {file_number}")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::FileNumber, pos.nFile);
         return false;
     }
     if (!FileCommit(file.Get())) {
-        LogError("%s: Failed to commit filter file %d\n", __func__, pos.nFile);
+        LogErrorEvent(
+            BCLog::ALL, "block_filter_commit_failed",
+            "{source_function}: Failed to commit filter file {file_number}")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::FileNumber, pos.nFile);
         return false;
     }
 
@@ -178,8 +189,11 @@ bool BlockFilterIndex::ReadFilterFromDisk(const FlatFilePos &pos,
         filter =
             BlockFilter(GetFilterType(), block_hash, std::move(encoded_filter));
     } catch (const std::exception &e) {
-        LogError("%s: Failed to deserialize block filter from disk: %s\n",
-                 __func__, e.what());
+        LogErrorEvent(
+            BCLog::ALL, "block_filter_deserialization_failed",
+            "{source_function}: Failed to deserialize block filter from disk: {error}")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::Error, e.what());
         return false;
     }
 
@@ -198,18 +212,27 @@ size_t BlockFilterIndex::WriteFilterToDisk(FlatFilePos &pos,
     if (pos.nPos + data_size > MAX_FLTR_FILE_SIZE) {
         AutoFile last_file{m_filter_fileseq->Open(pos)};
         if (last_file.IsNull()) {
-            LogPrintf("%s: Failed to open filter file %d\n", __func__,
-                      pos.nFile);
+            LogInfoEvent(
+                BCLog::ALL, "block_filter_write_open_failed",
+                "{source_function}: Failed to open filter file {file_number}")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::FileNumber, pos.nFile);
             return 0;
         }
         if (!TruncateFile(last_file.Get(), pos.nPos)) {
-            LogPrintf("%s: Failed to truncate filter file %d\n", __func__,
-                      pos.nFile);
+            LogInfoEvent(
+                BCLog::ALL, "block_filter_write_truncate_failed",
+                "{source_function}: Failed to truncate filter file {file_number}")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::FileNumber, pos.nFile);
             return 0;
         }
         if (!FileCommit(last_file.Get())) {
-            LogPrintf("%s: Failed to commit filter file %d\n", __func__,
-                      pos.nFile);
+            LogInfoEvent(
+                BCLog::ALL, "block_filter_write_commit_failed",
+                "{source_function}: Failed to commit filter file {file_number}")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::FileNumber, pos.nFile);
             return 0;
         }
 
@@ -221,13 +244,19 @@ size_t BlockFilterIndex::WriteFilterToDisk(FlatFilePos &pos,
     bool out_of_space;
     m_filter_fileseq->Allocate(pos, data_size, out_of_space);
     if (out_of_space) {
-        LogPrintf("%s: out of disk space\n", __func__);
+        LogInfoEvent(BCLog::ALL, "block_filter_disk_space_unavailable",
+                     "{source_function}: out of disk space")
+            .Field(BCLog::LogField::SourceFunction, __func__);
         return 0;
     }
 
     AutoFile fileout{m_filter_fileseq->Open(pos)};
     if (fileout.IsNull()) {
-        LogPrintf("%s: Failed to open filter file %d\n", __func__, pos.nFile);
+        LogInfoEvent(
+            BCLog::ALL, "block_filter_write_open_failed",
+            "{source_function}: Failed to open filter file {file_number}")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::FileNumber, pos.nFile);
         return 0;
     }
 
@@ -252,10 +281,12 @@ bool BlockFilterIndex::WriteBlock(const CBlock &block,
 
         BlockHash expected_block_hash = pindex->pprev->GetBlockHash();
         if (read_out.first != expected_block_hash) {
-            LogError("%s: previous block header belongs to unexpected "
-                     "block %s; expected %s\n",
-                     __func__, read_out.first.ToString(),
-                     expected_block_hash.ToString());
+            LogErrorEvent(
+                BCLog::ALL, "block_filter_previous_block_unexpected",
+                "{source_function}: previous block header belongs to unexpected block {block_hash}; expected {expected_block_hash}")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::BlockHash, read_out.first)
+                .Field(BCLog::LogField::ExpectedBlockHash, expected_block_hash);
             return false;
         }
 
@@ -289,15 +320,27 @@ static bool CopyHeightIndexToHashIndex(CDBIterator &db_it, CDBBatch &batch,
 
     for (int height = start_height; height <= stop_height; ++height) {
         if (!db_it.GetKey(key) || key.height != height) {
-            LogError("%s: unexpected key in %s: expected (%c, %d)\n", __func__,
-                     index_name, DB_BLOCK_HEIGHT, height);
+            LogErrorEvent(
+                BCLog::ALL, "block_filter_database_key_unexpected",
+                "{source_function}: unexpected key in {name}: expected ({database_key_prefix}, {height})")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::Name, index_name)
+                .Field(BCLog::LogField::DatabaseKeyPrefix,
+                       BCLog::LogChar{DB_BLOCK_HEIGHT})
+                .Field(BCLog::LogField::Height, height);
             return false;
         }
 
         std::pair<BlockHash, DBVal> value;
         if (!db_it.GetValue(value)) {
-            LogError("%s: unable to read value in %s at key (%c, %d)\n",
-                     __func__, index_name, DB_BLOCK_HEIGHT, height);
+            LogErrorEvent(
+                BCLog::ALL, "block_filter_database_height_read_failed",
+                "{source_function}: unable to read value in {name} at key ({database_key_prefix}, {height})")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::Name, index_name)
+                .Field(BCLog::LogField::DatabaseKeyPrefix,
+                       BCLog::LogChar{DB_BLOCK_HEIGHT})
+                .Field(BCLog::LogField::Height, height);
             return false;
         }
 
@@ -356,12 +399,20 @@ static bool LookupRange(CDBWrapper &db, const std::string &index_name,
                         int start_height, const CBlockIndex *stop_index,
                         std::vector<DBVal> &results) {
     if (start_height < 0) {
-        LogError("%s: start height (%d) is negative\n", __func__, start_height);
+        LogErrorEvent(
+            BCLog::ALL, "block_filter_start_height_negative",
+            "{source_function}: start height ({index_start_height}) is negative")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::IndexStartHeight, start_height);
         return false;
     }
     if (start_height > stop_index->nHeight) {
-        LogError("%s: start height (%d) is greater than stop height (%d)\n",
-                 __func__, start_height, stop_index->nHeight);
+        LogErrorEvent(
+            BCLog::ALL, "block_filter_height_range_reversed",
+            "{source_function}: start height ({index_start_height}) is greater than stop height ({index_stop_height})")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::IndexStartHeight, start_height)
+            .Field(BCLog::LogField::IndexStopHeight, stop_index->nHeight);
         return false;
     }
 
@@ -379,8 +430,14 @@ static bool LookupRange(CDBWrapper &db, const std::string &index_name,
 
         size_t i = static_cast<size_t>(height - start_height);
         if (!db_it->GetValue(values[i])) {
-            LogError("%s: unable to read value in %s at key (%c, %d)\n",
-                     __func__, index_name, DB_BLOCK_HEIGHT, height);
+            LogErrorEvent(
+                BCLog::ALL, "block_filter_database_height_read_failed",
+                "{source_function}: unable to read value in {name} at key ({database_key_prefix}, {height})")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::Name, index_name)
+                .Field(BCLog::LogField::DatabaseKeyPrefix,
+                       BCLog::LogChar{DB_BLOCK_HEIGHT})
+                .Field(BCLog::LogField::Height, height);
             return false;
         }
 
@@ -404,9 +461,14 @@ static bool LookupRange(CDBWrapper &db, const std::string &index_name,
         }
 
         if (!db.Read(DBHashKey(block_hash), results[i])) {
-            LogError("%s: unable to read value in %s at key (%c, %s)\n",
-                     __func__, index_name, DB_BLOCK_HASH,
-                     block_hash.ToString());
+            LogErrorEvent(
+                BCLog::ALL, "block_filter_database_hash_read_failed",
+                "{source_function}: unable to read value in {name} at key ({database_key_prefix}, {block_hash})")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::Name, index_name)
+                .Field(BCLog::LogField::DatabaseKeyPrefix,
+                       BCLog::LogChar{DB_BLOCK_HASH})
+                .Field(BCLog::LogField::BlockHash, block_hash);
             return false;
         }
     }
