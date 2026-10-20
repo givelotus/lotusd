@@ -24,6 +24,7 @@
 #include <psbt.h>
 #include <random.h>
 #include <rpc/blockchain.h>
+#include <rpc/native_psbt.h>
 #include <rpc/rawtransaction_util.h>
 #include <rpc/server.h>
 #include <rpc/server_util.h>
@@ -787,12 +788,14 @@ static RPCHelpMan decodepsbt() {
     return RPCHelpMan{
         "decodepsbt",
         "Return a JSON object representing the serialized, base64-encoded "
-        "partially signed Bitcoin transaction.\n",
+        "partially signed transaction. Native Lotus PSBTs additionally return "
+        "their explicit version, ChainID and lossless hexadecimal maps. "
+        "Decoding does not authenticate coins.\n",
         {
             {"psbt", RPCArg::Type::STR, RPCArg::Optional::NO,
              "The PSBT base64 string"},
         },
-        RPCResult{
+        rpc::NativePsbtDecodeResults(RPCResult{
             RPCResult::Type::OBJ,
             "",
             "",
@@ -940,10 +943,13 @@ static RPCHelpMan decodepsbt() {
                 {RPCResult::Type::STR_AMOUNT, "fee", /* optional */ true,
                  "The transaction fee paid if all UTXOs slots in the PSBT have "
                  "been filled."},
-            }},
+            }}),
         RPCExamples{HelpExampleCli("decodepsbt", "\"psbt\"")},
         [&](const RPCHelpMan &self, const Config &config,
             const JSONRPCRequest &request) -> UniValue {
+            if (rpc::IsNativePsbt(request.params[0].get_str())) {
+                return rpc::DecodeNativePsbtRPC(request);
+            }
             // Unserialize the transactions
             PartiallySignedTransaction psbtx;
             std::string error;
@@ -1155,6 +1161,9 @@ static RPCHelpMan combinepsbt() {
                 throw JSONRPCError(RPC_INVALID_PARAMETER,
                                    "Parameter 'txs' cannot be empty");
             }
+            if (rpc::IsNativePsbt(txs[0].get_str())) {
+                return rpc::CombineNativePsbtRPC(request);
+            }
             for (size_t i = 0; i < txs.size(); ++i) {
                 PartiallySignedTransaction psbtx;
                 std::string error;
@@ -1198,21 +1207,25 @@ static RPCHelpMan finalizepsbt() {
              "transaction in normal network serialization instead of the "
              "PSBT."},
         },
-        RPCResult{RPCResult::Type::OBJ,
-                  "",
-                  "",
-                  {
-                      {RPCResult::Type::STR, "psbt",
-                       "The base64-encoded partially signed transaction if not "
-                       "extracted"},
-                      {RPCResult::Type::STR_HEX, "hex",
-                       "The hex-encoded network transaction if extracted"},
-                      {RPCResult::Type::BOOL, "complete",
-                       "If the transaction has a complete set of signatures"},
-                  }},
+        rpc::NativePsbtFinalizeResults(RPCResult{
+            RPCResult::Type::OBJ,
+            "",
+            "",
+            {
+                {RPCResult::Type::STR, "psbt",
+                 "The base64-encoded partially signed transaction if not "
+                 "extracted"},
+                {RPCResult::Type::STR_HEX, "hex",
+                 "The hex-encoded network transaction if extracted"},
+                {RPCResult::Type::BOOL, "complete",
+                 "If the transaction has a complete set of signatures"},
+            }}),
         RPCExamples{HelpExampleCli("finalizepsbt", "\"psbt\"")},
         [&](const RPCHelpMan &self, const Config &config,
             const JSONRPCRequest &request) -> UniValue {
+            if (rpc::IsNativePsbt(request.params[0].get_str())) {
+                return rpc::FinalizeNativePsbtRPC(request);
+            }
             // Unserialize the transactions
             PartiallySignedTransaction psbtx;
             std::string error;
@@ -1252,6 +1265,8 @@ static RPCHelpMan createpsbt() {
     return RPCHelpMan{
         "createpsbt",
         "Creates a transaction in the Partially Signed Transaction format.\n"
+        "This creator builds legacy transactions; use converttopsbt with an "
+        "argument-free version-7 template for native Lotus PSBTs.\n"
         "Implements the Creator role.\n",
         {
             {
@@ -1356,7 +1371,9 @@ static RPCHelpMan converttopsbt() {
         "This should be used only with createrawtransaction and "
         "fundrawtransaction\n"
         "createpsbt and walletcreatefundedpsbt should be used for new "
-        "applications.\n",
+        "legacy applications. Native version-7 conversion requires every "
+        "witness argument vector empty, including with permitsigdata=true; "
+        "native signature slots must be supplied explicitly afterward.\n",
         {
             {"hexstring", RPCArg::Type::STR_HEX, RPCArg::Optional::NO,
              "The hex string of a raw transaction"},
@@ -1387,6 +1404,9 @@ static RPCHelpMan converttopsbt() {
                                    "TX decode failed");
             }
 
+            if (tx.nVersion == 7) {
+                return rpc::ConvertNativePsbtRPC(tx);
+            }
             // Remove all scriptSigs from inputs
             for (CTxIn &input : tx.vin) {
                 if (!input.scriptSig.empty() && !permitsigdata) {
@@ -1449,6 +1469,9 @@ RPCHelpMan utxoupdatepsbt() {
         RPCExamples{HelpExampleCli("utxoupdatepsbt", "\"psbt\"")},
         [&](const RPCHelpMan &self, const Config &config,
             const JSONRPCRequest &request) -> UniValue {
+            if (rpc::IsNativePsbt(request.params[0].get_str())) {
+                return rpc::UpdateNativePsbtRPC(request);
+            }
             // Unserialize the transactions
             PartiallySignedTransaction psbtx;
             std::string error;
