@@ -166,9 +166,11 @@ void WalletInit::AddWalletOptions(ArgsManager &argsman) const {
 bool WalletInit::ParameterInteraction() const {
     if (gArgs.GetBoolArg("-disablewallet", DEFAULT_DISABLE_WALLET)) {
         for (const std::string &wallet : gArgs.GetArgs("-wallet")) {
-            LogPrintf("%s: parameter interaction: -disablewallet -> ignoring "
-                      "-wallet=%s\n",
-                      __func__, wallet);
+            LogInfoEvent(
+                BCLog::ALL, "wallet_argument_ignored",
+                "{source_function}: parameter interaction: -disablewallet -> ignoring -wallet={wallet}")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::Wallet, wallet);
         }
 
         return true;
@@ -176,9 +178,10 @@ bool WalletInit::ParameterInteraction() const {
 
     if (gArgs.GetBoolArg("-blocksonly", DEFAULT_BLOCKSONLY) &&
         gArgs.SoftSetBoolArg("-walletbroadcast", false)) {
-        LogPrintf("%s: parameter interaction: -blocksonly=1 -> setting "
-                  "-walletbroadcast=0\n",
-                  __func__);
+        LogInfoEvent(
+            BCLog::ALL, "wallet_broadcast_disabled_by_blocksonly",
+            "{source_function}: parameter interaction: -blocksonly=1 -> setting -walletbroadcast=0")
+            .Field(BCLog::LogField::SourceFunction, __func__);
     }
 
     if (gArgs.IsArgSet("-zapwallettxes")) {
@@ -200,7 +203,7 @@ bool WalletInit::ParameterInteraction() const {
 void WalletInit::Construct(NodeContext &node) const {
     ArgsManager &args = *Assert(node.args);
     if (args.GetBoolArg("-disablewallet", DEFAULT_DISABLE_WALLET)) {
-        LogPrintf("Wallet disabled!\n");
+        LogInfoEvent(BCLog::ALL, "wallet_disabled", "Wallet disabled!");
         return;
     }
     auto wallet_client = interfaces::MakeWalletClient(*node.chain, args);
