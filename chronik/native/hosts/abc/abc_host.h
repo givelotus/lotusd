@@ -6,7 +6,9 @@
 #define CHRONIK_NATIVE_HOSTS_ABC_ABC_HOST_H
 
 #include <chronik/native/host.h>
+#include <hosts/common/flat_file_reader.h>
 
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -37,6 +39,7 @@ Bytes SerializeHeader(const CBlockIndex &bindex);
 class AbcHost final : public Host {
 public:
     AbcHost(const node::NodeContext &node, HostCapabilities caps);
+    ~AbcHost() override;
 
     const HostCapabilities &Capabilities() const override { return m_caps; }
 
@@ -77,9 +80,19 @@ public:
     std::unique_ptr<CBlockUndo> LoadBlockUndo(const CBlockIndex &) const;
     const CBlockIndex *LookupIndex(const BlockHash &) const;
 
+    /** Counters of the blk/rev descriptor cache used by LoadTx/LoadRawTx. */
+    hosts::FlatFileCacheStats FileCacheStats() const;
+
 private:
     const node::NodeContext &m_node;
     HostCapabilities m_caps;
+    /**
+     * Read-only descriptors of complete blk/rev files, read with pread.
+     * Files the node may still append to are read through BlockManager as
+     * before; pruned files are dropped before the node deletes them.
+     */
+    std::unique_ptr<hosts::FlatFileReadCache> m_file_cache;
+    uint64_t m_unlink_callback;
 };
 
 } // namespace chronik::native::abc
