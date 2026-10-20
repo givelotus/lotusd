@@ -7416,8 +7416,10 @@ bool Chainstate::RollforwardBlock(const CBlockIndex *pindex,
     // TODO: merge with ConnectBlock
     CBlock block;
     if (!m_blockman.ReadBlock(block, *pindex)) {
-        LogError("ReplayBlock(): ReadBlock failed at %d, hash=%s\n",
-                 pindex->nHeight, pindex->GetBlockHash().ToString());
+        LogErrorEvent(BCLog::ALL, "chain_replay_read_failed",
+            "ReplayBlock(): ReadBlock failed at {height}, hash={block_hash}")
+            .Field(BCLog::LogField::Height, pindex->nHeight)
+            .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash());
         return false;
     }
 
@@ -7495,20 +7497,23 @@ bool Chainstate::ReplayBlocks() {
             // Never disconnect the genesis block.
             CBlock block;
             if (!m_blockman.ReadBlock(block, *pindexOld)) {
-                LogError("RollbackBlock(): ReadBlock() failed at "
-                         "%d, hash=%s\n",
-                         pindexOld->nHeight,
-                         pindexOld->GetBlockHash().ToString());
+                LogErrorEvent(BCLog::ALL, "chain_rollback_read_failed",
+                    "RollbackBlock(): ReadBlock() failed at {height}, hash={block_hash}")
+                    .Field(BCLog::LogField::Height, pindexOld->nHeight)
+                    .Field(BCLog::LogField::BlockHash, pindexOld->GetBlockHash());
                 return false;
             }
 
-            LogPrintf("Rolling back %s (%i)\n",
-                      pindexOld->GetBlockHash().ToString(), pindexOld->nHeight);
+            LogInfoEvent(BCLog::ALL, "chain_replay_rolling_back",
+                "Rolling back {block_hash} ({height})")
+                .Field(BCLog::LogField::BlockHash, pindexOld->GetBlockHash())
+                .Field(BCLog::LogField::Height, pindexOld->nHeight);
             DisconnectResult res = DisconnectBlock(block, pindexOld, cache);
             if (res == DisconnectResult::FAILED) {
-                LogError(
-                    "RollbackBlock(): DisconnectBlock failed at %d, hash=%s\n",
-                    pindexOld->nHeight, pindexOld->GetBlockHash().ToString());
+                LogErrorEvent(BCLog::ALL, "chain_rollback_disconnect_failed",
+                    "RollbackBlock(): DisconnectBlock failed at {height}, hash={block_hash}")
+                    .Field(BCLog::LogField::Height, pindexOld->nHeight)
+                    .Field(BCLog::LogField::BlockHash, pindexOld->GetBlockHash());
                 return false;
             }
 
@@ -7528,8 +7533,10 @@ bool Chainstate::ReplayBlocks() {
     for (int nHeight = nForkHeight + 1; nHeight <= pindexNew->nHeight;
          ++nHeight) {
         const CBlockIndex &pindex{*Assert(pindexNew->GetAncestor(nHeight))};
-        LogPrintf("Rolling forward %s (%i)\n", pindex.GetBlockHash().ToString(),
-                  nHeight);
+        LogInfoEvent(BCLog::ALL, "chain_replay_rolling_forward",
+            "Rolling forward {block_hash} ({height})")
+            .Field(BCLog::LogField::BlockHash, pindex.GetBlockHash())
+            .Field(BCLog::LogField::Height, nHeight);
         m_chainman.GetNotifications().progress(
             _("Replaying blocks…"),
             (int)((nHeight - nForkHeight) * 100.0 /
