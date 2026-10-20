@@ -104,7 +104,14 @@
     X(ForkTipHeight, fork_tip_height, INT, "", "") \
     X(ForkTipHash, fork_tip_hash, HASH, "", "") \
     X(HeaderProgressPercent, header_progress_percent, FLOAT, "", "") \
-    X(ReceivedTimeDifferenceSeconds, received_time_difference_seconds, UINT, "", "")
+    X(ReceivedTimeDifferenceSeconds, received_time_difference_seconds, UINT, "", "") \
+    X(MempoolImportSucceededCount, mempool_import_succeeded_count, UINT, "", "") \
+    X(MempoolImportFailedCount, mempool_import_failed_count, UINT, "", "") \
+    X(MempoolImportExpiredCount, mempool_import_expired_count, UINT, "", "") \
+    X(MempoolImportPresentCount, mempool_import_present_count, UINT, "", "") \
+    X(MempoolImportWaitingBroadcastCount, mempool_import_waiting_broadcast_count, UINT, "", "") \
+    X(MempoolCopySeconds, mempool_copy_seconds, FLOAT, "", "") \
+    X(MempoolDumpSeconds, mempool_dump_seconds, FLOAT, "", "")
 
 namespace BCLog {
 

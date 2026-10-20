@@ -42,8 +42,9 @@ bool LoadMempool(CTxMemPool &pool, const fs::path &load_path,
 
     AutoFile file{opts.mockable_fopen_function(load_path, "rb")};
     if (file.IsNull()) {
-        LogPrintf(
-            "Failed to open mempool file from disk. Continuing anyway.\n");
+        LogInfoEvent(
+            BCLog::ALL, "mempool_file_open_failed",
+            "Failed to open mempool file from disk. Continuing anyway.");
         return false;
     }
 
@@ -132,16 +133,22 @@ bool LoadMempool(CTxMemPool &pool, const fs::path &load_path,
             }
         }
     } catch (const std::exception &e) {
-        LogPrintf("Failed to deserialize mempool data on disk: %s. Continuing "
-                  "anyway.\n",
-                  e.what());
+        LogInfoEvent(
+            BCLog::ALL, "mempool_file_deserialize_failed",
+            "Failed to deserialize mempool data on disk: {error}. Continuing anyway.")
+            .Field(BCLog::LogField::Error, e.what());
         return false;
     }
 
-    LogPrintf("Imported mempool transactions from disk: %i succeeded, %i "
-              "failed, %i expired, %i already there, %i waiting for initial "
-              "broadcast\n",
-              count, failed, expired, already_there, unbroadcast);
+    LogInfoEvent(
+        BCLog::ALL, "mempool_file_import_completed",
+        "Imported mempool transactions from disk: {mempool_import_succeeded_count} succeeded, {mempool_import_failed_count} failed, {mempool_import_expired_count} expired, {mempool_import_present_count} already there, {mempool_import_waiting_broadcast_count} waiting for initial broadcast")
+        .Field(BCLog::LogField::MempoolImportSucceededCount, count)
+        .Field(BCLog::LogField::MempoolImportFailedCount, failed)
+        .Field(BCLog::LogField::MempoolImportExpiredCount, expired)
+        .Field(BCLog::LogField::MempoolImportPresentCount, already_there)
+        .Field(BCLog::LogField::MempoolImportWaitingBroadcastCount,
+               unbroadcast);
     return true;
 }
 
@@ -187,8 +194,9 @@ bool DumpMempool(const CTxMemPool &pool, const fs::path &dump_path,
 
         file << mapDeltas;
 
-        LogPrintf("Writing %d unbroadcast transactions to disk.\n",
-                  unbroadcast_txids.size());
+        LogInfoEvent(BCLog::ALL, "mempool_file_unbroadcast_write_started",
+                     "Writing {count} unbroadcast transactions to disk.")
+            .Field(BCLog::LogField::Count, unbroadcast_txids.size());
         file << unbroadcast_txids;
 
         if (!skip_file_commit && !FileCommit(file.Get())) {
@@ -200,11 +208,17 @@ bool DumpMempool(const CTxMemPool &pool, const fs::path &dump_path,
         }
         auto last = SteadyClock::now();
 
-        LogPrintf("Dumped mempool: %gs to copy, %gs to dump\n",
-                  Ticks<SecondsDouble>(mid - start),
-                  Ticks<SecondsDouble>(last - mid));
+        LogInfoEvent(
+            BCLog::ALL, "mempool_file_dump_completed",
+            "Dumped mempool: {mempool_copy_seconds:g}s to copy, {mempool_dump_seconds:g}s to dump")
+            .Field(BCLog::LogField::MempoolCopySeconds,
+                   Ticks<SecondsDouble>(mid - start))
+            .Field(BCLog::LogField::MempoolDumpSeconds,
+                   Ticks<SecondsDouble>(last - mid));
     } catch (const std::exception &e) {
-        LogPrintf("Failed to dump mempool: %s. Continuing anyway.\n", e.what());
+        LogInfoEvent(BCLog::ALL, "mempool_file_dump_failed",
+                     "Failed to dump mempool: {error}. Continuing anyway.")
+            .Field(BCLog::LogField::Error, e.what());
         return false;
     }
     return true;
