@@ -25,6 +25,10 @@ fn fixture() -> CommittedBlock {
         explorer: ExplorerBlockFacts { header_wire },
         transactions: vec![ConfirmedTx {
             location,
+            pos: crate::v2_branch::TxPos {
+                file_num: 3,
+                data_pos: 128,
+            },
             outputs: vec![],
             spends: Vec::<SpentInput>::new(),
             explorer: ExplorerTxFacts {
@@ -57,7 +61,6 @@ fn fixture() -> CommittedBlock {
                         },
                         arguments_count: 0,
                     }],
-                    resolved_creation: None,
                 }],
             },
         }],
@@ -79,19 +82,13 @@ fn complete_native_facts_and_chunk_entries_roundtrip() {
         .unwrap(),
         block.explorer
     );
-    let (entries, flat_writes, next_pos) =
-        plan_explorer_block_at(&block, 0, 128).unwrap();
+    let entries = plan_explorer_block(&block).unwrap();
     let id = block.transactions[0].location.txid;
     let find = |key: Vec<u8>| {
         entries.iter().find(|(k, _)| *k == key).unwrap().1.clone()
     };
-    assert_eq!(flat_writes.len(), 1);
-    assert_eq!(flat_writes[0].0, 0);
-    assert_eq!(flat_writes[0].1, 128);
-    assert_eq!(flat_writes[0].2, facts.wire);
-    assert_eq!(next_pos, (0, 128 + facts.wire.len() as u64));
     let tx_meta: TxMeta = decode_record(&find(tx_key(id))).unwrap();
-    assert_eq!(tx_meta.file_num, 0);
+    assert_eq!(tx_meta.file_num, 3);
     assert_eq!(tx_meta.data_pos, 128);
     assert_eq!(tx_meta.wire_size, facts.wire.len() as u64);
     assert_eq!(tx_meta.wire_checksum, seahash::hash(&facts.wire));
@@ -101,7 +98,8 @@ fn complete_native_facts_and_chunk_entries_roundtrip() {
         find(txhash_key(block.transactions[0].location.txhash)),
         id.0 .0
     );
-    let input: InputMeta = decode_record(&find(input_key(id, 0))).unwrap();
+    let input: StoredInputMeta =
+        decode_record(&find(input_key(id, 0))).unwrap();
     assert_eq!(input.sequence, u32::MAX);
     assert_eq!(input.witness_count, 1);
     assert_eq!(input.coinbase_data.offset, WIRE_CHUNK_BYTES as u64);
@@ -124,7 +122,7 @@ fn ranges_and_incomplete_spends_fail_before_entries() {
     assert!(plan_explorer_block(&block).is_err());
 }
 #[test]
-fn frozen_creation_is_serialized_without_spend_state() {
+fn spend_input_metadata_does_not_copy_the_spent_output() {
     let mut block = fixture();
     let input = &mut block.transactions[0].explorer.inputs[0];
     input.flags = 1;
@@ -149,12 +147,16 @@ fn frozen_creation_is_serialized_without_spend_state() {
             txhash: TxHash(Hash32([8; 32])),
         },
     };
-    input.resolved_creation = Some(coin.clone());
     block.transactions[0].spends.push(SpentInput {
         outpoint: coin.outpoint,
         input_index: 0,
     });
-    assert!(plan_explorer_block(&block).is_ok());
+    let id = block.transactions[0].location.txid;
+    let entries = plan_explorer_block(&block).unwrap();
+    let stored = &entries.iter().find(|(k, _)| *k == input_key(id, 0)).unwrap().1;
+    let input: StoredInputMeta = decode_record(stored).unwrap();
+    assert_eq!(input.flags, 1);
+    assert!(stored.len() < 64);
     let encoded = encode_record(&coin).unwrap();
     assert_eq!(decode_record::<ResolvedCreation>(&encoded).unwrap(), coin);
     assert_eq!(coin.output.value, u64::MAX);

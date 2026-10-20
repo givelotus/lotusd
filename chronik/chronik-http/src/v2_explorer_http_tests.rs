@@ -72,7 +72,6 @@ impl Fixture {
                 },
                 arguments_count: 0,
             }],
-            resolved_creation: None,
         };
         let token = Output {
             flags: if burn { 3 } else { 1 },
@@ -86,6 +85,7 @@ impl Fixture {
             parent: anchor,
             explorer: ExplorerBlockFacts { header_wire },
             transactions: vec![ConfirmedTx {
+                pos: chronik_db::v2_branch::TxPos::default(),
                 location: TxLocation {
                     block_id: Hash32([2; 32]),
                     height: 0,
