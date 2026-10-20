@@ -345,7 +345,9 @@ void AppendQuotedText(std::string &out, std::string_view text);
  * replaced by the fields' text values (or the event name if it has none).
  * FLOAT fields also accept :f/:g or :.Nf/:.Ng (precision 0..18), formatted
  * only on the consumer. Nonnegative INT/UINT fields accept :x or :0Nx
- * (width 1..16). Numeric structured fields retain their raw value.
+ * (width 1..16). Copied/static STRING fields accept :fsq for fs::quoted's
+ * double-quote and ampersand escaping in the human message. Their structured
+ * value remains the original unquoted string. Numeric fields retain raw values.
  * Bit i of *used is set if the template used field i.
  */
 void AppendEventMessage(std::string &out, const LogEventSite &site,
