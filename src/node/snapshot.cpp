@@ -4,6 +4,8 @@
 
 #include <node/snapshot.h>
 
+#include <node/metrics.h>
+
 #include <arith_uint256.h>
 #include <chain.h>
 #include <chainparams.h>
@@ -624,6 +626,7 @@ void PublishChainTipSnapshot(ChainstateManager &chainman,
         g_chain_publication.dirty = true;
         return;
     }
+    const auto publish_start{SnapshotPublishStart()};
     SnapshotPublisher &publisher = GetGlobalSnapshotPublisher();
     auto prev = publisher.Load();
     auto next = CloneChainStateOnly(prev.get());
@@ -750,6 +753,7 @@ void PublishChainTipSnapshot(ChainstateManager &chainman,
 
     if (!mempool) InitMiningTemplate(*next, prev.get(), nullptr);
     publisher.Publish(std::move(next));
+    RecordSnapshotPublication(SnapshotKind::CHAIN_TIP, publish_start);
 }
 
 void PublishBestHeaderSnapshot(ChainstateManager &chainman)
@@ -771,6 +775,7 @@ void PublishBestHeaderSnapshot(ChainstateManager &chainman)
     const int height = chainman.m_best_header ? chainman.m_best_header->nHeight : -1;
     const bool ibd = chainman.IsInitialBlockDownload();
     if (prev->headers_height == height && prev->initial_block_download == ibd) return;
+    const auto publish_start{SnapshotPublishStart()};
     auto next = CloneChainStateOnly(prev.get());
     next->headers_height = height;
     next->initial_block_download = ibd;
@@ -780,6 +785,7 @@ void PublishBestHeaderSnapshot(ChainstateManager &chainman)
         InitMiningTemplate(*next, prev.get(), mempool);
     }
     publisher.Publish(std::move(next));
+    RecordSnapshotPublication(SnapshotKind::BEST_HEADER, publish_start);
 }
 
 void PublishMempoolSnapshot(const CTxMemPool &mempool)
@@ -792,6 +798,7 @@ void PublishMempoolSnapshot(const CTxMemPool &mempool)
     if (mempool.DeferSnapshotIfActive()) {
         return;
     }
+    const auto publish_start{SnapshotPublishStart()};
     SnapshotPublisher &publisher = GetGlobalSnapshotPublisher();
     auto prev = publisher.Load();
     auto next = mempool.HasSnapshotState() && prev && prev->mempool_ptr == &mempool
@@ -804,6 +811,7 @@ void PublishMempoolSnapshot(const CTxMemPool &mempool)
     InitMiningTemplate(*next, prev.get(), &mempool);
 
     publisher.Publish(std::move(next));
+    RecordSnapshotPublication(SnapshotKind::MEMPOOL, publish_start);
 }
 
 void PublishMempoolUnbroadcastSnapshot(const CTxMemPool &mempool,

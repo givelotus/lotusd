@@ -120,6 +120,30 @@ namespace metric_labels {
             "blockfilterindex", "coinstatsindex", "other"};
         return labels;
     }
+    const std::vector<std::string> &SealedHeaderOutcomes() {
+        static const std::vector<std::string> labels{
+            "rebuilt", "already_have", "fallback", "invalid", "rejected"};
+        return labels;
+    }
+    const std::vector<std::string> &SnapshotKinds() {
+        static const std::vector<std::string> labels{"chain_tip", "best_header",
+                                                     "mempool"};
+        return labels;
+    }
+    const std::vector<std::string> &SnapshotSyncStates() {
+        static const std::vector<std::string> labels{"idle",
+                                                     "fetching_roots",
+                                                     "fetching_shards",
+                                                     "pivot_active_peeling",
+                                                     "completed",
+                                                     "failed"};
+        return labels;
+    }
+    const std::vector<std::string> &AdaptiveLimits() {
+        static const std::vector<std::string> labels{"max", "target",
+                                                     "max_generated", "ema"};
+        return labels;
+    }
     const std::vector<std::string> &HTTPCodeClasses() {
         static const std::vector<std::string> labels{"1xx", "2xx", "3xx",
                                                      "4xx", "5xx", "other"};
@@ -172,6 +196,12 @@ namespace {
         0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005,
         0.01,    0.025,  0.05,    0.1,    0.25,  0.5,    1,
         2.5,     5,      10,      30,     120};
+    //! Seconds; snapshot publications and block templates, from a small
+    //! mempool's microseconds to a large one's seconds
+    const std::vector<double> FAST_BUCKETS{
+        0.000005, 0.00001, 0.000025, 0.00005, 0.0001, 0.00025, 0.0005,
+        0.001,    0.0025,  0.005,    0.01,    0.025,  0.05,    0.1,
+        0.25,     0.5,     1,        2.5,     5,      10};
     //! Blocks
     const std::vector<double> REORG_DEPTH_BUCKETS{1, 2,  3,  4,  5,   6,
                                                   8, 10, 20, 50, 100, 1000};
@@ -580,6 +610,81 @@ NodeMetrics::NodeMetrics(std::vector<std::string> rpc_methods)
           "it when asked), by database. _count is the number of commits.",
           DB_COMMIT_BUCKETS, /*divisor=*/1e9,
           std::vector<LabelDim>{{"db", L::Databases()}})},
+      sealed_headers{Add<Counter>(
+          registry, MetricName("sealed_headers_total"),
+          "Sealed headers received, by outcome: rebuilt (the block was "
+          "rebuilt from the mempool overlay), already_have (its data was "
+          "here), fallback (the compact block was requested instead), "
+          "invalid (malformed), rejected (header or coinbase refused).",
+          std::vector<LabelDim>{{"outcome", L::SealedHeaderOutcomes()}})},
+      merklix_rounds{Add<Counter>(
+          registry, MetricName("merklix_rounds_total"),
+          "Merklix set reconciliation rounds received from peers: summary "
+          "(merklixsync) and bucket (merklixbuck) rounds, by whether they "
+          "matched our set or found differences.",
+          std::vector<LabelDim>{{"round", {"summary", "bucket"}},
+                                {"result", {"matched", "differences"}}})},
+      merklix_differences{Add<EventHistogram>(
+          registry, MetricName("merklix_difference_size"),
+          "Short ids found missing locally per reconciliation round that "
+          "decoded some (then requested with getshorttx), by round.",
+          COUNT_BUCKETS, /*divisor=*/1,
+          std::vector<LabelDim>{{"round", {"summary", "bucket"}}})},
+      merklix_overflows{Add<Counter>(
+          registry, MetricName("merklix_overflows_total"),
+          "Merklix sub-buckets with more differences than their sketch "
+          "decodes (bisected into deeper buckets, or left unresolved at "
+          "the deepest level).")},
+      snapshot_publications{Add<Counter>(
+          registry, MetricName("snapshot_publications_total"),
+          "Chain and mempool snapshots published for lock-free RPC reads, by "
+          "trigger: chain_tip, best_header, mempool.",
+          std::vector<LabelDim>{{"kind", L::SnapshotKinds()}})},
+      snapshot_publish_seconds{Add<EventHistogram>(
+          registry, MetricName("snapshot_publish_seconds"),
+          "Time to build and publish a snapshot, by trigger.", FAST_BUCKETS,
+          /*divisor=*/1e9,
+          std::vector<LabelDim>{{"kind", L::SnapshotKinds()}})},
+      snapshot_sync_state{Add<Gauge>(
+          registry, MetricName("snapshot_sync_state"),
+          "UTXO snapshot (fast) sync swarm state: 1 for the current state.",
+          std::vector<LabelDim>{{"state", L::SnapshotSyncStates()}})},
+      snapshot_sync_pivot_height{
+          Add<Gauge>(registry, MetricName("snapshot_sync_pivot_height"),
+                     "Height of the fast sync pivot block (0 if none).")},
+      snapshot_sync_shards{Add<Gauge>(
+          registry, MetricName("snapshot_sync_shards"),
+          "Fast sync UTXO shards: total (non-empty), verified, pending, "
+          "in_flight.",
+          std::vector<LabelDim>{
+              {"status", {"total", "verified", "pending", "in_flight"}}})},
+      snapshot_sync_coins_imported{
+          Add<Gauge>(registry, MetricName("snapshot_sync_coins_imported"),
+                     "Coins imported by the current fast sync session.")},
+      snapshot_sync_blocks_peeled{
+          Add<Gauge>(registry, MetricName("snapshot_sync_blocks_peeled"),
+                     "Blocks peeled back from the pivot by the current fast "
+                     "sync session.")},
+      snapshot_sync_peers{
+          Add<Gauge>(registry, MetricName("snapshot_sync_peers"),
+                     "Fast sync swarm peers: active, banned.",
+                     std::vector<LabelDim>{{"status", {"active", "banned"}}})},
+      block_template_seconds{Add<EventHistogram>(
+          registry, MetricName("block_template_build_seconds"),
+          "Time to build a block template (CreateNewBlock): select "
+          "(choosing transactions), validity (TestBlockValidity), total.",
+          FAST_BUCKETS, /*divisor=*/1e9,
+          std::vector<LabelDim>{{"stage", {"select", "validity", "total"}}})},
+      adaptive_block_size{Add<Gauge>(
+          registry, MetricName("adaptive_block_size_bytes"),
+          "Adaptive block capacity: max (the consensus limit it allows), "
+          "target, max_generated (the mining limit with -adaptiveblocksize), "
+          "ema (moving average of block sizes).",
+          std::vector<LabelDim>{{"limit", L::AdaptiveLimits()}})},
+      adaptive_block_size_history_complete{Add<Gauge>(
+          registry, MetricName("adaptive_block_size_history_complete"),
+          "1 once the adaptive block capacity has a complete history of "
+          "blocks, else 0.")},
       m_rpc_methods{SortedWithOther(std::move(rpc_methods))} {
     build_info.Set(1);
     registry.Add(std::make_unique<metrics::FunctionCounter>(

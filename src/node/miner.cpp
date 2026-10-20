@@ -6,6 +6,8 @@
 
 #include <node/miner.h>
 
+#include <node/metrics.h>
+
 #include <avalanche/avalanche.h>
 #include <avalanche/processor.h>
 #include <chain.h>
@@ -296,6 +298,11 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
                                            __func__, state.ToString()));
     }
     const auto time_2{SteadyClock::now()};
+    if (auto *metrics{GetNodeMetrics()}) {
+        metrics->block_template_seconds.RecordDuration(time_1 - time_start, 0);
+        metrics->block_template_seconds.RecordDuration(time_2 - time_1, 1);
+        metrics->block_template_seconds.RecordDuration(time_2 - time_start, 2);
+    }
 
     LogDebug(
         BCLog::BENCH,

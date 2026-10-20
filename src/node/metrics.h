@@ -99,6 +99,14 @@ namespace metric_labels {
     const std::vector<std::string> &BlockParkReasons();
     //! Databases, index = MetricDatabaseIndex()
     const std::vector<std::string> &Databases();
+    //! Index = SealedHeaderOutcome
+    const std::vector<std::string> &SealedHeaderOutcomes();
+    //! Index = SnapshotKind
+    const std::vector<std::string> &SnapshotKinds();
+    //! Index = lotus::v2::net::FastSyncSwarmState
+    const std::vector<std::string> &SnapshotSyncStates();
+    //! Index = AdaptiveLimit
+    const std::vector<std::string> &AdaptiveLimits();
 } // namespace metric_labels
 
 enum class HTTPEndpoint : size_t {
@@ -213,6 +221,33 @@ struct NodeMetrics {
     metrics::Gauge &db_size;
     metrics::EventHistogram &db_commit_seconds;
 
+    // This tier's features
+    //! By SealedHeaderOutcome
+    metrics::Counter &sealed_headers;
+    //! By round (0 = summary, 1 = bucket) x result (0 = matched, 1 = differ)
+    metrics::Counter &merklix_rounds;
+    //! By round: short ids found missing, in rounds that found some
+    metrics::EventHistogram &merklix_differences;
+    //! Sub-buckets with too many differences to decode (bisected)
+    metrics::Counter &merklix_overflows;
+    //! By SnapshotKind
+    metrics::Counter &snapshot_publications;
+    metrics::EventHistogram &snapshot_publish_seconds;
+    //! One-hot by SnapshotSyncStates
+    metrics::Gauge &snapshot_sync_state;
+    metrics::Gauge &snapshot_sync_pivot_height;
+    //! By status: 0 = total, 1 = verified, 2 = pending, 3 = in_flight
+    metrics::Gauge &snapshot_sync_shards;
+    metrics::Gauge &snapshot_sync_coins_imported;
+    metrics::Gauge &snapshot_sync_blocks_peeled;
+    //! By status: 0 = active, 1 = banned
+    metrics::Gauge &snapshot_sync_peers;
+    //! By stage: 0 = select, 1 = validity, 2 = total
+    metrics::EventHistogram &block_template_seconds;
+    //! By AdaptiveLimit
+    metrics::Gauge &adaptive_block_size;
+    metrics::Gauge &adaptive_block_size_history_complete;
+
     /** Label index of an RPC method ("other" if not in the set) */
     size_t RPCMethodIndex(std::string_view method) const noexcept;
 
@@ -326,6 +361,39 @@ inline void CountValidationCacheLookup(bool script_execution,
  * other.
  */
 size_t MetricDatabaseIndex(const std::string &path) noexcept;
+
+enum class SealedHeaderOutcome : size_t {
+    REBUILT,
+    ALREADY_HAVE,
+    FALLBACK,
+    INVALID,
+    REJECTED,
+};
+enum class SnapshotKind : size_t { CHAIN_TIP, BEST_HEADER, MEMPOOL };
+enum class AdaptiveLimit : size_t { MAX, TARGET, MAX_GENERATED, EMA };
+
+inline void CountSealedHeader(SealedHeaderOutcome outcome) noexcept {
+    if (auto *m{GetNodeMetrics()}) {
+        m->sealed_headers.Add(size_t(outcome));
+    }
+}
+
+/** Start time of a snapshot publication, or the epoch without metrics */
+inline std::chrono::steady_clock::time_point SnapshotPublishStart() noexcept {
+    return GetNodeMetrics() ? std::chrono::steady_clock::now()
+                            : std::chrono::steady_clock::time_point{};
+}
+/** Count a snapshot publication begun at start */
+inline void RecordSnapshotPublication(
+    SnapshotKind kind, std::chrono::steady_clock::time_point start) noexcept {
+    if (auto *m{GetNodeMetrics()}) {
+        m->snapshot_publications.Add(size_t(kind));
+        if (start != std::chrono::steady_clock::time_point{}) {
+            m->snapshot_publish_seconds.RecordDuration(
+                std::chrono::steady_clock::now() - start, size_t(kind));
+        }
+    }
+}
 
 /** Count a transaction pool's (orphans, conflicting) removals */
 void RecordTxPoolRemovals(std::string_view pool_kind, unsigned expired,
