@@ -66,6 +66,13 @@ bool EncodeCoinOutput(const Output &coin, std::vector<uint8_t> &result,
                       std::string &error);
 bool ComputeCoinOutputSerializedSize(const Output &coin, size_t &size,
                                      std::string &error);
+// The inverse of EncodeCoinOutput: a frame starting with 0x80 is a
+// LegacyCoinWire (canonical CompactSize, no trailing byte), any other frame
+// an output (DecodeOutput). DecodeCoinOutput(EncodeCoinOutput(c)) == c.
+bool DecodeCoinOutput(const std::vector<uint8_t> &frame, Output &result,
+                      std::string &error);
+// Largest coin wire: a LegacyCoinWire of the largest legacy script.
+constexpr size_t MAX_COIN_OUTPUT_BYTES = 1 + 8 + 3 + MAX_LEGACY_COIN_SCRIPT_BYTES;
 
 } // namespace lotus::v2
 
