@@ -4,6 +4,8 @@
 
 #include <net_websocket_dialer.h>
 
+#include <config/bitcoin-config.h>
+
 #include <clientversion.h>
 #include <crypto/sha1.h>
 #include <logging.h>
@@ -17,6 +19,10 @@
 #include <util/strencodings.h>
 #include <util/string.h>
 #include <util/threadinterrupt.h>
+
+#ifdef ENABLE_HTTP2
+#include <http2_client.h>
+#endif
 
 #include <openssl/crypto.h>
 #include <openssl/err.h>
@@ -43,6 +49,8 @@ struct DialerState {
     std::string protocols;
     //! -p2pwebsocketpin: required public key hash per (lowercase) host
     std::map<std::string, std::vector<unsigned char>> pins;
+    //! ALPN offers h2 (HTTP/2 built and -http2)
+    bool offer_h2{false};
 };
 
 GlobalMutex g_dialer_mutex;
@@ -165,6 +173,87 @@ bool OfferedProtocol(const std::string &offered, const std::string &selected) {
     return false;
 }
 
+#ifdef ENABLE_HTTP2
+/**
+ * The server selected h2: open the WebSocket with an extended CONNECT
+ * (RFC 8441) on a new HTTP/2 connection. WebSocketSock then frames P2P
+ * messages exactly as over HTTP/1.1, inside the stream's DATA frames.
+ */
+std::optional<WebSocketDialResult>
+HandshakeHTTP2(const DialerState &state, std::unique_ptr<HandshakeSock> sock,
+               std::unique_ptr<WebSocketByteLayer> tls,
+               std::shared_ptr<WebSocketTransportInfo> info,
+               const ParsedWebSocketURL &url, Clock::time_point deadline,
+               CThreadInterrupt &interrupt) {
+    auto h2{std::make_unique<Http2ClientLayer>(std::move(tls))};
+    const auto pump_until = [&](auto done) {
+        while (!done()) {
+            if (!h2->Pump(sock->Fd())) {
+                return false;
+            }
+            if (done()) {
+                break;
+            }
+            if (!WaitFor(*sock, h2->WaitEvents(), deadline, interrupt)) {
+                return false;
+            }
+        }
+        return true;
+    };
+    // RFC 8441 3: only after the server's SETTINGS allow it.
+    if (!pump_until([&] { return h2->SettingsReceived(); })) {
+        LogDebug(BCLog::NET, "HTTP/2 connection to %s: no SETTINGS\n",
+                 url.authority);
+        return std::nullopt;
+    }
+    if (!h2->ConnectProtocolAllowed()) {
+        LogDebug(BCLog::NET,
+                 "WebSocket upgrade to %s (HTTP/2): the server does not accept "
+                 "WebSockets (no SETTINGS_ENABLE_CONNECT_PROTOCOL)\n",
+                 url.authority);
+        return std::nullopt;
+    }
+    std::vector<std::pair<std::string, std::string>> headers{
+        {"sec-websocket-version", "13"},
+        {"user-agent", FormatFullVersion()},
+    };
+    if (!state.protocols.empty()) {
+        headers.emplace_back("sec-websocket-protocol", state.protocols);
+    }
+    if (!url.token.empty()) {
+        headers.emplace_back("authorization", "Bearer " + url.token);
+    }
+    if (!h2->SubmitConnect(url.authority, url.target, headers) ||
+        !pump_until([&] { return h2->Status().has_value(); })) {
+        LogDebug(BCLog::NET, "WebSocket upgrade to %s (HTTP/2): no response\n",
+                 url.authority);
+        return std::nullopt;
+    }
+    const std::string selected{h2->ResponseHeader("sec-websocket-protocol")};
+    if (*h2->Status() != 200) {
+        LogDebug(BCLog::NET, "WebSocket upgrade to %s (HTTP/2) refused: %d\n",
+                 url.authority, *h2->Status());
+        return std::nullopt;
+    }
+    if (!h2->ResponseHeader("sec-websocket-extensions").empty() ||
+        !OfferedProtocol(state.protocols, selected)) {
+        LogDebug(BCLog::NET,
+                 "WebSocket upgrade to %s (HTTP/2): invalid response\n",
+                 url.authority);
+        return std::nullopt;
+    }
+    info->compression = CompressionForProtocol(selected);
+    LogDebug(BCLog::NET, "WebSocket P2P connection to %s (wss, %s, HTTP/2)\n",
+             url.authority, P2PWebSocketCompressionName(info->compression));
+    return WebSocketDialResult{
+        .sock = std::make_unique<WebSocketSock>(std::move(*sock),
+                                                WebSocketCodec::Role::CLIENT,
+                                                info, std::move(h2)),
+        .info = info,
+    };
+}
+#endif // ENABLE_HTTP2
+
 std::optional<WebSocketDialResult>
 Handshake(const DialerState &state, std::unique_ptr<Sock> &&tcp,
           const ParsedWebSocketURL &url, CThreadInterrupt &interrupt) {
@@ -245,6 +334,15 @@ Handshake(const DialerState &state, std::unique_ptr<Sock> &&tcp,
         }
         info->tls = true;
         layer = std::make_unique<TlsByteLayer>(std::move(ssl));
+        if (info->alpn == "h2") {
+#ifdef ENABLE_HTTP2
+            return HandshakeHTTP2(state, std::move(sock), std::move(layer),
+                                  info, url, deadline, interrupt);
+#else
+            // Never offered without HTTP/2 support.
+            return std::nullopt;
+#endif
+        }
     } else {
         layer = std::make_unique<PlainByteLayer>();
     }
@@ -325,8 +423,13 @@ Handshake(const DialerState &state, std::unique_ptr<Sock> &&tcp,
 bool StartP2PWebSocketDialer(const std::optional<fs::path> &client_cert,
                              const std::optional<fs::path> &client_key,
                              const std::string &offer,
-                             const std::vector<std::string> &pins) {
+                             const std::vector<std::string> &pins, bool http2) {
     auto state{std::make_shared<DialerState>()};
+#ifdef ENABLE_HTTP2
+    state->offer_h2 = http2;
+#else
+    (void)http2;
+#endif
     for (const std::string &entry : pins) {
         // A host never contains '=', so the first one separates the pin.
         const size_t eq{entry.find('=')};
@@ -342,8 +445,8 @@ bool StartP2PWebSocketDialer(const std::optional<fs::path> &client_cert,
         state->pins[ToLower(entry.substr(0, eq))] = *pin;
     }
     // Context replacement is atomic and each SSL session retains its context.
-    state->client_ctx =
-        std::make_unique<tls::ReloadingClientContext>(client_cert, client_key);
+    state->client_ctx = std::make_unique<tls::ReloadingClientContext>(
+        client_cert, client_key, state->offer_h2);
     if (!state->client_ctx->Get()) {
         return false;
     }

@@ -103,10 +103,10 @@ int SelectAlpn(SSL *ssl, const unsigned char **out, unsigned char *outlen,
 /**
  * Order the client's offer like a mainstream browser (Chrome) as far as
  * OpenSSL allows. Remaining fingerprint differences (no GREASE values,
- * fixed extension order, no h2 in ALPN, no ECH) are documented in
- * doc/p2p-websocket.md.
+ * fixed extension order, no h2 in ALPN without HTTP/2, no ECH) are
+ * documented in doc/p2p-websocket.md.
  */
-void ApplyClientProfile(SSL_CTX *ctx) {
+void ApplyClientProfile(SSL_CTX *ctx, bool offer_h2) {
     SSL_CTX_set_ciphersuites(ctx, "TLS_AES_128_GCM_SHA256:"
                                   "TLS_AES_256_GCM_SHA384:"
                                   "TLS_CHACHA20_POLY1305_SHA256");
@@ -124,7 +124,12 @@ void ApplyClientProfile(SSL_CTX *ctx) {
     SSL_CTX_set1_sigalgs_list(
         ctx, "ECDSA+SHA256:rsa_pss_rsae_sha256:RSA+SHA256:ECDSA+SHA384:"
              "rsa_pss_rsae_sha384:RSA+SHA384:rsa_pss_rsae_sha512:RSA+SHA512");
-    SSL_CTX_set_alpn_protos(ctx, ALPN_HTTP11, sizeof(ALPN_HTTP11));
+    if (offer_h2) {
+        // Chrome's ALPN list: h2, http/1.1.
+        SSL_CTX_set_alpn_protos(ctx, ALPN_H2_HTTP11, sizeof(ALPN_H2_HTTP11));
+    } else {
+        SSL_CTX_set_alpn_protos(ctx, ALPN_HTTP11, sizeof(ALPN_HTTP11));
+    }
 }
 } // namespace
 
@@ -140,7 +145,7 @@ std::string NegotiatedAlpn(const SSL *ssl) {
                 : std::string{};
 }
 
-SslCtxPtr NewContext(bool server) {
+SslCtxPtr NewContext(bool server, bool offer_h2) {
     SslCtxPtr ctx{
         SSL_CTX_new(server ? TLS_server_method() : TLS_client_method())};
     if (!ctx) {
@@ -157,7 +162,7 @@ SslCtxPtr NewContext(bool server) {
     if (server) {
         SSL_CTX_set_alpn_select_cb(ctx.get(), SelectAlpn, nullptr);
     } else {
-        ApplyClientProfile(ctx.get());
+        ApplyClientProfile(ctx.get(), offer_h2);
     }
     return ctx;
 }
@@ -201,9 +206,10 @@ bool UseCertificateFiles(SSL_CTX *ctx, const fs::path &cert_chain,
 }
 
 ReloadingClientContext::ReloadingClientContext(
-    const std::optional<fs::path> &cert, const std::optional<fs::path> &key)
-    : m_cert{cert}, m_key{key} {
-    auto ctx{NewContext(/*server=*/false)};
+    const std::optional<fs::path> &cert, const std::optional<fs::path> &key,
+    bool offer_h2)
+    : m_cert{cert}, m_key{key}, m_offer_h2{offer_h2} {
+    auto ctx{NewContext(/*server=*/false, m_offer_h2)};
     if (ctx) {
         // Self-signed peers are allowed; explicit SPKI pins authenticate
         // peers in the dialer, as before certificate reloading.
@@ -226,7 +232,7 @@ std::shared_ptr<SSL_CTX> ReloadingClientContext::Get() {
         key_mtime == m_key_mtime) {
         return m_context;
     }
-    auto ctx{NewContext(/*server=*/false)};
+    auto ctx{NewContext(/*server=*/false, m_offer_h2)};
     if (!ctx || !UseCertificateFiles(ctx.get(), *m_cert, *m_key)) {
         LogPrintf("Not reloading TLS client certificate %s: %s\n",
                   fs::PathToString(*m_cert), ErrorString());

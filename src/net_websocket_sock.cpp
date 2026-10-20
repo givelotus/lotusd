@@ -86,7 +86,8 @@ void WebSocketSock::UpdateFlagsLocked() const {
     m_has_buffered = m_rx_offset < m_rx_plain.size() || m_layer->HasBuffered() ||
                      WebSocketCodec::HasCompleteFrame(m_rx_wire) ||
                      m_eof || m_failed;
-    const bool pending{!m_coalesce.empty() || m_tx_offset < m_tx.size()};
+    const bool pending{!m_coalesce.empty() || m_tx_offset < m_tx.size() ||
+                       m_layer->HasPendingWrite()};
     // A read blocked on writability resumes from FlushPending().
     m_pending_events = (pending ? m_layer->WriteWaitsFor() : Event{0}) |
                        (m_read_waits_send ? Sock::SEND : Event{0});
@@ -115,6 +116,13 @@ bool WebSocketSock::FlushLocked() const {
             return false;
         }
         m_tx_offset += n;
+    }
+    if (m_tx_offset == m_tx.size() && m_layer->HasPendingWrite() &&
+        !m_layer->FlushBuffered(m_socket)) {
+        m_failed = true;
+        m_tx.clear();
+        m_tx_offset = 0;
+        return false;
     }
     if (m_tx_offset == m_tx.size()) {
         m_tx.clear();

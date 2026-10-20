@@ -33,10 +33,11 @@ using SslPtr = std::unique_ptr<SSL, SslDeleter>;
  * caller: partial writes and moving write buffers are allowed (as
  * WebSocketSock requires), and kernel TLS is enabled where OpenSSL and the
  * kernel support it. Servers select ALPN http/1.1 when offered; clients
- * offer it, with cipher suites, groups and signature algorithms ordered like
- * a mainstream browser.
+ * offer it (after h2 with `offer_h2`, as browsers do), with cipher suites,
+ * groups and signature algorithms ordered like a mainstream browser. Only
+ * offer h2 when the connection can then be spoken as HTTP/2.
  */
-SslCtxPtr NewContext(bool server);
+SslCtxPtr NewContext(bool server, bool offer_h2 = false);
 
 /**
  * Let a server session select ALPN h2 (HTTP/2), preferred over http/1.1,
@@ -65,11 +66,13 @@ class ReloadingClientContext {
     std::optional<fs::path> m_cert, m_key;
     fs::file_time_type m_cert_mtime{}, m_key_mtime{};
     bool m_loaded{false};
+    const bool m_offer_h2;
     std::chrono::steady_clock::time_point m_next_check{};
 
 public:
     ReloadingClientContext(const std::optional<fs::path> &cert,
-                           const std::optional<fs::path> &key);
+                           const std::optional<fs::path> &key,
+                           bool offer_h2 = false);
     std::shared_ptr<SSL_CTX> Get();
 };
 
