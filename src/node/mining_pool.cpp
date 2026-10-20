@@ -79,6 +79,41 @@ UniValue ShareSubmissionResult::ToUniValue() const {
 
 MiningPoolManager::MiningPoolManager() = default;
 
+Amount MiningPoolManager::OperatorCommission(Amount miner_slice, uint16_t bps) {
+    if (miner_slice < Amount::zero() || bps > 10000)
+        throw std::invalid_argument("Invalid pool commission amount or basis points");
+    const int64_t sats = miner_slice / SATOSHI;
+    // Divide first so no intermediate exceeds the original nonnegative amount.
+    return ((sats / 10000) * bps + ((sats % 10000) * bps) / 10000) * SATOSHI;
+}
+
+uint16_t MiningPoolManager::ParseOperatorFeePercent(const std::string &percent) {
+    auto invalid = []() -> uint16_t {
+        throw std::invalid_argument("Pool fee percent must be 0..100 with at most two decimal places");
+    };
+    const auto dot = percent.find('.');
+    const size_t integer_end = dot == std::string::npos ? percent.size() : dot;
+    if (integer_end == 0) return invalid();
+    uint16_t whole = 0;
+    for (size_t i = 0; i < integer_end; ++i) {
+        if (percent[i] < '0' || percent[i] > '9') return invalid();
+        whole = whole * 10 + percent[i] - '0';
+        if (whole > 100) return invalid();
+    }
+    uint16_t fraction = 0;
+    if (dot != std::string::npos) {
+        const auto digits = percent.size() - dot - 1;
+        if (digits == 0 || digits > 2) return invalid();
+        for (size_t i = dot + 1; i < percent.size(); ++i) {
+            if (percent[i] < '0' || percent[i] > '9') return invalid();
+            fraction = fraction * 10 + percent[i] - '0';
+        }
+        if (digits == 1) fraction *= 10;
+    }
+    const uint16_t bps = whole * 100 + fraction;
+    return bps <= 10000 ? bps : invalid();
+}
+
 void MiningPoolManager::Configure(const ArgsManager &args,
                                   const Config &config) {
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -88,6 +123,7 @@ void MiningPoolManager::Configure(const ArgsManager &args,
     if (m_next_job_id != 1 || !m_workers.empty()) {
         throw std::logic_error("Mining pool configuration is frozen after first use");
     }
+    m_operator_fee_bps = ParseOperatorFeePercent(args.GetArg("-poolfeepercent", "0"));
     m_treasury_rewards = args.GetBoolArg(
         "-avalanchetreasury", args.GetBoolArg("-avalanchestakingrewards", true));
     m_staking_rewards = args.GetBoolArg(
@@ -470,7 +506,10 @@ UniValue MiningPoolManager::GetMiningJobJSON(const Config &config,
         std::max(Amount::zero(),
                  blockReward - minerFundAmount - stakingRewardsAmount);
 
-    // Aggregate PPLNS payout weights by scriptPubKey in order of appearance
+    const Amount operatorCommission = OperatorCommission(minerSlice, m_operator_fee_bps);
+    const Amount workerReward = minerSlice - operatorCommission;
+
+    // Aggregate PPLNS payout weights by native policy in order of appearance
     std::vector<std::pair<CTxOut, double>> pplns_payouts;
     double total_weight = 0.0;
     for (const PPLNSShare &share : m_pplns_window) {
@@ -512,9 +551,9 @@ UniValue MiningPoolManager::GetMiningJobJSON(const Config &config,
     if (pplns_payouts.empty() || total_weight <= 0.0) {
         const CTxOut &recipient =
             worker.is_newsletter_subscriber ? fallback : worker.payout;
-        add_payout(minerSlice, recipient);
+        if (workerReward > Amount::zero()) add_payout(workerReward, recipient);
     } else {
-        const int64_t total_miner_sats = minerSlice / SATOSHI;
+        const int64_t total_miner_sats = workerReward / SATOSHI;
         int64_t allocated_sats = 0;
         for (size_t i = 0; i < pplns_payouts.size(); ++i) {
             int64_t sats = 0;
@@ -533,11 +572,13 @@ UniValue MiningPoolManager::GetMiningJobJSON(const Config &config,
                 add_payout(sats * SATOSHI, pplns_payouts[i].first);
             }
         }
-        if (coinbaseTx.vout.empty()) {
-            add_payout(minerSlice, fallback);
+        if (coinbaseTx.vout.empty() && workerReward > Amount::zero()) {
+            add_payout(workerReward, fallback);
         }
     }
 
+    if (operatorCommission > Amount::zero()) add_payout(operatorCommission, fallback);
+    if (coinbaseTx.vout.empty()) add_payout(Amount::zero(), fallback);
     ::node::SetCoinbaseOutputs(coinbaseTx, coinbaseTx.vout);
     const std::vector<CTxOut> payouts = coinbaseTx.vout;
     ::node::PadCoinbaseToMinSize(coinbaseTx);
@@ -604,6 +645,10 @@ UniValue MiningPoolManager::GetMiningJobJSON(const Config &config,
     job_slot.created_time = curtime;
     job_slot.block_size = blocksize;
     job_slot.block_reward = blockReward;
+    job_slot.operator_fee_bps = m_operator_fee_bps;
+    job_slot.operator_address = m_operator_fee_bps ? m_pool_address_arg : "";
+    job_slot.operator_commission = operatorCommission;
+    job_slot.worker_reward = workerReward;
     job_slot.block_sealed = false;
 
     if (out_job) {
@@ -647,6 +692,10 @@ UniValue MiningPoolManager::GetMiningJobJSON(const Config &config,
     result.pushKV("target", worker.share_target.GetHex());
     result.pushKV("coinbase_tx_hex", EncodeHexTx(*coinbaseRef));
     result.pushKV("coinbase_outputs", std::move(coinbase_outputs));
+    result.pushKV("operator_fee_bps", job_slot.operator_fee_bps);
+    result.pushKV("operator_address", job_slot.operator_address);
+    result.pushKV("operator_commission_sats", int64_t(operatorCommission / SATOSHI));
+    result.pushKV("worker_reward_sats", int64_t(workerReward / SATOSHI));
     return result;
 }
 
@@ -857,6 +906,8 @@ UniValue MiningPoolManager::GetPoolInfoJSON() const {
     obj.pushKV("payout_ready", m_fallback_payout.has_value());
     obj.pushKV("payout_error", m_payout_error);
     obj.pushKV("pool_address", m_pool_address_arg);
+    obj.pushKV("operator_fee_bps", m_operator_fee_bps);
+    obj.pushKV("operator_address", m_operator_fee_bps ? m_pool_address_arg : "");
     obj.pushKV("active_operations", static_cast<uint64_t>(m_active_operations));
     obj.pushKV("active_workers", static_cast<uint64_t>(m_workers.size()));
     obj.pushKV("pool_hashrate", pool_hashrate);
