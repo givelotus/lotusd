@@ -385,3 +385,44 @@ hint correctly selected WT but then failed the existing Avalanche-only
 service check; the corrected routing fixture uses full-relay connections.
 These tests do not validate a merged relay runtime or Avalanche proof/quorum
 behavior. The Linux CPU gate remains unmeasured.
+
+## Measurement gate and defaults (W12)
+
+`contrib/devtools/wt-loss-experiment/run.py --plan` prints the original
+interleaved loss matrix without starting jobs. Its explicit single-case mode
+uses two fresh copies of a stopped artificial regtest fixture, a real next
+block, fresh ping samples and matched valid Avalanche response RTT debug
+events. The fixture and valid staked quorum identities must be supplied; tiny
+smokes cannot substitute for the 32 MB real-transaction workload. The bounded
+prototype-derived UDP relay is WT-only. A userspace TCP byte dropper cannot
+model packet loss: the WSS comparison requires audited identical packet-level
+impairment on a controlled Linux VM, with a receipt and before/after counters.
+See the tool README for exact artifacts and the limits of receipt validation.
+
+Current measured gate status is **not passed**. This macOS work has not run the
+24-case Linux loss matrix, 1 GiB/16-peer CPU ceiling, two-builder Guix equality,
+24-hour/50-peer churn soak or test-VM firewall test. Stock/public-known-root CA
+browser acceptance and common reverse-proxy/merged H2 acceptance remain open.
+No speedup, CPU ratio, poll p99 or Linux/GSO performance number is claimed.
+Historical prototype numbers do not establish the real implementation's gate.
+`ENABLE_WEBTRANSPORT` remains OFF and `-p2pwebtransport` remains 0. Bulk preference
+remains 1 because its conditional CPU failure gate has not been measured.
+
+Future rendezvous-assisted QUIC hole punching is a separate, explicitly
+opt-in feature with default OFF: ordinary outbound synchronization must not
+enroll in discovery, advertise reachability or authorize coordinated punching.
+It is not implemented here and is distinct from normal QUIC address validation
+and migration.
+
+Focused W12 checks on macOS: combined daemon/Avalanche-unit build passes
+23 actions; the added RTT observation assertions rebuild in 7 actions and
+four selected cases pass 383 assertions. Twelve deterministic Python checks
+and Ruff pass. Fresh two-node WT/WSS tool smokes each deliver an artificial
+181-byte height-1 block and clean up in under one second; a 768-byte bounded
+UDP echo also passes. Both node cases explicitly report incomplete latency
+and `gate_pass=false`: neither has Avalanche samples, and the tiny WSS
+interval finishes before a fresh ping completes. These are tooling checks,
+not a transport comparison. The initial smoke failure is preserved: its
+connection settings reserved all inbound capacity and its connection wait
+ignored the requested work budget. Corrected fixture settings and shared
+budget/socket/encoding negative controls address those harness errors.
