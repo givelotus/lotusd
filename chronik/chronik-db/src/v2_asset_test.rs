@@ -18,19 +18,18 @@ fn output(token: u8, value: u64, burn: bool) -> Output {
         paths: if burn { vec![] } else { vec![vec![0]] },
     }
 }
-fn coin(token: u8, value: u64, index: u32) -> ResolvedCreation {
-    ResolvedCreation {
-        outpoint: OutPoint {
+fn coin(token: u8, value: u64, index: u32) -> SpentCoin {
+    SpentCoin::from_output(
+        OutPoint {
             txid: location(0).txid,
             out_idx: index,
         },
-        output: output(token, value, false),
-        creation: location(0),
-    }
+        &output(token, value, false),
+    )
 }
 fn view<'a>(
     outputs: &'a [Output],
-    spends: &'a [ResolvedCreation],
+    spends: &'a [SpentCoin],
     mints: &'a [Hash32],
 ) -> AssetTxView<'a> {
     AssetTxView {
@@ -116,8 +115,8 @@ fn explicit_and_implicit_burns_remain_distinct() {
 #[test]
 fn malformed_duplicate_spends_and_burn_inputs_are_rejected() {
     let mut c = coin(1, 0, 0);
-    assert!(derive_asset_events(view(&[], &[c.clone(), c.clone()], &[])).is_err());
-    c.output = output(1, 0, true);
+    assert!(derive_asset_events(view(&[], &[c, c], &[])).is_err());
+    c.flags = 3;
     assert!(derive_asset_events(view(&[], &[c], &[])).is_err());
     let mut malformed = output(1, 0, false);
     malformed.flags |= 4;
@@ -174,19 +173,20 @@ fn put_location(db: &crate::mdbx::MdbxEnv, loc: TxLocation) {
     .unwrap();
 }
 fn read_snapshot(db: &crate::mdbx::MdbxEnv) -> ReadSnapshot<'_> {
-    ReadSnapshot {
-        inner: db.snapshot().unwrap(),
-        anchor: crate::v2_branch::Anchor {
+    ReadSnapshot::new(
+        db.snapshot().unwrap(),
+        crate::v2_branch::Anchor {
             block_id: [9; 32],
             height: 7,
         },
-        binding: crate::v2_branch::Binding {
+        crate::v2_branch::Binding {
             chain_id: [1; 32],
             genesis: [2; 32],
             profile: [3; 32],
         },
-        bounds: crate::v2_branch::Bounds::new(32_000_000).unwrap(),
-    }
+        crate::v2_branch::Bounds::new(32_000_000).unwrap(),
+        std::sync::Arc::new(crate::v2_branch::MemTxSource::default()),
+    )
 }
 #[test]
 fn persisted_summary_and_event_reject_forged_same_position_identity() {

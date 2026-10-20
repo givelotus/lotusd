@@ -166,22 +166,29 @@ fn try_setup_chronik(
         work: 131072,
         response_bytes: 1024 * 1024,
     };
-    let v2_service = match crate::v2::open_service(
+    // An index of another schema version is refused with a reindex
+    // message; any other open failure rebuilds the index from scratch.
+    let v2_service = match crate::v2::open_service_with_node(
         &v2_path.to_string_lossy(),
         v2_binding.clone(),
         v2_fresh,
         v2_limits.clone(),
+        node.clone(),
     ) {
         Ok(svc) => svc,
+        Err(err @ crate::v2::OpenError::Schema(_)) => {
+            return Err(V2ServiceOpenFailed(err.to_string()).into());
+        }
         Err(_) => {
             let _ = std::fs::remove_dir_all(&v2_path);
-            crate::v2::open_service(
+            crate::v2::open_service_with_node(
                 &v2_path.to_string_lossy(),
                 v2_binding,
                 true,
                 v2_limits,
+                node.clone(),
             )
-            .map_err(V2ServiceOpenFailed)?
+            .map_err(|err| V2ServiceOpenFailed(err.to_string()))?
         }
     };
     resync_v2_service(&v2_service, node.as_ref());
