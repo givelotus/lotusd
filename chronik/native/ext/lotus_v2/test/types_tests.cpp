@@ -81,6 +81,7 @@ BOOST_AUTO_TEST_CASE(native_reference_roundtrips) {
                               name.find("burn") != std::string::npos);
             BOOST_CHECK_EQUAL(output->HasToken(),
                               name.find("token") != std::string::npos);
+            BOOST_CHECK(!output->HasState());
             if (name == "token") {
                 BOOST_CHECK_EQUAL(output->value, UINT64_MAX);
             }
@@ -119,7 +120,7 @@ BOOST_AUTO_TEST_CASE(structural_bounds_and_order) {
     output.paths = {{0}};
     output.branches[1] = output.branches[0];
     BOOST_CHECK(ValidateError(output) == "duplicate branch");
-    BOOST_CHECK(DecodeError(Bytes(813, 0)) == "output bytes");
+    BOOST_CHECK(DecodeError(Bytes(845, 0)) == "output bytes");
 }
 
 BOOST_AUTO_TEST_CASE(validation_rejects_non_native_models) {
@@ -129,7 +130,8 @@ BOOST_AUTO_TEST_CASE(validation_rejects_non_native_models) {
         Hash32 token_id;
         std::string_view expected;
     } cases[] = {
-        {4, Hash32{}, "flags"},
+        {8, Hash32{}, "flags"},
+        {4, Hash32{}, "zero state root"},
         {1, Hash32{}, "zero token"},
         {0, Fill(1), "native token field"},
         {2, Hash32{}, "burn paths"},
@@ -170,7 +172,7 @@ BOOST_AUTO_TEST_CASE(malformed_native_frames) {
         uint8_t value;
         std::string_view error;
     } cases[] = {
-        {0, 4, "flags"},
+        {0, 8, "flags"},
         {9, 17, "branch count"},
         {9, 0, "path count"},
         {44, 1, "path index"},
@@ -189,6 +191,37 @@ BOOST_AUTO_TEST_CASE(malformed_native_frames) {
     Bytes burn = bytes;
     burn[0] = 2;
     BOOST_CHECK(DecodeError(burn) == "burn paths");
+}
+
+BOOST_AUTO_TEST_CASE(state_root_outputs) {
+    // Matches the C++ wire order: flags, value, token, state, branches.
+    const Output base = *Output::Decode(Fixtures().at("native"));
+    Output stateful = base;
+    stateful.flags = 4;
+    stateful.state_root = Fill(9);
+    const Bytes bytes = *stateful.Encode();
+    BOOST_CHECK_EQUAL(bytes.size(), base.Encode()->size() + 32);
+    BOOST_CHECK(Bytes(bytes.begin() + 9, bytes.begin() + 41) == Bytes(32, 9));
+    BOOST_CHECK(Output::Decode(bytes) == stateful);
+    for (size_t end = 0; end < bytes.size(); ++end) {
+        BOOST_CHECK(!Output::Decode(ByteView(bytes).first(end)));
+    }
+    Output token = stateful;
+    token.flags = 5;
+    token.token_id = Fill(1);
+    const Bytes token_bytes = *token.Encode();
+    BOOST_CHECK(Bytes(token_bytes.begin() + 9, token_bytes.begin() + 41) ==
+                Bytes(32, 1));
+    BOOST_CHECK(Bytes(token_bytes.begin() + 41, token_bytes.begin() + 73) ==
+                Bytes(32, 9));
+    BOOST_CHECK(Output::Decode(token_bytes) == token);
+    Output stateless = stateful;
+    stateless.flags = 0;
+    BOOST_CHECK(ValidateError(stateless) == "stateless root field");
+    Output burn = stateful;
+    burn.flags = 6;
+    burn.paths.clear();
+    BOOST_CHECK(ValidateError(burn) == "burn state");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
