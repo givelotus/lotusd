@@ -54,7 +54,11 @@ inline constexpr size_t MIN_WITNESS_WIRE_BYTES = 3;
  * of a connect (branch.h, explorer.h), charged to the shortest wire encoding
  * of its element, stays within it (staging_covers_shortest_encodings test).
  */
-inline constexpr size_t STAGING_PER_WIRE_BYTE = 1024;
+// Legacy output: asset charge8192 + six1200-byte branch-record reservations,
+// over nine wire bytes; seven covers explorer per-byte/chunk charges. This
+// checked accounting ceiling is never passed to an allocator.
+inline constexpr size_t MIN_LEGACY_OUTPUT_WIRE_BYTES = 9;
+inline constexpr size_t STAGING_PER_WIRE_BYTE = 7 + (8192 + 6 * 1200 + 8) / 9;
 /** Staging reserved once per block (framing, checkpoint, header facts). */
 inline constexpr size_t STAGING_PER_BLOCK = 64 * 1024;
 
@@ -138,7 +142,7 @@ public:
     /** Most transactions a block within the limit can hold. */
     size_t Transactions() const { return m_block_bytes / MIN_TX_WIRE_BYTES; }
     /** Most created plus consumed outputs such a block can hold. */
-    size_t Changes() const { return m_block_bytes / MIN_INPUT_WIRE_BYTES; }
+    size_t Changes() const { return m_block_bytes / MIN_LEGACY_OUTPUT_WIRE_BYTES; }
     /**
      * Bound on the staging reserved for one block within the limit, and on
      * its receipt, undo and write batch.

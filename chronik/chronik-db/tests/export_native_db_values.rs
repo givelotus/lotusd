@@ -64,6 +64,7 @@ struct SerTx {
     data_pos: u32,
     undo_pos: u32,
     time_first_seen: i64,
+    is_legacy: bool,
 }
 
 struct Fixtures(BTreeMap<String, String>);
@@ -206,6 +207,7 @@ fn export_native_db_values() {
             data_pos: 81,
             undo_pos: 0,
             time_first_seen: 0,
+            is_legacy: false,
         },
     );
     f.pc(
@@ -215,6 +217,7 @@ fn export_native_db_values() {
             data_pos: 0x00ff_ff00,
             undo_pos: 0x1234,
             time_first_seen: 1_699_999_999,
+            is_legacy: false,
         },
     );
     f.pc(
@@ -224,6 +227,7 @@ fn export_native_db_values() {
             data_pos: u32::MAX,
             undo_pos: u32::MAX,
             time_first_seen: -1,
+            is_legacy: false,
         },
     );
 
