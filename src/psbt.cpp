@@ -10,6 +10,10 @@
 PartiallySignedTransaction::PartiallySignedTransaction(
     const CMutableTransaction &txIn)
     : tx(txIn) {
+    if (txIn.nVersion == 7) {
+        throw std::ios_base::failure(
+            "Native v7 requires an explicit native PSBT container");
+    }
     inputs.resize(txIn.vin.size());
     outputs.resize(txIn.vout.size());
 }
