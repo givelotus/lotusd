@@ -75,6 +75,8 @@ const std::unordered_map<std::string_view, StreamClass> &MessageClasses() {
         {"merklixsync", StreamClass::TX_ANNOUNCE},
         {"getmerklixbuck", StreamClass::TX_ANNOUNCE},
         {"merklixbuck", StreamClass::TX_ANNOUNCE},
+        {"sendinvshort", StreamClass::TX_ANNOUNCE},
+        {"invshort", StreamClass::TX_ANNOUNCE},
         {"mempool", StreamClass::TX_ANNOUNCE},
         // Transaction bodies.
         {"tx", StreamClass::TX_BODY},
@@ -335,6 +337,15 @@ ParseWebTransportURL(std::string_view url) {
 }
 
 static GlobalMutex g_wt_registry_mutex;
+bool ShouldTryWebTransport(ServiceFlags services, WebTransportDialPolicy policy,
+                           bool bulk) {
+    if (!(services & NODE_WEBTRANSPORT) ||
+        policy == WebTransportDialPolicy::OFF)
+        return false;
+    const bool block_only{(services & (NODE_NETWORK | NODE_NETWORK_LIMITED)) &&
+                          !(services & NODE_AVALANCHE)};
+    return bulk || policy == WebTransportDialPolicy::ONLY || !block_only;
+}
 static P2PWebTransportAcceptor
     g_wt_acceptor GUARDED_BY(g_wt_registry_mutex);
 static WebTransportDialer g_wt_dialer GUARDED_BY(g_wt_registry_mutex);
