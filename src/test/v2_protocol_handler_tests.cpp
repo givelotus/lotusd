@@ -30,6 +30,7 @@
 #include <validation.h>
 #include <validationinterface.h>
 
+#include <test/util/metrics.h>
 #include <test/util/mining.h>
 #include <test/util/net.h>
 #include <test/util/random.h>
@@ -194,6 +195,8 @@ BOOST_AUTO_TEST_CASE(gf64_arithmetic_and_syndrome_recovery) {
 
 BOOST_AUTO_TEST_CASE(sealedheader_fast_path_and_fallback_getdata) {
     LOCK(NetEventsInterface::g_msgproc_mutex);
+    ScopedNodeMetrics metrics;
+    using node::SealedHeaderOutcome;
 
     const Config &config = m_node.chainman->GetConfig();
     auto connman = std::make_unique<ConnmanTestMsg>(config, 0x1337, 0x1337,
@@ -296,6 +299,16 @@ BOOST_AUTO_TEST_CASE(sealedheader_fast_path_and_fallback_getdata) {
     BOOST_CHECK_EQUAL(stats_after_hit.sealedheader_received, 2U);
     BOOST_CHECK_EQUAL(stats_after_hit.sealedheader_reconstructed, 1U);
     BOOST_CHECK_EQUAL(stats_after_hit.sealedheader_fallback_getdata, 1U);
+    // The metrics count the same outcomes
+    BOOST_CHECK_EQUAL(
+        metrics.m.sealed_headers.Value(size_t(SealedHeaderOutcome::FALLBACK)),
+        1U);
+    BOOST_CHECK_EQUAL(
+        metrics.m.sealed_headers.Value(size_t(SealedHeaderOutcome::REBUILT)),
+        1U);
+    BOOST_CHECK_EQUAL(
+        metrics.m.sealed_headers.Value(size_t(SealedHeaderOutcome::INVALID)),
+        0U);
 
     {
         LOCK(cs_main);
@@ -343,6 +356,7 @@ BOOST_AUTO_TEST_CASE(sealedheader_fast_path_and_fallback_getdata) {
 }
 
 BOOST_AUTO_TEST_CASE(merklix_reconciliation_all_scopes_and_limits) {
+    ScopedNodeMetrics metrics;
     LOCK(NetEventsInterface::g_msgproc_mutex);
 
     const Config &config = m_node.chainman->GetConfig();
@@ -504,6 +518,28 @@ BOOST_AUTO_TEST_CASE(merklix_reconciliation_all_scopes_and_limits) {
         BOOST_CHECK(post_diff.root_matched);
         BOOST_CHECK_EQUAL(post_diff.mismatched_bucket_mask, 0U);
         BOOST_CHECK(post_diff.single_missing_short_ids.empty());
+    }
+
+    // One summary and two bucket rounds per scope find differences. The
+    // summary requests proof; the bucket rounds recover all three IDs.
+    {
+        auto &rounds{metrics.m.merklix_rounds};
+        const std::array<size_t, 2> summary_diff{0, 1}, bucket_diff{1, 1},
+            summary_match{0, 0}, bucket_match{1, 0};
+        BOOST_CHECK_EQUAL(rounds.Value(rounds.SeriesIndex(summary_diff)), 4U);
+        BOOST_CHECK_EQUAL(rounds.Value(rounds.SeriesIndex(bucket_diff)), 8U);
+        BOOST_CHECK_EQUAL(rounds.Value(rounds.SeriesIndex(summary_match)), 0U);
+        BOOST_CHECK_EQUAL(rounds.Value(rounds.SeriesIndex(bucket_match)), 0U);
+        BOOST_CHECK_EQUAL(metrics.m.merklix_overflows.Value(), 0U);
+        const std::string r{metrics.Render()};
+        BOOST_CHECK(
+            r.find("merklix_difference_size_sum{round=\"summary\"} 0\n") !=
+            std::string::npos);
+        BOOST_CHECK(r.find("merklix_difference_size_count{round=\"summary\"} "
+                           "0\n") != std::string::npos);
+        BOOST_CHECK(
+            r.find("merklix_difference_size_sum{round=\"bucket\"} 12\n") !=
+            std::string::npos);
     }
 
     // Malformed scope and oversized ShortTxRequest rejection:

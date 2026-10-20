@@ -15,6 +15,7 @@
 #include <lotus_v2/tagged_hash.h>
 #include <net_processing.h>
 #include <netmessagemaker.h>
+#include <node/metrics.h>
 #include <txmempool.h>
 #include <validation.h>
 
@@ -686,6 +687,7 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
     try {
         vRecv >> sealed;
     } catch (const std::exception &) {
+        node::CountSealedHeader(node::SealedHeaderOutcome::INVALID);
         LOCK(m_mutex);
         ++m_stats.sealedheader_invalid;
         ++m_stats.malformed_messages;
@@ -698,6 +700,7 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
     }
 
     if (!sealed.IsValid()) {
+        node::CountSealedHeader(node::SealedHeaderOutcome::INVALID);
         LOCK(m_mutex);
         ++m_stats.sealedheader_invalid;
         ++m_stats.malformed_messages;
@@ -708,6 +711,7 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
     // header/overlay processing.
     if (::GetSerializeSize(*sealed.coinbase_tx) >
         MAX_SEALEDHEADER_COINBASE_BYTES) {
+        node::CountSealedHeader(node::SealedHeaderOutcome::REJECTED);
         LOCK(m_mutex);
         ++m_stats.sealedheader_invalid;
         ++m_stats.sealedheader_rejected;
@@ -722,6 +726,7 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
     if (!m_chainman.ProcessNewBlockHeaders({sealed.header},
                                            /*min_pow_checked=*/true,
                                            header_state, &pindex)) {
+        node::CountSealedHeader(node::SealedHeaderOutcome::REJECTED);
         LOCK(m_mutex);
         ++m_stats.sealedheader_invalid;
         ++m_stats.sealedheader_rejected;
@@ -732,6 +737,7 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
     RecordPeerKnownBlock(pfrom.GetId(), block_hash);
 
     if (pindex && WITH_LOCK(cs_main, return pindex->nStatus.hasData())) {
+        node::CountSealedHeader(node::SealedHeaderOutcome::ALREADY_HAVE);
         LOCK(m_mutex);
         ++m_stats.sealedheader_reconstructed;
         return;
@@ -741,6 +747,7 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
         sealed.header, sealed.coinbase_tx, sealed.coinbase_merkle_branch,
         sealed.epoch_batch_ids);
     if (reconstructed) {
+        node::CountSealedHeader(node::SealedHeaderOutcome::REBUILT);
         {
             LOCK(m_mutex);
             ++m_stats.sealedheader_reconstructed;
@@ -754,6 +761,7 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
     // Fast-path candidate overlay missed: fall back to requesting
     // MSG_CMPCT_BLOCK via getdata from pfrom without penalizing the peer.
     const CInv fallback_inv(MSG_CMPCT_BLOCK, block_hash);
+    node::CountSealedHeader(node::SealedHeaderOutcome::FALLBACK);
     {
         LOCK(m_mutex);
         ++m_stats.sealedheader_fallback_getdata;
@@ -1304,6 +1312,13 @@ void V2PeerProtocolHandler::HandleMerklixSync(
     }
 
     const MerklixSyncDiffResult diff = DiffSyncSummary(summary);
+    if (auto *metrics{node::GetNodeMetrics()}) {
+        metrics->merklix_rounds.Add(diff.root_matched ? 0 : 1);
+        if (!diff.single_missing_short_ids.empty()) {
+            metrics->merklix_differences.Record(
+                diff.single_missing_short_ids.size(), 0);
+        }
+    }
     if (diff.root_matched) {
         return;
     }
@@ -1440,6 +1455,19 @@ void V2PeerProtocolHandler::HandleMerklixBuck(
     }
 
     const MerklixSubBucketDiffResult diff = DiffSubBucketSummary(sub);
+    if (auto *metrics{node::GetNodeMetrics()}) {
+        const bool matched{diff.missing_short_ids.empty() &&
+                           diff.unresolved_sub_buckets.empty()};
+        metrics->merklix_rounds.Add(2 + (matched ? 0 : 1));
+        if (!diff.missing_short_ids.empty()) {
+            metrics->merklix_differences.Record(diff.missing_short_ids.size(),
+                                                1);
+        }
+        if (!diff.unresolved_sub_buckets.empty()) {
+            metrics->merklix_overflows.Add(0,
+                                           diff.unresolved_sub_buckets.size());
+        }
+    }
     if (!diff.missing_short_ids.empty()) {
         RecordPendingShortTxRequest(pfrom.GetId(), scope, sub.context_id,
                                     sub.salt_k0, sub.salt_k1,
