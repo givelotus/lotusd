@@ -2240,6 +2240,7 @@ bool InitHTTPServer(Config &config) {
         return false;
     }
 
+    LogPrintf("Using %s\n", tls::LibraryDescription());
     if (!InitTLS()) {
         return false;
     }
