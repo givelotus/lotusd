@@ -130,3 +130,40 @@ H3 RPC claim. Keep TLS 1.3 and actual peer identity authentication through
 supported proxy paths. The installed OpenSSL API can set cipher/group/signature
 lists; it does not provide Chromium extension permutation. No named browser
 profile or indistinguishability claim has been applied.
+
+## Automatic discovery and fallback (W7)
+
+`NODE_WEBTRANSPORT` (`1 << 26`) says the advertised host and port also accept
+P2P WebTransport on UDP. It is optional and does not change the services
+required for ordinary peers. The node advertises it only after actual binds
+succeed, using the default `/p2p/wt` path without a required URL token. The
+ordinary P2P port and each configured public/domain port must have a matching
+UDP listener; custom paths/tokens and outbound-only engines remain usable
+through explicit URLs without advertising this bit.
+
+With the engine enabled, `-p2pwebtransportdial=prefer` attempts WT for such
+addresses, then uses the address's normal TCP transport if UDP fails: `NET_WSS`
+addresses use `wss://`, while IPv4/IPv6 addresses retain stock raw P2P TCP.
+An IP address's service bit does not imply an HTTP listener on its TCP port.
+`off` disables these automatic attempts; `only` disables their TCP fallback.
+Explicit `wt://` URLs remain WT-only and keep their explicit pins and path.
+No service bit or policy enrolls the node in rendezvous or hole punching.
+
+Automatic attempts use `-p2pwebtransporttimeout=3000` milliseconds. A failed
+QUIC/WT attempt enters an exact-address, maximum4096-entry LRU cache for
+`-p2pwebtransportretryafter=3600` seconds. Lookups do not extend its monotonic
+expiry; zero disables caching. Interruptions and proxy/cache skips do not
+create failures. `getwebtransportinfo` exposes current cache size and failure
+counts; with metrics enabled, `fullnode_p2p_wt_fallback_total{reason=...}` exports
+timeout/refused/unsupported/handshake counters. The fuller browser/info endpoint
+and DoS metrics remain W8/W9 work.
+
+Automatic UDP is disabled when a name or target-network proxy applies, and
+obeys `-onlynet`. Explicit WT URLs never fall back. Proxy-configured discovery uses its
+normal proxied TCP path instead. A pin supplied with `-p2pwebsocketpin` also
+applies to WT dials of that host. Automatic discovery does not invent a pin;
+use explicit configured pins when peer identity authentication is required.
+
+Focused W7 validation passes: daemon/unit builds, 10 selected cases (319
+assertions), the WT discovery/fallback test and both existing WebSocket
+discovery/address-version tests. No broad sweep or benchmark was run.
