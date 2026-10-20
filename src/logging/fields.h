@@ -159,7 +159,9 @@
     X(CacheCapacity, cache_capacity, UINT, "", "") \
     X(CacheSizeBytes, cache_size_bytes, INT, "", "") \
     X(CacheBudgetBytes, cache_budget_bytes, INT, "", "") \
-    X(CoinsTipCacheBudgetMiB, coins_tip_cache_budget_mib, FLOAT, "", "")
+    X(CoinsTipCacheBudgetMiB, coins_tip_cache_budget_mib, FLOAT, "", "") \
+    X(BugReportURL, bug_report_url, STRING, "", "") \
+    X(ExpectedChainTxCount, expected_chain_tx_count, UINT, "", "")
 
 namespace BCLog {
 
