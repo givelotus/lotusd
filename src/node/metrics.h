@@ -178,6 +178,15 @@ struct NodeMetrics {
     metrics::Gauge &mempool_transactions;
     metrics::Gauge &mempool_bytes;
 
+    // Admission durations are measured per batch, with lock waits separate.
+    metrics::EventHistogram &mempool_admission_lock_hold_seconds;
+    metrics::EventHistogram &mempool_admission_lock_wait_seconds;
+    metrics::EventHistogram &mempool_admission_verify_seconds;
+    metrics::Gauge &mempool_admission_queue_depth;
+    metrics::Gauge &mempool_admission_queue_bytes;
+    metrics::Counter &mempool_admission_queue_full;
+    metrics::Counter &mempool_admission_dropped;
+
     // HTTP and RPC
     metrics::Counter &http_requests;
     metrics::EventHistogram &http_request_seconds;
@@ -375,6 +384,31 @@ namespace detail {
 inline NodeMetrics *GetNodeMetrics() noexcept {
     return detail::g_node_metrics.load(std::memory_order_acquire);
 }
+
+/** Measures a cs_main admission scope; construct immediately after locking. */
+class AdmissionLockTimer {
+public:
+    AdmissionLockTimer(std::chrono::steady_clock::time_point waiting,
+                       bool enabled = true)
+        : m_metrics(enabled ? GetNodeMetrics() : nullptr),
+          m_acquired(m_metrics ? std::chrono::steady_clock::now()
+                               : std::chrono::steady_clock::time_point{}) {
+        if (m_metrics) {
+            m_metrics->mempool_admission_lock_wait_seconds.RecordDuration(
+                m_acquired - waiting);
+        }
+    }
+    ~AdmissionLockTimer() {
+        if (m_metrics) {
+            m_metrics->mempool_admission_lock_hold_seconds.RecordDuration(
+                std::chrono::steady_clock::now() - m_acquired);
+        }
+    }
+
+private:
+    NodeMetrics *m_metrics;
+    std::chrono::steady_clock::time_point m_acquired;
+};
 
 /**
  * Create the metrics (once), set the constant labels on every series
