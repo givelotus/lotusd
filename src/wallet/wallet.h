@@ -805,6 +805,14 @@ public:
     util::Result<CTxDestination> GetNewDestination(const OutputType type,
                                                    const std::string &label);
     util::Result<CTxDestination> GetNewChangeDestination(const OutputType type);
+    /** Generates a genuine native keyhash address, with its own addressbook
+     * entry. */
+    util::Result<CTxDestination>
+    GetNewNativeDestination(const std::string &label);
+    /** Resolve the destination of canonical output bytes, without rewriting
+     * them. */
+    bool GetDestinationForOutput(const CTxOut &out, CTxDestination &dest) const
+        EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
 
     isminetype IsMine(const CTxDestination &dest) const
         EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
