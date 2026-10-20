@@ -36,6 +36,15 @@ using node::TransactionError;
 using util::Join;
 using util::SplitString;
 
+UniValue CurrencyInfoToJSON() {
+    const Currency &currency = Currency::get();
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("ticker", Currency::getTicker());
+    result.pushKV("satoshisperunit", currency.baseunit / SATOSHI);
+    result.pushKV("decimals", currency.decimals);
+    return result;
+}
+
 const std::string UNIX_EPOCH_TIME = "UNIX epoch time";
 const std::string EXAMPLE_ADDRESS =
     "\"qrmzys48glkpevp2l4t24jtcltc9hyzx9cep2qffm4\"";
