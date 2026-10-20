@@ -1,0 +1,116 @@
+{
+  "schema": 1,
+  "batch": "validation-state-errors",
+  "review_note": "Complete reviewed validation state diagnostics batch; original severity preserved.",
+  "files": [
+    {
+      "path": "src/validation.cpp",
+      "rules": [
+        {
+          "id": "script_validation_flags_inconsistent",
+          "old": "LogPrintf(\"BUG! PLEASE REPORT THIS! CheckInputScripts failed against \"\n                  \"latest-block but not STANDARD flags %s, %s\\n\",\n                  txid.ToString(), state.ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"script_validation_flags_inconsistent\",\n                     \"BUG! PLEASE REPORT THIS! CheckInputScripts failed against latest-block but not STANDARD flags {txid}, {reason}\")\n            .Field(BCLog::LogField::TxId, txid)\n            .Field(BCLog::LogField::Reason, state)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "BUG! PLEASE REPORT THIS! CheckInputScripts failed against latest-block but not STANDARD flags %s, %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "txid.ToString()",
+              "state.ToString()"
+            ]
+          },
+          "review_note": "Preserve existing Info level, ALL category, diagnostic wording and branches. Reason snapshots actual Block/TxValidationState via existing reviewed LogValue adapter; hash fields copy uint256 instead of producer formatting. SourceFunction is the original __func__, Height the original index height. No transaction validation or rejection behavior changes."
+        },
+        {
+          "id": "block_validation_error",
+          "old": "LogInfo(\"Block validation error: %s\\n\", state.ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_validation_error\",\n                     \"Block validation error: {reason}\")\n            .Field(BCLog::LogField::Reason, state)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogInfo",
+            "format": "Block validation error: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "state.ToString()"
+            ]
+          },
+          "review_note": "Preserve existing Info level, ALL category, diagnostic wording and branches. Reason snapshots actual Block/TxValidationState via existing reviewed LogValue adapter; hash fields copy uint256 instead of producer formatting. SourceFunction is the original __func__, Height the original index height. No transaction validation or rejection behavior changes."
+        },
+        {
+          "id": "chainstate_flush_failed",
+          "old": "LogPrintf(\"%s: failed to flush state (%s)\\n\", __func__,\n                  state.ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chainstate_flush_failed\",\n                     \"{source_function}: failed to flush state ({reason})\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::Reason, state)",
+          "count": 3,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: failed to flush state (%s)\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "state.ToString()"
+            ]
+          },
+          "review_note": "Preserve existing Info level, ALL category, diagnostic wording and branches. Reason snapshots actual Block/TxValidationState via existing reviewed LogValue adapter; hash fields copy uint256 instead of producer formatting. SourceFunction is the original __func__, Height the original index height. No transaction validation or rejection behavior changes."
+        },
+        {
+          "id": "chain_verification_bad_block",
+          "old": "LogPrintf(\n                \"Verification error: found bad block at %d, hash=%s (%s)\\n\",\n                pindex->nHeight, pindex->GetBlockHash().ToString(),\n                state.ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_verification_bad_block\",\n                     \"Verification error: found bad block at {height}, hash={block_hash} ({reason})\")\n            .Field(BCLog::LogField::Height, pindex->nHeight)\n            .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash())\n            .Field(BCLog::LogField::Reason, state)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Verification error: found bad block at %d, hash=%s (%s)\n",
+            "specifiers": [
+              "%d",
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "pindex->nHeight",
+              "pindex->GetBlockHash().ToString()",
+              "state.ToString()"
+            ]
+          },
+          "review_note": "Preserve existing Info level, ALL category, diagnostic wording and branches. Reason snapshots actual Block/TxValidationState via existing reviewed LogValue adapter; hash fields copy uint256 instead of producer formatting. SourceFunction is the original __func__, Height the original index height. No transaction validation or rejection behavior changes."
+        },
+        {
+          "id": "chain_verification_unconnectable_block",
+          "old": "LogPrintf(\"Verification error: found unconnectable block at \"\n                          \"%d, hash=%s (%s)\\n\",\n                          pindex->nHeight, pindex->GetBlockHash().ToString(),\n                          state.ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_verification_unconnectable_block\",\n                     \"Verification error: found unconnectable block at {height}, hash={block_hash} ({reason})\")\n            .Field(BCLog::LogField::Height, pindex->nHeight)\n            .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash())\n            .Field(BCLog::LogField::Reason, state)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Verification error: found unconnectable block at %d, hash=%s (%s)\n",
+            "specifiers": [
+              "%d",
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "pindex->nHeight",
+              "pindex->GetBlockHash().ToString()",
+              "state.ToString()"
+            ]
+          },
+          "review_note": "Preserve existing Info level, ALL category, diagnostic wording and branches. Reason snapshots actual Block/TxValidationState via existing reviewed LogValue adapter; hash fields copy uint256 instead of producer formatting. SourceFunction is the original __func__, Height the original index height. No transaction validation or rejection behavior changes."
+        }
+      ],
+      "support_adjustments": [
+        {
+          "purpose": "Use existing producer-allocation-free validation-state snapshot adapter.",
+          "old": "#include <logging/timer.h>",
+          "new": "#include <logging/timer.h>\n#include <logging/values.h>"
+        }
+      ]
+    }
+  ]
+}
