@@ -2595,6 +2595,21 @@ static bool ParsePoolUint64Param(const UniValue &val, uint64_t &out) {
     return true;
 }
 
+static std::shared_ptr<node::MiningPoolManager>
+EnsureMiningPool(NodeContext &node) {
+    if (node.args &&
+        !node.args->GetBoolArg("-miningpool",
+                               lotus::v2::node::DEFAULT_MINING_POOL_ENABLED)) {
+        throw JSONRPCError(RPC_MISC_ERROR, "Built-in mining pool is disabled");
+    }
+    auto pool = node::GetMiningPool(node);
+    if (!pool || !pool->IsEnabled()) {
+        throw JSONRPCError(RPC_MISC_ERROR,
+                           "Built-in mining pool is unavailable");
+    }
+    return pool;
+}
+
 static RPCHelpMan getminingjob() {
     return RPCHelpMan{
         "getminingjob",
@@ -2614,12 +2629,7 @@ static RPCHelpMan getminingjob() {
            boost::asio::any_io_executor executor)
             -> boost::asio::awaitable<UniValue> {
             NodeContext &node = EnsureAnyNodeContext(request.context);
-            auto &pool = node.mining_pool ? *node.mining_pool
-                                          : node::GetGlobalMiningPool();
-            if (!pool.IsEnabled(node.args)) {
-                throw JSONRPCError(RPC_MISC_ERROR,
-                                   "Built-in mining pool is disabled");
-            }
+            auto pool = EnsureMiningPool(node);
             const std::string worker_id =
                 request.params[0].isNull() ? "default"
                                            : request.params[0].get_str();
@@ -2648,7 +2658,7 @@ static RPCHelpMan getminingjob() {
                     });
             }
 
-            co_return pool.GetMiningJobJSON(config, node, worker_id);
+            co_return pool->GetMiningJobJSON(config, node, worker_id);
         },
     };
 }
@@ -2677,12 +2687,7 @@ static RPCHelpMan submitminingshare() {
         [&](const RPCHelpMan &self, const Config &config,
             const JSONRPCRequest &request) -> UniValue {
             NodeContext &node = EnsureAnyNodeContext(request.context);
-            auto &pool = node.mining_pool ? *node.mining_pool
-                                          : node::GetGlobalMiningPool();
-            if (!pool.IsEnabled(node.args)) {
-                throw JSONRPCError(RPC_MISC_ERROR,
-                                   "Built-in mining pool is disabled");
-            }
+            auto pool = EnsureMiningPool(node);
 
             uint64_t job_id = 0;
             if (!ParsePoolUint64Param(request.params[0], job_id)) {
@@ -2702,8 +2707,8 @@ static RPCHelpMan submitminingshare() {
                 ntime_opt = parsed_time;
             }
 
-            const auto res = pool.SubmitShare(config, node, job_id, worker_id,
-                                              ntime_opt, nonce);
+            const auto res = pool->SubmitShare(config, node, job_id, worker_id,
+                                               ntime_opt, nonce);
             return res.ToUniValue();
         },
     };
@@ -2721,9 +2726,8 @@ static RPCHelpMan getpoolinfo() {
         [&](const RPCHelpMan &self, const Config &config,
             const JSONRPCRequest &request) -> UniValue {
             NodeContext &node = EnsureAnyNodeContext(request.context);
-            auto &pool = node.mining_pool ? *node.mining_pool
-                                          : node::GetGlobalMiningPool();
-            return pool.GetPoolInfoJSON();
+            auto pool = EnsureMiningPool(node);
+            return pool->GetPoolInfoJSON();
         },
     };
 }
@@ -2743,9 +2747,8 @@ static RPCHelpMan getpoolworker() {
         [&](const RPCHelpMan &self, const Config &config,
             const JSONRPCRequest &request) -> UniValue {
             NodeContext &node = EnsureAnyNodeContext(request.context);
-            auto &pool = node.mining_pool ? *node.mining_pool
-                                          : node::GetGlobalMiningPool();
-            return pool.GetWorkerStatsJSON(request.params[0].get_str());
+            auto pool = EnsureMiningPool(node);
+            return pool->GetWorkerStatsJSON(request.params[0].get_str());
         },
     };
 }

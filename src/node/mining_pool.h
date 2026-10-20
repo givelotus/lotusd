@@ -17,6 +17,7 @@
 
 #include <array>
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <memory>
@@ -126,7 +127,12 @@ public:
     void Reset();
 
     /** Return whether the built-in mining pool is enabled. */
-    bool IsEnabled(const ArgsManager *args = nullptr) const;
+    bool IsEnabled() const;
+
+    /** Reject new node-dependent work, then drain accepted work before
+     * teardown. */
+    void Interrupt();
+    void Stop();
 
     /** Register or retrieve a worker and build a current V2 mining job. */
     UniValue GetMiningJobJSON(const Config &config, ::node::NodeContext &node,
@@ -163,7 +169,24 @@ public:
     void SetPPLNSWindowSize(size_t window_size);
 
 private:
+    // A request retains its NodeContext dependencies until its operation ends.
+    // Never wait for operations or acquire cs_main while holding m_mutex.
+    class Operation {
+    public:
+        explicit Operation(MiningPoolManager &pool);
+        ~Operation();
+        Operation(const Operation &) = delete;
+        Operation &operator=(const Operation &) = delete;
+
+    private:
+        MiningPoolManager &m_pool;
+    };
     mutable std::mutex m_mutex;
+    std::condition_variable m_drained;
+    size_t m_active_operations{0};
+    bool m_stopping{false};
+    bool m_staking_rewards{false};
+    uint256 m_initial_share_target;
     bool m_configured{false};
     bool m_enabled{DEFAULT_MINING_POOL_ENABLED};
     std::string m_pool_address_arg;
@@ -193,21 +216,21 @@ private:
                                          const uint256 &pow_limit);
     void UpdateVarDiffLocked(PoolWorker &worker, int64_t now_ms,
                              const Consensus::Params &params);
-    double EstimateWorkerHashrateLocked(const PoolWorker &worker,
-                                        const Consensus::Params &params) const;
+    double EstimateWorkerHashrateLocked(const PoolWorker &worker) const;
     double ComputeWorkerPPLNSWeightLocked(const std::string &worker_id) const;
 };
-
-/** Global singleton accessor mirrored in NodeContext::mining_pool. */
-std::shared_ptr<MiningPoolManager> GetGlobalMiningPoolPtr();
-MiningPoolManager &GetGlobalMiningPool();
 
 } // namespace lotus::v2::node
 
 namespace node {
-using lotus::v2::node::GetGlobalMiningPool;
-using lotus::v2::node::GetGlobalMiningPoolPtr;
 using lotus::v2::node::MiningPoolManager;
+
+/** Startup/shutdown run serially; publication and handler acquisition are
+ * atomic. */
+std::shared_ptr<MiningPoolManager> GetMiningPool(const NodeContext &node);
+void StartMiningPool(NodeContext &node, const Config &config);
+void InterruptMiningPool(NodeContext &node);
+void StopMiningPool(NodeContext &node);
 } // namespace node
 
 #endif // BITCOIN_NODE_MINING_POOL_H
