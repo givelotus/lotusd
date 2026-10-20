@@ -13,8 +13,8 @@
 
 /**
  * Complete native explorer facts (port of chronik-db/src/v2_explorer.rs):
- * the explorer_* subdatabases and the flat segment (file_num, data_pos,
- * wire_size) pointers. Only the V2 DB owner commits these entries, together
+ * the explorer_* subdatabases, with node block-file (file_num, data_pos)
+ * pointers to the transactions. Only the V2 DB owner commits these entries, together
  * with its receipt, checkpoint and undo. The ReadSnapshot readers are
  * declared in branch.h.
  */
@@ -26,7 +26,7 @@ inline constexpr size_t WIRE_CHUNK_BYTES = 32768;
 inline constexpr size_t MAX_EXPLORER_RECORD_BYTES = 16 * 1024;
 /** Explorer staging reserved once per block. */
 inline constexpr size_t RESERVE_EXPLORER_BLOCK = 4096;
-/** Explorer staging reserved per wire byte (entries, flat-file staging). */
+/** Explorer staging reserved per wire byte (entries and their staging). */
 inline constexpr size_t RESERVE_EXPLORER_PER_WIRE_BYTE = 6;
 /** Explorer staging reserved per transaction. */
 inline constexpr size_t RESERVE_EXPLORER_TX = 4096;
@@ -71,24 +71,10 @@ void ValidateInputMeta(const InputMeta &input, uint64_t wire_size);
 /** Check witness ranges without allocating; else Corrupt. */
 void ValidateWitnessFact(const WitnessFact &witness, uint64_t wire_size);
 
-struct FlatWrite {
-    uint32_t file_num = 0;
-    uint64_t data_pos = 0;
-    Bytes wire;
-};
-struct ExplorerPlan {
-    /** Sorted, unique (key, value) entries. */
-    std::vector<std::pair<Bytes, Bytes>> entries;
-    /** One per transaction, in block order. */
-    std::vector<FlatWrite> flat_writes;
-    /** Flat position after the block. */
-    std::pair<uint32_t, uint64_t> next_flat_pos;
-};
-/** Deterministic exact entries and flat writes from (file, pos). */
-ExplorerPlan PlanExplorerBlockAt(const CommittedBlock &block,
-                                 uint32_t start_file_num,
-                                 uint64_t start_data_pos);
-/** Entries starting at flat position (0, 0). */
+/**
+ * Deterministic exact entries of a block (sorted, unique). Each
+ * transaction's metadata records its node block-file position.
+ */
 std::vector<std::pair<Bytes, Bytes>>
 PlanExplorerBlock(const CommittedBlock &block);
 

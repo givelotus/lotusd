@@ -275,7 +275,8 @@ line by line.
 - **V2 dumps.** Use `chronik-native-lotus-v2-dump`, which also dumps the six
   V2 group tables of the legacy env and, when present, the V2 service's
   `v2_index` env (`v2_index:<table>` lines with raw subdatabase keys and
-  values, plus size and SHA-256 of each flat `v2_tx_*.dat` segment).
+  values). The index has no transaction files of its own: its records hold
+  block-file positions and read transactions through the node.
 - **V2 service routes.** V2 records set `"v2": true`; the corpus then adds
   `/v2/status`, `/v2/utxos/:txid/:out_idx`, `POST /v2/branches/{utxos,outputs}`
   and every `/v2/explorer/v1` route (IDs in both byte orders, limit and
