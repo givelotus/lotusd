@@ -22,6 +22,7 @@ target_sources(lotus_v2_header PRIVATE
     output.cpp commitment.cpp sparse_state.cpp mempool_overlay.cpp
     tx_merklix.cpp minhash.cpp)
 target_sources(lotus_v2_header PRIVATE address.cpp)
+target_link_libraries(lotus_v2_header PUBLIC lotus_v2_blake3)
 target_link_libraries(lotus_v2_header PUBLIC Boost::headers)
 
 
