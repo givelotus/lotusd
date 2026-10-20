@@ -1,0 +1,186 @@
+{
+  "schema": 1,
+  "batch": "network-local-state-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/net.cpp",
+      "rules": [
+        {
+          "id": "local_address_added",
+          "old": "LogPrintf(\"AddLocal(%s,%i)\\n\", addr.ToStringAddrPort(), nScore)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"local_address_added\", \"AddLocal({addr},{local_score})\").Field(BCLog::LogField::Addr, addr.ToStringAddrPort()).Field(BCLog::LogField::LocalScore, nScore)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "AddLocal(%s,%i)\n",
+            "specifiers": [
+              "%s",
+              "%i"
+            ],
+            "arguments": [
+              "addr.ToStringAddrPort()",
+              "nScore"
+            ]
+          },
+          "review_note": "Preserve Info, exact text, byte/score/count types and units, existing WebSocketURL token redaction, all reachability predicates, RPCtoggle/relay/flowcontrol/thread behavior. NetworkActive is the original bool: tinyformat %s explicitly uses boolalpha, matching typedboolean human rendering. Inflight values are original uint64/size_t despite legacy %d; do not narrow. Exclude the old onlynet notice replaced in canonical listen work."
+        },
+        {
+          "id": "websocket_peer_url_invalid",
+          "old": "LogPrintf(\"Not connecting to %s: invalid WebSocket peer URL\\n\",\n                  RedactWebSocketURL(url))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"websocket_peer_url_invalid\", \"Not connecting to {addr}: invalid WebSocket peer URL\").Field(BCLog::LogField::Addr, RedactWebSocketURL(url))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Not connecting to %s: invalid WebSocket peer URL\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "RedactWebSocketURL(url)"
+            ]
+          },
+          "review_note": "Preserve Info, exact text, byte/score/count types and units, existing WebSocketURL token redaction, all reachability predicates, RPCtoggle/relay/flowcontrol/thread behavior. NetworkActive is the original bool: tinyformat %s explicitly uses boolalpha, matching typedboolean human rendering. Inflight values are original uint64/size_t despite legacy %d; do not narrow. Exclude the old onlynet notice replaced in canonical listen work."
+        },
+        {
+          "id": "websocket_transport_unavailable",
+          "old": "LogPrintf(\"Cannot connect to %s: P2P over WebSocket is unavailable\\n\",\n                  RedactWebSocketURL(url))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"websocket_transport_unavailable\", \"Cannot connect to {addr}: P2P over WebSocket is unavailable\").Field(BCLog::LogField::Addr, RedactWebSocketURL(url))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Cannot connect to %s: P2P over WebSocket is unavailable\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "RedactWebSocketURL(url)"
+            ]
+          },
+          "review_note": "Preserve Info, exact text, byte/score/count types and units, existing WebSocketURL token redaction, all reachability predicates, RPCtoggle/relay/flowcontrol/thread behavior. NetworkActive is the original bool: tinyformat %s explicitly uses boolalpha, matching typedboolean human rendering. Inflight values are original uint64/size_t despite legacy %d; do not narrow. Exclude the old onlynet notice replaced in canonical listen work."
+        },
+        {
+          "id": "websocket_onion_proxy_missing",
+          "old": "LogPrintf(\"Not connecting to %s: no -onion proxy\\n\",\n                      RedactWebSocketURL(url))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"websocket_onion_proxy_missing\", \"Not connecting to {addr}: no -onion proxy\").Field(BCLog::LogField::Addr, RedactWebSocketURL(url))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Not connecting to %s: no -onion proxy\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "RedactWebSocketURL(url)"
+            ]
+          },
+          "review_note": "Preserve Info, exact text, byte/score/count types and units, existing WebSocketURL token redaction, all reachability predicates, RPCtoggle/relay/flowcontrol/thread behavior. NetworkActive is the original bool: tinyformat %s explicitly uses boolalpha, matching typedboolean human rendering. Inflight values are original uint64/size_t despite legacy %d; do not narrow. Exclude the old onlynet notice replaced in canonical listen work."
+        },
+        {
+          "id": "network_inflight_throttling_changed",
+          "old": "LogPrintf(\"Inflight throttling %s (%d/%d)\\n\",\n                  inflight_throttle ? \"enabled\" : \"disabled\",\n                  nTotalInflightBytes, max_inflight_bytes)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"network_inflight_throttling_changed\", \"Inflight throttling {inflight_state} ({inflight_bytes}/{inflight_limit_bytes})\").Field(BCLog::LogField::InflightState, inflight_throttle ? \"enabled\" : \"disabled\").Field(BCLog::LogField::InflightBytes, nTotalInflightBytes).Field(BCLog::LogField::InflightLimitBytes, max_inflight_bytes)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Inflight throttling %s (%d/%d)\n",
+            "specifiers": [
+              "%s",
+              "%d",
+              "%d"
+            ],
+            "arguments": [
+              "inflight_throttle ? \"enabled\" : \"disabled\"",
+              "nTotalInflightBytes",
+              "max_inflight_bytes"
+            ]
+          },
+          "review_note": "Preserve Info, exact text, byte/score/count types and units, existing WebSocketURL token redaction, all reachability predicates, RPCtoggle/relay/flowcontrol/thread behavior. NetworkActive is the original bool: tinyformat %s explicitly uses boolalpha, matching typedboolean human rendering. Inflight values are original uint64/size_t despite legacy %d; do not narrow. Exclude the old onlynet notice replaced in canonical listen work."
+        },
+        {
+          "id": "dns_seed_query_delayed",
+          "old": "LogPrintf(\"Waiting %d seconds before querying DNS seeds.\\n\",\n                          seeds_wait_time.count())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"dns_seed_query_delayed\", \"Waiting {wait_seconds} seconds before querying DNS seeds.\").Field(BCLog::LogField::WaitSeconds, seeds_wait_time.count())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Waiting %d seconds before querying DNS seeds.\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "seeds_wait_time.count()"
+            ]
+          },
+          "review_note": "Preserve Info, exact text, byte/score/count types and units, existing WebSocketURL token redaction, all reachability predicates, RPCtoggle/relay/flowcontrol/thread behavior. NetworkActive is the original bool: tinyformat %s explicitly uses boolalpha, matching typedboolean human rendering. Inflight values are original uint64/size_t despite legacy %d; do not narrow. Exclude the old onlynet notice replaced in canonical listen work."
+        },
+        {
+          "id": "local_interface_discovered",
+          "old": "LogPrintf(\"%s: %s\\n\", __func__, addr.ToStringAddr())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"local_interface_discovered\", \"{source_function}: {addr}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::Addr, addr.ToStringAddr())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "addr.ToStringAddr()"
+            ]
+          },
+          "review_note": "Preserve Info, exact text, byte/score/count types and units, existing WebSocketURL token redaction, all reachability predicates, RPCtoggle/relay/flowcontrol/thread behavior. NetworkActive is the original bool: tinyformat %s explicitly uses boolalpha, matching typedboolean human rendering. Inflight values are original uint64/size_t despite legacy %d; do not narrow. Exclude the old onlynet notice replaced in canonical listen work."
+        },
+        {
+          "id": "network_active_set",
+          "old": "LogPrintf(\"%s: %s\\n\", __func__, active)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"network_active_set\", \"{source_function}: {network_active}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::NetworkActive, active)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "active"
+            ]
+          },
+          "review_note": "Preserve Info, exact text, byte/score/count types and units, existing WebSocketURL token redaction, all reachability predicates, RPCtoggle/relay/flowcontrol/thread behavior. NetworkActive is the original bool: tinyformat %s explicitly uses boolalpha, matching typedboolean human rendering. Inflight values are original uint64/size_t despite legacy %d; do not narrow. Exclude the old onlynet notice replaced in canonical listen work."
+        },
+        {
+          "id": "network_wakeup_socket_unavailable",
+          "old": "LogPrintf(\"Warning: cannot create the network thread's wakeup \"\n                      \"socket; new connections may wait up to %d ms\\n\",\n                      SELECT_TIMEOUT_MILLISECONDS)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"network_wakeup_socket_unavailable\", \"Warning: cannot create the network thread's wakeup socket; new connections may wait up to {wait_milliseconds} ms\").Field(BCLog::LogField::WaitMilliseconds, SELECT_TIMEOUT_MILLISECONDS)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Warning: cannot create the network thread's wakeup socket; new connections may wait up to %d ms\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "SELECT_TIMEOUT_MILLISECONDS"
+            ]
+          },
+          "review_note": "Preserve Info, exact text, byte/score/count types and units, existing WebSocketURL token redaction, all reachability predicates, RPCtoggle/relay/flowcontrol/thread behavior. NetworkActive is the original bool: tinyformat %s explicitly uses boolalpha, matching typedboolean human rendering. Inflight values are original uint64/size_t despite legacy %d; do not narrow. Exclude the old onlynet notice replaced in canonical listen work."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Preserve original signed scores/durations, unsigned byte quantities and real peer-networking boolean; retain readable throttle state as enum string.",
+          "old": "    X(FileLastTimeSeconds, file_last_time_seconds, UINT, \"\", \"\")\n",
+          "new": "    X(FileLastTimeSeconds, file_last_time_seconds, UINT, \"\", \"\") \\\n    X(LocalScore, local_score, INT, \"\", \"\") \\\n    X(InflightState, inflight_state, STRING, \"\", \"\") \\\n    X(InflightBytes, inflight_bytes, UINT, \"\", \"\") \\\n    X(InflightLimitBytes, inflight_limit_bytes, UINT, \"\", \"\") \\\n    X(WaitSeconds, wait_seconds, INT, \"\", \"\") \\\n    X(NetworkActive, network_active, BOOL, \"\", \"\") \\\n    X(WaitMilliseconds, wait_milliseconds, INT, \"\", \"\")\n"
+        }
+      ]
+    }
+  ]
+}
