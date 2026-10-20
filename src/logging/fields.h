@@ -111,7 +111,9 @@
     X(MempoolImportPresentCount, mempool_import_present_count, UINT, "", "") \
     X(MempoolImportWaitingBroadcastCount, mempool_import_waiting_broadcast_count, UINT, "", "") \
     X(MempoolCopySeconds, mempool_copy_seconds, FLOAT, "", "") \
-    X(MempoolDumpSeconds, mempool_dump_seconds, FLOAT, "", "")
+    X(MempoolDumpSeconds, mempool_dump_seconds, FLOAT, "", "") \
+    X(DatabaseCacheMiB, database_cache_mib, FLOAT, "", "") \
+    X(UnusedMempoolCacheMiB, unused_mempool_cache_mib, FLOAT, "", "")
 
 namespace BCLog {
 
