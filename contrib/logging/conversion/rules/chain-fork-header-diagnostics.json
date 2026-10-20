@@ -1,0 +1,191 @@
+{
+  "schema": 1,
+  "batch": "chain-fork-header-diagnostics",
+  "review_note": "Typed chain/fork/header diagnostics with explicit real field domains and units.",
+  "files": [
+    {
+      "path": "src/validation.cpp",
+      "rules": [
+        {
+          "id": "chain_large_fork_detected",
+          "old": "LogPrintf(\"%s: Warning: Large fork found\\n  forking the \"\n                      \"chain at height %d (%s)\\n  lasting to height %d \"\n                      \"(%s).\\nChain state database corruption likely.\\n\",\n                      __func__, m_best_fork_base->nHeight,\n                      m_best_fork_base->phashBlock->ToString(),\n                      m_best_fork_tip->nHeight,\n                      m_best_fork_tip->phashBlock->ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_large_fork_detected\",\n                     \"{source_function}: Warning: Large fork found\\n  forking the chain at height {fork_base_height} ({fork_base_hash})\\n  lasting to height {fork_tip_height} ({fork_tip_hash}).\\nChain state database corruption likely.\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::ForkBaseHeight, m_best_fork_base->nHeight)\n            .Field(BCLog::LogField::ForkBaseHash, m_best_fork_base->GetBlockHash())\n            .Field(BCLog::LogField::ForkTipHeight, m_best_fork_tip->nHeight)\n            .Field(BCLog::LogField::ForkTipHash, m_best_fork_tip->GetBlockHash())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: Warning: Large fork found\n  forking the chain at height %d (%s)\n  lasting to height %d (%s).\nChain state database corruption likely.\n",
+            "specifiers": [
+              "%s",
+              "%d",
+              "%s",
+              "%d",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "m_best_fork_base->nHeight",
+              "m_best_fork_base->phashBlock->ToString()",
+              "m_best_fork_tip->nHeight",
+              "m_best_fork_tip->phashBlock->ToString()"
+            ]
+          },
+          "review_note": "Preserve Info severity (including existing warning text), ALL category, exact message/newline shape and original chain/fork/header progress control flow. Capture actual referenced block hashes rather than formatted strings; keep log2 work/%.2f percent precision. ReceivedTimeDifferenceSeconds is the existing absolute difference: blockindex.h GetReceivedTimeDiff subtracts epoch seconds, and the surrounding code already applies llabs. No new timestamp tie-breaker or fork policy."
+        },
+        {
+          "id": "chain_large_invalid_fork_detected",
+          "old": "LogPrintf(\"%s: Warning: Found invalid chain at least ~6 blocks \"\n                      \"longer than our best chain.\\nChain state database \"\n                      \"corruption likely.\\n\",\n                      __func__)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_large_invalid_fork_detected\",\n                     \"{source_function}: Warning: Found invalid chain at least ~6 blocks longer than our best chain.\\nChain state database corruption likely.\")\n            .Field(BCLog::LogField::SourceFunction, __func__)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: Warning: Found invalid chain at least ~6 blocks longer than our best chain.\nChain state database corruption likely.\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve Info severity (including existing warning text), ALL category, exact message/newline shape and original chain/fork/header progress control flow. Capture actual referenced block hashes rather than formatted strings; keep log2 work/%.2f percent precision. ReceivedTimeDifferenceSeconds is the existing absolute difference: blockindex.h GetReceivedTimeDiff subtracts epoch seconds, and the surrounding code already applies llabs. No new timestamp tie-breaker or fork policy."
+        },
+        {
+          "id": "chain_invalid_block",
+          "old": "LogPrintf(\"%s: invalid block=%s  height=%d  log2_work=%f  date=%s\\n\",\n              __func__, pindexNew->GetBlockHash().ToString(),\n              pindexNew->nHeight,\n              log(pindexNew->nChainWork.getdouble()) / log(2.0),\n              FormatISO8601DateTime(pindexNew->GetBlockTime()))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_invalid_block\",\n                     \"{source_function}: invalid block={block_hash}  height={height}  log2_work={log2_work:f}  date={block_time}\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::BlockHash, pindexNew->GetBlockHash())\n            .Field(BCLog::LogField::Height, pindexNew->nHeight)\n            .Field(BCLog::LogField::Log2Work, log(pindexNew->nChainWork.getdouble()) / log(2.0))\n            .Field(BCLog::LogField::BlockTime, FormatISO8601DateTime(pindexNew->GetBlockTime()))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: invalid block=%s  height=%d  log2_work=%f  date=%s\n",
+            "specifiers": [
+              "%s",
+              "%s",
+              "%d",
+              "%f",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "pindexNew->GetBlockHash().ToString()",
+              "pindexNew->nHeight",
+              "log(pindexNew->nChainWork.getdouble()) / log(2.0)",
+              "FormatISO8601DateTime(pindexNew->GetBlockTime())"
+            ]
+          },
+          "review_note": "Preserve Info severity (including existing warning text), ALL category, exact message/newline shape and original chain/fork/header progress control flow. Capture actual referenced block hashes rather than formatted strings; keep log2 work/%.2f percent precision. ReceivedTimeDifferenceSeconds is the existing absolute difference: blockindex.h GetReceivedTimeDiff subtracts epoch seconds, and the surrounding code already applies llabs. No new timestamp tie-breaker or fork policy."
+        },
+        {
+          "id": "chain_invalid_current_best",
+          "old": "LogPrintf(\"%s:  current best=%s  height=%d  log2_work=%f  date=%s\\n\",\n              __func__, tip->GetBlockHash().ToString(), m_chain.Height(),\n              log(tip->nChainWork.getdouble()) / log(2.0),\n              FormatISO8601DateTime(tip->GetBlockTime()))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_invalid_current_best\",\n                     \"{source_function}:  current best={block_hash}  height={height}  log2_work={log2_work:f}  date={block_time}\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::BlockHash, tip->GetBlockHash())\n            .Field(BCLog::LogField::Height, m_chain.Height())\n            .Field(BCLog::LogField::Log2Work, log(tip->nChainWork.getdouble()) / log(2.0))\n            .Field(BCLog::LogField::BlockTime, FormatISO8601DateTime(tip->GetBlockTime()))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s:  current best=%s  height=%d  log2_work=%f  date=%s\n",
+            "specifiers": [
+              "%s",
+              "%s",
+              "%d",
+              "%f",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "tip->GetBlockHash().ToString()",
+              "m_chain.Height()",
+              "log(tip->nChainWork.getdouble()) / log(2.0)",
+              "FormatISO8601DateTime(tip->GetBlockTime())"
+            ]
+          },
+          "review_note": "Preserve Info severity (including existing warning text), ALL category, exact message/newline shape and original chain/fork/header progress control flow. Capture actual referenced block hashes rather than formatted strings; keep log2 work/%.2f percent precision. ReceivedTimeDifferenceSeconds is the existing absolute difference: blockindex.h GetReceivedTimeDiff subtracts epoch seconds, and the surrounding code already applies llabs. No new timestamp tie-breaker or fork policy."
+        },
+        {
+          "id": "chain_headers_sync_progress",
+          "old": "LogInfo(\"Synchronizing blockheaders, height: %d (~%.2f%%)\\n\",\n                    last_accepted.nHeight, progress)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_headers_sync_progress\",\n                     \"Synchronizing blockheaders, height: {height} (~{header_progress_percent:.2f}%)\")\n            .Field(BCLog::LogField::Height, last_accepted.nHeight)\n            .Field(BCLog::LogField::HeaderProgressPercent, progress)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogInfo",
+            "format": "Synchronizing blockheaders, height: %d (~%.2f%%)\n",
+            "specifiers": [
+              "%d",
+              "%.2f"
+            ],
+            "arguments": [
+              "last_accepted.nHeight",
+              "progress"
+            ]
+          },
+          "review_note": "Preserve Info severity (including existing warning text), ALL category, exact message/newline shape and original chain/fork/header progress control flow. Capture actual referenced block hashes rather than formatted strings; keep log2 work/%.2f percent precision. ReceivedTimeDifferenceSeconds is the existing absolute difference: blockindex.h GetReceivedTimeDiff subtracts epoch seconds, and the surrounding code already applies llabs. No new timestamp tie-breaker or fork policy."
+        },
+        {
+          "id": "chain_headers_presync_progress",
+          "old": "LogInfo(\"Pre-synchronizing blockheaders, height: %d (~%.2f%%)\\n\",\n                height, progress)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_headers_presync_progress\",\n                     \"Pre-synchronizing blockheaders, height: {height} (~{header_progress_percent:.2f}%)\")\n            .Field(BCLog::LogField::Height, height)\n            .Field(BCLog::LogField::HeaderProgressPercent, progress)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogInfo",
+            "format": "Pre-synchronizing blockheaders, height: %d (~%.2f%%)\n",
+            "specifiers": [
+              "%d",
+              "%.2f"
+            ],
+            "arguments": [
+              "height",
+              "progress"
+            ]
+          },
+          "review_note": "Preserve Info severity (including existing warning text), ALL category, exact message/newline shape and original chain/fork/header progress control flow. Capture actual referenced block hashes rather than formatted strings; keep log2 work/%.2f percent precision. ReceivedTimeDifferenceSeconds is the existing absolute difference: blockindex.h GetReceivedTimeDiff subtracts epoch seconds, and the surrounding code already applies llabs. No new timestamp tie-breaker or fork policy."
+        },
+        {
+          "id": "chain_tip_received_time_difference",
+          "old": "LogPrintf(\"Chain tip timestamp-to-received-time difference: hash=%s, \"\n                  \"diff=%d\\n\",\n                  ActiveTip()->GetBlockHash().ToString(), chainTipTimeDiff)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_tip_received_time_difference\",\n                     \"Chain tip timestamp-to-received-time difference: hash={block_hash}, diff={received_time_difference_seconds}\")\n            .Field(BCLog::LogField::BlockHash, ActiveTip()->GetBlockHash())\n            .Field(BCLog::LogField::ReceivedTimeDifferenceSeconds, chainTipTimeDiff)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Chain tip timestamp-to-received-time difference: hash=%s, diff=%d\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "ActiveTip()->GetBlockHash().ToString()",
+              "chainTipTimeDiff"
+            ]
+          },
+          "review_note": "Preserve Info severity (including existing warning text), ALL category, exact message/newline shape and original chain/fork/header progress control flow. Capture actual referenced block hashes rather than formatted strings; keep log2 work/%.2f percent precision. ReceivedTimeDifferenceSeconds is the existing absolute difference: blockindex.h GetReceivedTimeDiff subtracts epoch seconds, and the surrounding code already applies llabs. No new timestamp tie-breaker or fork policy."
+        },
+        {
+          "id": "chain_block_received_time_difference",
+          "old": "LogPrintf(\"New block timestamp-to-received-time difference: hash=%s, \"\n                  \"diff=%d\\n\",\n                  pindex->GetBlockHash().ToString(), newBlockTimeDiff)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_block_received_time_difference\",\n                     \"New block timestamp-to-received-time difference: hash={block_hash}, diff={received_time_difference_seconds}\")\n            .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash())\n            .Field(BCLog::LogField::ReceivedTimeDifferenceSeconds, newBlockTimeDiff)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "New block timestamp-to-received-time difference: hash=%s, diff=%d\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "pindex->GetBlockHash().ToString()",
+              "newBlockTimeDiff"
+            ]
+          },
+          "review_note": "Preserve Info severity (including existing warning text), ALL category, exact message/newline shape and original chain/fork/header progress control flow. Capture actual referenced block hashes rather than formatted strings; keep log2 work/%.2f percent precision. ReceivedTimeDifferenceSeconds is the existing absolute difference: blockindex.h GetReceivedTimeDiff subtracts epoch seconds, and the surrounding code already applies llabs. No new timestamp tie-breaker or fork policy."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Explicit fork base/tip identities, percent and absolute received-time difference in seconds. Existing field IDs unchanged.",
+          "old": "    X(ConfigEnabled, config_enabled, BOOL, \"\", \"\")",
+          "new": "    X(ConfigEnabled, config_enabled, BOOL, \"\", \"\") \\\n    X(ForkBaseHeight, fork_base_height, INT, \"\", \"\") \\\n    X(ForkBaseHash, fork_base_hash, HASH, \"\", \"\") \\\n    X(ForkTipHeight, fork_tip_height, INT, \"\", \"\") \\\n    X(ForkTipHash, fork_tip_hash, HASH, \"\", \"\") \\\n    X(HeaderProgressPercent, header_progress_percent, FLOAT, \"\", \"\") \\\n    X(ReceivedTimeDifferenceSeconds, received_time_difference_seconds, UINT, \"\", \"\")"
+        }
+      ]
+    }
+  ]
+}
