@@ -8,7 +8,9 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
+#include <set>
 #include <unordered_map>
 #include <vector>
 
@@ -255,6 +257,11 @@ private:
 
     const kernel::BlockManagerOpts m_opts;
 
+    mutable Mutex m_unlink_callbacks_mutex;
+    std::map<uint64_t, std::function<void(const std::set<int> &)>>
+        m_unlink_callbacks GUARDED_BY(m_unlink_callbacks_mutex);
+    uint64_t m_next_unlink_callback GUARDED_BY(m_unlink_callbacks_mutex){0};
+
 public:
     using Options = kernel::BlockManagerOpts;
 
@@ -437,11 +444,38 @@ public:
 
     /** Translation to a filesystem path. */
     fs::path GetBlockPosFilename(const FlatFilePos &pos) const;
+    /** Path of the undo file (rev?????.dat) of a position. */
+    fs::path GetUndoPosFilename(const FlatFilePos &pos) const;
+
+    /**
+     * Whether a block may still be written to block file file_num: it is
+     * the current file of a blockfile cursor, or a file not created yet.
+     * Every other blk file is complete and never appended to again. Undo
+     * data is different: it is written when a block is connected, so a rev
+     * file can still grow after its blk file is complete (e.g. when a reorg
+     * connects blocks stored there).
+     */
+    bool MayAppendToBlockFile(int file_num);
+
+    /** Called with the numbers of the blk/rev files about to be deleted. */
+    using UnlinkFilesCallback = std::function<void(const std::set<int> &)>;
+    /**
+     * Register a callback that UnlinkPrunedFiles runs before it deletes
+     * files, e.g. to close cached descriptors of them. It must not take
+     * cs_main or cs_LastBlockFile. Returns a handle for
+     * UnregisterUnlinkFilesCallback; once that returns, the callback is not
+     * running and won't run again.
+     */
+    uint64_t RegisterUnlinkFilesCallback(UnlinkFilesCallback callback)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_unlink_callbacks_mutex);
+    void UnregisterUnlinkFilesCallback(uint64_t handle)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_unlink_callbacks_mutex);
 
     /**
      *  Actually unlink the specified files
      */
-    void UnlinkPrunedFiles(const std::set<int> &setFilesToPrune) const;
+    void UnlinkPrunedFiles(const std::set<int> &setFilesToPrune) const
+        EXCLUSIVE_LOCKS_REQUIRED(!m_unlink_callbacks_mutex);
 
     /** Functions for disk access for blocks */
     bool ReadBlock(CBlock &block, const FlatFilePos &pos) const;
