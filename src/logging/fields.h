@@ -177,7 +177,15 @@
     X(HttpPath, http_path, STRING, "", "") \
     X(CoroutineWorkerThreads, coroutine_worker_threads, INT, "", "") \
     X(IOThreads, io_threads, INT, "", "") \
-    X(ListenerKind, listener_kind, STRING, "", "")
+    X(ListenerKind, listener_kind, STRING, "", "") \
+    X(BlockFileInfo, block_file_info, STRING, "", "") \
+    X(FileBlocks, file_blocks, UINT, "", "") \
+    X(BlockFileBytes, block_file_bytes, UINT, "", "") \
+    X(UndoFileBytes, undo_file_bytes, UINT, "", "") \
+    X(FileFirstHeight, file_first_height, UINT, "", "") \
+    X(FileLastHeight, file_last_height, UINT, "", "") \
+    X(FileFirstTimeSeconds, file_first_time_seconds, UINT, "", "") \
+    X(FileLastTimeSeconds, file_last_time_seconds, UINT, "", "")
 
 namespace BCLog {
 
