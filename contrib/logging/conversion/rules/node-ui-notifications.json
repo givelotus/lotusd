@@ -1,0 +1,145 @@
+{
+  "schema": 1,
+  "batch": "node-ui-notifications",
+  "files": [
+    {
+      "path": "src/noui.cpp",
+      "rules": [
+        {
+          "id": "node_ui_message_error",
+          "old": "LogError(\"%s%s\\n\", strCaption, message.original)",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"node_ui_message\", \"{log_prefix}{message_text}\").Field(BCLog::LogField::LogPrefix, strCaption).Field(BCLog::LogField::MessageText, message.original)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s%s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "strCaption",
+              "message.original"
+            ]
+          },
+          "review_note": "Preserve secure-message suppression before any field capture, original severity selection and stderr output/return values. MessageText is opaque existing UI prose, not inferred structured inner fields. Prefix punctuation and original untranslated text remain exact. Redirect functions are test infrastructure but retain Info severity and distinct message/question events; common init text has one event for both ordinary and redirect hooks."
+        },
+        {
+          "id": "node_ui_message_warning",
+          "old": "LogWarning(\"%s%s\\n\", strCaption, message.original)",
+          "replacement": "LogWarningEvent(BCLog::ALL, \"node_ui_message\", \"{log_prefix}{message_text}\").Field(BCLog::LogField::LogPrefix, strCaption).Field(BCLog::LogField::MessageText, message.original)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogWarning",
+            "format": "%s%s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "strCaption",
+              "message.original"
+            ]
+          },
+          "review_note": "Preserve secure-message suppression before any field capture, original severity selection and stderr output/return values. MessageText is opaque existing UI prose, not inferred structured inner fields. Prefix punctuation and original untranslated text remain exact. Redirect functions are test infrastructure but retain Info severity and distinct message/question events; common init text has one event for both ordinary and redirect hooks."
+        },
+        {
+          "id": "node_ui_message_info",
+          "old": "LogInfo(\"%s%s\\n\", strCaption, message.original)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"node_ui_message\", \"{log_prefix}{message_text}\").Field(BCLog::LogField::LogPrefix, strCaption).Field(BCLog::LogField::MessageText, message.original)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogInfo",
+            "format": "%s%s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "strCaption",
+              "message.original"
+            ]
+          },
+          "review_note": "Preserve secure-message suppression before any field capture, original severity selection and stderr output/return values. MessageText is opaque existing UI prose, not inferred structured inner fields. Prefix punctuation and original untranslated text remain exact. Redirect functions are test infrastructure but retain Info severity and distinct message/question events; common init text has one event for both ordinary and redirect hooks."
+        },
+        {
+          "id": "node_ui_init_message",
+          "old": "LogPrintf(\"init message: %s\\n\", message)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"node_ui_init_message\", \"init message: {message_text}\").Field(BCLog::LogField::MessageText, message)",
+          "count": 2,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "init message: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "message"
+            ]
+          },
+          "review_note": "Preserve secure-message suppression before any field capture, original severity selection and stderr output/return values. MessageText is opaque existing UI prose, not inferred structured inner fields. Prefix punctuation and original untranslated text remain exact. Redirect functions are test infrastructure but retain Info severity and distinct message/question events; common init text has one event for both ordinary and redirect hooks."
+        },
+        {
+          "id": "node_ui_redirected_message",
+          "old": "LogPrintf(\"%s: %s\\n\", caption, message.original)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"node_ui_redirected_message\", \"{caption}: {message_text}\").Field(BCLog::LogField::Caption, caption).Field(BCLog::LogField::MessageText, message.original)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "caption",
+              "message.original"
+            ]
+          },
+          "review_note": "Preserve secure-message suppression before any field capture, original severity selection and stderr output/return values. MessageText is opaque existing UI prose, not inferred structured inner fields. Prefix punctuation and original untranslated text remain exact. Redirect functions are test infrastructure but retain Info severity and distinct message/question events; common init text has one event for both ordinary and redirect hooks."
+        },
+        {
+          "id": "node_ui_redirected_question",
+          "old": "LogPrintf(\"%s: %s\\n\", caption, message)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"node_ui_redirected_question\", \"{caption}: {message_text}\").Field(BCLog::LogField::Caption, caption).Field(BCLog::LogField::MessageText, message)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "caption",
+              "message"
+            ]
+          },
+          "review_note": "Preserve secure-message suppression before any field capture, original severity selection and stderr output/return values. MessageText is opaque existing UI prose, not inferred structured inner fields. Prefix punctuation and original untranslated text remain exact. Redirect functions are test infrastructure but retain Info severity and distinct message/question events; common init text has one event for both ordinary and redirect hooks."
+        }
+      ]
+    },
+    {
+      "path": "src/noui.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Describe the now-structured test redirect without naming removed LogPrintf calls.",
+          "old": "Redirect all bitcoind signal handlers to LogPrintf. Used to check or suppress",
+          "new": "Redirect all bitcoind signal handlers to logging. Used to check or suppress"
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Opaque existing UI message text and display caption, with secure-message guard retained outside logging expression.",
+          "old": "    X(IndexStopHeight, index_stop_height, INT, \"\", \"\")\n\nnamespace BCLog {",
+          "new": "    X(IndexStopHeight, index_stop_height, INT, \"\", \"\") \\\n    X(MessageText, message_text, STRING, \"\", \"\") \\\n    X(Caption, caption, STRING, \"\", \"\")\n\nnamespace BCLog {"
+        }
+      ]
+    }
+  ]
+}

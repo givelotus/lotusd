@@ -23,7 +23,7 @@ void noui_InitMessage(const std::string &message);
 void noui_connect();
 
 /**
- * Redirect all bitcoind signal handlers to LogPrintf. Used to check or suppress
+ * Redirect all bitcoind signal handlers to logging. Used to check or suppress
  * output during test runs that produce expected errors.
  */
 void noui_test_redirect();
