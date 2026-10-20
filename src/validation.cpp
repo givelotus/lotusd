@@ -177,8 +177,12 @@ std::optional<std::vector<int>> CalculatePrevHeights(const CBlockIndex &tip,
                                   ? tip.nHeight + 1
                                   : coin->GetHeight();
         } else {
-            LogPrintf("ERROR: %s: Missing input %d in transaction \'%s\'\n",
-                      __func__, i, tx.GetHash().GetHex());
+            LogInfoEvent(
+                BCLog::ALL, "transaction_input_missing",
+                "ERROR: {source_function}: Missing input {input_index} in transaction '{tx_hash}'")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::InputIndex, i)
+                .Field(BCLog::LogField::TxHash, tx.GetHash());
             return std::nullopt;
         }
     }
@@ -1644,10 +1648,11 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(
     // has fast adds, so this is ok.
     if (auto it = m_pool.mapNextTx.lower_bound(COutPoint{txid, 0});
         it != m_pool.mapNextTx.end() && it->first->GetTxId() == txid) {
-        LogPrintf("%s: BUG! PLEASE REPORT THIS! Attempt to add txid %s, but "
-                  "its outputs are already spent in the "
-                  "mempool\n",
-                  __func__, txid.ToString());
+        LogInfoEvent(
+            BCLog::ALL, "mempool_child_before_parent",
+            "{source_function}: BUG! PLEASE REPORT THIS! Attempt to add txid {txid}, but its outputs are already spent in the mempool")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::TxId, txid);
         ws.m_state.Invalid(TxValidationResult::TX_CHILD_BEFORE_PARENT,
                            "txn-child-before-parent");
         return MempoolAcceptResult::Failure(ws.m_state);
