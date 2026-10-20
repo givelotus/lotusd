@@ -14,7 +14,6 @@ from test_framework.address import (
 from test_framework.blocktools import (
     COINBASE_MATURITY,
     GENESIS_CB_PK,
-    GENESIS_CB_TXID,
     create_block,
     create_coinbase,
 )
@@ -83,18 +82,8 @@ class ChronikScriptUtxosTest(BitcoinTestFramework):
         coinvalue = 5000000000
         genesis_utxos = pb.ScriptUtxos(
             script=bytes.fromhex(f"41{GENESIS_CB_PK}ac"),
-            utxos=[
-                pb.ScriptUtxo(
-                    outpoint=pb.OutPoint(
-                        txid=bytes.fromhex(GENESIS_CB_TXID)[::-1],
-                        out_idx=0,
-                    ),
-                    block_height=0,
-                    is_coinbase=True,
-                    sats=coinvalue,
-                    is_final=False,
-                )
-            ],
+            # Genesis is a native output; this legacy P2PK has no UTXOs.
+            utxos=[],
         )
         assert_equal(
             chronik.script("p2pk", GENESIS_CB_PK).utxos().ok(),
@@ -115,6 +104,7 @@ class ChronikScriptUtxosTest(BitcoinTestFramework):
                 script=bytes(P2SH_OP_TRUE),
                 utxos=[
                     pb.ScriptUtxo(
+                        is_legacy=True,
                         outpoint=pb.OutPoint(
                             txid=bytes.fromhex(cointx)[::-1],
                             out_idx=0,
@@ -141,6 +131,7 @@ class ChronikScriptUtxosTest(BitcoinTestFramework):
 
         expected_utxos = [
             pb.ScriptUtxo(
+                is_legacy=True,
                 outpoint=pb.OutPoint(
                     txid=bytes.fromhex(txid)[::-1],
                     out_idx=i,
@@ -180,6 +171,7 @@ class ChronikScriptUtxosTest(BitcoinTestFramework):
         del expected_utxos[3]
         expected_utxos.append(
             pb.ScriptUtxo(
+                is_legacy=True,
                 outpoint=pb.OutPoint(
                     txid=bytes.fromhex(txid2)[::-1],
                     out_idx=0,
