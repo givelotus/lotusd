@@ -115,9 +115,11 @@ InterpretValue(const KeyInfo &key, const std::optional<std::string> &value,
         }
         // Double negatives like -nofoo=0 are supported (but discouraged)
         if (value && !InterpretBool(*value)) {
-            LogPrintf("Warning: parsed potentially confusing double-negative "
-                      "-%s=%s\n",
-                      key.name, *value);
+            LogInfoEvent(
+                BCLog::ALL, "config_double_negative_interpreted",
+                "Warning: parsed potentially confusing double-negative -{config_option}={value}")
+                .Field(BCLog::LogField::ConfigOption, key.name)
+                .Field(BCLog::LogField::Value, *value);
             return true;
         }
         return false;
@@ -394,7 +396,8 @@ static void SaveErrors(const std::vector<std::string> errors,
         if (error_out) {
             error_out->emplace_back(error);
         } else {
-            LogPrintf("%s\n", error);
+            LogInfoEvent(BCLog::ALL, "config_settings_error", "{error}")
+                .Field(BCLog::LogField::Error, error);
         }
     }
 }
@@ -416,7 +419,9 @@ bool ArgsManager::ReadSettingsFile(std::vector<std::string> *errors) {
         // Split setting key into section and argname
         KeyInfo key = InterpretKey(setting.first);
         if (!GetArgFlags('-' + key.name)) {
-            LogPrintf("Ignoring unknown rw_settings value %s\n", setting.first);
+            LogInfoEvent(BCLog::ALL, "config_settings_option_unknown",
+                         "Ignoring unknown rw_settings value {config_option}")
+                .Field(BCLog::LogField::ConfigOption, setting.first);
         }
     }
     return true;
@@ -862,8 +867,13 @@ void ArgsManager::logArgsPrefix(
                 std::string value_str = (*flags & SENSITIVE)
                                             ? "****"
                                             : RedactURLTokens(value.write());
-                LogPrintf("%s %s%s=%s\n", prefix, section_str, arg.first,
-                          value_str);
+                LogInfoEvent(
+                    BCLog::ALL, "config_argument_displayed",
+                    "{log_prefix} {config_section_prefix}{config_option}={value}")
+                    .Field(BCLog::LogField::LogPrefix, prefix)
+                    .Field(BCLog::LogField::ConfigSectionPrefix, section_str)
+                    .Field(BCLog::LogField::ConfigOption, arg.first)
+                    .Field(BCLog::LogField::Value, value_str);
             }
         }
     }
@@ -875,8 +885,10 @@ void ArgsManager::LogArgs() const {
         logArgsPrefix("Config file arg:", section.first, section.second);
     }
     for (const auto &setting : m_settings.rw_settings) {
-        LogPrintf("Setting file arg: %s = %s\n", setting.first,
-                  setting.second.write());
+        LogInfoEvent(BCLog::ALL, "config_settings_argument_displayed",
+                     "Setting file arg: {config_option} = {value}")
+            .Field(BCLog::LogField::ConfigOption, setting.first)
+            .Field(BCLog::LogField::Value, setting.second.write());
     }
     logArgsPrefix("Command-line arg:", "", m_settings.command_line_options);
 }

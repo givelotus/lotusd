@@ -1,0 +1,118 @@
+{
+  "schema": 1,
+  "batch": "config-argument-diagnostics",
+  "review_note": "All five remaining common/args.cpp LogPrintf sites; preserve existing redaction/control flow.",
+  "files": [
+    {
+      "path": "src/common/args.cpp",
+      "rules": [
+        {
+          "id": "config_double_negative_interpreted",
+          "old": "LogPrintf(\"Warning: parsed potentially confusing double-negative \"\n                      \"-%s=%s\\n\",\n                      key.name, *value)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"config_double_negative_interpreted\", \"Warning: parsed potentially confusing double-negative -{config_option}={value}\").Field(BCLog::LogField::ConfigOption, key.name).Field(BCLog::LogField::Value, *value)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Warning: parsed potentially confusing double-negative -%s=%s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "key.name",
+              "*value"
+            ]
+          },
+          "review_note": "Preserve original Info level even if prose begins Warning, literal bytes, evaluation order and all locks/control flow. ConfigSectionPrefix records the original display-only bracketed section prefix including trailing space, not a claimed raw section. Value remains existing redacted value_str for command-line/config arguments; never add original hidden values or URL tokens as fields. Settings values remain existing JSON display strings and no new privacy/redaction policy is introduced here."
+        },
+        {
+          "id": "config_settings_error",
+          "old": "LogPrintf(\"%s\\n\", error)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"config_settings_error\", \"{error}\").Field(BCLog::LogField::Error, error)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "error"
+            ]
+          },
+          "review_note": "Preserve original Info level even if prose begins Warning, literal bytes, evaluation order and all locks/control flow. ConfigSectionPrefix records the original display-only bracketed section prefix including trailing space, not a claimed raw section. Value remains existing redacted value_str for command-line/config arguments; never add original hidden values or URL tokens as fields. Settings values remain existing JSON display strings and no new privacy/redaction policy is introduced here."
+        },
+        {
+          "id": "config_settings_option_unknown",
+          "old": "LogPrintf(\"Ignoring unknown rw_settings value %s\\n\", setting.first)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"config_settings_option_unknown\", \"Ignoring unknown rw_settings value {config_option}\").Field(BCLog::LogField::ConfigOption, setting.first)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Ignoring unknown rw_settings value %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "setting.first"
+            ]
+          },
+          "review_note": "Preserve original Info level even if prose begins Warning, literal bytes, evaluation order and all locks/control flow. ConfigSectionPrefix records the original display-only bracketed section prefix including trailing space, not a claimed raw section. Value remains existing redacted value_str for command-line/config arguments; never add original hidden values or URL tokens as fields. Settings values remain existing JSON display strings and no new privacy/redaction policy is introduced here."
+        },
+        {
+          "id": "config_argument_displayed",
+          "old": "LogPrintf(\"%s %s%s=%s\\n\", prefix, section_str, arg.first,\n                          value_str)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"config_argument_displayed\", \"{log_prefix} {config_section_prefix}{config_option}={value}\").Field(BCLog::LogField::LogPrefix, prefix).Field(BCLog::LogField::ConfigSectionPrefix, section_str).Field(BCLog::LogField::ConfigOption, arg.first).Field(BCLog::LogField::Value, value_str)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s %s%s=%s\n",
+            "specifiers": [
+              "%s",
+              "%s",
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "prefix",
+              "section_str",
+              "arg.first",
+              "value_str"
+            ]
+          },
+          "review_note": "Preserve original Info level even if prose begins Warning, literal bytes, evaluation order and all locks/control flow. ConfigSectionPrefix records the original display-only bracketed section prefix including trailing space, not a claimed raw section. Value remains existing redacted value_str for command-line/config arguments; never add original hidden values or URL tokens as fields. Settings values remain existing JSON display strings and no new privacy/redaction policy is introduced here."
+        },
+        {
+          "id": "config_settings_argument_displayed",
+          "old": "LogPrintf(\"Setting file arg: %s = %s\\n\", setting.first,\n                  setting.second.write())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"config_settings_argument_displayed\", \"Setting file arg: {config_option} = {value}\").Field(BCLog::LogField::ConfigOption, setting.first).Field(BCLog::LogField::Value, setting.second.write())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Setting file arg: %s = %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "setting.first",
+              "setting.second.write()"
+            ]
+          },
+          "review_note": "Preserve original Info level even if prose begins Warning, literal bytes, evaluation order and all locks/control flow. ConfigSectionPrefix records the original display-only bracketed section prefix including trailing space, not a claimed raw section. Value remains existing redacted value_str for command-line/config arguments; never add original hidden values or URL tokens as fields. Settings values remain existing JSON display strings and no new privacy/redaction policy is introduced here."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Append explicit display-only configuration section prefix; prior ids unchanged.",
+          "old": "    X(ObfuscationKey, obfuscation_key, STRING, \"\", \"\")\n\nnamespace BCLog {",
+          "new": "    X(ObfuscationKey, obfuscation_key, STRING, \"\", \"\") \\\n    X(ConfigSectionPrefix, config_section_prefix, STRING, \"\", \"\")\n\nnamespace BCLog {"
+        }
+      ]
+    }
+  ]
+}
