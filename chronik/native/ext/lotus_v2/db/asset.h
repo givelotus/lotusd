@@ -24,6 +24,27 @@ namespace chronik::native::lotus_v2 {
 /** Maximum serialized asset record. */
 inline constexpr size_t MAX_ASSET_RECORD_BYTES = 512;
 
+/**
+ * Asset facts of a consumed coin (v2_asset::SpentCoin): its flags, value and
+ * token, as recorded when the coin was created.
+ */
+struct SpentCoin {
+    OutPoint outpoint;
+    uint8_t flags = 0;
+    uint64_t value = 0;
+    /** Zero when the output carries no token. */
+    Hash32 token_id;
+    bool operator==(const SpentCoin &) const = default;
+    static SpentCoin FromOutput(const OutPoint &outpoint, const Output &o) {
+        return SpentCoin{outpoint, o.flags, o.value, o.token_id};
+    }
+    bool HasToken() const { return (flags & 1) != 0; }
+    bool IsBurn() const { return (flags & 2) != 0; }
+    bool Valid() const {
+        return (flags & ~3) == 0 && HasToken() == (token_id != Hash32{});
+    }
+};
+
 /** Immutable facts resolved by the transition owner before spending. */
 struct AssetTxView {
     /** Exact confirmed transaction position. */
@@ -31,7 +52,7 @@ struct AssetTxView {
     /** All outputs, including native outputs, zero units, and burns. */
     std::span<const Output> outputs;
     /** Frozen prior creations; not the runtime's current UTXO view. */
-    std::span<const ResolvedCreation> resolved_spends;
+    std::span<const SpentCoin> resolved_spends;
     /** One selector per mint input; duplicates must remain visible. */
     std::span<const Hash32> mint_token_ids;
 };
