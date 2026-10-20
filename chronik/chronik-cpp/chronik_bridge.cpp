@@ -18,6 +18,7 @@
 #include <node/blockstorage.h>
 #include <node/coin.h>
 #include <node/context.h>
+#include <node/metrics.h>
 #include <node/transaction.h>
 #include <node/ui_interface.h>
 #include <shutdown.h>
@@ -584,6 +585,23 @@ bool init_error(const rust::Str msg) {
 
 rust::String client_name() {
     return CLIENT_NAME;
+}
+
+void metrics_chronik_request(rust::Str route, uint16_t status, uint64_t nanos) {
+    node::RecordChronikRequest(std::string_view{route.data(), route.size()},
+                               status, nanos);
+}
+
+void metrics_chronik_ws_connections(int32_t delta) {
+    if (auto *m{node::GetNodeMetrics()}) {
+        m->chronik_ws_connections.Add(delta);
+    }
+}
+
+void metrics_chronik_ws_subscriptions(int32_t delta) {
+    if (auto *m{node::GetNodeMetrics()}) {
+        m->chronik_ws_subscriptions.Add(delta);
+    }
 }
 
 rust::String format_full_version() {
