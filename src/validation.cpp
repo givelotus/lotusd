@@ -4461,19 +4461,34 @@ static void UpdateTipLog(const CCoinsViewCache &coins_tip,
     EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
     AssertLockHeld(::cs_main);
 
-    // Disable rate limiting in LogPrintLevel_ so this source location may log
-    // during IBD.
-    LogPrintLevel_(
-        BCLog::LogFlags::ALL, BCLog::Level::Info,
-        /*should_ratelimit=*/false,
-        "%s%s: new best=%s height=%d version=0x%08x log2_work=%f tx=%lu "
-        "date='%s' progress=%f cache=%.1fMiB(%utxo)\n",
-        prefix, func_name, tip->GetBlockHash().ToString(), tip->nHeight,
-        tip->nVersion, log(tip->nChainWork.getdouble()) / log(2.0),
-        tip->GetChainTxCount(), FormatISO8601DateTime(tip->GetBlockTime()),
-        GuessVerificationProgress(params.TxData(), tip),
-        coins_tip.DynamicMemoryUsage() * (1.0 / (1 << 20)),
-        coins_tip.GetCacheSize());
+    // Preserve unrestricted progress reporting during IBD; ring-full policy
+    // remains the same as other Info events.
+    LogInfoEventNoRateLimit(
+        BCLog::LogFlags::ALL, "chain_tip_updated",
+        "{log_prefix}{source_function}: new best={block_hash} height={height} "
+        "version=0x{version:08x} log2_work={log2_work:f} tx={chain_tx_count} "
+        "date='{block_time}' progress={verification_progress:f} "
+        "cache={utxo_cache_mib:.1f}MiB({utxo_cache_coins}txo)")
+        .Field(BCLog::LogField::LogPrefix, prefix)
+        .Field(BCLog::LogField::SourceFunction, func_name)
+        .Field(BCLog::LogField::BlockHash, tip->GetBlockHash())
+        .Field(BCLog::LogField::Height, tip->nHeight)
+        .Field(BCLog::LogField::Version, uint32_t(tip->nVersion))
+        .Field(BCLog::LogField::Log2Work,
+               log(tip->nChainWork.getdouble()) / log(2.0))
+        .Field(BCLog::LogField::ChainTxCount, tip->GetChainTxCount())
+        .Field(BCLog::LogField::BlockTime,
+               FormatISO8601DateTime(tip->GetBlockTime()))
+        .Field(BCLog::LogField::VerificationProgress,
+               GuessVerificationProgress(params.TxData(), tip))
+        .Field(BCLog::LogField::UTXOCacheMiB,
+               coins_tip.DynamicMemoryUsage() * (1.0 / (1 << 20)))
+        .Field(BCLog::LogField::UTXOCacheCoins, coins_tip.GetCacheSize())
+        .Field(BCLog::LogField::UTXOCacheBytes, coins_tip.DynamicMemoryUsage())
+        .Field(BCLog::LogField::BlockTimeSeconds, tip->GetBlockTime())
+        .Field(BCLog::LogField::ChainstateRole,
+               prefix.empty() ? BCLog::LogStatic("active")
+                              : BCLog::LogStatic("background"));
 }
 
 static void SyncAdaptiveCapacityTip(const CBlockIndex *tip)
