@@ -144,6 +144,23 @@ one `_bucket` per bound plus `+Inf`, a `_sum` and a `_count`.
 | `fullnode_tx_pool_transactions` | gauge | `pool` (`orphan`, `conflicting`) | 2 | Transactions held outside the mempool: orphans, and conflicting ones awaiting a vote. |
 | `fullnode_tx_pool_removed_total` | counter | `pool` (2), `reason` (`expired`, `evicted`) | 4 | Transactions dropped from those pools on expiry, or evicted at random when full. |
 
+### Validation and UTXO
+
+| Name | Type | Labels | Max series | Meaning |
+|---|---|---|---|---|
+| `fullnode_block_validation_stage_seconds` | histogram | `stage` (9) | 9 | Time per stage of connecting a block. ConnectBlock: `check`, `forks`, `connect` (spending inputs), `verify` (scripts and signatures), `index` (undo and index); ConnectTip: `load` (reading the block), `flush` (into the UTXO cache), `chainstate` (writing it if needed), `post_connect`. Failed blocks and block template checks are not counted. 10 µs to 60 s. |
+| `fullnode_script_check_transactions` | histogram | | 1 | Per block, transactions whose scripts had to be checked (not in the script cache): the parallel script check queue's depth. |
+| `fullnode_script_check_workers` | histogram | | 1 | Per block, script check workers used (parallelism). |
+| `fullnode_validation_cache_lookups_total` | counter | `cache` (`signature`, `script_execution`), `result` (`hit`, `miss`) | 4 | Lookups in the signature and script execution caches. |
+| `fullnode_utxo_cache_bytes` | gauge | | 1 | Memory used by the chainstate's UTXO cache, as of its last flush check (each block and periodically). |
+| `fullnode_utxo_cache_entries` | gauge | | 1 | Coins in that cache, as of its last flush check. |
+| `fullnode_utxo_cache_lookups_total` | counter | `result` (`hit`, `miss`, `absent`) | 3 | Coin lookups in that cache: found, read from the database, or in neither. Hit rate: `hit / sum`. |
+| `fullnode_utxo_cache_flush_seconds` | histogram | `mode` (`flush`, `sync`) | 2 | Time to write the cache to the database: emptying it (`flush`) or keeping it (`sync`). `_count` counts flushes. |
+| `fullnode_chain_reorgs_total` | counter | | 1 | Chain reorganizations (tip changes that disconnected blocks). |
+| `fullnode_chain_reorg_depth_blocks` | histogram | | 1 | Blocks disconnected per reorganization. |
+| `fullnode_blocks_invalid_total` | counter | `source` (`validation`, `invalidateblock`) | 2 | Blocks marked invalid. |
+| `fullnode_blocks_parked_total` | counter | `reason` (`policy`, `finalization_conflict`, `deep_reorg`, `requested`) | 4 | Blocks parked: a block policy failed, forks below the Avalanche-finalized tip, `-parkdeepreorg`, or `parkblock`/an Avalanche rejection. |
+
 
 ## Tests
 
