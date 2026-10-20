@@ -556,8 +556,27 @@ NodeMetrics::NodeMetrics(std::vector<std::string> rpc_methods)
           "Time to connect a block to the chain tip (ConnectBlock: "
           "validating it and updating the UTXO view).",
           BLOCK_CONNECT_BUCKETS, /*divisor=*/1e9)},
-      mempool_transactions{Add<Gauge>(registry,
-                                      MetricName("mempool_transactions"),
+      block_prefetch_started{Add<Counter>(
+          registry, MetricName("block_prefetch_started_total"),
+          "Blocks whose spent coins were prefetched from the UTXO database "
+          "in the background on arrival.")},
+      block_prefetch_dropped{Add<Counter>(
+          registry, MetricName("block_prefetch_dropped_total"),
+          "Block prefetches not started because the maximum number were "
+          "already running.")},
+      block_prefetch_outpoints{Add<Counter>(
+          registry, MetricName("block_prefetch_outpoints_total"),
+          "Coins (distinct database keys) read by block prefetches.")},
+      block_prefetch_errors{Add<Counter>(
+          registry, MetricName("block_prefetch_errors_total"),
+          "Block prefetches that hit a database error (validation is not "
+          "affected; it reads the coins itself).")},
+      block_prefetch_seconds{Add<EventHistogram>(
+          registry, MetricName("block_prefetch_duration_seconds"),
+          "Time from a block's arrival to the end of the background "
+          "prefetch of its spent coins.",
+          BLOCK_CONNECT_BUCKETS, /*divisor=*/1e9)},
+      mempool_transactions{Add<Gauge>(registry, MetricName("mempool_transactions"),
                                       "Transactions in the mempool.")},
       mempool_bytes{Add<Gauge>(registry, MetricName("mempool_bytes"),
                                "Total size of the mempool's transactions.")},

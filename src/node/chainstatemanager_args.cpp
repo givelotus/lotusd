@@ -74,6 +74,15 @@ ApplyArgsManOptions(const ArgsManager &args, ChainstateManager::Options &opts) {
     // Subtract 1 because the main thread counts towards the par threads.
     opts.worker_threads_num = script_threads - 1;
 
+    if (auto value{args.GetIntArg("-blockprefetch")}) {
+        if (*value < 0 || *value > node::MAX_BLOCK_PREFETCH_THREADS) {
+            return strprintf(
+                Untranslated("-blockprefetch must be between 0 and %d"),
+                MAX_BLOCK_PREFETCH_THREADS);
+        }
+        opts.block_prefetch_threads = int(*value);
+    }
+
     if (auto value{args.GetBoolArg("-persistrecentheaderstime")}) {
         opts.store_recent_headers_time = *value;
     }

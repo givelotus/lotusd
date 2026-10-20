@@ -51,6 +51,7 @@
 #include <net_zstd_independent.h>
 #include <netbase.h>
 #include <node/blockmanager_args.h>
+#include <node/blockprefetch.h>
 #include <node/blockstorage.h>
 #include <node/caches.h>
 #include <node/chainstate.h>
@@ -776,6 +777,15 @@ void SetupServerArgs(NodeContext &node) {
             "(default: %s, testnet: %s)",
             defaultChainParams->GetConsensus().nMinimumChainWork.GetHex(),
             testnetChainParams->GetConsensus().nMinimumChainWork.GetHex()),
+        ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
+        OptionsCategory::OPTIONS);
+    argsman.AddArg(
+        "-blockprefetch=<n>",
+        strprintf("Threads reading the UTXO database pages of the coins an "
+                  "arriving block spends, in the background, before it is "
+                  "connected (0 to disable, up to %d, default: %d)",
+                  node::MAX_BLOCK_PREFETCH_THREADS,
+                  node::DEFAULT_BLOCK_PREFETCH_THREADS),
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
         OptionsCategory::OPTIONS);
     argsman.AddArg(

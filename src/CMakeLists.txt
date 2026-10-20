@@ -676,6 +676,7 @@ add_library(server
 	node/abort.cpp
 	node/blockfitter.cpp
 	node/blockmanager_args.cpp
+	node/blockprefetch.cpp
 	node/blockstorage.cpp
 	node/caches.cpp
 	node/chainstate.cpp
@@ -928,6 +929,7 @@ if(BUILD_CHAINSTATE)
 		networks/abc/chainparamsconstants.cpp
 		networks/abc/checkpoints.cpp
 		node/blockfitter.cpp
+		node/blockprefetch.cpp
 		node/blockstorage.cpp
 		node/chainstate.cpp
 		node/snapshot.cpp
