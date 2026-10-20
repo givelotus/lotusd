@@ -1,0 +1,132 @@
+diff -ru a/lib/includes/nghttp3/nghttp3.h b/lib/includes/nghttp3/nghttp3.h
+--- a/lib/includes/nghttp3/nghttp3.h
++++ b/lib/includes/nghttp3/nghttp3.h
+@@ -3000,6 +3000,32 @@
+  */
+ #define NGHTTP3_DATA_FLAG_NO_END_STREAM 0x02U
+ 
++
++/*
++ * WebTransport maintenance addition (local patch, not upstream):
++ * `nghttp3_conn_set_extra_settings` registers up to 8 additional
++ * SETTINGS entries that are emitted in the SETTINGS frame written when
++ * the control stream is bound.  Call it before
++ * `nghttp3_conn_bind_control_stream`.  `nghttp3_conn_set_recv_extra_setting_cb`
++ * registers a callback invoked for every SETTINGS identifier the
++ * library does not itself understand (RFC 9114 requires those to be
++ * ignored, which the library still does).
++ */
++typedef struct nghttp3_extra_setting {
++  uint64_t id;
++  uint64_t value;
++} nghttp3_extra_setting;
++
++NGHTTP3_EXTERN int nghttp3_conn_set_extra_settings(
++  nghttp3_conn *conn, const nghttp3_extra_setting *ents, size_t n);
++
++typedef int (*nghttp3_recv_extra_setting)(nghttp3_conn *conn, uint64_t id,
++                                          uint64_t value,
++                                          void *conn_user_data);
++
++NGHTTP3_EXTERN void nghttp3_conn_set_recv_extra_setting_cb(
++  nghttp3_conn *conn, nghttp3_recv_extra_setting cb);
++
+ /**
+  * @function
+  *
+diff -ru a/lib/nghttp3_conn.c b/lib/nghttp3_conn.c
+--- a/lib/nghttp3_conn.c
++++ b/lib/nghttp3_conn.c
+@@ -2032,12 +2032,38 @@
+     return NGHTTP3_ERR_H3_SETTINGS_ERROR;
+   default:
+     /* Ignore unknown settings ID */
++    if (conn->recv_extra_setting) {
++      if (conn->recv_extra_setting(conn, ent->id, ent->value,
++                                   conn->user_data) != 0) {
++        return NGHTTP3_ERR_CALLBACK_FAILURE;
++      }
++    }
+     break;
+   }
+ 
+   return 0;
+ }
+ 
++int nghttp3_conn_set_extra_settings(nghttp3_conn *conn,
++                                    const nghttp3_extra_setting *ents,
++                                    size_t n) {
++  size_t i;
++  if (n > 8) {
++    return NGHTTP3_ERR_INVALID_ARGUMENT;
++  }
++  for (i = 0; i < n; ++i) {
++    conn->extra_settings[i].id = ents[i].id;
++    conn->extra_settings[i].value = ents[i].value;
++  }
++  conn->extra_settingslen = n;
++  return 0;
++}
++
++void nghttp3_conn_set_recv_extra_setting_cb(nghttp3_conn *conn,
++                                            nghttp3_recv_extra_setting cb) {
++  conn->recv_extra_setting = cb;
++}
++
+ static int
+ conn_on_priority_update_stream(nghttp3_conn *conn,
+                                const nghttp3_frame_priority_update *fr) {
+@@ -2193,6 +2219,8 @@
+   fr->settings = (nghttp3_frame_settings){
+     .type = NGHTTP3_FRAME_SETTINGS,
+     .local_settings = &conn->local.settings,
++    .extra = conn->extra_settings,
++    .nextra = conn->extra_settingslen,
+   };
+ 
+   if (conn->local.settings.origin_list) {
+diff -ru a/lib/nghttp3_conn.h b/lib/nghttp3_conn.h
+--- a/lib/nghttp3_conn.h
++++ b/lib/nghttp3_conn.h
+@@ -86,6 +86,10 @@
+   nghttp3_qpack_encoder qenc;
+   nghttp3_pq qpack_blocked_streams;
+   nghttp3_ratelim glitch_rlim;
++  /* local patch: extra SETTINGS to send / callback for unknown ones */
++  nghttp3_settings_entry extra_settings[8];
++  size_t extra_settingslen;
++  nghttp3_recv_extra_setting recv_extra_setting;
+   struct {
+     nghttp3_pq spq;
+   } sched[NGHTTP3_URGENCY_LEVELS];
+diff -ru a/lib/nghttp3_frame.h b/lib/nghttp3_frame.h
+--- a/lib/nghttp3_frame.h
++++ b/lib/nghttp3_frame.h
+@@ -94,6 +94,9 @@
+   /* local_settings is set when sending SETTINGS frame.  It is not
+      used on reception. */
+   const nghttp3_settings *local_settings;
++  /* local patch: extra entries appended when sending */
++  const nghttp3_settings_entry *extra;
++  size_t nextra;
+ } nghttp3_frame_settings;
+ 
+ typedef struct nghttp3_frame_goaway {
+diff -ru a/lib/nghttp3_stream.c b/lib/nghttp3_stream.c
+--- a/lib/nghttp3_stream.c
++++ b/lib/nghttp3_stream.c
+@@ -372,6 +372,14 @@
+     ++fr.niv;
+   }
+ 
++  /* local patch: append extra entries (max 8, so 16 slots suffice) */
++  {
++    size_t i;
++    for (i = 0; i < infr->nextra && fr.niv < 16; ++i) {
++      ents[fr.niv++] = infr->extra[i];
++    }
++  }
++
+   len = nghttp3_frame_write_settings_len(&payloadlen, &fr);
+ 
+   rv = nghttp3_stream_ensure_chunk(stream, len);

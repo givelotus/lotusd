@@ -35,6 +35,7 @@ SDK_PATH ?= $(BASEDIR)/SDKs
 NO_QT ?=
 NO_PROTOBUF ?=
 NO_OPENSSL ?=
+NO_WEBTRANSPORT ?=
 NO_QR ?=
 NO_WALLET ?=
 NO_ZMQ ?=
@@ -153,6 +154,8 @@ protobuf_packages_$(NO_PROTOBUF) = $(protobuf_packages)
 
 openssl_packages_$(NO_OPENSSL) = $(openssl_packages)
 
+webtransport_packages_$(NO_WEBTRANSPORT) = $(webtransport_packages)
+
 jemalloc_packages_$(NO_JEMALLOC) = $(jemalloc_packages)
 
 cpython_packages_$(BUILD_CPYTHON) = $(cpython_packages)
@@ -175,6 +178,10 @@ endif
 
 ifneq ($(http2_packages_),)
 packages += $(http2_packages)
+endif
+
+ifneq ($(webtransport_packages_),)
+packages += $(webtransport_packages)
 endif
 
 ifneq ($(jemalloc_packages_),)

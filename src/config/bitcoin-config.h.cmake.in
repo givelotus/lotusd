@@ -67,6 +67,10 @@
 
 /* Define if the native C++ Chronik implementation is compiled in. */
 #cmakedefine01 ENABLE_CHRONIK_NATIVE
+
+/* Define if P2P over WebTransport (HTTP/3 / QUIC) should be compiled in. */
+#cmakedefine ENABLE_WEBTRANSPORT 1
+
 /* Define if QR support should be compiled in */
 #cmakedefine USE_QRCODE 1
 
