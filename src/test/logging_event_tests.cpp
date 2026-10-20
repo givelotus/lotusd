@@ -172,6 +172,37 @@ BOOST_AUTO_TEST_CASE(float_message_precision_preserves_raw_fields) {
     BOOST_CHECK_EQUAL(Json()["message"].get_str(), "{count:.2f}");
 }
 
+BOOST_AUTO_TEST_CASE(filesystem_quoted_message_preserves_raw_snapshot) {
+    Format(BCLog::LogFormat::JSON);
+    for (std::string path :
+         {std::string{}, std::string{"a b"}, std::string{"a&b\"c\\d"},
+          std::string{"caf\xc3\xa9/\xe6\x96\x87"}, std::string{"line\nbreak\t"},
+          std::string{"a\0b", 3}}) {
+        const std::string original{path};
+        LogInfoEvent(BCLog::ALL, "filesystem_path_fixture", "path=({path:fsq})")
+            .Field(LogField::Path, path);
+        // The producer's string may be destroyed or reused before the logger
+        // reads the event. Both JSON and quoting must use the copied snapshot.
+        path.assign("mutated");
+        const auto record{Json()};
+        BOOST_CHECK_EQUAL(record["path"].get_str(), original);
+        BOOST_CHECK_EQUAL(record["message"].get_str(),
+                          strprintf("path=(%s)", fs::quoted(original)));
+        BOOST_CHECK(record["fields_truncated"].isNull());
+    }
+    LogInfoEvent(BCLog::ALL, "filesystem_static_path", "{path:fsq}")
+        .Field(LogField::Path, LogStatic("a&b\"c"));
+    const auto literal{Json()};
+    BOOST_CHECK_EQUAL(literal["path"].get_str(), "a&b\"c");
+    BOOST_CHECK_EQUAL(literal["message"].get_str(),
+                      strprintf("%s", fs::quoted("a&b\"c")));
+    // Unsupported runtime field kinds fail closed instead of inventing a
+    // numeric string quotation contract. Production lint rejects this case.
+    LogInfoEvent(BCLog::ALL, "filesystem_invalid_type", "{count:fsq}")
+        .Field(LogField::Count, 1);
+    BOOST_CHECK_EQUAL(Json()["message"].get_str(), "{count:fsq}");
+}
+
 BOOST_AUTO_TEST_CASE(mempool_persistence_fields_keep_counts_and_seconds) {
     Format(BCLog::LogFormat::JSON);
     LogInfoEvent(

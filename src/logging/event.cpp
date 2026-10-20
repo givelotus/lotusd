@@ -198,6 +198,28 @@ namespace {
             field.AppendText(out);
             return true;
         }
+        // Match fs::quoted(string): double quotes with '&' escaping quotes
+        // and ampersands. Only the human message is quoted; the copied string
+        // remains raw for structured encoders. Never guess this from a path.
+        if (format == "fsq") {
+            std::string_view value;
+            if (field.kind == FieldKind::STR) {
+                value = {reinterpret_cast<const char *>(field.data.data()),
+                         field.data.size()};
+            } else if (field.kind == FieldKind::STATIC_STR) {
+                const auto str{Load<StaticStr>(field.data)};
+                value = {str.str, str.len};
+            } else {
+                return false;
+            }
+            out += '"';
+            for (const char character : value) {
+                if (character == '"' || character == '&') out += '&';
+                out += character;
+            }
+            out += '"';
+            return true;
+        }
         // Bounded zero-padded hexadecimal preserves diagnostic bit patterns
         // without turning the structured integer into a string. Signed values
         // must be nonnegative; callers cast a signed bitfield to its wire type.
