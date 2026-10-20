@@ -108,6 +108,12 @@ gen_asmap_headers(ASMAP_HEADERS
 	data/asmap.raw
 )
 
+if(ENABLE_HTTP2)
+	set(BITCOIN_HTTP2_TESTS
+		http2_tests.cpp
+	)
+endif()
+
 # The bridge tests exercise the Rust implementation's C++ bridge.
 if(BUILD_CHRONIK AND NOT CHRONIK_IMPLEMENTATION STREQUAL "native")
 	set(BITCOIN_CHRONIK_TESTS
@@ -301,6 +307,9 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 
 		# Chronik tests
 		${BITCOIN_CHRONIK_TESTS}
+
+		# HTTP/2 tests
+		${BITCOIN_HTTP2_TESTS}
 )
 
 function(add_boost_test_runners_with_upgrade_activated SUITE EXECUTABLE)

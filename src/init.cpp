@@ -1833,6 +1833,15 @@ void SetupServerArgs(NodeContext &node) {
                   DEFAULT_HTTP_TLS_EPHEMERAL),
         ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
     argsman.AddArg(
+        "-http2",
+        strprintf("Offer HTTP/2 (ALPN h2, preferred over http/1.1) on TLS "
+                  "listeners, serving the same endpoints with the same "
+                  "access rules as HTTP/1.1. Plain-text listeners stay "
+                  "HTTP/1.1. Only in builds with HTTP/2 support "
+                  "(default: %u)",
+                  DEFAULT_HTTP2),
+        ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
+    argsman.AddArg(
         "-tlsmutual",
         strprintf("Request (but do not require) TLS client certificates on "
                   "the RPC port and record their SHA-256 fingerprint "

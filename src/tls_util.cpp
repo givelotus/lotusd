@@ -66,20 +66,34 @@ std::string BioToString(BIO *bio) {
 namespace {
 //! ALPN protocol list (length-prefixed): HTTP/1.1, which WebSocket uses
 constexpr unsigned char ALPN_HTTP11[]{8, 'h', 't', 't', 'p', '/', '1', '.', '1'};
+//! h2, then http/1.1: what an HTTP/2 server prefers, in that order
+constexpr unsigned char ALPN_H2_HTTP11[]{2,   'h', '2', 8,   'h', 't',
+                                         't', 'p', '/', '1', '.', '1'};
 
 //! Key exchange groups the client offers, in Chrome's order
 constexpr const char *GROUPS_HYBRID{"X25519MLKEM768:X25519:P-256:P-384"};
 //! The same without the hybrid group, for OpenSSL < 3.5
 constexpr const char *GROUPS_CLASSIC{"X25519:P-256:P-384"};
 
-int SelectAlpn(SSL *, const unsigned char **out, unsigned char *outlen,
+//! SSL ex_data slot marking sessions that may select h2
+int AllowH2Index() {
+    static const int index{
+        SSL_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr)};
+    return index;
+}
+
+int SelectAlpn(SSL *ssl, const unsigned char **out, unsigned char *outlen,
                const unsigned char *in, unsigned int inlen, void *) {
+    const bool h2{ssl && SSL_get_ex_data(ssl, AllowH2Index()) != nullptr};
+    // SSL_select_next_proto() takes the first protocol of *our* list that
+    // the client also offers: server preference, as web servers do.
     unsigned char *selected{nullptr};
-    if (SSL_select_next_proto(&selected, outlen, ALPN_HTTP11,
-                              sizeof(ALPN_HTTP11), in,
-                              inlen) != OPENSSL_NPN_NEGOTIATED) {
-        // No http/1.1 offered (e.g. h2 only): continue without ALPN, as
-        // HTTP/1.1-only web servers do.
+    if (SSL_select_next_proto(&selected, outlen,
+                              h2 ? ALPN_H2_HTTP11 : ALPN_HTTP11,
+                              h2 ? sizeof(ALPN_H2_HTTP11) : sizeof(ALPN_HTTP11),
+                              in, inlen) != OPENSSL_NPN_NEGOTIATED) {
+        // Nothing we speak offered (e.g. h2 only, without HTTP/2):
+        // continue without ALPN, as HTTP/1.1-only web servers do.
         return SSL_TLSEXT_ERR_NOACK;
     }
     *out = selected;
@@ -113,6 +127,10 @@ void ApplyClientProfile(SSL_CTX *ctx) {
     SSL_CTX_set_alpn_protos(ctx, ALPN_HTTP11, sizeof(ALPN_HTTP11));
 }
 } // namespace
+
+void AllowServerAlpnH2(SSL *ssl) {
+    SSL_set_ex_data(ssl, AllowH2Index(), reinterpret_cast<void *>(1));
+}
 
 std::string NegotiatedAlpn(const SSL *ssl) {
     const unsigned char *data{nullptr};
