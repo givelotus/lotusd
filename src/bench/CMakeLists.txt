@@ -70,6 +70,7 @@ add_executable(bitcoin-bench
 	prevector.cpp
 	readwriteblock.cpp
 	rollingbloom.cpp
+	txrelay_index.cpp
 	rpc_blockchain.cpp
 	rpc_mempool.cpp
 	streams_findbyte.cpp
