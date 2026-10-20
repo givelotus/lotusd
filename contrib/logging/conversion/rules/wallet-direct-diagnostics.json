@@ -1,0 +1,178 @@
+{
+  "schema": 1,
+  "batch": "wallet-direct-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/wallet/load.cpp",
+      "rules": [
+        {
+          "id": "wallet_directory_selected",
+          "old": "LogPrintf(\"Using wallet directory %s\\n\", fs::PathToString(GetWalletDir()))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_directory_selected\", \"Using wallet directory {directory}\").Field(BCLog::LogField::Directory, fs::PathToString(GetWalletDir()))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Using wallet directory %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(GetWalletDir())"
+            ]
+          },
+          "review_note": "Preserve original Info severity and exact readable error/path text, directory iteration/recursion choices, wallet database/cursor return values and partial-decryption exception semantics. No key, passphrase, wallet record contents or SQL data are newly logged. The dynamic WalletLogPrintf formatting helper is separate infrastructure review; this catalog covers all nine concrete direct Info sites."
+        }
+      ]
+    },
+    {
+      "path": "src/wallet/sqlite.cpp",
+      "rules": [
+        {
+          "id": "wallet_sqlite_close_failed",
+          "old": "LogPrintf(\"SQLiteDatabase: Failed to close database\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_sqlite_close_failed\", \"SQLiteDatabase: Failed to close database\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "SQLiteDatabase: Failed to close database\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve original Info severity and exact readable error/path text, directory iteration/recursion choices, wallet database/cursor return values and partial-decryption exception semantics. No key, passphrase, wallet record contents or SQL data are newly logged. The dynamic WalletLogPrintf formatting helper is separate infrastructure review; this catalog covers all nine concrete direct Info sites."
+        }
+      ]
+    },
+    {
+      "path": "src/wallet/walletdb.cpp",
+      "rules": [
+        {
+          "id": "wallet_database_cursor_start_failed",
+          "old": "LogPrintf(\"Error getting wallet database cursor\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_database_cursor_start_failed\", \"Error getting wallet database cursor\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Error getting wallet database cursor\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve original Info severity and exact readable error/path text, directory iteration/recursion choices, wallet database/cursor return values and partial-decryption exception semantics. No key, passphrase, wallet record contents or SQL data are newly logged. The dynamic WalletLogPrintf formatting helper is separate infrastructure review; this catalog covers all nine concrete direct Info sites."
+        },
+        {
+          "id": "wallet_database_cursor_read_failed",
+          "old": "LogPrintf(\"Error reading next record from wallet database\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_database_cursor_read_failed\", \"Error reading next record from wallet database\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Error reading next record from wallet database\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve original Info severity and exact readable error/path text, directory iteration/recursion choices, wallet database/cursor return values and partial-decryption exception semantics. No key, passphrase, wallet record contents or SQL data are newly logged. The dynamic WalletLogPrintf formatting helper is separate infrastructure review; this catalog covers all nine concrete direct Info sites."
+        }
+      ]
+    },
+    {
+      "path": "src/wallet/scriptpubkeyman.cpp",
+      "rules": [
+        {
+          "id": "wallet_partial_key_decryption__legacy",
+          "old": "LogPrintf(\"The wallet is probably corrupted: Some keys decrypt but \"\n                      \"not all.\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_partial_key_decryption\", \"The wallet is probably corrupted: Some keys decrypt but not all.\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "The wallet is probably corrupted: Some keys decrypt but not all.\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve original Info severity and exact readable error/path text, directory iteration/recursion choices, wallet database/cursor return values and partial-decryption exception semantics. No key, passphrase, wallet record contents or SQL data are newly logged. The dynamic WalletLogPrintf formatting helper is separate infrastructure review; this catalog covers all nine concrete direct Info sites."
+        },
+        {
+          "id": "wallet_partial_key_decryption__descriptor",
+          "old": "LogPrintf(\"The wallet is probably corrupted: Some keys decrypt but not \"\n                  \"all.\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_partial_key_decryption\", \"The wallet is probably corrupted: Some keys decrypt but not all.\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "The wallet is probably corrupted: Some keys decrypt but not all.\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve original Info severity and exact readable error/path text, directory iteration/recursion choices, wallet database/cursor return values and partial-decryption exception semantics. No key, passphrase, wallet record contents or SQL data are newly logged. The dynamic WalletLogPrintf formatting helper is separate infrastructure review; this catalog covers all nine concrete direct Info sites."
+        }
+      ]
+    },
+    {
+      "path": "src/wallet/walletutil.cpp",
+      "rules": [
+        {
+          "id": "wallet_directory_iteration_failed",
+          "old": "LogPrintf(\"%s: %s %s\\n\", __func__, ec.message(),\n                      fs::PathToString(it->path()))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_directory_iteration_failed\", \"{source_function}: {error} {path}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::Error, ec.message()).Field(BCLog::LogField::Path, fs::PathToString(it->path()))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: %s %s\n",
+            "specifiers": [
+              "%s",
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "ec.message()",
+              "fs::PathToString(it->path())"
+            ]
+          },
+          "review_note": "Preserve original Info severity and exact readable error/path text, directory iteration/recursion choices, wallet database/cursor return values and partial-decryption exception semantics. No key, passphrase, wallet record contents or SQL data are newly logged. The dynamic WalletLogPrintf formatting helper is separate infrastructure review; this catalog covers all nine concrete direct Info sites."
+        },
+        {
+          "id": "wallet_directory_scan_failed",
+          "old": "LogPrintf(\"%s: Error scanning %s: %s\\n\", __func__,\n                              fs::PathToString(it->path()), dir_ec.message())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_directory_scan_failed\", \"{source_function}: Error scanning {path}: {error}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::Path, fs::PathToString(it->path())).Field(BCLog::LogField::Error, dir_ec.message())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: Error scanning %s: %s\n",
+            "specifiers": [
+              "%s",
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "fs::PathToString(it->path())",
+              "dir_ec.message()"
+            ]
+          },
+          "review_note": "Preserve original Info severity and exact readable error/path text, directory iteration/recursion choices, wallet database/cursor return values and partial-decryption exception semantics. No key, passphrase, wallet record contents or SQL data are newly logged. The dynamic WalletLogPrintf formatting helper is separate infrastructure review; this catalog covers all nine concrete direct Info sites."
+        },
+        {
+          "id": "wallet_directory_scan_exception",
+          "old": "LogPrintf(\"%s: Error scanning %s: %s\\n\", __func__,\n                      it->path().string(), e.what())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_directory_scan_exception\", \"{source_function}: Error scanning {path}: {error}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::Path, it->path().string()).Field(BCLog::LogField::Error, e.what())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: Error scanning %s: %s\n",
+            "specifiers": [
+              "%s",
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "it->path().string()",
+              "e.what()"
+            ]
+          },
+          "review_note": "Preserve original Info severity and exact readable error/path text, directory iteration/recursion choices, wallet database/cursor return values and partial-decryption exception semantics. No key, passphrase, wallet record contents or SQL data are newly logged. The dynamic WalletLogPrintf formatting helper is separate infrastructure review; this catalog covers all nine concrete direct Info sites."
+        }
+      ]
+    }
+  ],
+  "scope_limits": "Actual normal startup and owned permission-denied wallet-directory scan controls pending. SQLite close/cursor/partial-decryption/iterator-exception rare failures not newly forced; no claims of backend or encryption repair."
+}

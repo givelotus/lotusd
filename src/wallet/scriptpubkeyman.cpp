@@ -198,8 +198,9 @@ bool LegacyScriptPubKeyMan::CheckDecryptionKey(
             }
         }
         if (keyPass && keyFail) {
-            LogPrintf("The wallet is probably corrupted: Some keys decrypt but "
-                      "not all.\n");
+            LogInfoEvent(
+                BCLog::ALL, "wallet_partial_key_decryption",
+                "The wallet is probably corrupted: Some keys decrypt but not all.");
             throw std::runtime_error(
                 "Error unlocking wallet: some keys decrypt but not all. Your "
                 "wallet file may be corrupt.");
@@ -1719,8 +1720,9 @@ bool DescriptorScriptPubKeyMan::CheckDecryptionKey(
         }
     }
     if (keyPass && keyFail) {
-        LogPrintf("The wallet is probably corrupted: Some keys decrypt but not "
-                  "all.\n");
+        LogInfoEvent(
+            BCLog::ALL, "wallet_partial_key_decryption",
+            "The wallet is probably corrupted: Some keys decrypt but not all.");
         throw std::runtime_error(
             "Error unlocking wallet: some keys decrypt but not all. Your "
             "wallet file may be corrupt.");
