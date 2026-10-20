@@ -11,8 +11,6 @@
 #include <cstdio>
 #include <cstring>
 
-#include <fcntl.h>
-#include <unistd.h>
 
 namespace chronik::native::lotus_v2 {
 
@@ -23,7 +21,7 @@ constexpr TableSpec kTables[] = {
     {"block_receipts"},
     {"undo"},
     {"tx_locations"},
-    {"outputs"},
+    {"coins"},
     {"postings", TableSpec::Kind::Dup, 36},
     {"explorer_height"},
     {"explorer_block"},
@@ -113,128 +111,7 @@ std::array<uint8_t, 36> Dup36(ByteView v) {
     return out;
 }
 
-int DataSync(int fd) {
-#ifdef __APPLE__
-    return fcntl(fd, F_FULLFSYNC);
-#else
-    return fdatasync(fd);
-#endif
-}
-
 } // namespace
-
-// ---- Flat files ----
-
-FlatFileStore::File::~File() {
-    if (fd >= 0) {
-        ::close(fd);
-    }
-}
-
-std::filesystem::path FlatFileStore::SegmentPath(uint32_t file_num) const {
-    char name[32];
-    std::snprintf(name, sizeof(name), "v2_tx_%05u.dat", unsigned(file_num));
-    return m_dir / name;
-}
-
-std::shared_ptr<FlatFileStore::File>
-FlatFileStore::GetOrOpen(uint32_t file_num, bool create) const {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    if (auto it = m_files.find(file_num); it != m_files.end()) {
-        return it->second;
-    }
-    const auto path = SegmentPath(file_num);
-    const int fd =
-        ::open(path.c_str(), O_RDWR | O_CLOEXEC | (create ? O_CREAT : 0), 0666);
-    if (fd < 0) {
-        ThrowDb("open " + path.string() + ": " + IoError(errno));
-    }
-    auto file = std::make_shared<File>();
-    file->fd = fd;
-    m_files.emplace(file_num, file);
-    return file;
-}
-
-void FlatFileStore::WriteAt(uint32_t file_num, uint64_t offset,
-                            ByteView bytes) const {
-    auto file = GetOrOpen(file_num, true);
-    size_t done = 0;
-    while (done < bytes.size()) {
-        const ssize_t n = ::pwrite(file->fd, bytes.data() + done,
-                                   bytes.size() - done, off_t(offset + done));
-        if (n < 0 && errno == EINTR) {
-            continue;
-        }
-        if (n <= 0) {
-            const std::string err =
-                n == 0 ? std::string("failed to write whole buffer")
-                       : IoError(errno);
-            ThrowDb("pwrite flat file " + std::to_string(file_num) + "@" +
-                    std::to_string(offset) + ": " + err);
-        }
-        done += size_t(n);
-    }
-}
-
-void FlatFileStore::SyncFile(uint32_t file_num) const {
-    auto file = GetOrOpen(file_num, true);
-    if (DataSync(file->fd) != 0) {
-        ThrowDb("fdatasync flat file " + std::to_string(file_num) + ": " +
-                IoError(errno));
-    }
-}
-
-Bytes FlatFileStore::ReadAt(uint32_t file_num, uint64_t offset,
-                            size_t len) const {
-    if (len == 0) {
-        return {};
-    }
-    auto file = GetOrOpen(file_num, false);
-    Bytes buf(len);
-    size_t done = 0;
-    while (done < len) {
-        const ssize_t n = ::pread(file->fd, buf.data() + done, len - done,
-                                  off_t(offset + done));
-        if (n < 0 && errno == EINTR) {
-            continue;
-        }
-        if (n <= 0) {
-            const std::string err =
-                n == 0 ? std::string("failed to fill whole buffer")
-                       : IoError(errno);
-            ThrowDb("pread flat file " + std::to_string(file_num) + "@" +
-                    std::to_string(offset) + "+" + std::to_string(len) +
-                    ": " + err);
-        }
-        done += size_t(n);
-    }
-    return buf;
-}
-
-void FlatFileStore::TruncateTo(uint32_t file_num, uint64_t write_pos) const {
-    std::shared_ptr<File> file;
-    try {
-        file = GetOrOpen(file_num, false);
-    } catch (const V2Error &) {
-    }
-    if (file) {
-        if (::ftruncate(file->fd, off_t(write_pos)) != 0) {
-            ThrowDb("truncate flat file " + std::to_string(file_num) +
-                    " to " + std::to_string(write_pos) + ": " +
-                    IoError(errno));
-        }
-        if (DataSync(file->fd) != 0) {
-            ThrowDb("sync truncated flat file " + std::to_string(file_num) +
-                    ": " + IoError(errno));
-        }
-    }
-    std::lock_guard<std::mutex> lock(m_mutex);
-    for (auto it = m_files.upper_bound(file_num); it != m_files.end();) {
-        std::error_code ec;
-        std::filesystem::remove(SegmentPath(it->first), ec);
-        it = m_files.erase(it);
-    }
-}
 
 // ---- Env ----
 
@@ -244,8 +121,7 @@ V2Env::Route V2Env::RouteKey(ByteView key) {
     auto meta = [&](std::string_view name) {
         return key.size() == name.size() && StartsWith(key, Str(name));
     };
-    if (meta("v2-binding") || meta("tip") || meta("disconnected") ||
-        meta("flat_pos")) {
+    if (meta("v2-binding") || meta("tip") || meta("disconnected")) {
         return {META, key, std::nullopt};
     }
     if (key.size() >= 1) {
@@ -261,7 +137,7 @@ V2Env::Route V2Env::RouteKey(ByteView key) {
                 if (rest.size() == 32) return {TX_LOCATIONS, rest, {}};
                 break;
             case 'o':
-                if (rest.size() == 36) return {OUTPUTS, rest, {}};
+                if (rest.size() == 36) return {COINS, rest, {}};
                 break;
             case 'p':
                 if (rest.size() == 69) {
@@ -294,7 +170,7 @@ V2Env::Route V2Env::RouteKey(ByteView key) {
     ThrowDb("unrecognized logical key of length " + std::to_string(key.size()));
 }
 
-V2Env::V2Env(const std::filesystem::path &dir) : m_flat(dir) {
+V2Env::V2Env(const std::filesystem::path &dir) {
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     if (ec) {
@@ -378,11 +254,6 @@ std::optional<Bytes> V2EnvSnapshot::Get(ByteView key) const {
         }
         return Bytes(value->begin(), value->end());
     });
-}
-
-Bytes V2EnvSnapshot::ReadFlat(uint32_t file_num, uint64_t offset,
-                              size_t len) const {
-    return m_env->Flat().ReadAt(file_num, offset, len);
 }
 
 std::optional<std::array<uint8_t, 36>> V2EnvSnapshot::NextPostingDupfixed(
@@ -488,7 +359,7 @@ std::vector<std::pair<Bytes, Bytes>> V2EnvSnapshot::DumpAll() const {
         {V2Env::BLOCK_RECEIPTS, "b"},
         {V2Env::UNDO, "u"},
         {V2Env::TX_LOCATIONS, "t"},
-        {V2Env::OUTPUTS, "o"},
+        {V2Env::COINS, "o"},
         {V2Env::EXPLORER_HEIGHT, "eH"},
         {V2Env::EXPLORER_BLOCK, "eB"},
         {V2Env::EXPLORER_BLOCK_TX, "eO"},
