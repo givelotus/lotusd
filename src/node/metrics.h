@@ -156,6 +156,10 @@ struct NodeMetrics {
     metrics::Gauge &p2p_compress_once_cache_entries;
     metrics::Counter &p2p_compress_once_encodes;
 
+    // Serialized block messages (-blockmessagecache)
+    metrics::Counter &p2p_block_message_cache_hits;
+    metrics::Counter &p2p_block_message_cache_misses;
+
     // Chain
     metrics::Gauge &tip_height;
     metrics::Gauge &tip_timestamp;

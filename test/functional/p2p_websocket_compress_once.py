@@ -50,8 +50,12 @@ class P2PWebSocketCompressOnceTest(BitcoinTestFramework):
         assert_equal(res.status, 200)
         values = {}
         for line in res.read().decode().splitlines():
-            if line.startswith("fullnode_p2p_compress_once") or line.startswith(
-                "fullnode_p2p_websocket_independent"
+            if line.startswith(
+                (
+                    "fullnode_p2p_compress_once",
+                    "fullnode_p2p_websocket_independent",
+                    "fullnode_p2p_block_message_cache",
+                )
             ):
                 name, value = line.rsplit(" ", 1)
                 values[name] = float(value)
@@ -142,6 +146,10 @@ class P2PWebSocketCompressOnceTest(BitcoinTestFramework):
         assert_equal(after["fullnode_p2p_compress_once_cache_entries"], 1)
         assert after["fullnode_p2p_compress_once_cache_bytes"] > 0
 
+        self.log.info("It was read and checksummed once for all five peers")
+        assert_equal(delta("fullnode_p2p_block_message_cache_misses_total"), 1)
+        assert_equal(delta("fullnode_p2p_block_message_cache_hits_total"), 4)
+
         self.log.info("Serving it again is a cache hit")
         dict_a.send_message(getdata)
         while dict_a.recv_raw_message()[0] != b"block":
@@ -154,6 +162,10 @@ class P2PWebSocketCompressOnceTest(BitcoinTestFramework):
         assert_equal(
             again["fullnode_p2p_compress_once_cache_hits_total"],
             after["fullnode_p2p_compress_once_cache_hits_total"] + 1,
+        )
+        assert_equal(
+            again["fullnode_p2p_block_message_cache_hits_total"],
+            after["fullnode_p2p_block_message_cache_hits_total"] + 1,
         )
 
         self.log.info("A zstd peer may send independent frames")

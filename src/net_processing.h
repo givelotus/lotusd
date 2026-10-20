@@ -102,6 +102,12 @@ struct CNodeStateStats {
     int64_t presync_height{-1};
 };
 
+//! Default -blockmessagecache, MiB of serialized block messages kept for
+//! serving the same block to several peers
+static constexpr int64_t DEFAULT_BLOCK_MESSAGE_CACHE_MB{64};
+//! Blocks smaller than this are cheap to serialize again and not cached
+static constexpr size_t BLOCK_MESSAGE_CACHE_MIN_BYTES{64 * 1024};
+
 class PeerManager : public CValidationInterface, public NetEventsInterface {
 public:
     struct Options {
@@ -131,6 +137,10 @@ public:
         //! Whether or not the internal RNG behaves deterministically (this is
         //! a test-only option).
         bool deterministic_rng{false};
+        //! Bytes of recently served block messages kept, with their
+        //! checksums, for the next peers asking for them (0 disables)
+        size_t block_message_cache_bytes{size_t(DEFAULT_BLOCK_MESSAGE_CACHE_MB)
+                                         << 20};
     };
 
     static std::unique_ptr<PeerManager>

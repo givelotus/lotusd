@@ -422,8 +422,12 @@ def scrape_metrics(node):
         return {}
     values = {}
     for line in text.splitlines():
-        if line.startswith("lotus_p2p_compress_once") or line.startswith(
-            "lotus_p2p_websocket_independent"
+        if line.startswith(
+            (
+                "fullnode_p2p_compress_once",
+                "fullnode_p2p_websocket_independent",
+                "fullnode_p2p_block_message_cache",
+            )
         ):
             name, value = line.rsplit(" ", 1)
             values[name] = float(value)

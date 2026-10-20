@@ -39,6 +39,7 @@
 #include <util/sockwakeup.h>
 #include <util/time.h>
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -139,11 +140,16 @@ struct CSerializedNetMsg {
         CSerializedNetMsg copy;
         copy.data = data;
         copy.m_type = m_type;
+        copy.m_checksum = m_checksum;
         return copy;
     }
 
     std::vector<uint8_t> data;
     std::string m_type;
+    //! The first bytes of Hash(data), if already known (e.g. for a block
+    //! message served to many peers); else computed when it is sent
+    std::optional<std::array<uint8_t, CMessageHeader::CHECKSUM_SIZE>>
+        m_checksum;
 };
 
 const std::vector<std::string> CONNECTION_TYPE_DOC{
