@@ -12,6 +12,7 @@
 #include <chainparams.h>
 #include <config.h>
 #include <lotus_v2/chronik_explorer.h>
+#include <lotus_v2/chronik_legacy.h>
 #include <lotus_v2/fee_hysteresis.h>
 #include <lotus_v2/header.h>
 #include <lotus_v2/output.h>
@@ -122,26 +123,44 @@ ffi::Binding GetV2Binding() {
 ffi::NativeTx ConvertV2NativeTx(const CTransaction &ctx, bool coinbase,
                                 uint32_t n, uint32_t file_num,
                                 uint32_t data_pos) {
-    lotus::v2::Transaction v2tx = ctx.ToV2Transaction();
-    if (coinbase) {
-        NormalizeCoinbase(v2tx);
-    } else {
-        NormalizeInputs(v2tx);
-    }
-
-    std::vector<uint8_t> tx_wire;
-    std::string err;
-    if (!lotus::v2::EncodeTransaction(v2tx, lotus::v2::DefaultTxProfile,
-                                      tx_wire, err)) {
-        throw std::runtime_error("V2 EncodeTransaction failed: " + err);
-    }
     std::vector<uint8_t> fact_wire;
     std::vector<lotus::v2::ChronikFullInput> fact_inputs;
-    if (!lotus::v2::MakeChronikExplorerFacts(
-            v2tx, lotus::v2::DefaultTxProfile,
-            std::span<const uint8_t>(tx_wire.data(), tx_wire.size()),
-            fact_wire, fact_inputs, err)) {
-        throw std::runtime_error("MakeChronikExplorerFacts failed: " + err);
+    std::vector<std::vector<uint8_t>> output_wires;
+    uint64_t lock = ctx.nLockTime;
+    if (ctx.nVersion != 7) {
+        auto facts = lotus::v2::MakeChronikLegacyFacts(ctx);
+        fact_wire = std::move(facts.wire);
+        fact_inputs = std::move(facts.inputs);
+        output_wires = std::move(facts.outputs);
+    } else {
+        lotus::v2::Transaction v2tx = ctx.ToV2Transaction();
+        if (coinbase) {
+            NormalizeCoinbase(v2tx);
+        } else {
+            NormalizeInputs(v2tx);
+        }
+
+        std::vector<uint8_t> tx_wire;
+        std::string err;
+        if (!lotus::v2::EncodeTransaction(v2tx, lotus::v2::DefaultTxProfile,
+                                          tx_wire, err)) {
+            throw std::runtime_error("V2 EncodeTransaction failed: " + err);
+        }
+        if (!lotus::v2::MakeChronikExplorerFacts(
+                v2tx, lotus::v2::DefaultTxProfile,
+                std::span<const uint8_t>(tx_wire.data(), tx_wire.size()),
+                fact_wire, fact_inputs, err)) {
+            throw std::runtime_error("MakeChronikExplorerFacts failed: " + err);
+        }
+
+        lock = v2tx.lock;
+        for (const auto &out : v2tx.outputs) {
+            std::vector<uint8_t> wire;
+            if (!lotus::v2::EncodeOutput(out, wire, err)) {
+                throw std::runtime_error("V2 EncodeOutput failed: " + err);
+            }
+            output_wires.push_back(std::move(wire));
+        }
     }
 
     ffi::NativeTx tx;
@@ -153,7 +172,7 @@ ffi::NativeTx ConvertV2NativeTx(const CTransaction &ctx, bool coinbase,
     tx.full_inputs.reserve(fact_inputs.size());
     for (size_t i = 0; i < fact_inputs.size(); ++i) {
         const auto &fi = fact_inputs[i];
-        if (fi.flags == 1) {
+        if (fi.flags == 1 || fi.flags == 4) {
             tx.inputs.push_back(ffi::Input{
                 .txid = fi.prev_txid,
                 .out_idx = fi.prev_index,
@@ -180,16 +199,12 @@ ffi::NativeTx ConvertV2NativeTx(const CTransaction &ctx, bool coinbase,
         }
         tx.full_inputs.push_back(std::move(full));
     }
-    tx.outputs.reserve(v2tx.outputs.size());
-    for (const auto &output : v2tx.outputs) {
-        std::vector<uint8_t> out_wire;
-        if (!lotus::v2::EncodeOutput(output, out_wire, err)) {
-            throw std::runtime_error("V2 EncodeOutput failed: " + err);
-        }
-        tx.outputs.push_back(ffi::NativeOutput{.wire = std::move(out_wire)});
+    tx.outputs.reserve(output_wires.size());
+    for (auto &wire : output_wires) {
+        tx.outputs.push_back(ffi::NativeOutput{.wire = std::move(wire)});
     }
     tx.wire = std::move(fact_wire);
-    tx.lock = v2tx.lock;
+    tx.lock = lock;
     return tx;
 }
 
@@ -250,63 +265,63 @@ ffi::NativeBlock ConvertV2NativeBlock(const CBlock &block,
 
 namespace {
 
-    /**
-     * The consensus block-size limit (chronik.cpp get_v2_max_block_bytes): the
-     * configured limit, at least the adaptive ceiling, within 32 bits.
-     */
-    uint32_t V2MaxBlockBytes() {
-        const uint64_t limit =
-            std::max(GetConfig().GetMaxBlockSize(),
-                     lotus::v2::DEFAULT_ADAPTIVE_MAX_BLOCK_CEILING);
-        return uint32_t(
-            std::min<uint64_t>(limit, std::numeric_limits<uint32_t>::max()));
-    }
+/**
+ * The consensus block-size limit (chronik.cpp get_v2_max_block_bytes): the
+ * configured limit, at least the adaptive ceiling, within 32 bits.
+ */
+uint32_t V2MaxBlockBytes() {
+    const uint64_t limit =
+        std::max(GetConfig().GetMaxBlockSize(),
+                 lotus::v2::DEFAULT_ADAPTIVE_MAX_BLOCK_CEILING);
+    return uint32_t(
+        std::min<uint64_t>(limit, std::numeric_limits<uint32_t>::max()));
+}
 
-    /** bridge.rs v2_limits: index bounds follow the block-size limit. */
-    ffi::ServiceLimits V2Limits() {
-        const uint32_t block_bytes = V2MaxBlockBytes();
-        const lotus_v2::Bounds bounds(block_bytes);
-        return ffi::ServiceLimits{
-            .block_bytes = block_bytes,
-            .transactions = uint32_t(bounds.Transactions()),
-            .changes = uint32_t(bounds.Changes()),
-            .roots = 256,
-            .clauses = 16,
-            .page_size = 1000,
-            .posting_reads = 65536,
-            .work = 131072,
-            .response_bytes = 1024 * 1024,
-        };
-    }
-
-    /**
-     * Reads indexed transactions from the node's block files and converts
-     * them exactly as at connect (the index stores only positions).
-     */
-    class AbcTxSource final : public lotus_v2::TxSource {
-    public:
-        explicit AbcTxSource(const node::NodeContext &node) : m_node(node) {}
-        lotus_v2::NodeTx LoadTx(const lotus_v2::TxPos &pos,
-                                const lotus_v2::TxId &txid,
-                                bool coinbase) const override {
-            CMutableTransaction mtx;
-            if (!m_node.chainman->m_blockman.ReadTxFromDisk(
-                    mtx, FlatFilePos(int(pos.file_num), pos.data_pos))) {
-                throw std::runtime_error("Reading tx data from disk failed");
-            }
-            const CTransaction tx(std::move(mtx));
-            if (HashArray(tx.GetId()) != txid.hash.b) {
-                throw std::runtime_error(
-                    "transaction identity at block-file position");
-            }
-            return lotus_v2::NodeTx::From(lotus_v2::ConvertNativeTx(
-                ConvertV2NativeTx(tx, coinbase, 0, pos.file_num, pos.data_pos),
-                lotus_v2::Anchor{}));
-        }
-
-    private:
-        const node::NodeContext &m_node;
+/** bridge.rs v2_limits: index bounds follow the block-size limit. */
+ffi::ServiceLimits V2Limits() {
+    const uint32_t block_bytes = V2MaxBlockBytes();
+    const lotus_v2::Bounds bounds(block_bytes);
+    return ffi::ServiceLimits{
+        .block_bytes = block_bytes,
+        .transactions = uint32_t(bounds.Transactions()),
+        .changes = uint32_t(bounds.Changes()),
+        .roots = 256,
+        .clauses = 16,
+        .page_size = 1000,
+        .posting_reads = 65536,
+        .work = 131072,
+        .response_bytes = 1024 * 1024,
     };
+}
+
+/**
+ * Reads indexed transactions from the node's block files and converts
+ * them exactly as at connect (the index stores only positions).
+ */
+class AbcTxSource final : public lotus_v2::TxSource {
+public:
+    explicit AbcTxSource(const node::NodeContext &node) : m_node(node) {}
+    lotus_v2::NodeTx LoadTx(const lotus_v2::TxPos &pos,
+                            const lotus_v2::TxId &txid,
+                            bool coinbase) const override {
+        CMutableTransaction mtx;
+        if (!m_node.chainman->m_blockman.ReadTxFromDisk(
+                mtx, FlatFilePos(int(pos.file_num), pos.data_pos))) {
+            throw std::runtime_error("Reading tx data from disk failed");
+        }
+        const CTransaction tx(std::move(mtx));
+        if (HashArray(tx.GetId()) != txid.hash.b) {
+            throw std::runtime_error(
+                "transaction identity at block-file position");
+        }
+        return lotus_v2::NodeTx::From(lotus_v2::ConvertNativeTx(
+            ConvertV2NativeTx(tx, coinbase, 0, pos.file_num, pos.data_pos),
+            lotus_v2::Anchor{}));
+    }
+
+private:
+    const node::NodeContext &m_node;
+};
 
 } // namespace
 

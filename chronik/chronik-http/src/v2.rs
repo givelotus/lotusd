@@ -528,6 +528,7 @@ mod tests {
     }
     fn output() -> Output {
         Output {
+            legacy_script: None,
             flags: 0,
             value: u64::MAX,
             token_id: Hash32([0; 32]),

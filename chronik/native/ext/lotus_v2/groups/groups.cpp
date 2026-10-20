@@ -70,7 +70,7 @@ void V2BranchGroup::InputMembers(const GroupQuery &query, const GroupAux *,
     }
     for (size_t idx = 0; idx < query.tx->inputs.size(); ++idx) {
         const auto &coin = query.tx->inputs[idx].coin;
-        if (!coin) {
+        if (!coin || coin->is_legacy) {
             continue;
         }
         if (auto v2_out = DecodeV2OutputScript(coin->output.script)) {
@@ -83,6 +83,7 @@ void V2BranchGroup::InputMembers(const GroupQuery &query, const GroupAux *,
 
 void V2BranchGroup::OutputMembers(const GroupQuery &query, const GroupAux *,
                                   std::vector<MemberItem> &out) const {
+    if (query.tx->version != 7) return;
     for (size_t idx = 0; idx < query.tx->outputs.size(); ++idx) {
         auto v2_out = DecodeV2OutputScript(query.tx->outputs[idx].script);
         if (!v2_out || v2_out->IsBurn()) {
@@ -116,7 +117,7 @@ void V2AssetGroup::InputMembers(const GroupQuery &query, const GroupAux *,
     }
     for (size_t idx = 0; idx < query.tx->inputs.size(); ++idx) {
         const auto &coin = query.tx->inputs[idx].coin;
-        if (!coin) {
+        if (!coin || coin->is_legacy) {
             continue;
         }
         auto v2_out = DecodeV2OutputScript(coin->output.script);
@@ -128,6 +129,7 @@ void V2AssetGroup::InputMembers(const GroupQuery &query, const GroupAux *,
 
 void V2AssetGroup::OutputMembers(const GroupQuery &query, const GroupAux *,
                                  std::vector<MemberItem> &out) const {
+    if (query.tx->version != 7) return;
     for (size_t idx = 0; idx < query.tx->outputs.size(); ++idx) {
         auto v2_out = DecodeV2OutputScript(query.tx->outputs[idx].script);
         if (v2_out && v2_out->HasToken() && !v2_out->IsBurn()) {

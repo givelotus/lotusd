@@ -234,6 +234,7 @@ mod tests {
         let script = |script: &[u8]| Script::new(script.to_vec().into());
         assert_eq!(
             parse_tx_lokad_ids(&TxMut {
+                native_txid: None,
                 version: 1,
                 inputs: vec![
                     TxInput {
@@ -271,6 +272,7 @@ mod tests {
         );
         assert_eq!(
             parse_tx_lokad_ids(&TxMut {
+                native_txid: None,
                 version: 1,
                 inputs: vec![TxInput {
                     script: script(b"\x4d\x04\0efgh"),
