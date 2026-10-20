@@ -38,8 +38,10 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <future>
+#include <limits>
 #include <string>
 #include <thread>
 
@@ -136,6 +138,137 @@ struct MiningPoolTestSetup : TestChain100Setup {
 };
 
 BOOST_FIXTURE_TEST_SUITE(mining_pool_tests, MiningPoolTestSetup)
+
+BOOST_AUTO_TEST_CASE(operator_commission_exact_percent_parser) {
+    using Pool = node::MiningPoolManager;
+    for (const auto &[text, bps] : std::vector<std::pair<std::string, int>>{
+        {"0", 0}, {"0.00", 0}, {"0.01", 1}, {"1.2", 120}, {"1.25", 125},
+        {"99.99", 9999}, {"100", 10000}, {"100.00", 10000}})
+        BOOST_CHECK_EQUAL(Pool::ParseOperatorFeePercent(text), bps);
+    for (const auto *text : {"", "-1", "100.01", "101", "nan", "1e1", "+1",
+                             ".5", "1.", "0.001", "1.2.3", "1%", " 1", "1 "})
+        BOOST_CHECK_THROW(Pool::ParseOperatorFeePercent(text), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(operator_commission_integer_rounding) {
+    using Pool = node::MiningPoolManager;
+    for (const uint16_t bps : {0, 1, 125, 9999, 10000}) {
+        for (const int64_t amount : {0LL, 1LL, 79LL, 80LL, 9999LL, 10000LL,
+                                    10001LL, 5000000000LL}) {
+            const auto fee = Pool::OperatorCommission(amount * SATOSHI, bps);
+            BOOST_CHECK_EQUAL(fee / SATOSHI, (amount * bps) / 10000);
+            BOOST_CHECK(fee >= Amount::zero());
+            BOOST_CHECK(fee <= amount * SATOSHI);
+            BOOST_CHECK_EQUAL(((amount * SATOSHI - fee) + fee) / SATOSHI, amount);
+        }
+    }
+    const int64_t huge = std::numeric_limits<int64_t>::max();
+    BOOST_CHECK_EQUAL(Pool::OperatorCommission(huge * SATOSHI, 10000) / SATOSHI, huge);
+    BOOST_CHECK_THROW(Pool::OperatorCommission(-SATOSHI, 100), std::invalid_argument);
+    BOOST_CHECK_THROW(Pool::OperatorCommission(SATOSHI, 10001), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(operator_commission_jobs_conserve_and_freeze) {
+    const Config &config = GetConfig();
+    CKey worker_key;
+    worker_key.MakeNewKey(true);
+    const auto worker_address = NativeAddress(worker_key);
+    const auto operator_address = NativeAddress(coinbaseKey);
+    for (const auto &[percent, bps] : std::vector<std::pair<std::string, int>>{
+            {"0", 0}, {"0.01", 1}, {"1.25", 125}, {"100", 10000}}) {
+        ArgsManager args;
+        args.ForceSetArg("-pooladdress", operator_address);
+        args.ForceSetArg("-poolfeepercent", percent);
+        node::MiningPoolManager pool;
+        pool.Configure(args, config);
+        lotus::v2::node::PoolJob cached;
+        const auto job = pool.GetMiningJobJSON(config, m_node, worker_address, &cached);
+        BOOST_CHECK_EQUAL(job.find_value("operator_fee_bps").getInt<int>(), bps);
+        const auto fee = node::MiningPoolManager::OperatorCommission(cached.block_reward, bps);
+        BOOST_CHECK_EQUAL(cached.operator_commission / SATOSHI, fee / SATOSHI);
+        BOOST_CHECK_EQUAL(cached.worker_reward / SATOSHI,
+                          (cached.block_reward - fee) / SATOSHI);
+        Amount total = Amount::zero(), worker_paid = Amount::zero(), operator_paid = Amount::zero();
+        for (const auto &output : cached.coinbase_tx->vout) {
+            BOOST_CHECK(!output.IsLegacy());
+            total += output.nValue;
+            if (output.vBranches == std::vector<lotus::v2::Hash32>{AddressRoot(worker_address)})
+                worker_paid += output.nValue;
+            else if (output.vBranches == std::vector<lotus::v2::Hash32>{AddressRoot(operator_address)})
+                operator_paid += output.nValue;
+            else BOOST_FAIL("Unexpected recipient");
+        }
+        BOOST_CHECK(total == cached.block_reward);
+        BOOST_CHECK(operator_paid == fee);
+        BOOST_CHECK(worker_paid == cached.worker_reward);
+        const auto wire_before = EncodeHexTx(*cached.coinbase_tx);
+        args.ForceSetArg("-poolfeepercent", "50");
+        BOOST_CHECK_THROW(pool.Configure(args, config), std::logic_error);
+        BOOST_CHECK_EQUAL(pool.GetPoolInfoJSON().find_value("operator_fee_bps").getInt<int>(), bps);
+        BOOST_CHECK_EQUAL(EncodeHexTx(*cached.coinbase_tx), wire_before);
+    }
+    for (const auto &address : {std::string(), std::string("invalid"),
+             EncodeDestination(PKHash(coinbaseKey.GetPubKey()), config)}) {
+        ArgsManager args;
+        args.ForceSetArg("-poolfeepercent", "1.25");
+        args.ForceSetArg("-pooladdress", address);
+        node::MiningPoolManager pool;
+        pool.Configure(args, config);
+        BOOST_CHECK(!pool.GetPoolInfoJSON().find_value("payout_ready").get_bool());
+        BOOST_CHECK_THROW(pool.GetMiningJobJSON(config, m_node, worker_address), std::runtime_error);
+    }
+    for (const auto *invalid : {"-1", "100.01", "1.234", "NaN"}) {
+        ArgsManager args;
+        args.ForceSetArg("-poolfeepercent", invalid);
+        node::MiningPoolManager pool;
+        BOOST_CHECK_THROW(pool.Configure(args, config), std::invalid_argument);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(operator_commission_preserves_multi_worker_pplns_remainder) {
+    const Config &config = GetConfig();
+    ArgsManager args;
+    const auto operator_address = NativeAddress(coinbaseKey);
+    args.ForceSetArg("-pooladdress", operator_address);
+    args.ForceSetArg("-poolfeepercent", "1.25");
+    node::MiningPoolManager pool;
+    pool.Configure(args, config);
+    CKey a, b;
+    a.MakeNewKey(true);
+    b.MakeNewKey(true);
+    const auto address_a = NativeAddress(a), address_b = NativeAddress(b);
+    for (const auto &[address, count] :
+         std::vector<std::pair<std::string, int>>{{address_a, 3}, {address_b, 1}}) {
+        lotus::v2::node::PoolJob cached;
+        lotus::v2::node::PoolWorker worker;
+        pool.GetMiningJobJSON(config, m_node, address, &cached, &worker);
+        uint64_t cursor = 1;
+        for (int i = 0; i < count; ++i) {
+            pool.SetWorkerShareTarget(address, worker.share_target, config);
+            const auto nonce = FindShareNonce(cached.header_134, worker.nonce_prefix,
+                worker.share_target, cached.network_target, true, cursor);
+            cursor = (nonce & 0xFFFFFFFFFFULL) + 1;
+            const auto result = pool.SubmitShare(config, m_node, cached.job_id,
+                                                address, std::nullopt, nonce);
+            BOOST_REQUIRE(result.accepted);
+            BOOST_CHECK(!result.block_found);
+        }
+    }
+    lotus::v2::node::PoolJob final_job;
+    pool.GetMiningJobJSON(config, m_node, address_a, &final_job);
+    Amount paid_a = Amount::zero(), paid_b = Amount::zero(), paid_operator = Amount::zero();
+    for (const auto &output : final_job.coinbase_tx->vout) {
+        const auto &root = output.vBranches.at(0);
+        if (root == AddressRoot(address_a)) paid_a += output.nValue;
+        else if (root == AddressRoot(address_b)) paid_b += output.nValue;
+        else if (root == AddressRoot(operator_address)) paid_operator += output.nValue;
+        else BOOST_FAIL("Unexpected PPLNS recipient");
+    }
+    BOOST_CHECK(paid_operator == final_job.operator_commission);
+    BOOST_CHECK(paid_a + paid_b == final_job.worker_reward);
+    BOOST_CHECK(paid_a + paid_b + paid_operator == final_job.block_reward);
+    BOOST_CHECK_LE(std::abs((paid_a - 3 * paid_b) / SATOSHI), 2);
+}
 
 BOOST_AUTO_TEST_CASE(native_payout_configuration_failclosed) {
     const Config &config = GetConfig();
