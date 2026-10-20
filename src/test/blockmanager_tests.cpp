@@ -60,6 +60,50 @@ BOOST_AUTO_TEST_CASE(blockmanager_find_block_pos) {
                           BLOCK_SERIALIZATION_HEADER_SIZE);
 }
 
+BOOST_FIXTURE_TEST_CASE(blockmanager_unlink_files_callback,
+                        TestChain100Setup) {
+    auto &blockman = Assert(m_node.chainman)->m_blockman;
+    const CBlockIndex *tip{WITH_LOCK(
+        ::cs_main, return Assert(m_node.chainman)->ActiveChain().Tip())};
+    const int file_number{WITH_LOCK(::cs_main, return tip->GetBlockPos().nFile)};
+    const FlatFilePos pos(file_number, 0);
+
+    std::vector<std::set<int>> calls;
+    bool existed_during_call{false};
+    const uint64_t handle = blockman.RegisterUnlinkFilesCallback(
+        [&](const std::set<int> &files) {
+            calls.push_back(files);
+            // Runs before the files are deleted.
+            existed_during_call = fs::exists(blockman.GetBlockPosFilename(pos)) &&
+                                  fs::exists(blockman.GetUndoPosFilename(pos));
+        });
+    int other_calls{0};
+    const uint64_t other = blockman.RegisterUnlinkFilesCallback(
+        [&](const std::set<int> &) { ++other_calls; });
+    BOOST_CHECK(handle != other);
+
+    {
+        LOCK(::cs_main);
+        blockman.PruneOneBlockFile(file_number);
+    }
+    blockman.UnlinkPrunedFiles({file_number});
+    BOOST_REQUIRE_EQUAL(calls.size(), 1U);
+    BOOST_CHECK(calls[0] == std::set<int>{file_number});
+    BOOST_CHECK(existed_during_call);
+    BOOST_CHECK_EQUAL(other_calls, 1);
+    BOOST_CHECK(!fs::exists(blockman.GetBlockPosFilename(pos)));
+    BOOST_CHECK(!fs::exists(blockman.GetUndoPosFilename(pos)));
+
+    // Unregistered callbacks don't run again.
+    blockman.UnregisterUnlinkFilesCallback(handle);
+    blockman.UnlinkPrunedFiles({file_number});
+    BOOST_CHECK_EQUAL(calls.size(), 1U);
+    BOOST_CHECK_EQUAL(other_calls, 2);
+    blockman.UnregisterUnlinkFilesCallback(other);
+    blockman.UnlinkPrunedFiles({file_number});
+    BOOST_CHECK_EQUAL(other_calls, 2);
+}
+
 BOOST_FIXTURE_TEST_CASE(blockmanager_scan_unlink_already_pruned_files,
                         TestChain100Setup) {
     // Cap last block file size, and mine new block in a new block file.
