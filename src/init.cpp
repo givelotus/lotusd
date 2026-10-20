@@ -1808,8 +1808,8 @@ void SetupServerArgs(NodeContext &node) {
                    ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
     argsman.AddArg(
         "-pooladdress=<addr>",
-        "Fallback Lotus address or script hex for built-in mining pool "
-        "newsletter/unclaimed shares",
+        "Explicit native Lotus address for this network for built-in mining "
+        "pool default, symbolic-worker and newsletter payouts (required for jobs)",
         ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
     argsman.AddArg(
         "-poolpplnswindow=<n>",
