@@ -16,6 +16,7 @@
 
 class CBlock;
 class CBlockIndex;
+class CTransaction;
 namespace node {
 struct NodeContext;
 } // namespace node
@@ -40,12 +41,23 @@ lotus_v2::ffi::Binding GetV2Binding();
  */
 lotus_v2::ffi::NativeBlock ConvertV2NativeBlock(const CBlock &block,
                                                 const CBlockIndex &bindex);
+/**
+ * The native form of one transaction (`coinbase` for a block's first) at
+ * block-file position (file_num, data_pos); used at connect and to read an
+ * indexed transaction back from the block files.
+ */
+lotus_v2::ffi::NativeTx ConvertV2NativeTx(const CTransaction &ctx,
+                                          bool coinbase, uint32_t n,
+                                          uint32_t file_num,
+                                          uint32_t data_pos);
 
 /**
  * The native V2 service of a Lotus V2 node (port of the V2 parts of
  * chronik-lib bridge.rs), as an OwnEnv extension driven after the core:
  *  - Open: the v2_index env at <indexes>/chronik/v2_index, fresh when wiped
- *    or without mdbx.dat, reopened fresh if opening fails;
+ *    or without mdbx.dat, reopened fresh if opening fails (an index of
+ *    another schema version fails instead, asking for -chronikreindex).
+ *    Indexed transactions are read back from the node's block files;
  *  - Resync (after the core's resync): pop checkpoints until one is on the
  *    active chain, replay the active chain from there, stop silently at the
  *    first error, then publish the authority;

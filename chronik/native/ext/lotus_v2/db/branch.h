@@ -10,6 +10,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -17,15 +18,19 @@
 /**
  * Separate, versioned V2 confirmed branch database (port of
  * chronik-db/src/v2_branch.rs). Callers supply only authoritative committed
- * transitions. One synced write batch commits records, history postings,
- * explorer and asset facts, receipt, undo and checkpoint together; the flat
- * wire segments are written and synced before it.
+ * transitions. One synced write batch commits coins, history postings,
+ * explorer and asset facts, receipt, undo and checkpoint together. No
+ * transaction bytes are copied: records keep node block-file positions and
+ * transactions are read back through a TxSource.
  *
  * Errors are thrown as V2Error.
  */
 namespace chronik::native::lotus_v2 {
 
-/** Max serialized output record (output <= 812 B plus two locations). */
+/**
+ * Staging reservations per spend and output keep the bound of the former
+ * full output record (output <= 812 B plus two locations).
+ */
 inline constexpr size_t MAX_BRANCH_RECORD_BYTES = 1200;
 /** Branch staging reserved per transaction. */
 inline constexpr size_t RESERVE_TX = 512;
@@ -61,9 +66,16 @@ class ReadSnapshot;
 class V2Db {
 public:
     /**
-     * Open or create a dedicated V2 directory; reject foreign schema.
-     * `bounds` come from the consensus block-size limit.
+     * Open or create a dedicated V2 directory; reject foreign schema
+     * (Schema for another version). `bounds` come from the consensus
+     * block-size limit. Transactions are read through `source`.
      */
+    V2Db(const std::filesystem::path &path, const Binding &binding,
+         const Bounds &bounds, std::shared_ptr<const TxSource> source);
+    /** Open with an in-memory source recording every connected block. */
+    V2Db(const std::filesystem::path &path, const Binding &binding,
+         const Bounds &bounds, std::shared_ptr<MemTxSource> recorder);
+    /** Open with a fresh in-memory recording source (tests and tools). */
     V2Db(const std::filesystem::path &path, const Binding &binding,
          const Bounds &bounds);
 
@@ -90,10 +102,14 @@ public:
 
 private:
     void ConnectImpl(const CommittedBlock &block, bool genesis);
+    void CheckReplay(const CommittedBlock &block, const Bytes &block_key,
+                     const Bytes &receipt_bytes) const;
 
     std::unique_ptr<V2Env> m_db;
     Binding m_binding;
     Bounds m_bounds;
+    std::shared_ptr<const TxSource> m_source;
+    std::shared_ptr<MemTxSource> m_recorder;
 };
 
 /**
@@ -103,9 +119,10 @@ private:
 class ReadSnapshot {
 public:
     ReadSnapshot(V2EnvSnapshot inner, Anchor anchor, Binding binding,
-                 Bounds bounds)
+                 Bounds bounds, std::shared_ptr<const TxSource> source)
         : anchor(anchor), binding(binding), bounds(bounds),
-          m_inner(std::move(inner)) {}
+          m_inner(std::move(inner)), m_source(std::move(source)),
+          m_last_mutex(std::make_unique<std::mutex>()) {}
 
     /** Checkpoint matching this snapshot. */
     Anchor anchor;
@@ -177,7 +194,15 @@ public:
     NextAssetOutputCounted(const Hash32 &token, std::optional<ByteView> after,
                            AssetReadBudget &budget) const;
 
+    /**
+     * The transaction described by `meta`, read through the node and checked
+     * against its identities, counts, lock, wire size and checksum.
+     */
+    std::shared_ptr<const NodeTx> NodeTxOf(const TxMeta &meta) const;
+
 private:
+    /** Complete output `op`, read from its creating transaction. */
+    Output CreationOutput(const OutPoint &op, const TxLocation &creation) const;
     std::pair<uint64_t, uint64_t>
     ExplorerTableCount(const TxId &id, uint64_t wire_size,
                        const WireRange &range) const;
@@ -188,6 +213,11 @@ private:
                  std::optional<ByteView> after, AssetReadBudget &budget) const;
 
     V2EnvSnapshot m_inner;
+    std::shared_ptr<const TxSource> m_source;
+    /** Last transaction read through the node (outputs share it). */
+    std::unique_ptr<std::mutex> m_last_mutex;
+    mutable std::optional<std::pair<TxMeta, std::shared_ptr<const NodeTx>>>
+        m_last;
 };
 
 } // namespace chronik::native::lotus_v2
