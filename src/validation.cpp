@@ -9039,8 +9039,10 @@ bool Chainstate::RollforwardBlock(const CBlockIndex *pindex,
     CBlockUndo undo;
     if (!m_blockman.ReadBlockUndo(undo, *pindex) || block.vtx.empty() ||
         undo.vtxundo.size() != block.vtx.size() - 1) {
-        LogError("ReplayBlock(): missing or inconsistent undo at %d, hash=%s\n",
-                 pindex->nHeight, pindex->GetBlockHash().ToString());
+        LogErrorEvent(BCLog::ALL, "chain_replay_undo_inconsistent",
+            "ReplayBlock(): missing or inconsistent undo at {height}, hash={block_hash}")
+            .Field(BCLog::LogField::Height, pindex->nHeight)
+            .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash());
         return false;
     }
     std::vector<uint64_t> fee_shares(block.vtx.size(), 0);
@@ -9052,9 +9054,11 @@ bool Chainstate::RollforwardBlock(const CBlockIndex *pindex,
         if (spent.size() != tx.vin.size() ||
             !Consensus::CheckTxInputsFromSpentCoins(
                 tx, spent, state, pindex->nHeight, fee)) {
-            LogError("ReplayBlock(): inconsistent transaction undo at %d, "
-                     "hash=%s, tx=%s\n", pindex->nHeight,
-                     pindex->GetBlockHash().ToString(), tx.GetId().ToString());
+            LogErrorEvent(BCLog::ALL, "chain_replay_transaction_undo_inconsistent",
+                "ReplayBlock(): inconsistent transaction undo at {height}, hash={block_hash}, tx={txid}")
+                .Field(BCLog::LogField::Height, pindex->nHeight)
+                .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash())
+                .Field(BCLog::LogField::TxId, tx.GetId());
             return false;
         }
         size_t spendable_outputs = 0;
