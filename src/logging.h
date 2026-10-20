@@ -91,6 +91,8 @@ enum LogFlags : uint32_t {
     NETDEBUG = (1 << 27),
     TXPACKAGES = (1 << 28),
     TXRELAY = (1 << 29),
+    // P2P over WebTransport (QUIC engine, HTTP/3 sessions)
+    WEBTRANSPORT = (1 << 30),
     ALL = ~uint32_t(0),
 };
 
