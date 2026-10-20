@@ -383,6 +383,13 @@ void QuicConnection::QueueStreamData(QuicStream &stream,
     }
 }
 
+void QuicConnection::QueueDatagram(std::vector<uint8_t> &&payload) {
+    // A small bound: datagrams are best effort.
+    if (m_datagrams.size() < 64) {
+        m_datagrams.push_back(std::move(payload));
+    }
+}
+
 void QuicConnection::ExtendCredit(int64_t stream_id, uint64_t n) {
     if (n == 0 || !m_conn) {
         return;
@@ -558,6 +565,40 @@ void QuicConnection::Write(uint64_t now) {
     ngtcp2_path_storage_zero(&ps);
     ngtcp2_pkt_info pi{};
     for (int pkts = 0; pkts < MAX_PACKETS_PER_WRITE;) {
+        if (!m_datagrams.empty()) {
+            const std::vector<uint8_t> &d{m_datagrams.front()};
+            ngtcp2_vec v{const_cast<uint8_t *>(d.data()), d.size()};
+            int accepted{0};
+            const ngtcp2_ssize n{ngtcp2_conn_writev_datagram(
+                m_conn, &ps.path, &pi, m_txbuf.data(), max_pkt, &accepted,
+                NGTCP2_WRITE_DATAGRAM_FLAG_MORE, m_next_datagram_id++, &v, 1,
+                now)};
+            if (n == NGTCP2_ERR_WRITE_MORE) {
+                if (accepted) {
+                    m_datagrams.pop_front();
+                }
+                continue;
+            }
+            if (n < 0) {
+                if (n == NGTCP2_ERR_INVALID_STATE ||
+                    n == NGTCP2_ERR_INVALID_ARGUMENT) {
+                    // Not negotiated, or larger than the peer accepts.
+                    m_datagrams.pop_front();
+                    continue;
+                }
+                CloseLib(static_cast<int>(n));
+                return;
+            }
+            if (accepted) {
+                m_datagrams.pop_front();
+            }
+            if (n == 0) {
+                break;
+            }
+            SendPacket(m_txbuf.data(), static_cast<size_t>(n));
+            ++pkts;
+            continue;
+        }
         int64_t stream_id{-1};
         int fin{0};
         ngtcp2_vec vec[MAX_WRITE_VECS];
