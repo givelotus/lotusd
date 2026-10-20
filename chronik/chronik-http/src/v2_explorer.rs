@@ -448,6 +448,9 @@ fn location(l: TxLocation) -> Value {
     json!({"block_id":hex::encode(l.block_id.0),"height":l.height.to_string(),"tx_index":l.tx_index.to_string(),"txid":hex::encode(l.txid.0.0),"txhash":hex::encode(l.txhash.0.0)})
 }
 fn output_fields(out: &Output) -> Value {
+    if let Some(script) = &out.legacy_script {
+        return json!({"is_legacy":true,"value":out.value.to_string(),"legacy_script":hex::encode(script),"branches":[],"paths":[],"is_burn":out.is_burn(),"has_token":false,"has_state":false});
+    }
     json!({"flags":out.flags.to_string(),"value":out.value.to_string(),"has_token":out.has_token(),"token_id":hex::encode(out.token_id.0),"is_burn":out.is_burn(),"has_state":out.has_state(),"state_root":hex::encode(out.state_root.0),"branches":out.branches.iter().map(|h|hex::encode(h.0)).collect::<Vec<_>>(),"paths":out.paths.iter().map(|p|p.iter().map(u8::to_string).collect::<Vec<_>>()).collect::<Vec<_>>()})
 }
 fn record(r: &OutputRecord) -> Value {
@@ -757,7 +760,7 @@ fn dispatch(
                 let i =
                     db(v.explorer_input(id, index))?.ok_or_else(unavailable)?;
                 let (kind, path, resolved) = match i.flags {
-                    1 => {
+                    1 | 4 => {
                         let coin = i
                             .resolved_creation
                             .as_ref()
@@ -765,13 +768,25 @@ fn dispatch(
                         let mut out = output_fields(&coin.output);
                         out.as_object_mut().unwrap().extend(json!({"txid":hex::encode(coin.outpoint.txid.0.0),"out_idx":coin.outpoint.out_idx.to_string(),"creation":location(coin.creation)}).as_object().unwrap().clone());
                         (
-                            "spend",
-                            json!(i.path_index.to_string()),
+                            if i.flags == 4 {
+                                "legacy_spend"
+                            } else {
+                                "spend"
+                            },
+                            if i.flags == 4 {
+                                Value::Null
+                            } else {
+                                json!(i.path_index.to_string())
+                            },
                             json!({"availability":"complete","output":out}),
                         )
                     }
-                    2 => (
-                        "coinbase",
+                    2 | 5 => (
+                        if i.flags == 5 {
+                            "legacy_coinbase"
+                        } else {
+                            "coinbase"
+                        },
                         Value::Null,
                         json!({"availability":"not_applicable"}),
                     ),
@@ -1301,6 +1316,7 @@ mod tests {
         assert_eq!(c.snapshot()["height"], (u64::MAX - 1).to_string());
         assert!(c.confirmations(u64::MAX).is_err());
         let out = Output {
+            legacy_script: None,
             flags: 0,
             value: u64::MAX,
             token_id: Hash32([0; 32]),

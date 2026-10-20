@@ -134,6 +134,7 @@ chronik_bridge::Coin BridgeCoin(const Coin &coin) {
     const int32_t nHeight =
         coin.GetHeight() == 0x7fff'ffff ? -1 : coin.GetHeight();
     return {
+        .is_legacy = coin.IsLegacy(),
         .output = BridgeTxOutput(coin.GetTxOut()),
         .height = nHeight,
         .is_coinbase = coin.IsCoinBase(),
