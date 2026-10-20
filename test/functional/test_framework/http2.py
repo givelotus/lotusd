@@ -181,3 +181,122 @@ def basic_auth(url):
     u = urllib.parse.urlparse(url)
     token = base64.b64encode(f"{u.username}:{u.password}".encode()).decode()
     return f"Basic {token}"
+
+
+class H2WebSocket:
+    """A WebSocket over an HTTP/2 stream (RFC 8441 extended CONNECT).
+
+    Offers what test_framework.p2p_websocket.P2PWebSocketClient and the
+    Chronik tests use from websocket-client: send_binary(), recv(),
+    getsubprotocol(), close().
+    """
+
+    def __init__(self, client, path, *, subprotocols=None, headers=()):
+        import os
+
+        self.client = client
+        self.os = os
+        # RFC 8441 3: the server must have advertised the protocol first.
+        while not client.remote_settings_received:
+            if not client.pump():
+                raise ConnectionError("no SETTINGS from the server")
+        hdrs = [
+            (":method", "CONNECT"),
+            (":protocol", "websocket"),
+            (":scheme", "https"),
+            (":authority", "localhost"),
+            (":path", path),
+            ("sec-websocket-version", "13"),
+        ]
+        if subprotocols:
+            hdrs.append(("sec-websocket-protocol", ", ".join(subprotocols)))
+        hdrs += list(headers)
+        self.sid = client.conn.get_next_available_stream_id()
+        client.conn.send_headers(self.sid, hdrs, end_stream=False)
+        client.flush()
+        while True:
+            r = client.responses.get(self.sid)
+            if r is not None and (":status" in r.headers or r.reset is not None):
+                break
+            if not client.pump():
+                break
+        self.response = client.responses.get(self.sid, Response())
+        self.status = self.response.status
+        self.buf = b""
+        self.message = b""
+        self.closed = False
+
+    def getsubprotocol(self):
+        return self.response.headers.get("sec-websocket-protocol")
+
+    def _send_frame(self, opcode, payload):
+        mask = self.os.urandom(4)
+        head = bytes([0x80 | opcode])
+        n = len(payload)
+        if n < 126:
+            head += bytes([0x80 | n])
+        elif n < 65536:
+            head += bytes([0x80 | 126]) + n.to_bytes(2, "big")
+        else:
+            head += bytes([0x80 | 127]) + n.to_bytes(8, "big")
+        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        self.client.send_body(self.sid, head + mask + masked, end_stream=False)
+
+    def send_binary(self, data):
+        self._send_frame(0x2, bytes(data))
+
+    def _frame(self):
+        """Parse one frame from the buffer, or None"""
+        b = self.buf
+        if len(b) < 2:
+            return None
+        fin, opcode = b[0] & 0x80, b[0] & 0x0F
+        assert not b[1] & 0x80, "the server must not mask"
+        n, pos = b[1] & 0x7F, 2
+        if n == 126:
+            if len(b) < 4:
+                return None
+            n, pos = int.from_bytes(b[2:4], "big"), 4
+        elif n == 127:
+            if len(b) < 10:
+                return None
+            n, pos = int.from_bytes(b[2:10], "big"), 10
+        if len(b) < pos + n:
+            return None
+        self.buf = b[pos + n :]
+        return fin, opcode, b[pos : pos + n]
+
+    def recv(self):
+        """The next binary message; b"" once the server closed."""
+        while True:
+            frame = self._frame()
+            if frame is None:
+                r = self.client.responses.get(self.sid)
+                if r is not None and r.body:
+                    self.buf += r.body
+                    r.body = b""
+                    continue
+                if self.closed or (r is not None and (r.ended or r.reset)):
+                    return b""
+                if not self.client.pump():
+                    return b""
+                continue
+            fin, opcode, payload = frame
+            if opcode == 0x9:  # ping
+                self._send_frame(0xA, payload)
+            elif opcode == 0x8:  # close
+                self.closed = True
+                return b""
+            elif opcode in (0x0, 0x1, 0x2):
+                self.message += payload
+                if fin:
+                    msg, self.message = self.message, b""
+                    return msg
+
+    def close(self):
+        if not self.closed:
+            try:
+                self._send_frame(0x8, (1000).to_bytes(2, "big"))
+            except Exception:
+                pass
+        self.closed = True
