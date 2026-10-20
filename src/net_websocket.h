@@ -10,6 +10,8 @@
 #include <util/threadinterrupt.h>
 
 #include <atomic>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -30,8 +32,17 @@
 //! URI path of the P2P WebSocket endpoint on the RPC/HTTP port
 static const char *const P2P_WEBSOCKET_PATH = "/p2p/ws";
 static_assert(std::string_view{"/p2p/ws"} == P2P_WSS_DEFAULT_PATH);
-//! Accept P2P connections over WebSocket on the RPC/HTTP port
+//! Accept P2P connections over WebSocket (-p2pwslisten): on the P2P port,
+//! -publicbind listeners and the RPC/HTTP port
 static const bool DEFAULT_P2P_WEBSOCKET = true;
+//! -p2pporthandshaketimeout default: how long a connection on the P2P port
+//! has to show what it speaks and, for WebSocket, to finish its upgrade
+static constexpr std::chrono::seconds DEFAULT_P2P_PORT_HANDSHAKE_TIMEOUT{10};
+//! P2P port connections identified as HTTP/TLS and not yet upgraded to
+//! WebSocket, at most: in all, and from one address. (Before that, they are
+//! inbound P2P connections, under the usual limits and eviction.)
+static constexpr size_t MAX_P2P_PORT_PENDING{64};
+static constexpr size_t MAX_P2P_PORT_PENDING_PER_ADDR{8};
 //! Sec-WebSocket-Protocol tokens, in order of preference
 static const char *const P2P_WS_PROTOCOL_ZSTD_DICT = "p2p-zstd-v1";
 static const char *const P2P_WS_PROTOCOL_ZSTD = "p2p-zstd";
