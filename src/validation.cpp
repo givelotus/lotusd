@@ -2295,7 +2295,44 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package &package,
 
 namespace {
 std::atomic<uint64_t> g_mempool_admission_attempts{0};
+
+/** Count a final (not test) mempool admission result in the metrics */
+void RecordMempoolAdmission(const MempoolAcceptResult &result) {
+    auto *metrics{node::GetNodeMetrics()};
+    if (!metrics) {
+        return;
+    }
+    switch (result.m_result_type) {
+        case MempoolAcceptResult::ResultType::VALID: {
+            metrics->mempool_accepted.Inc();
+            if (result.m_vsize && *result.m_vsize > 0 && result.m_base_fees) {
+                const int64_t sats{*result.m_base_fees / SATOSHI};
+                metrics->mempool_accepted_fee_rate.Record(
+                    uint64_t(std::max<int64_t>(0, sats)) * 1000 /
+                    uint64_t(*result.m_vsize));
+            }
+            break;
+        }
+        case MempoolAcceptResult::ResultType::MEMPOOL_ENTRY:
+            metrics->mempool_rejected.Add(node::MempoolRejectSeries(
+                int(TxValidationResult::TX_DUPLICATE)));
+            break;
+        case MempoolAcceptResult::ResultType::INVALID:
+            metrics->mempool_rejected.Add(
+                node::MempoolRejectSeries(int(result.m_state.GetResult())));
+            break;
+    }
 }
+
+void RecordMempoolAdmissions(const PackageMempoolAcceptResult &result) {
+    if (!node::GetNodeMetrics()) {
+        return;
+    }
+    for (const auto &[txid, tx_result] : result.m_tx_results) {
+        RecordMempoolAdmission(tx_result);
+    }
+}
+} // namespace
 uint64_t GetMempoolAdmissionAttempts() noexcept {
     return g_mempool_admission_attempts.load(std::memory_order_relaxed);
 }
@@ -2318,6 +2355,9 @@ MempoolAcceptResult AcceptToMemoryPool(Chainstate &active_chainstate,
     args.m_limits = limits;
     MempoolAcceptResult result = MemPoolAccept(pool, active_chainstate)
                                      .AcceptSingleTransaction(tx, args);
+    if (!test_accept) {
+        RecordMempoolAdmission(result);
+    }
     if (result.m_result_type != MempoolAcceptResult::ResultType::VALID) {
         // Remove coins that were not present in the coins cache before calling
         // ATMPW; this is to prevent memory DoS in case we receive a large
@@ -2363,6 +2403,9 @@ PackageMempoolAcceptResult ProcessNewPackage(Chainstate &active_chainstate,
                 .AcceptPackage(package, args);
         }
     }();
+    if (!test_accept) {
+        RecordMempoolAdmissions(result);
+    }
 
     // Uncache coins pertaining to transactions that were not submitted to the
     // mempool.
@@ -2408,6 +2451,9 @@ ProcessRawTxBatch(
         MemPoolAccept(pool, active_chainstate)
             .AcceptRawTxBatch(package, args, max_raw_tx_fee_rate,
                               precomputed_batch);
+    if (!test_accept) {
+        RecordMempoolAdmissions(result);
+    }
 
     if (test_accept || result.m_state.IsInvalid()) {
         for (const COutPoint &hashTx : coins_to_uncache) {

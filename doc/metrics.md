@@ -132,6 +132,18 @@ one `_bucket` per bound plus `+Inf`, a `_sum` and a `_count`.
 | `fullnode_avalanche_items_total` | counter | `type` (6), `outcome` (`finalized`, `invalidated`, `stale`) | 18 | Items whose vote ended. Types: `proof`, `block`, `contender`, `transaction`, `batch`, `state_anchor`. |
 | `fullnode_avalanche_finalization_seconds` | histogram | `type` (6) | 6 | Time from an item's registration for polling to its finalization. Items registered while metrics were off are not timed. |
 
+### Mempool admission
+
+| Name | Type | Labels | Max series | Meaning |
+|---|---|---|---|---|
+| `fullnode_mempool_accepted_total` | counter | | 1 | Transactions accepted (from peers, RPC, raw batches, packages, reorgs and the mempool file; test acceptances excluded). |
+| `fullnode_mempool_rejected_total` | counter | `reason` (13) | 13 | Transactions refused, by validation result: `consensus`, `inputs_not_standard`, `not_standard`, `missing_inputs`, `premature_spend`, `duplicate` (incl. already in the mempool), `conflict`, `child_before_parent`, `mempool_policy`, `no_mempool`, `package_reconsiderable` (e.g. fee below the floor), `avalanche_reconsiderable`, `unknown`. |
+| `fullnode_mempool_accepted_fee_rate_sats_per_byte` | histogram | | 1 | Accepted transactions' own fee rate (base fee over sigcheck-adjusted virtual size, without prioritisetransaction deltas). Buckets 0 to 10000 sat/byte, dense around the 1 sat/byte floor. |
+| `fullnode_mempool_removed_total` | counter | `reason` (7) | 7 | Transactions removed: `expiry`, `sizelimit` (evictions), `reorg`, `block`, `conflict`, `avalanche`, `manual`. |
+| `fullnode_mempool_min_fee_rate_sats_per_byte` | gauge | `kind` (`rolling`, `effective`) | 2 | Rolling minimum (raised when the mempool is full; 0 otherwise) and the effective admission floor (highest of the minimum relay fee, the rolling minimum and the fee hysteresis rate, as `estimatefee`). |
+| `fullnode_tx_pool_transactions` | gauge | `pool` (`orphan`, `conflicting`) | 2 | Transactions held outside the mempool: orphans, and conflicting ones awaiting a vote. |
+| `fullnode_tx_pool_removed_total` | counter | `pool` (2), `reason` (`expired`, `evicted`) | 4 | Transactions dropped from those pools on expiry, or evicted at random when full. |
+
 
 ## Tests
 

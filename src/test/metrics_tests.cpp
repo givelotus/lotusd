@@ -3,9 +3,11 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <config/bitcoin-config.h>
+#include <consensus/validation.h>
 #include <metrics/metrics.h>
 #include <node/metrics.h>
 #include <protocol.h>
+#include <txmempool.h>
 
 #include <test/util/setup_common.h>
 
@@ -385,6 +387,34 @@ BOOST_AUTO_TEST_CASE(avalanche_vote_series) {
                       "neutral"); // missing
     BOOST_CHECK_EQUAL(labels.size(), 3U);
     BOOST_CHECK_EQUAL(node::metric_labels::AvalancheItemTypes().size(), 6U);
+}
+
+BOOST_AUTO_TEST_CASE(mempool_reason_labels) {
+    const auto &reject{node::metric_labels::MempoolRejectReasons()};
+    BOOST_CHECK_EQUAL(reject.size(), size_t(TxValidationResult::TX_UNKNOWN));
+    const auto label{[&](TxValidationResult r) {
+        return reject[node::MempoolRejectSeries(int(r))];
+    }};
+    BOOST_CHECK_EQUAL(label(TxValidationResult::TX_CONSENSUS), "consensus");
+    BOOST_CHECK_EQUAL(label(TxValidationResult::TX_MISSING_INPUTS),
+                      "missing_inputs");
+    BOOST_CHECK_EQUAL(label(TxValidationResult::TX_DUPLICATE), "duplicate");
+    BOOST_CHECK_EQUAL(label(TxValidationResult::TX_MEMPOOL_POLICY),
+                      "mempool_policy");
+    BOOST_CHECK_EQUAL(label(TxValidationResult::TX_PACKAGE_RECONSIDERABLE),
+                      "package_reconsiderable");
+    BOOST_CHECK_EQUAL(label(TxValidationResult::TX_AVALANCHE_RECONSIDERABLE),
+                      "avalanche_reconsiderable");
+    BOOST_CHECK_EQUAL(label(TxValidationResult::TX_UNKNOWN), "unknown");
+    BOOST_CHECK_EQUAL(label(TxValidationResult::TX_RESULT_UNSET), "unknown");
+    BOOST_CHECK_EQUAL(reject[node::MempoolRejectSeries(99)], "unknown");
+
+    const auto &removal{node::metric_labels::MempoolRemovalReasons()};
+    for (size_t r = 0; r <= size_t(MemPoolRemovalReason::MANUAL); ++r) {
+        BOOST_CHECK_EQUAL(removal.at(r),
+                          RemovalReasonToString(MemPoolRemovalReason(r)));
+    }
+    BOOST_CHECK_EQUAL(removal.size(), size_t(MemPoolRemovalReason::MANUAL) + 1);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
