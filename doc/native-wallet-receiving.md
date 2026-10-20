@@ -27,4 +27,7 @@ unchanged.
 
 The optional discovery field `wallet.native_receiving` advertises this
 provider only in a binary that includes the receiving feature. It does not
-advertise ordinary native funding or native message-signing support.
+advertise ordinary native funding or native message-signing support. Discovery
+also includes `address.nativehrp` and `xpiaddr` in `address.acceptedformats`;
+clients use that declared prefix, not a ticker or network-name heuristic. The
+existing default address format and its legacy prefix remain unchanged.
