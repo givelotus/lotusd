@@ -540,6 +540,12 @@ NodeMetrics::NodeMetrics(std::vector<std::string> rpc_methods)
           registry, MetricName("p2p_block_message_cache_misses_total"),
           "Block messages of cacheable size read or serialized and "
           "checksummed, then kept for the next peers.")},
+      webtransport_fallback{Add<Counter>(
+          registry, MetricName("p2p_wt_fallback_total"),
+          "Failed automatic WebTransport attempts, by reason (excludes "
+          "proxy/cache skips).",
+          std::vector<LabelDim>{
+              {"reason", {"timeout", "refused", "unsupported", "handshake"}}})},
       tip_height{Add<Gauge>(registry, MetricName("chain_tip_height"),
                             "Height of the active chain tip.")},
       tip_timestamp{

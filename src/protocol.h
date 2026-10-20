@@ -480,6 +480,9 @@ enum ServiceFlags : uint64_t {
     // export, reverse block undo serving, and Avalanche state-anchor polling.
     NODE_UTXO_SHARD = (1 << 25),
 
+    // Same advertised host:port accepts P2P WebTransport on UDP.
+    NODE_WEBTRANSPORT = (1 << 26),
+
     // Explicit opt-in for private mempool batch announcements and polls.
     NODE_MERKLIX_EPOCH = (1 << 28),
 };
