@@ -100,6 +100,13 @@ static constexpr size_t DEFAULT_TXRELAY_FANOUT_MAX{32};
  */
 static constexpr uint64_t DEFAULT_TXRELAY_RATE_MAX{250'000};
 
+/**
+ * Default for -txrelayshortids: announce transactions with 8-byte short ids
+ * (invshort) to peers that negotiate them (sendinvshort). Other peers get
+ * ordinary 36-byte INVs.
+ */
+static constexpr bool DEFAULT_TXRELAY_SHORTIDS{true};
+
 /** Number of peers to announce a relayed transaction to (see above) */
 size_t TxRelayFanout(size_t relay_peers, size_t fanout_min, double fanout_pct,
                      size_t fanout_max) noexcept;
@@ -177,6 +184,10 @@ public:
         size_t txrelay_fanout_max{DEFAULT_TXRELAY_FANOUT_MAX};
         //! Per-peer announcements per second (-txrelayratemax)
         uint64_t txrelay_rate_max{DEFAULT_TXRELAY_RATE_MAX};
+        //! Offer and use short-id announcements (-txrelayshortids)
+        bool txrelay_shortids{DEFAULT_TXRELAY_SHORTIDS};
+        //! Short id width; below 64 only in tests, to force collisions
+        unsigned txrelay_shortid_bits{64};
     };
 
     static std::unique_ptr<PeerManager>
@@ -224,6 +235,20 @@ public:
             if (tx) RelayTransaction(tx->GetId());
         }
     }
+    /**
+     * Transactions a peer served for relay-epoch short ids (getshorttx):
+     * processed as if each had arrived in a tx message.
+     */
+    /** Select relay-epoch bodies against the authoritative request tracker.
+     * An opted-in peer may also send unsolicited bodies. Other peers must
+     * answer requests issued to that exact peer in the declared epoch.
+     */
+    virtual std::vector<CTransactionRef> FilterRequestedShortTxResponse(
+        NodeId peer_id, const uint256 &epoch_id,
+        std::span<const CTransactionRef> txs,
+        bool allow_unsolicited) = 0;
+    virtual void ProcessShortTxResponse(CNode &node,
+                                        std::span<const CTransactionRef> txs) {}
     virtual void MarkPeerKnownTxBatch(NodeId peer_id,
                                       std::span<const CTransactionRef> txs) {
         for (const auto &tx : txs) {

@@ -639,6 +639,18 @@ void SetupServerArgs(NodeContext &node) {
                   DEFAULT_TXRELAY_RATE_MAX),
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg(
+        "-txrelayshortids",
+        strprintf("Announce transactions to peers that support it by 8-byte "
+                  "short ids instead of 36-byte inventory entries "
+                  "(default: %u)",
+                  DEFAULT_TXRELAY_SHORTIDS),
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg("-txrelaytestshortidbits=<n>",
+                   "Truncate transaction relay short ids to this many bits, "
+                   "to force collisions in tests (regtest only, default: 64)",
+                   ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
+                   OptionsCategory::DEBUG_TEST);
+    argsman.AddArg(
         "-testdisablehighbandwidthshorttx",
         "Disable unsolicited shorttx frames in regtest tests (default: 0)",
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
