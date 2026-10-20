@@ -1,0 +1,295 @@
+{
+  "schema": 1,
+  "reviewed_against": "abdbbae484d22094e7a8a69ad387d890c0bd36b7",
+  "review_scope": "Explicitly inspected legacy logging regression/benchmark controls and infrastructure wrappers; remaining sites are not waived. Unknown/stale identities fail closed.",
+  "sites": {
+    "src/logging/timer.h:597879d4a32261e80035:1": {
+      "disposition": "infrastructure",
+      "reason": "Reviewed generic BCLog::Timer<TimeType>::Log forwarder for a preformatted title/status/elapsed string and runtime category. Actual LOG_TIME_* application producer invocations are separately inventoried and explicitly deferred; this wrapper is not counted as a typed timer conversion."
+    },
+    "src/logging/timer.h:d7122b78397bd273db71:1": {
+      "disposition": "infrastructure",
+      "reason": "Reviewed generic BCLog::Timer<TimeType>::Log forwarder for a preformatted title/status/elapsed string and runtime category. Actual LOG_TIME_* application producer invocations are separately inventoried and explicitly deferred; this wrapper is not counted as a typed timer conversion."
+    },
+    "src/bench/logging.cpp:bda13b8c7ff0222f9878:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed legacy-logger benchmark/control: preserve legacy producer and disabled-category measurements alongside typed-event comparisons; conversion would change the workload being compared."
+    },
+    "src/bench/logging.cpp:bda13b8c7ff0222f9878:2": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed legacy-logger benchmark/control: preserve legacy producer and disabled-category measurements alongside typed-event comparisons; conversion would change the workload being compared."
+    },
+    "src/bench/logging.cpp:cd75ca18036018169493:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed legacy-logger benchmark/control: preserve legacy producer and disabled-category measurements alongside typed-event comparisons; conversion would change the workload being compared."
+    },
+    "src/bench/logging.cpp:cd75ca18036018169493:2": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed legacy-logger benchmark/control: preserve legacy producer and disabled-category measurements alongside typed-event comparisons; conversion would change the workload being compared."
+    },
+    "src/bench/logging.cpp:b921ad6bfe72793dcb8a:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed legacy-logger benchmark/control: preserve legacy producer and disabled-category measurements alongside typed-event comparisons; conversion would change the workload being compared."
+    },
+    "src/bench/logging.cpp:cd75ca18036018169493:3": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed legacy-logger benchmark/control: preserve legacy producer and disabled-category measurements alongside typed-event comparisons; conversion would change the workload being compared."
+    },
+    "src/bench/logging.cpp:bda13b8c7ff0222f9878:3": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed legacy-logger benchmark/control: preserve legacy producer and disabled-category measurements alongside typed-event comparisons; conversion would change the workload being compared."
+    },
+    "src/bench/logging.cpp:ce4e613843ec8b9c7d4c:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed legacy-logger benchmark/control: preserve legacy producer and disabled-category measurements alongside typed-event comparisons; conversion would change the workload being compared."
+    },
+    "src/bench/logging.cpp:5161813567c137958e63:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed legacy-logger benchmark/control: preserve legacy producer and disabled-category measurements alongside typed-event comparisons; conversion would change the workload being compared."
+    },
+    "src/logging.cpp:e97b869761dd7450d16a:1": {
+      "disposition": "infrastructure",
+      "reason": "Reviewed logging infrastructure or generic forwarding wrapper, not an application event schema. Logger internals preserve diagnostic/recovery paths; wallet forwarding has no caller field semantics. Inventory actual application/wallet call sites separately rather than falsely counting a wrapper conversion."
+    },
+    "src/logging.cpp:4a4200657ba65eccfdf7:1": {
+      "disposition": "infrastructure",
+      "reason": "Reviewed logging infrastructure or generic forwarding wrapper, not an application event schema. Logger internals preserve diagnostic/recovery paths; wallet forwarding has no caller field semantics. Inventory actual application/wallet call sites separately rather than falsely counting a wrapper conversion."
+    },
+    "src/logging.cpp:d258612d745e983d0691:1": {
+      "disposition": "infrastructure",
+      "reason": "Reviewed logging infrastructure or generic forwarding wrapper, not an application event schema. Logger internals preserve diagnostic/recovery paths; wallet forwarding has no caller field semantics. Inventory actual application/wallet call sites separately rather than falsely counting a wrapper conversion."
+    },
+    "src/logging.cpp:01a6d77a0c77ad3c9641:1": {
+      "disposition": "infrastructure",
+      "reason": "Reviewed logging infrastructure or generic forwarding wrapper, not an application event schema. Logger internals preserve diagnostic/recovery paths; wallet forwarding has no caller field semantics. Inventory actual application/wallet call sites separately rather than falsely counting a wrapper conversion."
+    },
+    "src/logging.h:453bdeacc7468daa4ac5:1": {
+      "disposition": "infrastructure",
+      "reason": "Reviewed logging infrastructure or generic forwarding wrapper, not an application event schema. Logger internals preserve diagnostic/recovery paths; wallet forwarding has no caller field semantics. Inventory actual application/wallet call sites separately rather than falsely counting a wrapper conversion."
+    },
+    "src/test/logging_tests.cpp:e0d86843f11ce4305460:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:cf6caf271a630f1ba2b5:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:eb5f21027a559b8bb756:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:2fc954e643a2db96ba4d:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:c64dfccac0a9b07b5f2a:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:332db8586d05ee59ea21:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:e6b1fd4f2f8053590dd7:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:02d227a73867af8a80e9:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:331d46a8bfad54b03dce:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:166a656fd656384de126:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:16974ecd7b74a35692f6:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:4d9e880537501e6c77a3:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:a41112e113717e76e62f:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:dd5439efa4607a174093:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:d608bc3126eca33b13a4:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:f3937c55bf3015fe9f33:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:f5aaca60dab8cdf8858a:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:4b358701978927430191:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:f452e8f0fda81432fd11:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:9283e6b768953b5db7a1:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:a26a086940005c5e95f7:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:bfbcde6c0b836b655d0a:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:0188ee49fadb91b6eb3b:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:aba4435ff1025d347f6e:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:b571f46d529439703018:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:21f907d5f782089369fd:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:65a0de827900458cb1c0:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:995dd004d67036b81f7d:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:995dd004d67036b81f7d:2": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:617c5b10aacaf2a66a93:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:696dc65e387ff28bcb10:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:8930c1ca94cb7dafe993:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:9a3f95fafcd70b36ec86:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:f58986279336fb46f13f:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:77f0b3299a707ef4cb47:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:4336f901918b1aa1d90f:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:7d67962b1cf1579f6cee:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:724ff5d3f6505a4f93b8:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:ed8cbfffa4a504be8df1:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:e23ffd4d41079ba21a9f:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:9a83cb180e361a548355:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:47c3d578a1105e434d0e:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:893adb773305c24680df:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:9029c74e4f23921e13a8:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:55efa2f9b219f2175c08:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:c1b7ea873bb3d22ecfde:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:89f660e424b0c3b4ef4c:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:0ff51eb31f13f3ff2d86:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:6a3a350e695c8e1d56a6:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:e878d66a30c6947d27ed:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:78cdca789d5a3cd6294a:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:38ce5006e388522085b8:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/logging_tests.cpp:97eb67ea46c4fad682ee:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed native legacy-logger regression control: retain legacy API coverage for severity/category, rate limiting, async ordering, fork/callback lifecycle and sink encoding; converting this fixture would stop testing the legacy entry point."
+    },
+    "src/test/rpc_tests.cpp:ca9a27b6fe8b01c977cd:1": {
+      "disposition": "intentionally_freeform",
+      "reason": "Reviewed RPC barrier test sentinel deliberately enters the legacy logging queue to verify RPC flush behavior; retain legacy-path regression coverage."
+    },
+    "src/wallet/wallet.h:7e9c14c3fe5ee4738a8b:1": {
+      "disposition": "infrastructure",
+      "reason": "Reviewed logging infrastructure or generic forwarding wrapper, not an application event schema. Logger internals preserve diagnostic/recovery paths; wallet forwarding has no caller field semantics. Inventory actual application/wallet call sites separately rather than falsely counting a wrapper conversion."
+    },
+    "src/wallet/wallet.h:1ab99f177f9b72fbe574:1": {
+      "disposition": "infrastructure",
+      "reason": "Reviewed logging infrastructure or generic forwarding wrapper, not an application event schema. Logger internals preserve diagnostic/recovery paths; wallet forwarding has no caller field semantics. Inventory actual application/wallet call sites separately rather than falsely counting a wrapper conversion."
+    }
+  }
+}
