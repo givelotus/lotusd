@@ -1,0 +1,204 @@
+{
+  "schema": 1,
+  "batch": "chain-validation-failure-stages",
+  "review_note": "Additional shared chain validation Error stages; fold into the existing validation diagnostic cleanup owner afcf8d8a0e. Existing fields and reviewed value snapshots only.",
+  "files": [
+    {
+      "path": "src/validation.cpp",
+      "rules": [
+        {
+          "id": "script_sigchecks_inconsistent",
+          "old": "LogError(\n            \"%s: BUG! PLEASE REPORT THIS! SigChecks count differed between \"\n            \"standard and consensus flags in %s\\n\",\n            __func__, txid.ToString())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"script_sigchecks_inconsistent\",\n            \"{source_function}: BUG! PLEASE REPORT THIS! SigChecks count differed between standard and consensus flags in {txid}\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::TxId, txid)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: BUG! PLEASE REPORT THIS! SigChecks count differed between standard and consensus flags in %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "txid.ToString()"
+            ]
+          },
+          "review_note": "Preserve original Error severity, ALL category, readable message and failure/notification/return branches. Existing reviewed LogValue<ValidationState> snapshots Reason; function name and hash/TxId fields come from the exact original values without producer ToString. BlockHash here is block.GetHash exactly as before; TxId is txid, never an exchanged identifier domain. No new validation, finalization, policy, parser or consensus behavior; existing registry/API only."
+        },
+        {
+          "id": "chain_check_block_failed",
+          "old": "LogError(\"%s: Consensus::CheckBlock: %s\\n\", __func__, state.ToString())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"chain_check_block_failed\",\n            \"{source_function}: Consensus::CheckBlock: {reason}\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::Reason, state)",
+          "count": 2,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: Consensus::CheckBlock: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "state.ToString()"
+            ]
+          },
+          "review_note": "Preserve original Error severity, ALL category, readable message and failure/notification/return branches. Existing reviewed LogValue<ValidationState> snapshots Reason; function name and hash/TxId fields come from the exact original values without producer ToString. BlockHash here is block.GetHash exactly as before; TxId is txid, never an exchanged identifier domain. No new validation, finalization, policy, parser or consensus behavior; existing registry/API only."
+        },
+        {
+          "id": "chain_disconnect_block_failed",
+          "old": "LogError(\"DisconnectTip(): DisconnectBlock %s failed\\n\",\n                     pindexDelete->GetBlockHash().ToString())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"chain_disconnect_block_failed\",\n                \"DisconnectTip(): DisconnectBlock {block_hash} failed\")\n                .Field(BCLog::LogField::BlockHash, pindexDelete->GetBlockHash())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "DisconnectTip(): DisconnectBlock %s failed\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "pindexDelete->GetBlockHash().ToString()"
+            ]
+          },
+          "review_note": "Preserve original Error severity, ALL category, readable message and failure/notification/return branches. Existing reviewed LogValue<ValidationState> snapshots Reason; function name and hash/TxId fields come from the exact original values without producer ToString. BlockHash here is block.GetHash exactly as before; TxId is txid, never an exchanged identifier domain. No new validation, finalization, policy, parser or consensus behavior; existing registry/API only."
+        },
+        {
+          "id": "chain_connect_block_failed",
+          "old": "LogError(\"%s: ConnectBlock %s failed, %s\\n\", __func__,\n                     pindexNew->GetBlockHash().ToString(), state.ToString())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"chain_connect_block_failed\",\n                \"{source_function}: ConnectBlock {block_hash} failed, {reason}\")\n                .Field(BCLog::LogField::SourceFunction, __func__)\n                .Field(BCLog::LogField::BlockHash, pindexNew->GetBlockHash())\n                .Field(BCLog::LogField::Reason, state)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: ConnectBlock %s failed, %s\n",
+            "specifiers": [
+              "%s",
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "pindexNew->GetBlockHash().ToString()",
+              "state.ToString()"
+            ]
+          },
+          "review_note": "Preserve original Error severity, ALL category, readable message and failure/notification/return branches. Existing reviewed LogValue<ValidationState> snapshots Reason; function name and hash/TxId fields come from the exact original values without producer ToString. BlockHash here is block.GetHash exactly as before; TxId is txid, never an exchanged identifier domain. No new validation, finalization, policy, parser or consensus behavior; existing registry/API only."
+        },
+        {
+          "id": "chain_contextual_block_failed",
+          "old": "LogError(\"%s: %s (block %s)\\n\", __func__, state.ToString(),\n                 block.GetHash().ToString())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"chain_contextual_block_failed\",\n            \"{source_function}: {reason} (block {block_hash})\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::Reason, state)\n            .Field(BCLog::LogField::BlockHash, block.GetHash())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: %s (block %s)\n",
+            "specifiers": [
+              "%s",
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "state.ToString()",
+              "block.GetHash().ToString()"
+            ]
+          },
+          "review_note": "Preserve original Error severity, ALL category, readable message and failure/notification/return branches. Existing reviewed LogValue<ValidationState> snapshots Reason; function name and hash/TxId fields come from the exact original values without producer ToString. BlockHash here is block.GetHash exactly as before; TxId is txid, never an exchanged identifier domain. No new validation, finalization, policy, parser or consensus behavior; existing registry/API only."
+        },
+        {
+          "id": "chain_accept_block_failed",
+          "old": "LogError(\"%s: AcceptBlock FAILED (%s)\\n\", __func__,\n                     state.ToString())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"chain_accept_block_failed\",\n                \"{source_function}: AcceptBlock FAILED ({reason})\")\n                .Field(BCLog::LogField::SourceFunction, __func__)\n                .Field(BCLog::LogField::Reason, state)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: AcceptBlock FAILED (%s)\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "state.ToString()"
+            ]
+          },
+          "review_note": "Preserve original Error severity, ALL category, readable message and failure/notification/return branches. Existing reviewed LogValue<ValidationState> snapshots Reason; function name and hash/TxId fields come from the exact original values without producer ToString. BlockHash here is block.GetHash exactly as before; TxId is txid, never an exchanged identifier domain. No new validation, finalization, policy, parser or consensus behavior; existing registry/API only."
+        },
+        {
+          "id": "chain_activate_best_failed",
+          "old": "LogError(\"%s: ActivateBestChain failed (%s)\\n\", __func__,\n                 state.ToString())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"chain_activate_best_failed\",\n            \"{source_function}: ActivateBestChain failed ({reason})\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::Reason, state)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: ActivateBestChain failed (%s)\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "state.ToString()"
+            ]
+          },
+          "review_note": "Preserve original Error severity, ALL category, readable message and failure/notification/return branches. Existing reviewed LogValue<ValidationState> snapshots Reason; function name and hash/TxId fields come from the exact original values without producer ToString. BlockHash here is block.GetHash exactly as before; TxId is txid, never an exchanged identifier domain. No new validation, finalization, policy, parser or consensus behavior; existing registry/API only."
+        },
+        {
+          "id": "chain_background_activate_best_failed",
+          "old": "LogError(\"%s: [background] ActivateBestChain failed (%s)\\n\", __func__,\n                 bg_state.ToString())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"chain_background_activate_best_failed\",\n            \"{source_function}: [background] ActivateBestChain failed ({reason})\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::Reason, bg_state)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: [background] ActivateBestChain failed (%s)\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "bg_state.ToString()"
+            ]
+          },
+          "review_note": "Preserve original Error severity, ALL category, readable message and failure/notification/return branches. Existing reviewed LogValue<ValidationState> snapshots Reason; function name and hash/TxId fields come from the exact original values without producer ToString. BlockHash here is block.GetHash exactly as before; TxId is txid, never an exchanged identifier domain. No new validation, finalization, policy, parser or consensus behavior; existing registry/API only."
+        },
+        {
+          "id": "chain_contextual_header_check_failed",
+          "old": "LogError(\"%s: Consensus::ContextualCheckBlockHeader: %s\\n\", __func__,\n                 state.ToString())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"chain_contextual_header_check_failed\",\n            \"{source_function}: Consensus::ContextualCheckBlockHeader: {reason}\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::Reason, state)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: Consensus::ContextualCheckBlockHeader: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "state.ToString()"
+            ]
+          },
+          "review_note": "Preserve original Error severity, ALL category, readable message and failure/notification/return branches. Existing reviewed LogValue<ValidationState> snapshots Reason; function name and hash/TxId fields come from the exact original values without producer ToString. BlockHash here is block.GetHash exactly as before; TxId is txid, never an exchanged identifier domain. No new validation, finalization, policy, parser or consensus behavior; existing registry/API only."
+        },
+        {
+          "id": "chain_contextual_block_check_failed",
+          "old": "LogError(\"%s: Consensus::ContextualCheckBlock: %s\\n\", __func__,\n                 state.ToString())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"chain_contextual_block_check_failed\",\n            \"{source_function}: Consensus::ContextualCheckBlock: {reason}\")\n            .Field(BCLog::LogField::SourceFunction, __func__)\n            .Field(BCLog::LogField::Reason, state)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: Consensus::ContextualCheckBlock: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "state.ToString()"
+            ]
+          },
+          "review_note": "Preserve original Error severity, ALL category, readable message and failure/notification/return branches. Existing reviewed LogValue<ValidationState> snapshots Reason; function name and hash/TxId fields come from the exact original values without producer ToString. BlockHash here is block.GetHash exactly as before; TxId is txid, never an exchanged identifier domain. No new validation, finalization, policy, parser or consensus behavior; existing registry/API only."
+        }
+      ]
+    }
+  ]
+}
