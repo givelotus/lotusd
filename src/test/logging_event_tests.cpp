@@ -1323,4 +1323,28 @@ BOOST_AUTO_TEST_CASE(
 }
 #endif
 
+BOOST_AUTO_TEST_CASE(ignored_config_option_does_not_log_its_value) {
+    Format(BCLog::LogFormat::JSON);
+    struct ConfigArgs : ArgsManager {
+        using ArgsManager::ReadConfigStream;
+    } args;
+    std::istringstream input{
+        "unknown_logging_option=not-a-real-secret-canary-215\n"};
+    std::string error;
+    BOOST_REQUIRE(args.ReadConfigStream(input, "logging-fixture.conf", error,
+                                        /*ignore_invalid_keys=*/true));
+    BOOST_CHECK(error.empty());
+    const auto row{Json()};
+    BOOST_CHECK_EQUAL(row["event"].get_str(), "config_unknown_option_ignored");
+    BOOST_CHECK_EQUAL(row["config_option"].get_str(), "unknown_logging_option");
+    BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
+    BOOST_CHECK_EQUAL(
+        row["message"].get_str(),
+        "Ignoring unknown configuration value unknown_logging_option");
+    BOOST_CHECK(row.write().find("not-a-real-secret-canary-215") ==
+                std::string::npos);
+    BOOST_CHECK(row["value"].isNull());
+    BOOST_CHECK(row["fields_truncated"].isNull());
+}
+
 BOOST_AUTO_TEST_SUITE_END()
