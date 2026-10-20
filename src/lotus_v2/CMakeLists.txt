@@ -198,6 +198,17 @@ target_include_directories(lotus_v2_validation PUBLIC
 target_link_libraries(lotus_v2_validation PUBLIC
     lotus_v2_block_template lotus_v2_sparse_state lotus_v2_incremental_utxo lotus_v2_mdbx Boost::headers secp256k1 leveldb OpenSSL::Crypto crypto)
 
+# Wallet interchange only: no transaction or block consensus changes.
+add_library(lotus_v2_psbt STATIC psbt.cpp)
+target_link_libraries(lotus_v2_psbt PUBLIC lotus_v2_validation)
+add_executable(test_lotus_v2_psbt test_psbt.cpp)
+target_link_libraries(test_lotus_v2_psbt PRIVATE lotus_v2_psbt)
+add_test(NAME lotus_v2_psbt COMMAND test_lotus_v2_psbt)
+add_test(NAME lotus_v2_psbt_vectors
+    COMMAND ${Python_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/psbt_test/check_vectors.py
+        $<TARGET_FILE:test_lotus_v2_psbt>)
+
 # Compare the disk path against the retained in-memory connector oracle using
 # the same dependencies selected by the full daemon build.
 add_executable(test_lotus_v2_disk_block
