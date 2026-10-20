@@ -6,6 +6,7 @@
 #include <chain.h>
 #include <chainparams.h>
 #include <common/args.h>
+#include <flatfile.h>
 #include <index/blockfilterindex.h>
 #include <interfaces/chain.h>
 #include <logging.h>
@@ -28,11 +29,12 @@
 
 #if defined(__linux__) || defined(MAC_OSX)
 #include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 #ifdef __linux__
 #include <sys/socket.h>
 #include <sys/un.h>
-#include <unistd.h>
 #endif
 
 #include <algorithm>
@@ -1385,5 +1387,55 @@ BOOST_AUTO_TEST_CASE(
     BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
     BOOST_CHECK(row["fields_truncated"].isNull());
 }
+
+BOOST_AUTO_TEST_CASE(
+    flatfile_open_failure_preserves_plain_path_and_null_result) {
+    Format(BCLog::LogFormat::JSON);
+    const fs::path directory{m_args.GetDataDirBase() / "absent-flat-files"};
+    FlatFileSeq sequence{directory, "blk", 1024};
+    const FlatFilePos missing{17, 0};
+    BOOST_CHECK(sequence.Open(missing, /*read_only=*/true) == nullptr);
+    BOOST_CHECK(!fs::exists(directory));
+    const auto row{Json()};
+    const auto path{fs::PathToString(sequence.FileName(missing))};
+    BOOST_CHECK_EQUAL(row["event"].get_str(), "flatfile_open_failed");
+    BOOST_CHECK_EQUAL(row["path"].get_str(), path);
+    BOOST_CHECK_EQUAL(row["message"].get_str(), "Unable to open file " + path);
+    BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
+    BOOST_CHECK(row["fields_truncated"].isNull());
+}
+
+#if defined(__linux__) || defined(MAC_OSX)
+BOOST_AUTO_TEST_CASE(
+    flatfile_fifo_seek_failure_keeps_unsigned_offset_and_null_result) {
+    Format(BCLog::LogFormat::JSON);
+    const fs::path directory{m_args.GetDataDirBase() / "flatfile-fifo"};
+    fs::create_directories(directory);
+    FlatFileSeq sequence{directory, "blk", 1024};
+    const FlatFilePos position{18, 1};
+    const fs::path path{sequence.FileName(position)};
+    BOOST_REQUIRE_EQUAL(mkfifo(path.c_str(), 0600), 0);
+    // Hold both FIFO ends so fopen(read-only) does not wait for a writer.
+    // No bytes are exchanged: a FIFO's real fseek returns ESPIPE.
+    struct Descriptor {
+        int value;
+        ~Descriptor() {
+            if (value >= 0) close(value);
+        }
+    } holder{open(path.c_str(), O_RDWR | O_NONBLOCK)};
+    BOOST_REQUIRE(holder.value >= 0);
+    BOOST_CHECK(sequence.Open(position, /*read_only=*/true) == nullptr);
+    const auto row{Json()};
+    BOOST_CHECK_EQUAL(row["event"].get_str(), "flatfile_seek_failed");
+    BOOST_CHECK(row["file_offset"].isNum());
+    BOOST_CHECK_EQUAL(row["file_offset"].getInt<uint64_t>(), 1U);
+    BOOST_CHECK_EQUAL(row["path"].get_str(), fs::PathToString(path));
+    BOOST_CHECK_EQUAL(row["message"].get_str(),
+                      "Unable to seek to position 1 of " +
+                          fs::PathToString(path));
+    BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
+    BOOST_CHECK(row["fields_truncated"].isNull());
+}
+#endif
 
 BOOST_AUTO_TEST_SUITE_END()
