@@ -75,6 +75,10 @@ uint64_t GetP2PWebSocketMessageSizeLimit();
 struct WebSocketTransportInfo {
     bool tls{false};
     P2PWebSocketCompression compression{P2PWebSocketCompression::NONE};
+    //! Independent (compress-once, RSV2) frames carried in each direction,
+    //! zstd modes only
+    std::atomic<uint64_t> independent_frames_sent{0};
+    std::atomic<uint64_t> independent_frames_recv{0};
     //! Bytes of P2P data (uncompressed) carried in each direction
     std::atomic<uint64_t> payload_bytes_sent{0};
     std::atomic<uint64_t> payload_bytes_recv{0};

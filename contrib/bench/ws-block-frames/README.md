@@ -3,7 +3,8 @@
 Tools to measure what a node spends to serve the same block to many peers
 at once, comparing two builds (A and B) on the same fixture, over P2P
 WebSocket (see [doc/p2p-websocket.md](../../../doc/p2p-websocket.md)) or raw
-TCP. They work for any two builds of the node.
+TCP. They work for any two builds of the node; they were written for
+compress-once block frames.
 
 ## What is measured
 
@@ -20,8 +21,8 @@ serve it records:
   SHA256);
 - **bytes on the wire**: WebSocket frame bytes the node sent
   (`getnettotals`), or TCP bytes with `--transport=tcp`;
-- with `-metrics` (the default `--node-arg`), the change of the node's
-  WebSocket serving metrics, where a build has them.
+- with `-metrics`, the change of the `fullnode_p2p_compress_once_*` and
+  `fullnode_p2p_websocket_independent_*` metrics where they exist.
 
 The peers (`peers.py`) are asyncio connections in several client processes
 (`--workers`, default 8). They decode what they receive as real peers would
@@ -39,7 +40,8 @@ beforehand so they come from the page cache, as a fresh tip would.
 
 `src/bench/ws_block_serve.cpp` (`bitcoin-bench -filter='WsServe.*'`)
 measures the per-peer pieces in isolation: block serialization, the P2P
-checksum, and stream compression and decompression.
+checksum, stream compression and decompression, and (with compress-once)
+independent compression, cache hits and decompression.
 
 ## How to reproduce
 
@@ -52,7 +54,8 @@ cmake -GNinja -S <patched-tree> -B <patched-build> -DCMAKE_BUILD_TYPE=Release -D
 ninja -C <patched-build> bitcoind bitcoin-bench
 ```
 
-Run the driver from the newer tree, with Python 3.10+ and `zstandard`:
+Run the driver from the newer tree (its client decodes independent
+frames), with Python 3.10+ and `zstandard`:
 
 ```
 python3 contrib/bench/ws-block-frames/serve_ab.py \
@@ -60,9 +63,7 @@ python3 contrib/bench/ws-block-frames/serve_ab.py \
     --output /path/to/results --sizes 1,8,32 --peers 8,32,64 --rounds 5
 ```
 
-`--base`/`--patched` take a build directory or a `bitcoind` binary. The
-offer is what every peer offers: a node that does not know a token ignores
-it. `--transport=tcp` measures raw TCP peers instead. `--rpcport`/`--port`
+`--base`/`--patched` take a build directory or a `bitcoind` binary. `--offer` selects the compression subprotocol offered by every peer. `--transport=tcp` measures raw TCP peers instead. `--rpcport`/`--port`
 (default 41604/41605) choose the node's ports. Building the fixture takes a
 few minutes; it is kept in `<output>/fixture` and reused. A full run of the
 default matrix (9 cells, 5 rounds, two builds) takes 20-40 minutes.
