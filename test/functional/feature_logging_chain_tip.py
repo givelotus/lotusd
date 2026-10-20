@@ -27,6 +27,13 @@ class ChainTipLoggingTest(BitcoinTestFramework):
             [{"event": "chain_verification_completed", "verification_depth": 1}]
         ):
             assert node.verifychain(4, 1)
+        with node.assert_debug_log(
+            [{"event": "chain_invalid_block", "block_hash": block_hash}]
+        ):
+            node.invalidateblock(block_hash)
+        assert_equal(node.getblockcount(), 0)
+        node.reconsiderblock(block_hash)
+        assert_equal(node.getblockcount(), 1)
         # Stop flushes the async logger and closes the file. Never race producer
         # completion with the logging worker or substitute a fixed sleep.
         self.stop_node(0)
@@ -61,6 +68,13 @@ class ChainTipLoggingTest(BitcoinTestFramework):
         )
         assert f"date='{record['block_time']}'" in record["message"]
         assert "fields_truncated" not in record
+        invalid = next(
+            row for row in records if row.get("event") == "chain_invalid_block"
+        )
+        assert_equal(invalid["block_hash"], block_hash)
+        assert_equal(invalid["height"], 1)
+        assert_equal(invalid["source_function"], "InvalidChainFound")
+        assert type(invalid["log2_work"]) in (int, float)
         interaction = next(
             row
             for row in records
