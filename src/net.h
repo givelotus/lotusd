@@ -215,6 +215,34 @@ extern bool g_listen_plain_p2p;
  */
 bool GetP2PWebSocketListen(const ArgsManager &args);
 
+/** What a connection on the P2P port speaks, judged from its first bytes */
+enum class P2PPortProtocol {
+    //! Not enough bytes yet
+    UNDECIDED,
+    //! Plain P2P: the network magic (or anything that is not the below)
+    PLAIN,
+    //! A TLS ClientHello (0x16 0x03) or an HTTP GET: WebSocket, or a request
+    //! the HTTP server answers like any unserved one
+    WEBSOCKET,
+};
+
+/**
+ * Classify a connection on the P2P port from its first bytes (up to 4,
+ * peeked). Plain P2P starts with the network magic, which is decided from
+ * its first byte whenever that cannot also start TLS or "GET ", so stock
+ * peers never wait for more data.
+ */
+P2PPortProtocol ClassifyP2PPortBytes(Span<const uint8_t> first,
+                                     const CMessageHeader::MessageMagic &magic);
+
+/**
+ * Receives connections on the P2P port identified as WebSocket (HTTP or
+ * TLS), with nothing consumed: the socket, the peer's address and ours.
+ * It owns the socket from then on.
+ */
+using P2PPortWebSocketHandler = std::function<void(
+    std::unique_ptr<Sock> &&sock, const CService &peer, const CService &local)>;
+
 /**
  * Check the P2P transport listening options (-p2prawlisten, -p2pwslisten)
  * against each other and against the options that need a plain P2P
@@ -509,6 +537,15 @@ public:
      * then one end of a local socketpair bridged to the WebSocket.
      */
     const std::shared_ptr<WebSocketTransportInfo> m_websocket_info;
+    /**
+     * Accepted on a P2P port shared with WebSocket, and not yet known to
+     * speak raw P2P: nothing is read from it until its first bytes say
+     * which (CConnman::ClassifyP2PPortNode), or m_p2p_port_deadline passes.
+     */
+    std::atomic<bool> m_p2p_port_unclassified{false};
+    //! Sent part of its first bytes (socket handler thread only)
+    bool m_p2p_port_partial{false};
+    std::chrono::steady_clock::time_point m_p2p_port_deadline;
     //! Series of the peer gauges this node was counted in (metrics on at
     //! construction), so that its destruction removes exactly that.
     std::optional<std::pair<size_t, std::optional<size_t>>> m_metrics_series;
@@ -939,6 +976,13 @@ public:
         std::vector<NetKeyPermissions> vWhitelistedKeys;
         //! Drop inbound P2P WebSocket peers whose key is not listed above
         bool m_websocket_require_known_key{false};
+        //! Accept WebSocket peers on the P2P port by handing connections
+        //! starting with HTTP or TLS to this (the HTTP server). Unset: the
+        //! P2P port only speaks plain P2P, exactly as without WebSocket.
+        P2PPortWebSocketHandler p2p_port_websocket;
+        //! How long a P2P port connection may take to show what it speaks
+        std::chrono::seconds p2p_port_handshake_timeout{
+            DEFAULT_P2P_PORT_HANDSHAKE_TIMEOUT};
     };
 
     void Init(const Options &connOptions)
@@ -984,6 +1028,8 @@ public:
         vWhitelistedKeys = connOptions.vWhitelistedKeys;
         m_websocket_require_known_key =
             connOptions.m_websocket_require_known_key;
+        m_p2p_port_websocket = connOptions.p2p_port_websocket;
+        m_p2p_port_handshake_timeout = connOptions.p2p_port_handshake_timeout;
     }
 
     CConnman(const Config &configIn, uint64_t seed0, uint64_t seed1,
@@ -1178,11 +1224,15 @@ private:
             NetPermissions::AddFlag(flags, m_permissions);
         }
         ListenSocket(std::shared_ptr<Sock> sock_,
-                     NetPermissionFlags permissions_)
-            : sock(sock_), m_permissions(permissions_) {}
+                     NetPermissionFlags permissions_, const CService &addr_)
+            : sock(sock_), m_permissions(permissions_), addr(addr_) {}
 
     private:
         NetPermissionFlags m_permissions;
+
+    public:
+        //! The address bound
+        CService addr;
     };
 
     bool BindListenPort(const CService &bindAddr, bilingual_str &strError,
@@ -1220,7 +1270,8 @@ private:
     void CreateNodeFromAcceptedSocket(
         std::unique_ptr<Sock> &&sock, NetPermissionFlags permission_flags,
         const CAddress &addr_bind, const CAddress &addr,
-        std::shared_ptr<WebSocketTransportInfo> websocket_info = nullptr);
+        std::shared_ptr<WebSocketTransportInfo> websocket_info = nullptr,
+        bool classify = false);
 
     void DisconnectNodes();
     void NotifyNumConnectionsChanged();
@@ -1255,6 +1306,23 @@ private:
      * @param[in] events_per_sock Sockets that are ready for IO.
      */
     void SocketHandlerListening(const Sock::EventsPerSock &events_per_sock);
+    /**
+     * For a node accepted on a P2P port shared with WebSocket and not yet
+     * classified: peek at its first bytes. Returns whether to go on with it
+     * as a raw P2P node; otherwise it was handed to the WebSocket endpoint,
+     * dropped, or is still undecided (until its deadline).
+     */
+    bool ClassifyP2PPortNode(CNode &node,
+                             const Sock::EventsPerSock &events_per_sock);
+    /**
+     * Whether an inbound connection may go on to the HTTP server: the checks
+     * of CreateNodeFromAcceptedSocket that need no data, without evicting
+     * anyone (that is left to the node's creation).
+     */
+    bool MayAcceptInbound(const CAddress &addr,
+                          NetPermissionFlags permission_flags);
+    /** The peer to evict for a new inbound one, if any (none is evicted) */
+    std::optional<NodeId> SelectEvictionCandidate();
 
     void ThreadSocketHandler() EXCLUSIVE_LOCKS_REQUIRED(!mutexMsgProc);
     void ThreadDNSAddressSeed()
@@ -1344,6 +1412,12 @@ private:
     unsigned int nReceiveFloodSize{0};
 
     std::vector<ListenSocket> vhListenSocket;
+
+    //! See Options::p2p_port_websocket
+    P2PPortWebSocketHandler m_p2p_port_websocket;
+    std::chrono::seconds m_p2p_port_handshake_timeout{
+        DEFAULT_P2P_PORT_HANDSHAKE_TIMEOUT};
+
     std::atomic<bool> fNetworkActive{true};
     bool fAddressesInitialized{false};
     AddrMan &addrman;

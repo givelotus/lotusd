@@ -1125,6 +1125,8 @@ BOOST_AUTO_TEST_CASE(p2p_listen_args) {
                             &settings,
                         bool interaction = true) {
         ArgsManager args;
+        // As bitcoind sets it.
+        args.SoftSetBoolArg("-server", true);
         for (const auto &[name, value] : settings) {
             args.ForceSetArg(name, value);
         }
@@ -1166,12 +1168,22 @@ BOOST_AUTO_TEST_CASE(p2p_listen_args) {
     ok({{"-p2prawlisten", "0"}, {"-p2pwslisten", "0"}}, 1);
     ok({{"-listen", "0"}, {"-p2prawlisten", "0"}, {"-p2pwslisten", "0"}}, 0);
 
-    // Options that need a plain P2P listener are refused, not ignored.
-    fails({{"-p2prawlisten", "0"}, {"-bind", "127.0.0.1:1234"}}, "-bind");
-    fails({{"-p2prawlisten", "0"}, {"-bind", "127.0.0.1:1234=onion"}},
+    // The P2P port's listeners serve WebSocket too.
+    BOOST_CHECK(ok({{"-p2prawlisten", "0"}, {"-bind", "127.0.0.1:1234"}}));
+    BOOST_CHECK(
+        ok({{"-p2prawlisten", "0"}, {"-whitebind", "noban@127.0.0.1:1234"}}));
+    // ... unless nothing would use them.
+    fails({{"-p2prawlisten", "0"},
+           {"-p2pwslisten", "0"},
+           {"-bind", "127.0.0.1:1234"}},
           "-bind");
-    fails({{"-p2prawlisten", "0"}, {"-whitebind", "noban@127.0.0.1:1234"}},
+    fails({{"-p2prawlisten", "0"},
+           {"-p2pwslisten", "0"},
+           {"-whitebind", "noban@127.0.0.1:1234"}},
           "-whitebind");
+    // Options that need raw P2P are refused, not ignored.
+    fails({{"-p2prawlisten", "0"}, {"-bind", "127.0.0.1:1234=onion"}},
+          "=onion");
     fails({{"-p2prawlisten", "0"}, {"-externalip", "1.2.3.4"}},
           "-externalip");
     fails({{"-p2prawlisten", "0"}, {"-listenonion", "1"}}, "-listenonion");
@@ -1192,11 +1204,58 @@ BOOST_AUTO_TEST_CASE(p2p_listen_args) {
         BOOST_CHECK(args.GetBoolArg("-listen", DEFAULT_LISTEN));
     }
     // -bind still soft-sets -listen=1, as before.
-    fails({{"-p2prawlisten", "0"}, {"-proxy", "127.0.0.1:9050"},
+    fails({{"-p2prawlisten", "0"},
+           {"-p2pwslisten", "0"},
+           {"-proxy", "127.0.0.1:9050"},
            {"-bind", "127.0.0.1:1234"}},
           "-bind");
+    // WebSocket peers need the HTTP server.
+    {
+        const auto [error, warnings,
+                    ws]{check({{"-p2prawlisten", "0"}, {"-server", "0"}})};
+        BOOST_CHECK_EQUAL(error, "");
+        BOOST_CHECK_EQUAL(warnings, 1U);
+    }
     // Not listening: -p2prawlisten=0 changes nothing.
     ok({{"-listen", "0"}, {"-p2prawlisten", "0"}, {"-externalip", "1.2.3.4"}});
+}
+
+BOOST_AUTO_TEST_CASE(classify_p2p_port_bytes) {
+    using P = P2PPortProtocol;
+    const auto classify{[](const std::vector<uint8_t> &bytes,
+                           const CMessageHeader::MessageMagic &magic) {
+        return ClassifyP2PPortBytes(bytes, magic);
+    }};
+    // Every network's magic: raw P2P from the first byte.
+    for (const auto network :
+         {ChainType::MAIN, ChainType::TESTNET, ChainType::REGTEST}) {
+        const auto magic{CreateChainParams(*m_node.args, network)->NetMagic()};
+        BOOST_CHECK(classify({magic[0]}, magic) == P::PLAIN);
+        BOOST_CHECK(classify({magic.begin(), magic.end()}, magic) == P::PLAIN);
+        BOOST_CHECK(classify({}, magic) == P::UNDECIDED);
+        // TLS: a handshake record of TLS 1.0-1.3.
+        BOOST_CHECK(classify({0x16}, magic) == P::UNDECIDED);
+        BOOST_CHECK(classify({0x16, 0x03}, magic) == P::WEBSOCKET);
+        BOOST_CHECK(classify({0x16, 0x03, 0x01, 0x02}, magic) == P::WEBSOCKET);
+        BOOST_CHECK(classify({0x16, 0x02}, magic) == P::PLAIN);
+        // HTTP: only GET, as a WebSocket upgrade needs.
+        BOOST_CHECK(classify({'G'}, magic) == P::UNDECIDED);
+        BOOST_CHECK(classify({'G', 'E', 'T'}, magic) == P::UNDECIDED);
+        BOOST_CHECK(classify({'G', 'E', 'T', ' '}, magic) == P::WEBSOCKET);
+        BOOST_CHECK(classify({'G', 'E', 'T', 'x'}, magic) == P::PLAIN);
+        BOOST_CHECK(classify({'P', 'O', 'S', 'T'}, magic) == P::PLAIN);
+        // Anything else is left to raw P2P, which rejects it.
+        BOOST_CHECK(classify({0x00}, magic) == P::PLAIN);
+    }
+    // A magic that could also start TLS or HTTP waits for 4 bytes.
+    const CMessageHeader::MessageMagic tls_like{0x16, 0x03, 0xaa, 0xbb};
+    BOOST_CHECK(classify({0x16, 0x03}, tls_like) == P::UNDECIDED);
+    BOOST_CHECK(classify({0x16, 0x03, 0xaa, 0xbb}, tls_like) == P::PLAIN);
+    BOOST_CHECK(classify({0x16, 0x03, 0x01, 0x00}, tls_like) == P::WEBSOCKET);
+    const CMessageHeader::MessageMagic get_like{'G', 'E', 'T', '!'};
+    BOOST_CHECK(classify({'G', 'E', 'T'}, get_like) == P::UNDECIDED);
+    BOOST_CHECK(classify({'G', 'E', 'T', '!'}, get_like) == P::PLAIN);
+    BOOST_CHECK(classify({'G', 'E', 'T', ' '}, get_like) == P::WEBSOCKET);
 }
 
 BOOST_AUTO_TEST_CASE(avalanche_statistics) {

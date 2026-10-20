@@ -1078,28 +1078,39 @@ void SetupServerArgs(NodeContext &node) {
     argsman.AddArg(
         "-p2prawlisten",
         strprintf(
-            "When listening, accept raw P2P connections (\"raw\" means plain "
-            "P2P: the ordinary, non-WebSocket protocol). With 0 "
-            "the node opens no plain P2P listening socket, refuses -bind, "
-            "-whitebind, -externalip, -listenonion and -i2pacceptincoming, "
-            "and advertises no address but -externaldomain. Outbound "
+            "When listening, accept raw P2P connections on the P2P port "
+            "(\"raw\" means plain P2P: the ordinary, non-WebSocket "
+            "protocol). With 0, raw P2P connections are closed (the P2P port "
+            "stays bound while -p2pwslisten=1, for WebSocket), -externalip, "
+            "-listenonion, -i2pacceptincoming and onion binds are refused, "
+            "and no address but -externaldomain is advertised. Outbound "
             "connections are unchanged: add -onlynet=wss to dial WebSocket "
             "peers only. -listen stays the master switch: -listen=0 accepts "
             "nothing on any transport; with -listen=1, -p2prawlisten and "
-            "-p2pwslisten select the transports (both 0: nothing, with a "
-            "warning) (default: %d)",
+            "-p2pwslisten select the transports (both 0: no listening socket "
+            "and nothing accepted, with a warning) (default: %d)",
             DEFAULT_P2P_RAW_LISTEN),
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg(
         "-p2pwslisten",
         strprintf("When listening, accept P2P connections over WebSocket at "
-                  "%s (ws:// or wss://, auto-detected): on -publicbind "
-                  "listeners for anyone, and on the RPC port for "
-                  "-rpcallowip clients, so nothing is public until "
-                  "-publicbind is set. Requires -server. -listen=0 accepts "
-                  "nothing on any transport (default: %d)",
+                  "%s (ws:// or wss://, auto-detected): on the P2P port, "
+                  "which tells them from raw P2P by their first bytes, and "
+                  "on -publicbind listeners for anyone; on the RPC port for "
+                  "-rpcallowip clients. The P2P port serves nothing else over "
+                  "HTTP (404, or -publicfallback). Requires -server. "
+                  "-listen=0 accepts nothing on any transport (default: %d)",
                   P2P_WEBSOCKET_PATH, DEFAULT_P2P_WEBSOCKET),
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
+        "-p2pporthandshaketimeout=<n>",
+        strprintf("Seconds a connection on the P2P port has to show whether "
+                  "it speaks raw P2P or WebSocket (a silent one then counts "
+                  "as raw P2P) and, for WebSocket, to complete its upgrade "
+                  "(default: %d)",
+                  DEFAULT_P2P_PORT_HANDSHAKE_TIMEOUT.count()),
+        ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
+        OptionsCategory::CONNECTION);
     argsman.AddArg(
         "-p2pwebsocketpath=<path>",
         strprintf("Serve P2P WebSocket upgrades at this path instead of %s. "
@@ -1748,7 +1759,8 @@ void SetupServerArgs(NodeContext &node) {
         "-httphealth",
         "Serve /livez (the server runs), /readyz and /healthz (the node is out "
         "of initial block download and has peers; 503 with the reason "
-        "otherwise) on every HTTP listener, for load balancer health checks "
+        "otherwise) on every HTTP listener (not the P2P port), for load "
+        "balancer health checks "
         "(default: 1, but 0 with -p2pwebsockettoken or -publicfallback, since "
         "they reveal a node to probes)",
         ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
@@ -1772,8 +1784,9 @@ void SetupServerArgs(NodeContext &node) {
         OptionsCategory::RPC);
     argsman.AddArg(
         "-publicfallback=<host>:<port>",
-        "On -publicbind listeners, hand every request the node does not "
-        "serve (anything but an accepted P2P WebSocket upgrade or Chronik) "
+        "On -publicbind listeners and the P2P port, hand every request the "
+        "node does not serve (anything but an accepted P2P WebSocket upgrade "
+        "or, on -publicbind, Chronik) "
         "to this plain-HTTP web server, which then answers the rest of that "
         "connection byte for byte, so the endpoint looks like an ordinary "
         "web site to visitors and probes. Without it, such requests get 404.",
@@ -3743,6 +3756,24 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
                 "Unable to start the P2P WebSocket dialer (check "
                 "-p2pwebsocketpin; see the debug log)"));
         }
+    }
+
+    if (fListen && GetP2PWebSocketListen(args) &&
+        args.GetBoolArg("-server", false)) {
+        // WebSocket peers on the P2P port too: connections starting like
+        // HTTP or TLS go to the HTTP server's P2P port endpoint.
+        connOptions.p2p_port_websocket = [](std::unique_ptr<Sock> &&sock,
+                                            const CService &peer,
+                                            const CService &local) {
+            HandOffP2PPortConnection(std::move(sock), peer, local);
+        };
+        connOptions.p2p_port_handshake_timeout =
+            std::chrono::seconds{std::max<int64_t>(
+                args.GetIntArg("-p2pporthandshaketimeout",
+                               DEFAULT_P2P_PORT_HANDSHAKE_TIMEOUT.count()),
+                1)};
+        LogPrintf("Accepting %sWebSocket P2P peers on the P2P port\n",
+                  g_listen_plain_p2p ? "raw and " : "");
     }
 
     if (!node.connman->Start(scheduler, connOptions)) {

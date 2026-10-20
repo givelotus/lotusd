@@ -39,6 +39,12 @@ Sock::~Sock() {
     Close();
 }
 
+SOCKET Sock::Release() {
+    const SOCKET s{m_socket};
+    m_socket = INVALID_SOCKET;
+    return s;
+}
+
 Sock &Sock::operator=(Sock &&other) {
     Close();
     m_socket = other.m_socket;
