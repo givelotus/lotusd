@@ -157,12 +157,43 @@ IsMineResult IsMineInner(const LegacyScriptPubKeyMan &keystore,
 
 } // namespace
 
-
 std::optional<CScript>
-LegacyScriptPubKeyMan::GetScriptForV2Branch(const uint256 &) const {
-    // No supported native ownership provider exists at this prefix.
-    // Legacy IsMine(CScript) remains unchanged.
-    return std::nullopt;
+LegacyScriptPubKeyMan::GetScriptForV2Branch(const uint256 &branch) const {
+    LOCK(cs_KeyStore);
+    const std::array<size_t, 6> state{
+        mapKeys.size(),      mapCryptedKeys.size(), mapScripts.size(),
+        setWatchOnly.size(), mapWatchKeys.size(),   m_watch_only_removals};
+    if (state != m_v2_branch_index_state) {
+        // Only an explicitly supported native authorization program proves
+        // ownership. A commitment to legacy script bytes is not that program.
+        m_v2_branch_scripts.clear();
+        const auto add_pubkey =
+            [&](const CPubKey &pubkey) EXCLUSIVE_LOCKS_REQUIRED(cs_KeyStore) {
+                if (pubkey.IsFullyValid() && pubkey.IsCompressed()) {
+                    const auto root =
+                        NativeDestinationRoot(NativeKeyHashDestination(pubkey));
+                    uint256 branch;
+                    std::copy(root.begin(), root.end(), branch.begin());
+                    m_v2_branch_scripts.emplace(
+                        branch, GetScriptForDestination(PKHash(pubkey)));
+                }
+            };
+        for (const auto &[keyid, key] : mapKeys) {
+            add_pubkey(key.GetPubKey());
+        }
+        for (const auto &[keyid, crypted] : mapCryptedKeys) {
+            add_pubkey(crypted.first);
+        }
+        for (const auto &[keyid, pubkey] : mapWatchKeys) {
+            add_pubkey(pubkey);
+        }
+        m_v2_branch_index_state = state;
+    }
+    const auto it = m_v2_branch_scripts.find(branch);
+    if (it == m_v2_branch_scripts.end()) {
+        return std::nullopt;
+    }
+    return it->second;
 }
 
 isminetype LegacyScriptPubKeyMan::IsMine(const CScript &script) const {
@@ -642,6 +673,16 @@ LegacyScriptPubKeyMan::FillPSBT(PartiallySignedTransaction &psbtx,
 std::unique_ptr<CKeyMetadata>
 LegacyScriptPubKeyMan::GetMetadata(const CTxDestination &dest) const {
     LOCK(cs_KeyStore);
+
+    if (const auto *native = std::get_if<NativeDestination>(&dest)) {
+        const auto root = NativeDestinationRoot(*native);
+        uint256 branch;
+        std::copy(root.begin(), root.end(), branch.begin());
+        const auto script = GetScriptForV2Branch(branch);
+        CTxDestination owner;
+        return script && ExtractDestination(*script, owner) ? GetMetadata(owner)
+                                                            : nullptr;
+    }
 
     CKeyID key_id = GetKeyForDestination(*this, dest);
     if (!key_id.IsNull()) {
@@ -1744,10 +1785,34 @@ DescriptorScriptPubKeyMan::GetNewDestination(const OutputType type) {
 }
 
 std::optional<CScript>
-DescriptorScriptPubKeyMan::GetScriptForV2Branch(const uint256 &) const {
-    // No supported native ownership provider exists at this prefix.
-    // Legacy IsMine(CScript) remains unchanged.
-    return std::nullopt;
+DescriptorScriptPubKeyMan::GetScriptForV2Branch(const uint256 &branch) const {
+    LOCK(cs_desc_man);
+    // The map only grows between descriptor updates (which reset the
+    // index), so its size identifies its contents.
+    if (m_v2_branch_index_size != m_map_script_pub_keys.size()) {
+        m_v2_branch_scripts.clear();
+        for (const auto &[script, index] : m_map_script_pub_keys) {
+            const auto provider = GetSigningProvider(script);
+            CTxDestination dest;
+            if (!provider || !ExtractDestination(script, dest)) continue;
+            const auto *keyhash = std::get_if<PKHash>(&dest);
+            CPubKey pubkey;
+            if (keyhash && provider->GetPubKey(ToKeyID(*keyhash), pubkey) &&
+                pubkey.IsCompressed()) {
+                const auto root =
+                    NativeDestinationRoot(NativeKeyHashDestination(pubkey));
+                uint256 branch;
+                std::copy(root.begin(), root.end(), branch.begin());
+                m_v2_branch_scripts.emplace(branch, script);
+            }
+        }
+        m_v2_branch_index_size = m_map_script_pub_keys.size();
+    }
+    const auto it = m_v2_branch_scripts.find(branch);
+    if (it == m_v2_branch_scripts.end()) {
+        return std::nullopt;
+    }
+    return it->second;
 }
 
 isminetype DescriptorScriptPubKeyMan::IsMine(const CScript &script) const {
@@ -2342,6 +2407,15 @@ DescriptorScriptPubKeyMan::FillPSBT(PartiallySignedTransaction &psbtx,
 
 std::unique_ptr<CKeyMetadata>
 DescriptorScriptPubKeyMan::GetMetadata(const CTxDestination &dest) const {
+    if (const auto *native = std::get_if<NativeDestination>(&dest)) {
+        const auto root = NativeDestinationRoot(*native);
+        uint256 branch;
+        std::copy(root.begin(), root.end(), branch.begin());
+        const auto script = GetScriptForV2Branch(branch);
+        CTxDestination owner;
+        return script && ExtractDestination(*script, owner) ? GetMetadata(owner)
+                                                            : nullptr;
+    }
     std::unique_ptr<SigningProvider> provider =
         GetSigningProvider(GetScriptForDestination(dest));
     if (provider) {

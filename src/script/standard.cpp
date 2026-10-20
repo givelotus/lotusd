@@ -7,6 +7,7 @@
 
 #include <script/script.h>
 
+#include <stdexcept>
 #include <string>
 
 typedef std::vector<uint8_t> valtype;
@@ -225,6 +226,11 @@ namespace {
 class CScriptVisitor {
 public:
     CScript operator()(const CNoDestination &dest) const { return CScript(); }
+
+    CScript operator()(const NativeDestination &) const {
+        throw std::invalid_argument(
+            "Native addresses do not encode legacy scripts");
+    }
 
     CScript operator()(const PKHash &keyID) const {
         return CScript() << OP_DUP << OP_HASH160 << ToByteVector(keyID)

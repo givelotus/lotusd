@@ -11,6 +11,7 @@
 #include <uint256.h>
 #include <util/hash_type.h>
 
+#include <cstdint>
 #include <string>
 #include <variant>
 
@@ -80,9 +81,22 @@ struct ScriptHash : public BaseHash<uint160> {
  *  * CNoDestination: no destination set
  *  * PKHash: TxoutType::PUBKEYHASH destination (P2PKH)
  *  * ScriptHash: TxoutType::SCRIPTHASH destination (P2SH)
- *  A CTxDestination is the internal data type encoded in a bitcoin address
+ *  * NativeDestination: an explicit native root or keyhash address payload
+ *  A CTxDestination is the internal data type encoded in an address
  */
-using CTxDestination = std::variant<CNoDestination, PKHash, ScriptHash>;
+/** Explicit native address payload; never a legacy script/key identifier. */
+struct NativeDestination {
+    uint8_t type{0};
+    uint256 payload;
+    friend bool operator==(const NativeDestination &,
+                           const NativeDestination &) = default;
+    friend bool operator<(const NativeDestination &a,
+                          const NativeDestination &b) {
+        return a.type < b.type || (a.type == b.type && a.payload < b.payload);
+    }
+};
+using CTxDestination =
+    std::variant<CNoDestination, PKHash, ScriptHash, NativeDestination>;
 
 /** Check whether a CTxDestination is a CNoDestination. */
 bool IsValidDestination(const CTxDestination &dest);

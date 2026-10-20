@@ -311,6 +311,14 @@ public:
         return UniValue(UniValue::VOBJ);
     }
 
+    UniValue operator()(const NativeDestination &dest) const {
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("native", true);
+        obj.pushKV("type", int(dest.type));
+        obj.pushKV("isscript", dest.type == 0);
+        return obj;
+    }
+
     UniValue operator()(const PKHash &keyID) const {
         UniValue obj(UniValue::VOBJ);
         obj.pushKV("isscript", false);
