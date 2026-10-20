@@ -53,6 +53,8 @@ fn block(
             full_inputs: full_inputs(&inputs),
             wire: vec![0],
             lock: 0,
+            file_num: 0,
+            data_pos: 0,
             outputs: vec![f::NativeOutput {
                 wire: output.encode().unwrap(),
             }],

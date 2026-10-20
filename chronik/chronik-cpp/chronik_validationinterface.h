@@ -24,12 +24,17 @@ class CBlockIndex;
 namespace chronik_v2 {
 struct Binding;
 struct NativeBlock;
+struct NativeTx;
 
 Binding get_v2_binding(const chronik_bridge::ChronikBridge &bridge);
 /** Consensus block-size limit (largest valid block, in wire bytes). */
 uint32_t get_v2_max_block_bytes(const chronik_bridge::ChronikBridge &bridge);
 NativeBlock bridge_v2_native_block(const CBlock &block,
                                    const CBlockIndex &bindex);
+/** Read and convert the transaction at a block-file position. */
+NativeTx load_v2_native_tx(const chronik_bridge::ChronikBridge &bridge,
+                           uint32_t file_num, uint32_t data_pos,
+                           bool coinbase);
 } // namespace chronik_v2
 
 namespace chronik {
