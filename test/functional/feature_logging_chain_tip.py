@@ -23,6 +23,10 @@ class ChainTipLoggingTest(BitcoinTestFramework):
             block_hash = self.generatetoaddress(
                 node, 1, node.get_deterministic_priv_key().address
             )[0]
+        with node.assert_debug_log(
+            [{"event": "chain_verification_completed", "verification_depth": 1}]
+        ):
+            assert node.verifychain(4, 1)
         # Stop flushes the async logger and closes the file. Never race producer
         # completion with the logging worker or substitute a fixed sleep.
         self.stop_node(0)
@@ -57,6 +61,25 @@ class ChainTipLoggingTest(BitcoinTestFramework):
         )
         assert f"date='{record['block_time']}'" in record["message"]
         assert "fields_truncated" not in record
+        checked = next(
+            row
+            for row in records
+            if row.get("event") == "chain_verification_parameters"
+            and row.get("verification_depth") == 1
+        )
+        assert_equal(checked["verification_level"], 4)
+        assert type(checked["verification_depth"]) is int
+        assert type(checked["verification_level"]) is int
+        completed = next(
+            row
+            for row in records
+            if row.get("event") == "chain_verification_completed"
+            and row.get("verification_depth") == 1
+        )
+        assert type(completed["count"]) is int
+        assert completed["message"].startswith(
+            "Verification: No coin database inconsistencies in last 1 blocks ("
+        )
 
 
 if __name__ == "__main__":
