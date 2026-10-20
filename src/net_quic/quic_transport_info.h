@@ -11,6 +11,18 @@
 #include <cstdint>
 #include <string>
 
+enum class QuicRejectReason : size_t {
+    PER_IP,
+    HANDSHAKING,
+    BANNED,
+    ORIGIN,
+    TOKEN,
+    PATH,
+    SESSION,
+    CAPACITY
+};
+static constexpr size_t QUIC_REJECT_REASONS{8};
+
 /**
  * Details of a P2P connection carried over WebTransport (HTTP/3 over QUIC),
  * shared between the QUIC engine thread (which updates the counters) and a

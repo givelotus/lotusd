@@ -50,7 +50,7 @@ namespace metric_labels {
         return labels;
     }
     const std::vector<std::string> &Transports() {
-        static const std::vector<std::string> labels{"tcp", "ws", "wss"};
+        static const std::vector<std::string> labels{"tcp", "ws", "wss", "webtransport"};
         return labels;
     }
     const std::vector<std::string> &HTTPEndpoints() {
@@ -546,6 +546,57 @@ NodeMetrics::NodeMetrics(std::vector<std::string> rpc_methods)
           "proxy/cache skips).",
           std::vector<LabelDim>{
               {"reason", {"timeout", "refused", "unsupported", "handshake"}}})},
+      webtransport_connections{Add<Gauge>(
+          registry, MetricName("p2p_wt_connections"),
+          "QUIC connections, including handshake and closing state.",
+          std::vector<LabelDim>{
+              {"dir", L::Directions()},
+              {"state", {"handshaking", "established", "closing"}}})},
+      webtransport_handshakes{Add<Counter>(
+          registry, MetricName("p2p_wt_handshakes_total"),
+          "Completed TLS handshakes or connections ending before handshake "
+          "completion.",
+          std::vector<LabelDim>{{"result", {"success", "failure"}}})},
+      webtransport_retry_sent{
+          Add<Counter>(registry, MetricName("p2p_wt_retry_sent_total"),
+                       "QUIC address-validation Retry packets sent.")},
+      webtransport_stateless_reset_sent{
+          Add<Counter>(registry, MetricName("p2p_wt_stateless_reset_sent_total"),
+                       "QUIC stateless resets sent.")},
+      webtransport_rejected{Add<Counter>(
+          registry, MetricName("p2p_wt_rejected_total"),
+          "Inbound QUIC/WT requests rejected by admission or session policy.",
+          std::vector<LabelDim>{{"reason",
+                                 {"per_ip", "handshaking", "banned", "origin",
+                                  "token", "path", "session", "capacity"}}})},
+      webtransport_bytes{Add<Counter>(
+          registry, MetricName("p2p_wt_bytes_total"),
+          "P2P class-stream bytes queued outbound or consumed inbound (framing "
+          "included).",
+          std::vector<LabelDim>{
+              {"dir", L::Directions()},
+              {"class",
+               {"control", "avalanche", "tx_announce", "tx_body", "block"}}})},
+      webtransport_blocked{Add<Counter>(
+          registry, MetricName("p2p_wt_blocked_total"),
+          "QUIC stream flow-control stalls, by P2P class.",
+          std::vector<LabelDim>{
+              {"class",
+               {"control", "avalanche", "tx_announce", "tx_body", "block"}}})},
+      webtransport_lost_packets{
+          Add<Counter>(registry, MetricName("p2p_wt_lost_packets_total"),
+                       "QUIC packets declared lost, excluding PMTU probes.")},
+      webtransport_rtt{
+          Add<EventHistogram>(registry, MetricName("p2p_wt_rtt_seconds"),
+                              "Smoothed QUIC RTT sampled at most once per "
+                              "second per established connection.",
+                              std::vector<double>{0.0001, 0.0005, 0.001, 0.005,
+                                                  0.01, 0.05, 0.1, 0.5, 1, 5},
+                              1e9)},
+      webtransport_split{Add<Counter>(
+          registry, MetricName("p2p_wt_split_total"),
+          "Mixed inventory messages split into P2P stream classes.",
+          std::vector<LabelDim>{{"type", {"inv", "getdata", "notfound"}}})},
       tip_height{Add<Gauge>(registry, MetricName("chain_tip_height"),
                             "Height of the active chain tip.")},
       tip_timestamp{

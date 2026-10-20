@@ -167,3 +167,48 @@ use explicit configured pins when peer identity authentication is required.
 Focused W7 validation passes: daemon/unit builds, 10 selected cases (319
 assertions), the WT discovery/fallback test and both existing WebSocket
 discovery/address-version tests. No broad sweep or benchmark was run.
+
+## Admission, buffering and metrics (W8)
+
+The engine checks banned/discouraged sources before allocating inbound TLS
+state. `-p2pwebtransportmaxperip=16` counts handshaking, established and retained
+closing connections by IPv4 /32 or IPv6 /64. TLS handshake state is limited
+by `-p2pwebtransportmaxhandshaking=256`. A separate finite inbound engine cap
+uses CConnman's effective inbound budget, including TLS connections that have
+not opened a WT session. Accepted P2P sessions also enter the existing combined
+TCP/WebSocket/WT connection accounting and eviction path.
+
+`-p2pwebtransportretry=auto` asks for standard QUIC address validation above
+64 pending inbound handshakes or 8 token-less Initials from an IP group within
+10 seconds. `always` validates every new source; `off` retains QUIC's normal
+anti-amplification protection without Retry. The source/rate table is bounded
+at 4096 entries, preserves active counts and cannot replace recent source-rate
+history with an unvalidated source. Global exhaustion uses Retry or rejection,
+not unbounded allocations. Stateless resets retain their 10-per-second limit.
+These mechanisms do not perform rendezvous introductions or hole punching.
+
+Complete-frame receive credit follows `-maxreceivebuffer`. A large valid
+message needs room to finish before the net thread can consume it, so the
+aggregate encoded-byte bound also includes one maximum wire frame and the
+32MiB receive window already granted by QUIC. At most 4096 complete frames
+may wait per peer, including early CONTROL frames. A peer exceeding these
+bounds loses its session. Large completed reassembly buffers are transferred
+or released, instead of retained independently by all five stream classes.
+These are encoded-byte/queue bounds; allocator capacity, decoded messages and
+QUIC/TLS state add memory beyond that accounting.
+
+With `-metrics`, `/metrics` reports WT connection gauges by direction/state,
+TLS handshake results, Retry/reset counts, admission/session rejection reasons,
+class-stream bytes and flow-control stalls, declared packet losses, smoothed
+RTT samples, inventory splits and fallback reasons. Class-stream bytes include
+framing: outbound bytes are counted when queued, inbound bytes when consumed.
+RTT is sampled at most once per second per established connection. Labels use
+fixed sets without peer addresses or URL tokens. Existing peer/connection
+metrics now identify WebTransport separately from raw TCP and WebSocket.
+
+Focused W8 checks pass: daemon and unit builds, 25 selected QUIC/peer-socket
+cases (13,286 assertions), the six-node admission/Retry/ban/reconnect/block
+test, and the existing HTTP metrics functional test. The opt-in capture-server
+case remained inactive; no new browser cohort or broad benchmark ran. Linux,
+Guix, cross-lane admission integration and the remaining W9–W12 gates are
+separate from these focused results.
