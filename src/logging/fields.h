@@ -201,7 +201,9 @@
     X(SnapshotCacheMB, snapshot_cache_mb, UINT, "", "") \
     X(SnapshotProgressPercent, snapshot_progress_percent, FLOAT, "", "") \
     X(ImportedBlockCount, imported_block_count, INT, "", "") \
-    X(ElapsedMilliseconds, elapsed_milliseconds, INT, "", "")
+    X(ElapsedMilliseconds, elapsed_milliseconds, INT, "", "") \
+    X(ClientName, client_name, STRING, "", "") \
+    X(ClientVersion, client_version, STRING, "", "")
 
 namespace BCLog {
 

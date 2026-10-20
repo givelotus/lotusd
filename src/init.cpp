@@ -2477,10 +2477,11 @@ std::set<BlockFilterType> g_enabled_filter_types;
 
 [[noreturn]] static void new_handler_terminate() {
     // Rather than throwing std::bad-alloc if allocation fails, terminate
-    // immediately to (try to) avoid chain corruption. Since LogPrintf may
+    // immediately to (try to) avoid chain corruption. Since logging may
     // itself allocate memory, set the handler directly to terminate first.
     std::set_new_handler(std::terminate);
-    LogPrintf("Error: Out of memory. Terminating.\n");
+    LogInfoEvent(BCLog::ALL, "node_memory_exhausted",
+                 "Error: Out of memory. Terminating.");
 
     // The log was successful, terminate now.
     std::terminate();
@@ -3465,9 +3466,10 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
                 index->Interrupt();
                 index->Stop();
                 if (!(index->Init() && index->StartBackgroundSync())) {
-                    LogPrintf("[snapshot] WARNING failed to restart index %s "
-                              "on snapshot chain\n",
-                              index->GetName());
+                    LogInfoEvent(
+                        BCLog::ALL, "snapshot_index_restart_failed",
+                        "[snapshot] WARNING failed to restart index {name} on snapshot chain")
+                        .Field(BCLog::LogField::Name, index->GetName());
                 }
             }
         };
@@ -3520,8 +3522,10 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
                                        node.chainman->m_options.datadir /
                                        HEADERS_TIME_FILE_NAME));
                 fLoaded = true;
-                LogPrintf(" block index %15dms\n",
-                          GetTimeMillis() - load_block_index_start_time);
+                LogInfoEvent(BCLog::ALL, "block_index_startup_completed",
+                             " block index {elapsed_milliseconds:15d}ms")
+                    .Field(BCLog::LogField::ElapsedMilliseconds,
+                           GetTimeMillis() - load_block_index_start_time);
             }
         }
 
