@@ -6,21 +6,22 @@
 #include <chainparams.h>
 #include <config.h>
 #include <core_io.h>
-#include <primitives/v2_outputs.h>
 #include <interfaces/chain.h>
+#include <key_io.h>
 #include <logging.h>
 #include <lotus_v2/fee_hysteresis.h>
-#include <wallet/fees.h>
-#include <util/time.h>
 #include <node/blockstorage.h>
 #include <node/context.h>
 #include <node/transaction.h>
 #include <policy/policy.h>
+#include <primitives/v2_outputs.h>
 #include <rpc/server.h>
+#include <util/time.h>
 #include <util/translation.h>
 #include <validation.h>
 #include <wallet/coincontrol.h>
 #include <wallet/context.h>
+#include <wallet/fees.h>
 #include <wallet/receive.h>
 #include <wallet/rpc/backup.h>
 #include <wallet/spend.h>
@@ -106,11 +107,47 @@ static void AddKey(CWallet &wallet, const CKey &key) {
     spk_man->AddKeyPubKey(key, key.GetPubKey());
 }
 
+BOOST_AUTO_TEST_CASE(native_keyhash_receiving_ownership_is_explicit) {
+    CKey key;
+    key.MakeNewKey(true);
+    AddKey(m_wallet, key);
+    const auto native = NativeKeyHashDestination(key.GetPubKey());
+    lotus::v2::Output policy;
+    policy.value = 1000;
+    policy.branches = {NativeDestinationRoot(native)};
+    policy.paths = {{0}};
+    const auto output = CTxOut::FromV2Output(policy);
+    const auto original = output;
+    LOCK(m_wallet.cs_wallet);
+    BOOST_REQUIRE(m_wallet.SetAddressBook(native, "native receive", "receive"));
+    BOOST_CHECK(m_wallet.IsMine(CTxDestination(native)) & ISMINE_SPENDABLE);
+    BOOST_CHECK(m_wallet.IsMine(output) & ISMINE_SPENDABLE);
+    CTxDestination resolved;
+    BOOST_REQUIRE(m_wallet.GetDestinationForOutput(output, resolved));
+    BOOST_CHECK(resolved == CTxDestination(native));
+    BOOST_CHECK_EQUAL(m_wallet.FindAddressBookEntry(resolved)->GetLabel(),
+                      "native receive");
+    BOOST_CHECK(output == original);
+    BOOST_CHECK_THROW(GetScriptForDestination(native), std::invalid_argument);
+    BOOST_CHECK(m_wallet.IsMine(CTxDestination(PKHash(key.GetPubKey()))) &
+                ISMINE_SPENDABLE);
+    CKey other;
+    other.MakeNewKey(true);
+    BOOST_CHECK_EQUAL(m_wallet.IsMine(CTxDestination(
+                          NativeKeyHashDestination(other.GetPubKey()))),
+                      ISMINE_NO);
+}
+
 BOOST_AUTO_TEST_CASE(native_wallet_ownership_keeps_canonical_transaction) {
     CKey key;
     key.MakeNewKey(true);
     AddKey(m_wallet, key);
-    const CScript script = GetScriptForRawPubKey(key.GetPubKey());
+    const CScript script = GetScriptForDestination(PKHash(key.GetPubKey()));
+    lotus::v2::Output policy;
+    policy.value = 1000;
+    policy.branches = {
+        NativeDestinationRoot(NativeKeyHashDestination(key.GetPubKey()))};
+    policy.paths = {{0}};
     CMutableTransaction native;
     native.nVersion = 7;
     native.vin.emplace_back(COutPoint(TxId{uint256::ONE}, 0));
@@ -118,40 +155,26 @@ BOOST_AUTO_TEST_CASE(native_wallet_ownership_keeps_canonical_transaction) {
     lotus::v2::BranchWitness witness;
     witness.script = {0x4e};
     native.vin[0].vWitnesses = {witness};
-    native.vout = {V0LeafOutput(1000 * SATOSHI, script)};
+    native.vout = {CTxOut::FromV2Output(policy)};
     const auto tx = MakeTransactionRef(std::move(native));
     const auto wire = EncodeHexTx(*tx);
     const auto id = tx->GetId();
     const auto hash = tx->GetHash();
 
-    // A raw legacy script leaf is not an authorized native ownership policy.
-    // The callback must not insert an unrelated native transaction as ours.
+    // A callback must not replace the immutable native output with the
+    // wallet's ownership script, even when the wallet recognizes its branch.
     m_wallet.transactionAddedToMempool(tx, 0);
     LOCK(m_wallet.cs_wallet);
-    BOOST_CHECK(m_wallet.mapWallet.find(id) == m_wallet.mapWallet.end());
-    BOOST_CHECK_EQUAL(m_wallet.IsMine(tx->vout[0]), ISMINE_NO);
-    BOOST_CHECK(m_wallet.GetScriptForOutput(tx->vout[0]) == tx->vout[0].scriptPubKey);
-    BOOST_CHECK(OutputGetCredit(m_wallet, tx->vout[0], ISMINE_ALL) == Amount::zero());
-    const CTxOut legacy(1000 * SATOSHI, script);
-    BOOST_CHECK(m_wallet.IsMine(legacy) & ISMINE_SPENDABLE);
-    BOOST_CHECK(OutputGetCredit(m_wallet, legacy, ISMINE_ALL) == 1000 * SATOSHI);
-
-    // Explicit bookkeeping may store an unowned transaction. The next callback
-    // must retain its immutable wire bytes, identifiers and output commitment.
-    BOOST_REQUIRE(m_wallet.AddToWallet(
-        tx, {CWalletTx::Status::UNCONFIRMED, 0, BlockHash(), 0}, nullptr, false));
-    m_wallet.transactionAddedToMempool(tx, 1);
     const auto found = m_wallet.mapWallet.find(id);
     BOOST_REQUIRE(found != m_wallet.mapWallet.end());
     BOOST_CHECK(found->second.tx == tx);
     BOOST_CHECK_EQUAL(EncodeHexTx(*found->second.tx), wire);
     BOOST_CHECK_EQUAL(found->second.tx->GetId(), id);
     BOOST_CHECK_EQUAL(found->second.tx->GetHash(), hash);
-    BOOST_CHECK(found->second.tx->vout[0] == tx->vout[0]);
     BOOST_CHECK(!found->second.tx->vout[0].IsLegacy());
-    BOOST_CHECK(found->second.InMempool());
-    BOOST_CHECK_EQUAL(m_wallet.IsMine(tx->vout[0]), ISMINE_NO);
-    BOOST_CHECK(OutputGetCredit(m_wallet, tx->vout[0], ISMINE_ALL) == Amount::zero());
+    BOOST_CHECK(m_wallet.GetScriptForOutput(tx->vout[0]) == script);
+    BOOST_CHECK(m_wallet.IsMine(tx->vout[0]) & ISMINE_SPENDABLE);
+    BOOST_CHECK(m_wallet.IsMine(CTxOut(1000 * SATOSHI, script)) & ISMINE_SPENDABLE);
 
     // Ownership recognition must not advertise a native coin as spendable by
     // the ordinary wallet's currently legacy-only funder/signer.
@@ -159,7 +182,13 @@ BOOST_AUTO_TEST_CASE(native_wallet_ownership_keeps_canonical_transaction) {
     control.m_include_unsafe_inputs = true;
     std::vector<COutput> available;
     AvailableCoins(m_wallet, available, &control);
-    BOOST_CHECK(available.empty());
+    BOOST_REQUIRE_EQUAL(available.size(), 1U);
+    BOOST_CHECK(!available[0].fSpendable);
+    BOOST_CHECK(!available[0].fSolvable);
+
+    // Legacy bytecode cannot be reinterpreted as native authorization.
+    BOOST_CHECK_EQUAL(m_wallet.IsMine(V0LeafOutput(1000 * SATOSHI, script)),
+                      ISMINE_NO);
 
     CKey unrelated;
     unrelated.MakeNewKey(true);
