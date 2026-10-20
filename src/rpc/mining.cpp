@@ -619,13 +619,14 @@ static RPCHelpMan generateblock() {
 static UniValue MiningProofOfWork(const CChainParams &) {
     UniValue pow(UniValue::VOBJ);
     pow.pushKV("version", 1);
-    pow.pushKV("algorithm", "sha256d");
-    pow.pushKV("headerbytes", 80);
-    pow.pushKV("nonceoffset", 76);
-    pow.pushKV("noncebytes", 4);
+    pow.pushKV("algorithm", "lotus-v2-blockid");
+    pow.pushKV("headerbytes", 134);
+    pow.pushKV("nonceoffset", 42);
+    pow.pushKV("noncebytes", 8);
     pow.pushKV("noncebyteorder", "little");
     pow.pushKV("hashbyteorder", "little");
     pow.pushKV("targetbyteorder", "big");
+    pow.pushKV("chainid", HexStr(GetActiveV2ChainId()));
     pow.pushKV("template_rpc", "getrawunsolvedblock");
     pow.pushKV("submit_rpc", "submitblock");
     return pow;
@@ -649,7 +650,7 @@ static RPCHelpMan getchainconfig() {
         [&](const RPCHelpMan &, const Config &config,
             const JSONRPCRequest &) -> UniValue {
             const CChainParams &params = config.GetChainParams();
-            const std::string kind = "ecash";
+            const std::string kind = "lotus-v2";
             const std::string network = params.GetChainTypeString();
             const std::string genesis =
                 params.GenesisBlock().GetHash().GetHex();
@@ -659,6 +660,7 @@ static RPCHelpMan getchainconfig() {
             chain.pushKV("network", network);
             chain.pushKV("identifier", kind + "-" + network + ":" + genesis);
             chain.pushKV("genesis", genesis);
+            chain.pushKV("chainid", HexStr(GetActiveV2ChainId()));
 
             const UniValue denomination = CurrencyInfoToJSON();
             UniValue currency(UniValue::VOBJ);
@@ -693,7 +695,7 @@ static RPCHelpMan getchainconfig() {
             mining.pushKV("testgeneration", params.MineBlocksOnDemand());
             UniValue features(UniValue::VOBJ);
             features.pushKV("legacytransactions", true);
-            features.pushKV("nativetransactions", false);
+            features.pushKV("nativetransactions", true);
             features.pushKV("message_signing", "legacy-p2pkh");
             UniValue node(UniValue::VOBJ);
             node.pushKV("client", CLIENT_NAME);
@@ -755,6 +757,8 @@ static RPCHelpMan getmininginfo() {
                       "Raw digest integer byte order for target comparison"},
                      {RPCResult::Type::STR, "targetbyteorder",
                       "getrawunsolvedblock target hex byte order"},
+                     {RPCResult::Type::STR_HEX, "chainid",
+                      "32-byte chain domain in raw hash input byte order"},
                      {RPCResult::Type::STR, "template_rpc",
                       "RPC returning a complete unsolved block"},
                      {RPCResult::Type::STR, "submit_rpc",
