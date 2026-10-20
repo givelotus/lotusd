@@ -10,6 +10,10 @@ This release includes the following features and fixes:
   every such peer instead of once per peer. See
   `-p2pcompressoncethreshold`, `-p2pcompressoncecache` and
   doc/p2p-websocket.md.
+- A block served to several peers (typically a new tip) is read or
+  serialized and checksummed once: the serialized message is kept for the
+  next peers (`-blockmessagecache`, MiB, default 64, 0 disables). Blocks
+  under 64 KiB are not kept.
 - Wallets receive chain notifications (blocks, mempool transactions and chain
   state flushes) on a per-wallet worker thread instead of the validation
   scheduler thread, in the same order as before. A wallet that is busy, for

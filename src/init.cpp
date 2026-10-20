@@ -574,6 +574,15 @@ void SetupServerArgs(NodeContext &node) {
                    "replaced by block hash)",
                    ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 #endif
+    argsman.AddArg(
+        "-blockmessagecache=<n>",
+        strprintf("Keep up to <n> MiB of serialized block messages (with "
+                  "their checksums) to serve the same block to further peers "
+                  "without reading, serializing and hashing it again; blocks "
+                  "under %u bytes are not kept, 0 disables (default: %d)",
+                  BLOCK_MESSAGE_CACHE_MIN_BYTES,
+                  DEFAULT_BLOCK_MESSAGE_CACHE_MB),
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg("-blockreconstructionextratxn=<n>",
                    strprintf("Extra transactions to keep in memory for compact "
                              "block reconstructions (default: %u)",

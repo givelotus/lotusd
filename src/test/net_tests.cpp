@@ -15,6 +15,7 @@
 #include <crypto/sha256.h>
 #include <hash.h>
 #include <init.h>
+#include <net_block_message_cache.h>
 #include <net_processing.h>
 #include <net_websocket.h>
 #include <net_websocket_bridge.h>
@@ -2171,6 +2172,72 @@ BOOST_AUTO_TEST_CASE(sock_buffered_data_hooks) {
 
     connman.ClearTestNodes();
     close(sv[1]);
+}
+
+BOOST_AUTO_TEST_CASE(block_message_cache) {
+    FastRandomContext rng{true};
+    auto payload = [&](size_t size) { return rng.randbytes<uint8_t>(size); };
+    const BlockHash a{rng.rand256()}, b{rng.rand256()}, c{rng.rand256()};
+    BlockMessageCache cache{250000, 2};
+    BOOST_CHECK(cache.Enabled());
+    BOOST_CHECK(!cache.Get(a));
+    const auto data_a{payload(100000)};
+    const auto put{cache.Put(a, std::vector<uint8_t>{data_a})};
+    BOOST_CHECK(*put.data == data_a);
+    // The checksum is the start of the payload's double SHA256.
+    const uint256 sum{Hash(data_a)};
+    BOOST_CHECK(
+        std::equal(put.checksum.begin(), put.checksum.end(), sum.begin()));
+    const auto got{cache.Get(a)};
+    BOOST_REQUIRE(got);
+    BOOST_CHECK(got->data == put.data);
+    BOOST_CHECK(got->checksum == put.checksum);
+    // A second Put of the same block keeps the first copy.
+    BOOST_CHECK(cache.Put(a, payload(100000)).data == put.data);
+    // Byte bound: b fits beside a, c (100000) evicts the least recently
+    // used.
+    cache.Put(b, payload(100000));
+    BOOST_CHECK(cache.Get(a)); // a is now the most recently used
+    cache.Put(c, payload(100000));
+    BOOST_CHECK(cache.Get(a));
+    BOOST_CHECK(!cache.Get(b));
+    BOOST_CHECK(cache.Get(c));
+    auto stats{cache.GetStats()};
+    BOOST_CHECK_EQUAL(stats.entries, 2U);
+    BOOST_CHECK_LE(stats.bytes, 250000U);
+    // Larger than the whole budget: returned, not kept.
+    const BlockHash big{rng.rand256()};
+    BOOST_CHECK_EQUAL(cache.Put(big, payload(300000)).data->size(), 300000U);
+    BOOST_CHECK(!cache.Get(big));
+    BOOST_CHECK(!BlockMessageCache{0}.Enabled());
+    // Entry bound.
+    BlockMessageCache one{1 << 20, 1};
+    one.Put(a, payload(10));
+    one.Put(b, payload(10));
+    BOOST_CHECK(!one.Get(a));
+    BOOST_CHECK(one.Get(b));
+    BOOST_CHECK_EQUAL(one.GetStats().entries, 1U);
+}
+
+BOOST_AUTO_TEST_CASE(precomputed_checksum_is_used) {
+    const Config &config{GetConfig()};
+    V1TransportSerializer serializer;
+    CSerializedNetMsg msg;
+    msg.m_type = NetMsgType::BLOCK;
+    msg.data = {1, 2, 3, 4, 5};
+    std::vector<uint8_t> computed, given;
+    serializer.prepareForTransport(config, msg, computed);
+    const uint256 sum{Hash(msg.data)};
+    BOOST_CHECK(
+        std::equal(computed.begin() + 20, computed.begin() + 24, sum.begin()));
+    msg.m_checksum = {9, 8, 7, 6};
+    serializer.prepareForTransport(config, msg, given);
+    BOOST_CHECK_EQUAL(given.size(), CMessageHeader::HEADER_SIZE);
+    BOOST_CHECK(
+        std::equal(given.begin(), given.begin() + 20, computed.begin()));
+    BOOST_CHECK_EQUAL(given[20], 9);
+    BOOST_CHECK_EQUAL(given[23], 6);
+    BOOST_CHECK(msg.Copy().m_checksum == msg.m_checksum);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
