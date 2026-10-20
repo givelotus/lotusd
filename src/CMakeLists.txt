@@ -696,6 +696,7 @@ add_library(server
 	node/metrics.cpp
 	node/miner.cpp
 	node/peerman_args.cpp
+	node/txadmission.cpp
 	node/psbt.cpp
 	node/transaction.cpp
 	node/ui_interface.cpp
