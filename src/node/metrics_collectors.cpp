@@ -7,6 +7,9 @@
 #include <avalanche/peermanager.h>
 #include <avalanche/processor.h>
 #include <feerate.h>
+#include <lotus_v2/fee_hysteresis.h>
+#include <net/v2_protocol_handler.h>
+#include <net_processing.h>
 #include <node/context.h>
 #include <node/metrics.h>
 #include <sync.h>
@@ -67,6 +70,46 @@ namespace {
                 1);
         }));
     }
+    void AddSnapshotSyncCollector(NodeMetrics &m,
+                                  lotus::v2::net::V2PeerProtocolHandler &v2) {
+        g_collectors.push_back(m.registry.AddCollector([&m, &v2] {
+            // The handler's mutex, briefly, as getfastsyncinfo takes it
+            const auto status{v2.GetFastSyncSwarmStatus()};
+            for (size_t i = 0; i < metric_labels::SnapshotSyncStates().size();
+                 ++i) {
+                m.snapshot_sync_state.Set(size_t(status.state) == i ? 1 : 0, i);
+            }
+            m.snapshot_sync_pivot_height.Set(double(status.pivot_height));
+            m.snapshot_sync_shards.Set(double(status.total_non_empty_shards),
+                                       0);
+            m.snapshot_sync_shards.Set(double(status.verified_shards), 1);
+            m.snapshot_sync_shards.Set(double(status.pending_shards), 2);
+            m.snapshot_sync_shards.Set(double(status.in_flight_shards), 3);
+            m.snapshot_sync_coins_imported.Set(double(status.coins_imported));
+            m.snapshot_sync_blocks_peeled.Set(double(status.blocks_peeled));
+            m.snapshot_sync_peers.Set(double(status.active_peers), 0);
+            m.snapshot_sync_peers.Set(double(status.banned_swarm_peers), 1);
+        }));
+    }
+
+    void AddAdaptiveCapacityCollector(NodeMetrics &m) {
+        g_collectors.push_back(m.registry.AddCollector([&m] {
+            // The controller's own mutex, briefly
+            const auto &c{lotus::v2::GetGlobalFeeHysteresisController()};
+            using A = AdaptiveLimit;
+            m.adaptive_block_size.Set(double(c.GetAdaptiveMaxBlockSize()),
+                                      size_t(A::MAX));
+            m.adaptive_block_size.Set(double(c.GetAdaptiveTargetBlockSize()),
+                                      size_t(A::TARGET));
+            m.adaptive_block_size.Set(
+                double(c.GetAdaptiveMaxGeneratedBlockSize()),
+                size_t(A::MAX_GENERATED));
+            m.adaptive_block_size.Set(double(c.GetEmaBlockSizeBytes()),
+                                      size_t(A::EMA));
+            m.adaptive_block_size_history_complete.Set(
+                c.HasCompleteAdaptiveHistory() ? 1 : 0);
+        }));
+    }
 } // namespace
 
 void StartNodeMetricsCollectors(NodeContext &node) {
@@ -81,6 +124,12 @@ void StartNodeMetricsCollectors(NodeContext &node) {
     if (node.mempool) {
         AddMempoolCollector(*m, *node.mempool);
     }
+    if (node.peerman) {
+        if (auto *v2{node.peerman->GetV2ProtocolHandler()}) {
+            AddSnapshotSyncCollector(*m, *v2);
+        }
+    }
+    AddAdaptiveCapacityCollector(*m);
 }
 
 void StopNodeMetricsCollectors() {
