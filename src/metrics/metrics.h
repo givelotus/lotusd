@@ -327,8 +327,25 @@ public:
     void PrepareThisThread() noexcept EXCLUSIVE_LOCKS_REQUIRED(!m_rings_mutex);
 
     /** Run f before each rendering (to set gauges computed at scrape time) */
-    void AddCollector(std::function<void()> f) {
-        m_collectors.push_back(std::move(f));
+    /**
+     * Run f before each rendering (to set gauges computed at scrape time).
+     * Thread-safe: subsystems created after metrics start add theirs (and
+     * remove them before they go away) while scrapes may be in progress.
+     * Returns an id for RemoveCollector. f must not add or remove
+     * collectors.
+     */
+    uint64_t AddCollector(std::function<void()> f)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_render_mutex) {
+        LOCK(m_render_mutex);
+        m_collectors.emplace_back(++m_last_collector_id, std::move(f));
+        return m_last_collector_id;
+    }
+    /** Remove a collector; once this returns, it no longer runs */
+    void RemoveCollector(uint64_t id)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_render_mutex) {
+        LOCK(m_render_mutex);
+        std::erase_if(m_collectors,
+                      [id](const auto &c) { return c.first == id; });
     }
 
     /** Start the drain thread, with `rings` rings ready for new threads */
@@ -372,7 +389,9 @@ private:
 
     std::vector<std::unique_ptr<Metric>> m_metrics;
     std::vector<EventHistogram *> m_histograms;
-    std::vector<std::function<void()>> m_collectors;
+    std::vector<std::pair<uint64_t, std::function<void()>>>
+        m_collectors GUARDED_BY(m_render_mutex);
+    uint64_t m_last_collector_id GUARDED_BY(m_render_mutex){0};
 
     mutable Mutex m_rings_mutex;
     //! Rings in use by threads (and orphaned ones still to be drained)
