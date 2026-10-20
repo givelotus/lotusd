@@ -358,3 +358,67 @@ WebTransportDialer GetWebTransportDialer() {
     LOCK(g_wt_registry_mutex);
     return g_wt_dialer;
 }
+
+void WebTransportNegativeCache::SetRetryAfter(
+    std::chrono::seconds retry_after) {
+    LOCK(m_mutex);
+    m_retry_after = retry_after;
+    m_entries.clear();
+    m_lru.clear();
+}
+
+bool WebTransportNegativeCache::Contains(const CService &addr,
+                                         Clock::time_point now) {
+    LOCK(m_mutex);
+    const auto it{m_entries.find(addr)};
+    if (it == m_entries.end()) {
+        return false;
+    }
+    if (now >= it->second.expires) {
+        m_lru.erase(it->second.lru);
+        m_entries.erase(it);
+        return false;
+    }
+    m_lru.splice(m_lru.begin(), m_lru, it->second.lru);
+    return true;
+}
+
+void WebTransportNegativeCache::Record(const CService &addr,
+                                       Clock::time_point now) {
+    LOCK(m_mutex);
+    if (m_capacity == 0 || m_retry_after <= std::chrono::seconds::zero()) {
+        return;
+    }
+    if (const auto it{m_entries.find(addr)}; it != m_entries.end()) {
+        it->second.expires = now + m_retry_after;
+        m_lru.splice(m_lru.begin(), m_lru, it->second.lru);
+        return;
+    }
+    if (m_entries.size() == m_capacity) {
+        m_entries.erase(m_lru.back());
+        m_lru.pop_back();
+    }
+    m_lru.push_front(addr);
+    m_entries.emplace(addr, Entry{now + m_retry_after, m_lru.begin()});
+}
+
+void WebTransportNegativeCache::Erase(const CService &addr) {
+    LOCK(m_mutex);
+    if (const auto it{m_entries.find(addr)}; it != m_entries.end()) {
+        m_lru.erase(it->second.lru);
+        m_entries.erase(it);
+    }
+}
+
+size_t WebTransportNegativeCache::Size(Clock::time_point now) {
+    LOCK(m_mutex);
+    for (auto it{m_entries.begin()}; it != m_entries.end();) {
+        if (now >= it->second.expires) {
+            m_lru.erase(it->second.lru);
+            it = m_entries.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    return m_entries.size();
+}

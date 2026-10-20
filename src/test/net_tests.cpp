@@ -62,6 +62,7 @@ static CNetAddr ip(uint32_t ip) {
 namespace {
 struct CConnmanTest : public CConnman {
     using CConnman::CConnman;
+    using CConnman::ConnectNode;
 
     Mutex cs;
     size_t outboundFullRelayCount GUARDED_BY(cs);
@@ -273,6 +274,65 @@ private:
 
 // Use TestingSetup or a daughter class so that m_node.addrman is non-null
 BOOST_FIXTURE_TEST_SUITE(net_tests, RegTestingSetup)
+
+BOOST_AUTO_TEST_CASE(webtransport_discovery_preserves_raw_fallback) {
+    const auto old_socket_factory{CreateSock};
+    const auto old_dialer{GetWebTransportDialer()};
+    const bool old_ipv4{IsReachable(NET_IPV4)};
+    struct Restore {
+        std::function<void()> fn;
+        ~Restore() { fn(); }
+    } restore{[&] {
+        CreateSock = old_socket_factory;
+        SetWebTransportDialer(old_dialer);
+        SetReachable(NET_IPV4, old_ipv4);
+    }};
+    SetReachable(NET_IPV4, true);
+    unsigned udp_attempts{0}, tcp_attempts{0};
+    // No real network I/O: intercept the registered UDP dialer and TCP
+    // socket factory. A service bit cannot turn a raw TCP port into HTTP.
+    CreateSock = [&](int, int type, int) -> std::unique_ptr<Sock> {
+        BOOST_CHECK_EQUAL(type, SOCK_STREAM);
+        ++tcp_attempts;
+        return {};
+    };
+    SetWebTransportDialer([&](const CService &, const ParsedWebTransportURL &,
+                              std::chrono::milliseconds timeout,
+                              CThreadInterrupt &, WebTransportDialError &error)
+                              -> std::optional<WebTransportDialResult> {
+        BOOST_CHECK(timeout == WEBTRANSPORT_DISCOVERY_TIMEOUT);
+        ++udp_attempts;
+        error = WebTransportDialError::TIMEOUT;
+        return std::nullopt;
+    });
+    CConnmanTest connman(m_node.chainman->GetConfig(), 0x1337, 0x1337,
+                         *m_node.addrman);
+    CConnman::Options options{};
+    connman.Init(options);
+    const CAddress addr{LookupNumeric("8.8.4.4", 443),
+                        ServiceFlags(NODE_NETWORK | NODE_WEBTRANSPORT)};
+    BOOST_CHECK(!connman.ConnectNode(addr, nullptr, false,
+                                     ConnectionType::OUTBOUND_FULL_RELAY));
+    BOOST_CHECK_EQUAL(udp_attempts, 1U);
+    BOOST_CHECK_EQUAL(tcp_attempts, 1U);
+    BOOST_CHECK_EQUAL(connman.WebTransportNegativeCacheSize(), 1U);
+    BOOST_CHECK(!connman.ConnectNode(addr, nullptr, false,
+                                     ConnectionType::OUTBOUND_FULL_RELAY));
+    BOOST_CHECK_EQUAL(udp_attempts, 1U);
+    BOOST_CHECK_EQUAL(tcp_attempts, 2U);
+    options.m_wt_dial_policy = WebTransportDialPolicy::ONLY;
+    connman.Init(options);
+    BOOST_CHECK(!connman.ConnectNode(addr, nullptr, false,
+                                     ConnectionType::OUTBOUND_FULL_RELAY));
+    BOOST_CHECK_EQUAL(udp_attempts, 2U);
+    BOOST_CHECK_EQUAL(tcp_attempts, 2U);
+    options.m_wt_dial_policy = WebTransportDialPolicy::OFF;
+    connman.Init(options);
+    BOOST_CHECK(!connman.ConnectNode(addr, nullptr, false,
+                                     ConnectionType::OUTBOUND_FULL_RELAY));
+    BOOST_CHECK_EQUAL(udp_attempts, 2U);
+    BOOST_CHECK_EQUAL(tcp_attempts, 3U);
+}
 
 BOOST_AUTO_TEST_CASE(cnode_listen_port) {
     // test default

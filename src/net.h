@@ -1004,6 +1004,10 @@ public:
         //! How long a P2P port connection may take to show what it speaks
         std::chrono::seconds p2p_port_handshake_timeout{
             DEFAULT_P2P_PORT_HANDSHAKE_TIMEOUT};
+        WebTransportDialPolicy m_wt_dial_policy{WebTransportDialPolicy::PREFER};
+        std::chrono::milliseconds m_wt_dial_timeout{
+            WEBTRANSPORT_DISCOVERY_TIMEOUT};
+        std::chrono::seconds m_wt_retry_after{WEBTRANSPORT_RETRY_AFTER};
     };
 
     void Init(const Options &connOptions)
@@ -1051,6 +1055,9 @@ public:
             connOptions.m_websocket_require_known_key;
         m_p2p_port_websocket = connOptions.p2p_port_websocket;
         m_p2p_port_handshake_timeout = connOptions.p2p_port_handshake_timeout;
+        m_wt_dial_policy = connOptions.m_wt_dial_policy;
+        m_wt_dial_timeout = connOptions.m_wt_dial_timeout;
+        m_wt_negative_cache.SetRetryAfter(connOptions.m_wt_retry_after);
     }
 
     CConnman(const Config &configIn, uint64_t seed0, uint64_t seed1,
@@ -1206,6 +1213,13 @@ public:
     //! which is used to advertise which services we are offering
     //! that peer during `net_processing.cpp:PushNodeVersion()`.
     ServiceFlags GetLocalServices() const;
+    size_t WebTransportNegativeCacheSize() {
+        return m_wt_negative_cache.Size();
+    }
+    std::array<uint64_t, 4> WebTransportFallbackCounts() const {
+        return {m_wt_fallbacks[0].load(), m_wt_fallbacks[1].load(),
+                m_wt_fallbacks[2].load(), m_wt_fallbacks[3].load()};
+    }
 
     //! Updates the local services that this node advertises to other peers
     //! during connection handshake.
@@ -1384,15 +1398,17 @@ private:
      */
     CNode *ConnectWebSocketNode(const std::string &url,
                                 const CAddress *wss_addr, bool fCountFailure,
-                                ConnectionType conn_type);
+                                ConnectionType conn_type,
+                                bool record_attempt = true);
     /**
      * Open an outbound P2P connection over WebTransport to `url` (wt://),
      * via the dialer set with SetWebTransportDialer(). Never through a
      * proxy: UDP cannot use one, so with -proxy/-onion it fails closed.
      */
     CNode *ConnectWebTransportNode(const std::string &url, bool fCountFailure,
-                                   ConnectionType conn_type);
-    ;
+                                   ConnectionType conn_type,
+                                   const CAddress *discovered = nullptr,
+                                   WebTransportDialError *dial_error = nullptr);
     void AddWhitelistPermissionFlags(
         NetPermissionFlags &flags, const CNetAddr &addr,
         const std::vector<NetWhitelistPermissions> &ranges) const;
@@ -1446,6 +1462,11 @@ private:
     // P2P WebSocket peers known by their TLS public key (-p2pwebsocketpeer)
     std::vector<NetKeyPermissions> vWhitelistedKeys;
     bool m_websocket_require_known_key{false};
+    WebTransportDialPolicy m_wt_dial_policy{WebTransportDialPolicy::PREFER};
+    std::chrono::milliseconds m_wt_dial_timeout{WEBTRANSPORT_DISCOVERY_TIMEOUT};
+    WebTransportNegativeCache m_wt_negative_cache;
+    // timeout, refused, unsupported, handshake; excludes shutdown/proxy skips.
+    std::array<std::atomic<uint64_t>, 4> m_wt_fallbacks{};
 
     unsigned int nSendBufferMaxSize{0};
     unsigned int nReceiveFloodSize{0};

@@ -1384,6 +1384,19 @@ void SetupServerArgs(NodeContext &node) {
                    "QUIC idle timeout for WebTransport (default: 30)",
                    ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
                    OptionsCategory::CONNECTION);
+    argsman.AddArg("-p2pwebtransportdial=<off|prefer|only>",
+                   "Automatic WebTransport dialing for peers advertising it: "
+                   "prefer tries UDP then wss; only disables fallback "
+                   "(default: prefer). Explicit wt:// peers are WT-only.",
+                   ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
+        "-p2pwebtransporttimeout=<milliseconds>",
+        "Timeout for an automatic WebTransport attempt (default: 3000)",
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg("-p2pwebtransportretryafter=<seconds>",
+                   "Cache automatic WebTransport failures this long before "
+                   "retrying UDP (default: 3600; 0 disables caching)",
+                   ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg(
         "-listenonion",
         strprintf("Automatically create Tor onion service (default: %d)",
@@ -4051,6 +4064,24 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
     }
     connOptions.m_websocket_require_known_key =
         args.GetBoolArg("-p2pwebsocketrequirecert", false);
+    const auto wt_dial{args.GetArg("-p2pwebtransportdial", "prefer")};
+    if (wt_dial != "off" && wt_dial != "prefer" && wt_dial != "only") {
+        return InitError(_("-p2pwebtransportdial must be off, prefer or only"));
+    }
+    connOptions.m_wt_dial_policy =
+        wt_dial == "off"    ? WebTransportDialPolicy::OFF
+        : wt_dial == "only" ? WebTransportDialPolicy::ONLY
+                            : WebTransportDialPolicy::PREFER;
+    const auto wt_timeout{args.GetIntArg("-p2pwebtransporttimeout", 3000)};
+    const auto wt_retry{args.GetIntArg("-p2pwebtransportretryafter", 3600)};
+    if (wt_timeout < 1 || wt_timeout > 60000 || wt_retry < 0 ||
+        wt_retry > 86400) {
+        return InitError(
+            _("-p2pwebtransporttimeout must be 1-60000 ms and "
+              "-p2pwebtransportretryafter must be 0-86400 seconds"));
+    }
+    connOptions.m_wt_dial_timeout = std::chrono::milliseconds{wt_timeout};
+    connOptions.m_wt_retry_after = std::chrono::seconds{wt_retry};
     if (connOptions.m_websocket_require_known_key &&
         connOptions.vWhitelistedKeys.empty()) {
         return InitError(_("-p2pwebsocketrequirecert needs at least one "

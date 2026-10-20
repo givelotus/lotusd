@@ -317,6 +317,8 @@ static std::string serviceFlagToStr(const size_t bit) {
             return "AVALANCHE";
         case NODE_UTXO_SHARD:
             return "UTXO_SHARD";
+        case NODE_WEBTRANSPORT:
+            return "WEBTRANSPORT";
         default:
             std::ostringstream stream;
             stream.imbue(std::locale::classic());
