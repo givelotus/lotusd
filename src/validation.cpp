@@ -4810,10 +4810,12 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
                                  [&](const auto &policy) {
                                      bool ret = (*policy)(blockPolicyState);
                                      if (!ret) {
-                                         LogPrintf(
-                                             "Park block because it "
-                                             "violated a block policy: %s\n",
-                                             blockPolicyState.ToString());
+                                         LogInfoEvent(
+                                             BCLog::ALL, "block_parked_policy",
+                                             "Park block because it violated a block policy: {reason}")
+                                             .Field(
+                                                 BCLog::LogField::Reason,
+                                                 blockPolicyState.ToString());
                                      }
                                      return ret;
                                  }) != parkingPolicies.end()) {
@@ -4952,9 +4954,11 @@ CBlockIndex *Chainstate::FindMostWorkChain(
             if (m_avalancheFinalizedBlockIndex &&
                 !AreOnTheSameFork(pindexNew, m_avalancheFinalizedBlockIndex)) {
                 conflictsFinalizedAncestry = true;
-                LogPrintf("Park block %s because it forks prior to the "
-                          "avalanche finalized chaintip.\n",
-                          pindexNew->GetBlockHash().ToString());
+                LogInfoEvent(
+                    BCLog::ALL, "block_parked_before_finalized_tip",
+                    "Park block {block_hash} because it forks prior to the avalanche finalized chaintip.")
+                    .Field(BCLog::LogField::BlockHash,
+                           pindexNew->GetBlockHash());
                 node::CountParkedBlock(
                     node::BlockParkReason::FINALIZATION_CONFLICT);
                 pindexNew->nStatus = pindexNew->nStatus.withParked();
@@ -5038,9 +5042,11 @@ CBlockIndex *Chainstate::FindMostWorkChain(
                 }
                 if (pindexNew->nChainWork > requiredWork) {
                     // We have enough, clear the parked state.
-                    LogPrintf("Unpark chain up to block %s as it has "
-                              "accumulated enough PoW.\n",
-                              pindexNew->GetBlockHash().ToString());
+                    LogInfoEvent(
+                        BCLog::ALL, "chain_unparked_by_work",
+                        "Unpark chain up to block {block_hash} as it has accumulated enough PoW.")
+                        .Field(BCLog::LogField::BlockHash,
+                               pindexNew->GetBlockHash());
                     fParkedChain = false;
                     UnparkBlock(pindexTest);
                 }
@@ -6914,8 +6920,10 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock> &pblock,
         const CBlockIndex *pindexFork = ActiveChain().FindFork(pindex);
         if (!is_background_block && pindexFork &&
             pindexFork->nHeight + 1 < ActiveHeight()) {
-            LogPrintf("Park block %s as it would cause a deep reorg.\n",
-                      pindex->GetBlockHash().ToString());
+            LogInfoEvent(
+                BCLog::ALL, "block_parked_deep_reorg",
+                "Park block {block_hash} as it would cause a deep reorg.")
+                .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash());
             node::CountParkedBlock(node::BlockParkReason::DEEP_REORG);
             pindex->nStatus = pindex->nStatus.withParked();
             m_blockman.m_dirty_blockindex.insert(pindex);
