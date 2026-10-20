@@ -92,6 +92,19 @@ WIF so the returned envelope has the native header. Do not add another RPC
 just to select the format. Do not mix eCash and Lotus signature domains based
 on the address's text.
 
+## Discovery integration
+
+After both this feature and `getchainconfig` are integrated, the V2 discovery
+adapter reports `features.message_signing` as
+`lotus-chain-bound-compact-ecdsa-v1`, and
+`features.native_keyhash_message_signing` as true. Its `message_address`
+object identifies `format: xpiaddr`, the current network HRP, `types: [1]`,
+and `keyhash: blake3-xonly32`. This describes message RPC support only. It
+must not change the separate global receive/send address capabilities until
+native wallet destination and spending support is actually integrated.
+The PWA's strict ChainConfig validator must adopt this scheme at the same
+integration point, so it never mislabels a Lotus proof as eCash-compatible.
+
 ## Independent digest vector and validation gates
 
 ```
