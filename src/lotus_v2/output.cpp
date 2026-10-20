@@ -335,4 +335,46 @@ bool EncodeCoinOutput(const Output &coin, std::vector<uint8_t> &result,
     return true;
 }
 
+bool DecodeCoinOutput(const std::vector<uint8_t> &frame, Output &result,
+                      std::string &error) {
+    if (frame.empty() || frame[0] != 0x80) {
+        return DecodeOutput(frame, result, error);
+    }
+    if (frame.size() < 10 || frame.size() > MAX_COIN_OUTPUT_BYTES) {
+        error = "legacy coin bytes";
+        return false;
+    }
+    uint64_t value = 0;
+    for (size_t i = 0; i < 8; ++i) {
+        value |= uint64_t(frame[1 + i]) << (8 * i);
+    }
+    size_t offset = 9;
+    uint64_t n = frame[offset++];
+    if (n == 253) {
+        if (frame.size() < offset + 2) {
+            error = "legacy coin bytes";
+            return false;
+        }
+        n = uint64_t(frame[offset]) | (uint64_t(frame[offset + 1]) << 8);
+        offset += 2;
+        if (n < 253) {
+            error = "legacy coin compact size";
+            return false;
+        }
+    } else if (n > 253) {
+        error = "legacy coin compact size";
+        return false;
+    }
+    if (n > MAX_LEGACY_COIN_SCRIPT_BYTES || frame.size() - offset != n) {
+        error = "legacy coin bytes";
+        return false;
+    }
+    Output coin;
+    coin.value = value;
+    coin.legacy_script.emplace(frame.begin() + offset, frame.end());
+    result = std::move(coin);
+    error.clear();
+    return true;
+}
+
 } // namespace lotus::v2
