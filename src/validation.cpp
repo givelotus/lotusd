@@ -35,6 +35,7 @@
 #include <logging/timer.h>
 #include <lotus_v2/fee_hysteresis.h>
 #include <lotus_v2/signing.h>
+#include <logging/values.h>
 #include <minerfund.h>
 #include <node/blockstorage.h>
 #include <node/metrics.h>
@@ -1412,9 +1413,10 @@ bool MemPoolAccept::ConsensusScriptChecks(const ATMPArgs &args, Workspace &ws) {
         // This can occur under some circumstances, if the node receives an
         // unrequested tx which is invalid due to new consensus rules not
         // being activated yet (during IBD).
-        LogPrintf("BUG! PLEASE REPORT THIS! CheckInputScripts failed against "
-                  "latest-block but not STANDARD flags %s, %s\n",
-                  txid.ToString(), state.ToString());
+        LogInfoEvent(BCLog::ALL, "script_validation_flags_inconsistent",
+                     "BUG! PLEASE REPORT THIS! CheckInputScripts failed against latest-block but not STANDARD flags {txid}, {reason}")
+            .Field(BCLog::LogField::TxId, txid)
+            .Field(BCLog::LogField::Reason, state);
         return Assume(false);
     }
 
@@ -1422,10 +1424,11 @@ bool MemPoolAccept::ConsensusScriptChecks(const ATMPArgs &args, Workspace &ws) {
         // We can't accept this transaction as we've used the standard count
         // for the mempool/mining, but the consensus count will be enforced
         // in validation (we don't want to produce bad block templates).
-        LogError(
-            "%s: BUG! PLEASE REPORT THIS! SigChecks count differed between "
-            "standard and consensus flags in %s\n",
-            __func__, txid.ToString());
+        LogErrorEvent(
+            BCLog::ALL, "script_sigchecks_inconsistent",
+            "{source_function}: BUG! PLEASE REPORT THIS! SigChecks count differed between standard and consensus flags in {txid}")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::TxId, txid);
         return false;
     }
     return true;
@@ -3563,7 +3566,10 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
                               "Corrupt block found indicating potential "
                               "hardware failure; shutting down");
         }
-        LogError("%s: Consensus::CheckBlock: %s\n", __func__, state.ToString());
+        LogErrorEvent(BCLog::ALL, "chain_check_block_failed",
+                      "{source_function}: Consensus::CheckBlock: {reason}")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::Reason, state);
         return false;
     }
 
@@ -4162,7 +4168,9 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
         (void)control->Complete();
     }
     if (!state.IsValid()) {
-        LogInfo("Block validation error: %s\n", state.ToString());
+        LogInfoEvent(BCLog::ALL, "block_validation_error",
+                     "Block validation error: {reason}")
+            .Field(BCLog::LogField::Reason, state);
         return false;
     }
     const auto time_4{SteadyClock::now()};
@@ -4440,8 +4448,10 @@ bool Chainstate::FlushStateToDisk(BlockValidationState &state,
 void Chainstate::ForceFlushStateToDisk() {
     BlockValidationState state;
     if (!this->FlushStateToDisk(state, FlushStateMode::ALWAYS)) {
-        LogPrintf("%s: failed to flush state (%s)\n", __func__,
-                  state.ToString());
+        LogInfoEvent(BCLog::ALL, "chainstate_flush_failed",
+                     "{source_function}: failed to flush state ({reason})")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::Reason, state);
     }
 }
 
@@ -4449,8 +4459,10 @@ void Chainstate::PruneAndFlush() {
     BlockValidationState state;
     m_blockman.m_check_for_pruning = true;
     if (!this->FlushStateToDisk(state, FlushStateMode::NONE)) {
-        LogPrintf("%s: failed to flush state (%s)\n", __func__,
-                  state.ToString());
+        LogInfoEvent(BCLog::ALL, "chainstate_flush_failed",
+                     "{source_function}: failed to flush state ({reason})")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::Reason, state);
     }
 }
 
@@ -4579,8 +4591,11 @@ bool Chainstate::DisconnectTip(BlockValidationState &state,
         assert(view.GetBestBlock() == pindexDelete->GetBlockHash());
         if (DisconnectBlock(block, pindexDelete, view) !=
             DisconnectResult::OK) {
-            LogError("DisconnectTip(): DisconnectBlock %s failed\n",
-                     pindexDelete->GetBlockHash().ToString());
+            LogErrorEvent(
+                BCLog::ALL, "chain_disconnect_block_failed",
+                "DisconnectTip(): DisconnectBlock {block_hash} failed")
+                .Field(BCLog::LogField::BlockHash,
+                       pindexDelete->GetBlockHash());
             return false;
         }
 
@@ -4709,8 +4724,12 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
                 InvalidBlockFound(pindexNew, state);
             }
 
-            LogError("%s: ConnectBlock %s failed, %s\n", __func__,
-                     pindexNew->GetBlockHash().ToString(), state.ToString());
+            LogErrorEvent(
+                BCLog::ALL, "chain_connect_block_failed",
+                "{source_function}: ConnectBlock {block_hash} failed, {reason}")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::BlockHash, pindexNew->GetBlockHash())
+                .Field(BCLog::LogField::Reason, state);
             return false;
         }
 
@@ -6849,8 +6868,11 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock> &pblock,
             m_blockman.m_dirty_blockindex.insert(pindex);
         }
 
-        LogError("%s: %s (block %s)\n", __func__, state.ToString(),
-                 block.GetHash().ToString());
+        LogErrorEvent(BCLog::ALL, "chain_contextual_block_failed",
+                      "{source_function}: {reason} (block {block_hash})")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::Reason, state)
+            .Field(BCLog::LogField::BlockHash, block.GetHash());
         return false;
     }
 
@@ -6968,8 +6990,10 @@ bool ChainstateManager::ProcessNewBlock(
             if (m_options.signals) {
                 m_options.signals->BlockChecked(*block, state);
             }
-            LogError("%s: AcceptBlock FAILED (%s)\n", __func__,
-                     state.ToString());
+            LogErrorEvent(BCLog::ALL, "chain_accept_block_failed",
+                          "{source_function}: AcceptBlock FAILED ({reason})")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::Reason, state);
             return false;
         }
     }
@@ -6979,8 +7003,10 @@ bool ChainstateManager::ProcessNewBlock(
     // Only used to report errors, not invalidity - ignore it
     BlockValidationState state;
     if (!ActiveChainstate().ActivateBestChain(state, block, avalanche)) {
-        LogError("%s: ActivateBestChain failed (%s)\n", __func__,
-                 state.ToString());
+        LogErrorEvent(BCLog::ALL, "chain_activate_best_failed",
+                      "{source_function}: ActivateBestChain failed ({reason})")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::Reason, state);
         return false;
     }
 
@@ -6989,8 +7015,11 @@ bool ChainstateManager::ProcessNewBlock(
                                                        : nullptr)};
     BlockValidationState bg_state;
     if (bg_chain && !bg_chain->ActivateBestChain(bg_state, block)) {
-        LogError("%s: [background] ActivateBestChain failed (%s)\n", __func__,
-                 bg_state.ToString());
+        LogErrorEvent(
+            BCLog::ALL, "chain_background_activate_best_failed",
+            "{source_function}: [background] ActivateBestChain failed ({reason})")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::Reason, bg_state);
         return false;
     }
 
@@ -7034,20 +7063,29 @@ bool TestBlockValidity(
     if (!ContextualCheckBlockHeader(block, state, chainstate.m_blockman,
                                     chainstate.m_chainman, pindexPrev,
                                     adjusted_time_callback())) {
-        LogError("%s: Consensus::ContextualCheckBlockHeader: %s\n", __func__,
-                 state.ToString());
+        LogErrorEvent(
+            BCLog::ALL, "chain_contextual_header_check_failed",
+            "{source_function}: Consensus::ContextualCheckBlockHeader: {reason}")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::Reason, state);
         return false;
     }
 
     if (!CheckBlock(block, state, params.GetConsensus(), validationOptions)) {
-        LogError("%s: Consensus::CheckBlock: %s\n", __func__, state.ToString());
+        LogErrorEvent(BCLog::ALL, "chain_check_block_failed",
+                      "{source_function}: Consensus::CheckBlock: {reason}")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::Reason, state);
         return false;
     }
 
     if (!ContextualCheckBlock(block, state, chainstate.m_chainman,
                               pindexPrev)) {
-        LogError("%s: Consensus::ContextualCheckBlock: %s\n", __func__,
-                 state.ToString());
+        LogErrorEvent(
+            BCLog::ALL, "chain_contextual_block_check_failed",
+            "{source_function}: Consensus::ContextualCheckBlock: {reason}")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::Reason, state);
         return false;
     }
 
@@ -7066,8 +7104,10 @@ void PruneBlockFilesManual(Chainstate &active_chainstate,
     BlockValidationState state;
     if (active_chainstate.FlushStateToDisk(state, FlushStateMode::NONE,
                                            nManualPruneHeight)) {
-        LogPrintf("%s: failed to flush state (%s)\n", __func__,
-                  state.ToString());
+        LogInfoEvent(BCLog::ALL, "chainstate_flush_failed",
+                     "{source_function}: failed to flush state ({reason})")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::Reason, state);
     }
 }
 
@@ -7227,10 +7267,11 @@ VerifyDBResult CVerifyDB::VerifyDB(Chainstate &chainstate,
         // check level 1: verify block validity
         if (nCheckLevel >= 1 && !CheckBlock(block, state, consensusParams,
                                             BlockValidationOptions(config))) {
-            LogPrintf(
-                "Verification error: found bad block at %d, hash=%s (%s)\n",
-                pindex->nHeight, pindex->GetBlockHash().ToString(),
-                state.ToString());
+            LogInfoEvent(BCLog::ALL, "chain_verification_bad_block",
+                     "Verification error: found bad block at {height}, hash={block_hash} ({reason})")
+            .Field(BCLog::LogField::Height, pindex->nHeight)
+            .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash())
+            .Field(BCLog::LogField::Reason, state);
             return VerifyDBResult::CORRUPTED_BLOCK_DB;
         }
 
@@ -7320,10 +7361,11 @@ VerifyDBResult CVerifyDB::VerifyDB(Chainstate &chainstate,
             }
             if (!chainstate.ConnectBlock(block, state, pindex, coins,
                                          BlockValidationOptions(config))) {
-                LogPrintf("Verification error: found unconnectable block at "
-                          "%d, hash=%s (%s)\n",
-                          pindex->nHeight, pindex->GetBlockHash().ToString(),
-                          state.ToString());
+                LogInfoEvent(BCLog::ALL, "chain_verification_unconnectable_block",
+                     "Verification error: found unconnectable block at {height}, hash={block_hash} ({reason})")
+            .Field(BCLog::LogField::Height, pindex->nHeight)
+            .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash())
+            .Field(BCLog::LogField::Reason, state);
                 return VerifyDBResult::CORRUPTED_BLOCK_DB;
             }
             if (chainstate.m_chainman.m_interrupt) {
