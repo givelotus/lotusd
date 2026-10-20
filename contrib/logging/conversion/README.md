@@ -19,6 +19,13 @@ printf precision exactly. Bounded integer `%x`/`%0Nx` (width 1..16) is also supp
 their wire-width unsigned type. Other width/sign/type formatting remains rejected;
 this capability does not infer a field type or domain from its label.
 
+The message-only `:fsq` format preserves `fs::quoted` filesystem diagnostics:
+double quotes surround the value, and `&` escapes embedded quotes and ampersands
+(backslashes are unchanged). Structured JSON keeps the original unquoted string.
+The converter accepts this format only when the old `%s` argument is an exact
+`fs::quoted(...)` AST call; a plain string may not silently gain quoting. The
+consumer accepts copied or static string fields only, not custom adapters.
+
 The checked-in JSON rules are reviewed semantic mappings, not inferred schemas.
 They specify exact input ASTs, expected counts, event expressions, and review
 notes. Whitespace may differ in input; argument tokens may not. Missing,
