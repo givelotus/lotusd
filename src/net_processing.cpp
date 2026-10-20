@@ -3608,17 +3608,17 @@ void PeerManagerImpl::UpdateRelayEpochTo(const BlockHash &tip, int height) {
         current && current->epoch_id == uint256{tip}) {
         return;
     }
-    // A new key: re-index the mempool (one SipHash per transaction).
-    std::vector<std::pair<TxId, std::chrono::microseconds>> txs;
-    {
+    // Snapshot only after the index starts tracking concurrent mutations.
+    m_txrelay_index.SetEpoch(txrelay::MakeEpochKey(tip, uint64_t(height)), [&] {
+        txrelay::TxRelayIndex::Snapshot txs;
         LOCK(m_mempool.cs);
         txs.reserve(m_mempool.mapTx.size());
         for (const auto &entry : m_mempool.mapTx) {
             txs.emplace_back(entry->GetTx().GetId(),
                              std::chrono::microseconds{entry->GetTime()});
         }
-    }
-    m_txrelay_index.SetEpoch(txrelay::MakeEpochKey(tip, uint64_t(height)), txs);
+        return txs;
+    });
 }
 
 uint64_t PeerManagerImpl::ShortIdFor(const Peer &peer, const TxId &txid,
