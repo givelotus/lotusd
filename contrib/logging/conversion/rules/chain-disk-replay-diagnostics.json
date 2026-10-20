@@ -1,0 +1,107 @@
+{
+  "schema": 1,
+  "batch": "chain-disk-replay-diagnostics",
+  "review_note": "Five shared chainstate disk replay diagnostics; existing block hash and height fields only.",
+  "files": [
+    {
+      "path": "src/validation.cpp",
+      "rules": [
+        {
+          "id": "chain_replay_read_failed",
+          "old": "LogError(\"ReplayBlock(): ReadBlock failed at %d, hash=%s\\n\",\n                 pindex->nHeight, pindex->GetBlockHash().ToString())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"chain_replay_read_failed\",\n            \"ReplayBlock(): ReadBlock failed at {height}, hash={block_hash}\")\n            .Field(BCLog::LogField::Height, pindex->nHeight)\n            .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "ReplayBlock(): ReadBlock failed at %d, hash=%s\n",
+            "specifiers": [
+              "%d",
+              "%s"
+            ],
+            "arguments": [
+              "pindex->nHeight",
+              "pindex->GetBlockHash().ToString()"
+            ]
+          },
+          "review_note": "Preserve original Error/Info severity, ALL category, readable text, argument order and replay/rollback control flow. Height copies the same integer; BlockHash and TxId copy the original GetBlockHash/GetId rather than producer-side ToString. Transaction identifier is GetId (never GetHash); no replay, undo, fee or UTXO logic is changed. Existing fields/API only. V2 undo diagnostics belong after3c491043cec (Original-Patch v2/030); shared replay sites belong in the shared tier."
+        },
+        {
+          "id": "chain_rollback_read_failed",
+          "old": "LogError(\"RollbackBlock(): ReadBlock() failed at \"\n                         \"%d, hash=%s\\n\",\n                         pindexOld->nHeight,\n                         pindexOld->GetBlockHash().ToString())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"chain_rollback_read_failed\",\n                    \"RollbackBlock(): ReadBlock() failed at {height}, hash={block_hash}\")\n                    .Field(BCLog::LogField::Height, pindexOld->nHeight)\n                    .Field(BCLog::LogField::BlockHash, pindexOld->GetBlockHash())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "RollbackBlock(): ReadBlock() failed at %d, hash=%s\n",
+            "specifiers": [
+              "%d",
+              "%s"
+            ],
+            "arguments": [
+              "pindexOld->nHeight",
+              "pindexOld->GetBlockHash().ToString()"
+            ]
+          },
+          "review_note": "Preserve original Error/Info severity, ALL category, readable text, argument order and replay/rollback control flow. Height copies the same integer; BlockHash and TxId copy the original GetBlockHash/GetId rather than producer-side ToString. Transaction identifier is GetId (never GetHash); no replay, undo, fee or UTXO logic is changed. Existing fields/API only. V2 undo diagnostics belong after3c491043cec (Original-Patch v2/030); shared replay sites belong in the shared tier."
+        },
+        {
+          "id": "chain_replay_rolling_back",
+          "old": "LogPrintf(\"Rolling back %s (%i)\\n\",\n                      pindexOld->GetBlockHash().ToString(), pindexOld->nHeight)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_replay_rolling_back\",\n                \"Rolling back {block_hash} ({height})\")\n                .Field(BCLog::LogField::BlockHash, pindexOld->GetBlockHash())\n                .Field(BCLog::LogField::Height, pindexOld->nHeight)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Rolling back %s (%i)\n",
+            "specifiers": [
+              "%s",
+              "%i"
+            ],
+            "arguments": [
+              "pindexOld->GetBlockHash().ToString()",
+              "pindexOld->nHeight"
+            ]
+          },
+          "review_note": "Preserve original Error/Info severity, ALL category, readable text, argument order and replay/rollback control flow. Height copies the same integer; BlockHash and TxId copy the original GetBlockHash/GetId rather than producer-side ToString. Transaction identifier is GetId (never GetHash); no replay, undo, fee or UTXO logic is changed. Existing fields/API only. V2 undo diagnostics belong after3c491043cec (Original-Patch v2/030); shared replay sites belong in the shared tier."
+        },
+        {
+          "id": "chain_rollback_disconnect_failed",
+          "old": "LogError(\n                    \"RollbackBlock(): DisconnectBlock failed at %d, hash=%s\\n\",\n                    pindexOld->nHeight, pindexOld->GetBlockHash().ToString())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"chain_rollback_disconnect_failed\",\n                    \"RollbackBlock(): DisconnectBlock failed at {height}, hash={block_hash}\")\n                    .Field(BCLog::LogField::Height, pindexOld->nHeight)\n                    .Field(BCLog::LogField::BlockHash, pindexOld->GetBlockHash())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "RollbackBlock(): DisconnectBlock failed at %d, hash=%s\n",
+            "specifiers": [
+              "%d",
+              "%s"
+            ],
+            "arguments": [
+              "pindexOld->nHeight",
+              "pindexOld->GetBlockHash().ToString()"
+            ]
+          },
+          "review_note": "Preserve original Error/Info severity, ALL category, readable text, argument order and replay/rollback control flow. Height copies the same integer; BlockHash and TxId copy the original GetBlockHash/GetId rather than producer-side ToString. Transaction identifier is GetId (never GetHash); no replay, undo, fee or UTXO logic is changed. Existing fields/API only. V2 undo diagnostics belong after3c491043cec (Original-Patch v2/030); shared replay sites belong in the shared tier."
+        },
+        {
+          "id": "chain_replay_rolling_forward",
+          "old": "LogPrintf(\"Rolling forward %s (%i)\\n\", pindex.GetBlockHash().ToString(),\n                  nHeight)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_replay_rolling_forward\",\n            \"Rolling forward {block_hash} ({height})\")\n            .Field(BCLog::LogField::BlockHash, pindex.GetBlockHash())\n            .Field(BCLog::LogField::Height, nHeight)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Rolling forward %s (%i)\n",
+            "specifiers": [
+              "%s",
+              "%i"
+            ],
+            "arguments": [
+              "pindex.GetBlockHash().ToString()",
+              "nHeight"
+            ]
+          },
+          "review_note": "Preserve original Error/Info severity, ALL category, readable text, argument order and replay/rollback control flow. Height copies the same integer; BlockHash and TxId copy the original GetBlockHash/GetId rather than producer-side ToString. Transaction identifier is GetId (never GetHash); no replay, undo, fee or UTXO logic is changed. Existing fields/API only. V2 undo diagnostics belong after3c491043cec (Original-Patch v2/030); shared replay sites belong in the shared tier."
+        }
+      ]
+    }
+  ]
+}
