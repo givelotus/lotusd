@@ -40,6 +40,7 @@ add_executable(bitcoin-bench
 	bench.cpp
 	bench_bitcoin.cpp
 	block_assemble.cpp
+	block_validation_scaling.cpp
 	cashaddr.cpp
 	ccoins_caching.cpp
 	chacha20.cpp
