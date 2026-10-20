@@ -7,6 +7,7 @@
 
 #include <consensus/validation.h>
 #include <logging.h>
+#include <node/metrics.h>
 #include <policy/policy.h>
 #include <random.h>
 
@@ -137,6 +138,7 @@ unsigned int TxPool::LimitTxs(unsigned int max_txs, FastRandomContext &rng) {
         if (nErased > 0) {
             LogDebug(BCLog::TXPACKAGES, "Erased %d %s tx due to expiration\n",
                      nErased, txKind);
+            node::RecordTxPoolRemovals(txKind, unsigned(nErased), 0);
         }
     }
     while (m_pool_txs.size() > max_txs) {
@@ -144,6 +146,9 @@ unsigned int TxPool::LimitTxs(unsigned int max_txs, FastRandomContext &rng) {
         size_t randompos = rng.randrange(m_txs_list.size());
         EraseTxNoLock(m_txs_list[randompos]->first);
         ++nEvicted;
+    }
+    if (nEvicted > 0) {
+        node::RecordTxPoolRemovals(txKind, 0, nEvicted);
     }
     return nEvicted;
 }

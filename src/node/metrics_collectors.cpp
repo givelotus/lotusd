@@ -6,9 +6,13 @@
 
 #include <avalanche/peermanager.h>
 #include <avalanche/processor.h>
+#include <feerate.h>
 #include <node/context.h>
 #include <node/metrics.h>
 #include <sync.h>
+#include <txconflicting.h>
+#include <txmempool.h>
+#include <txorphanage.h>
 
 #include <cstdint>
 #include <vector>
@@ -44,6 +48,25 @@ namespace {
             });
         }));
     }
+    void AddMempoolCollector(NodeMetrics &m, CTxMemPool &mempool) {
+        g_collectors.push_back(m.registry.AddCollector([&m, &mempool] {
+            // mempool.cs, briefly, as getmempoolinfo and estimatefee take it
+            const auto per_byte{[](const CFeeRate &rate) {
+                return double(rate.GetFeePerK() / SATOSHI) / 1000;
+            }};
+            m.mempool_min_fee_rate.Set(per_byte(mempool.GetMinFee()), 0);
+            m.mempool_min_fee_rate.Set(per_byte(mempool.estimateFee()), 1);
+            // The pools' own mutexes, briefly
+            m.tx_pool_transactions.Set(
+                double(mempool.withOrphanage(
+                    [](const TxOrphanage &pool) { return pool.Size(); })),
+                0);
+            m.tx_pool_transactions.Set(
+                double(mempool.withConflicting(
+                    [](const TxConflicting &pool) { return pool.Size(); })),
+                1);
+        }));
+    }
 } // namespace
 
 void StartNodeMetricsCollectors(NodeContext &node) {
@@ -54,6 +77,9 @@ void StartNodeMetricsCollectors(NodeContext &node) {
     LOCK(g_collectors_mutex);
     if (node.avalanche) {
         AddAvalancheCollector(*m, *node.avalanche);
+    }
+    if (node.mempool) {
+        AddMempoolCollector(*m, *node.mempool);
     }
 }
 

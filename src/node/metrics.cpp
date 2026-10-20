@@ -77,6 +77,32 @@ namespace metric_labels {
                                                      "immature", "dangling"};
         return labels;
     }
+    const std::vector<std::string> &MempoolRejectReasons() {
+        static const std::vector<std::string> labels{"consensus",
+                                                     "inputs_not_standard",
+                                                     "not_standard",
+                                                     "missing_inputs",
+                                                     "premature_spend",
+                                                     "duplicate",
+                                                     "conflict",
+                                                     "child_before_parent",
+                                                     "mempool_policy",
+                                                     "no_mempool",
+                                                     "package_reconsiderable",
+                                                     "avalanche_reconsiderable",
+                                                     "unknown"};
+        return labels;
+    }
+    const std::vector<std::string> &MempoolRemovalReasons() {
+        static const std::vector<std::string> labels{
+            "expiry",   "sizelimit", "reorg", "block",
+            "conflict", "avalanche", "manual"};
+        return labels;
+    }
+    const std::vector<std::string> &TxPools() {
+        static const std::vector<std::string> labels{"orphan", "conflicting"};
+        return labels;
+    }
     const std::vector<std::string> &HTTPCodeClasses() {
         static const std::vector<std::string> labels{"1xx", "2xx", "3xx",
                                                      "4xx", "5xx", "other"};
@@ -104,6 +130,11 @@ namespace {
     //! a fast quorum) to stalled items (minutes)
     const std::vector<double> FINALIZATION_BUCKETS{
         0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5, 7.5, 10, 15, 30, 60, 120, 300, 600};
+    //! Satoshis per byte (recorded per 1000 bytes); from free relay to
+    //! fees far above the 1 sat/byte default floor
+    const std::vector<double> FEE_RATE_BUCKETS{
+        0, 0.5, 1,  1.01, 1.1, 1.25, 1.5, 2,    3,
+        5, 10,  20, 50,   100, 200,  500, 1000, 10000};
     //! Seconds; HTTP and RPC requests (long polls can take minutes)
     const std::vector<double> REQUEST_BUCKETS{
         0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1,
@@ -134,6 +165,23 @@ namespace {
         return reg.Add(std::make_unique<T>(std::forward<Args>(args)...));
     }
 } // namespace
+
+void RecordTxPoolRemovals(std::string_view pool_kind, unsigned expired,
+                          unsigned evicted) noexcept {
+    if (auto *m{GetNodeMetrics()}) {
+        const size_t pool{pool_kind == "orphan" ? 0U : 1U};
+        if (expired) {
+            const std::array<size_t, 2> idx{pool, 0};
+            m->tx_pool_removed.Add(m->tx_pool_removed.SeriesIndex(idx),
+                                   expired);
+        }
+        if (evicted) {
+            const std::array<size_t, 2> idx{pool, 1};
+            m->tx_pool_removed.Add(m->tx_pool_removed.SeriesIndex(idx),
+                                   evicted);
+        }
+    }
+}
 
 size_t MetricMsgTypeIndex(std::string_view msg_type) noexcept {
     return SortedIndex(L::MsgTypes(), msg_type);
@@ -352,6 +400,43 @@ NodeMetrics::NodeMetrics(std::vector<std::string> rpc_methods)
           "by item type.",
           FINALIZATION_BUCKETS, /*divisor=*/1e9,
           std::vector<LabelDim>{{"type", L::AvalancheItemTypes()}})},
+      mempool_accepted{Add<Counter>(
+          registry, MetricName("mempool_accepted_total"),
+          "Transactions accepted to the mempool (from peers, RPC, reorgs "
+          "and the mempool file; test acceptances excluded).")},
+      mempool_rejected{Add<Counter>(
+          registry, MetricName("mempool_rejected_total"),
+          "Transactions refused by the mempool, by validation result "
+          "(test acceptances excluded).",
+          std::vector<LabelDim>{{"reason", L::MempoolRejectReasons()}})},
+      mempool_accepted_fee_rate{Add<EventHistogram>(
+          registry, MetricName("mempool_accepted_fee_rate_sats_per_byte"),
+          "Fee rate of accepted transactions: base fee over virtual size "
+          "(size adjusted for sigchecks), without fee deltas.",
+          FEE_RATE_BUCKETS, /*divisor=*/1000)},
+      mempool_removed{Add<Counter>(
+          registry, MetricName("mempool_removed_total"),
+          "Transactions removed from the mempool, by reason (expiry and "
+          "sizelimit are evictions).",
+          std::vector<LabelDim>{{"reason", L::MempoolRemovalReasons()}})},
+      mempool_min_fee_rate{Add<Gauge>(
+          registry, MetricName("mempool_min_fee_rate_sats_per_byte"),
+          "Minimum fee rate: rolling (raised when the mempool is full, as "
+          "getmempoolinfo's mempoolminfee) and effective (the admission "
+          "floor: the highest of the minimum relay fee, the rolling minimum "
+          "and the fee hysteresis rate).",
+          std::vector<LabelDim>{{"kind", {"rolling", "effective"}}})},
+      tx_pool_transactions{Add<Gauge>(
+          registry, MetricName("tx_pool_transactions"),
+          "Transactions held outside the mempool: orphans (missing inputs) "
+          "and conflicting (awaiting an Avalanche vote).",
+          std::vector<LabelDim>{{"pool", L::TxPools()}})},
+      tx_pool_removed{Add<Counter>(
+          registry, MetricName("tx_pool_removed_total"),
+          "Transactions dropped from the orphan and conflicting pools when "
+          "they expired, or evicted at random when the pool was full.",
+          std::vector<LabelDim>{{"pool", L::TxPools()},
+                                {"reason", {"expired", "evicted"}}})},
       m_rpc_methods{SortedWithOther(std::move(rpc_methods))} {
     build_info.Set(1);
     registry.Add(std::make_unique<metrics::FunctionCounter>(
