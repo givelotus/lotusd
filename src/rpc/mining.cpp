@@ -2617,7 +2617,7 @@ static RPCHelpMan getminingjob() {
         "mining pool.\n",
         {
             {"worker_id", RPCArg::Type::STR, RPCArg::Default{"default"},
-             "Worker identifier (Lotus address, script hex, or sub:<user>)"},
+             "Worker identifier (native address, symbolic label, or sub:<user>)"},
             {"longpoll", RPCArg::Type::BOOL, RPCArg::Default{false},
              "Wait for the next block tip change before returning"},
         },
