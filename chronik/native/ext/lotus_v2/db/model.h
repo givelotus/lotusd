@@ -11,6 +11,9 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
+#include <map>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -26,8 +29,11 @@ namespace chronik::native::lotus_v2 {
 
 using Bytes32 = std::array<uint8_t, 32>;
 
-/** Schema cannot share a legacy Chronik database directory. */
-inline constexpr uint32_t SCHEMA_VERSION = 3;
+/**
+ * Schema cannot share a legacy Chronik database directory. Version 4 stores
+ * node block-file positions instead of transaction and output copies.
+ */
+inline constexpr uint32_t SCHEMA_VERSION = 4;
 /**
  * Shortest V2 transaction: the native codec rejects anything shorter (a
  * 16-byte header and at least one input).
@@ -57,10 +63,13 @@ inline constexpr size_t STAGING_PER_BLOCK = 64 * 1024;
  *   Db       "V2 database: mdbx storage error: <detail>"
  *   Invalid  "invalid V2 index transition: <detail>"
  *   Corrupt  "corrupt V2 index encoding"
+ *   Schema   "V2 index schema version <found> is incompatible with version
+ *            <expected>; restart with -chronikreindex to rebuild the V2 index"
+ *   Node     "V2 index node read: <detail>"
  */
 class V2Error : public ChronikError {
 public:
-    enum class Kind { Db, Invalid, Corrupt };
+    enum class Kind { Db, Invalid, Corrupt, Schema, Node };
 
     static V2Error Db(const std::string &detail) {
         return V2Error(Kind::Db, detail,
@@ -72,6 +81,17 @@ public:
     }
     static V2Error Corrupt() {
         return V2Error(Kind::Corrupt, "", "corrupt V2 index encoding");
+    }
+    static V2Error Schema(uint32_t found, uint32_t expected) {
+        return V2Error(Kind::Schema, "",
+                       "V2 index schema version " + std::to_string(found) +
+                           " is incompatible with version " +
+                           std::to_string(expected) +
+                           "; restart with -chronikreindex to rebuild the V2 "
+                           "index");
+    }
+    static V2Error Node(const std::string &detail) {
+        return V2Error(Kind::Node, detail, "V2 index node read: " + detail);
     }
 
     Kind kind() const { return m_kind; }
@@ -174,7 +194,7 @@ struct ResolvedCreation {
     bool operator==(const ResolvedCreation &) const = default;
 };
 
-struct InputMeta;
+struct StoredInputMeta;
 
 /** Complete native input facts; selectors retain their raw meaning by flags. */
 struct InputFact {
@@ -186,10 +206,9 @@ struct InputFact {
     bool has_coinbase_data = false;
     WireRange coinbase_data;
     std::vector<WitnessFact> witnesses;
-    std::optional<ResolvedCreation> resolved_creation;
     bool operator==(const InputFact &) const = default;
     /** Bounded persisted descriptor. */
-    InputMeta Metadata() const;
+    StoredInputMeta Metadata() const;
 };
 
 /** Required native transaction frame, never reconstructed from records. */
@@ -211,8 +230,9 @@ struct ExplorerBlockFacts {
 };
 
 /**
- * Fixed transaction metadata with a compact (file_num, data_pos, wire_size)
- * pointer into the append-only flat segment file (v2_tx_NNNNN.dat).
+ * Fixed transaction metadata with the transaction's position in the node's
+ * block files (blkNNNNN.dat file number and byte offset) and the size and
+ * seahash of its native wire, which every wire range here refers to.
  */
 struct TxMeta {
     TxLocation location;
@@ -220,7 +240,7 @@ struct TxMeta {
     uint32_t input_count = 0;
     uint32_t output_count = 0;
     uint32_t file_num = 0;
-    uint64_t data_pos = 0;
+    uint32_t data_pos = 0;
     uint64_t wire_size = 0;
     uint64_t wire_checksum = 0;
     bool operator==(const TxMeta &) const = default;
@@ -232,6 +252,22 @@ struct BlockMeta {
     HeaderWire header_wire{};
     uint32_t tx_count = 0;
     bool operator==(const BlockMeta &) const = default;
+};
+
+/**
+ * Persisted input descriptor. A spend's prior output is not copied here; it
+ * is read from the coin index when the input is queried.
+ */
+struct StoredInputMeta {
+    Bytes32 prev_txid{};
+    uint32_t prev_index = 0;
+    uint32_t sequence = 0;
+    uint8_t flags = 0;
+    uint8_t path_index = 0;
+    bool has_coinbase_data = false;
+    WireRange coinbase_data;
+    uint32_t witness_count = 0;
+    bool operator==(const StoredInputMeta &) const = default;
 };
 
 /** Input descriptor with a count instead of an unbounded witness vector. */
@@ -246,6 +282,15 @@ struct InputMeta {
     uint32_t witness_count = 0;
     std::optional<ResolvedCreation> resolved_creation;
     bool operator==(const InputMeta &) const = default;
+    /** Public descriptor joined to the spent output's creation. */
+    static InputMeta WithCreation(const StoredInputMeta &stored,
+                                  std::optional<ResolvedCreation> creation) {
+        return InputMeta{stored.prev_txid,     stored.prev_index,
+                         stored.sequence,      stored.flags,
+                         stored.path_index,    stored.has_coinbase_data,
+                         stored.coinbase_data, stored.witness_count,
+                         std::move(creation)};
+    }
 };
 
 /** Confirmed native spend input, preserving its original input ordinal. */
@@ -255,12 +300,26 @@ struct SpentInput {
     bool operator==(const SpentInput &) const = default;
 };
 
+/** Position of a confirmed transaction in the node's block files. */
+struct TxPos {
+    /** Block file number (blkNNNNN.dat). */
+    uint32_t file_num = 0;
+    /** Byte offset of the serialized transaction in that file. */
+    uint32_t data_pos = 0;
+    auto operator<=>(const TxPos &) const = default;
+};
+
 /** A transaction from the authoritative committed block, in block order. */
 struct ConfirmedTx {
     TxLocation location;
     std::vector<Output> outputs;
     std::vector<SpentInput> spends;
     ExplorerTxFacts explorer;
+    /**
+     * Position in the node's block files. The index stores it instead of
+     * the transaction and reads the transaction back through its TxSource.
+     */
+    TxPos pos{};
     bool operator==(const ConfirmedTx &) const = default;
 };
 
@@ -271,6 +330,54 @@ struct CommittedBlock {
     std::vector<ConfirmedTx> transactions;
     ExplorerBlockFacts explorer;
     bool operator==(const CommittedBlock &) const = default;
+};
+
+/**
+ * A confirmed transaction read back from the node's block files and
+ * converted to its native facts, exactly as when its block was connected.
+ */
+struct NodeTx {
+    TxId txid;
+    TxHash txhash;
+    std::vector<Output> outputs;
+    std::vector<SpentInput> spends;
+    ExplorerTxFacts explorer;
+    bool operator==(const NodeTx &) const = default;
+    static NodeTx From(const ConfirmedTx &tx) {
+        return NodeTx{tx.location.txid, tx.location.txhash, tx.outputs,
+                      tx.spends, tx.explorer};
+    }
+};
+
+/**
+ * Reads confirmed transactions from the node (v2_branch::TxSource). The
+ * index stores only block-file positions; every transaction byte, output and
+ * input it serves comes from here, checked against the identities, wire size
+ * and checksum it recorded. LoadTx throws std::exception on a read failure.
+ */
+class TxSource {
+public:
+    virtual ~TxSource() = default;
+    /** `coinbase` is true for the first transaction of its block. */
+    virtual NodeTx LoadTx(const TxPos &pos, const TxId &txid,
+                          bool coinbase) const = 0;
+};
+
+/**
+ * In-memory TxSource for tests and tools (v2_branch::MemTxSource): a V2Db
+ * opened with it records the transactions of every block it connects.
+ */
+class MemTxSource : public TxSource {
+public:
+    void Record(const CommittedBlock &block);
+    /** Change a recorded transaction; returns whether it was recorded. */
+    bool Modify(const TxId &txid, const std::function<void(NodeTx &)> &f);
+    NodeTx LoadTx(const TxPos &pos, const TxId &txid,
+                  bool coinbase) const override;
+
+private:
+    mutable std::mutex m_mutex;
+    std::map<TxId, std::pair<TxPos, NodeTx>> m_txs;
 };
 
 using U128 = unsigned __int128;
@@ -345,6 +452,7 @@ void Write(Writer &w, const ExplorerBlockFacts &v);
 void Write(Writer &w, const TxMeta &v);
 void Write(Writer &w, const BlockMeta &v);
 void Write(Writer &w, const InputMeta &v);
+void Write(Writer &w, const StoredInputMeta &v);
 void Write(Writer &w, const AssetEvent &v);
 void Write(Writer &w, const AssetSummary &v);
 
@@ -364,6 +472,7 @@ void Read(Reader &r, ExplorerBlockFacts &v);
 void Read(Reader &r, TxMeta &v);
 void Read(Reader &r, BlockMeta &v);
 void Read(Reader &r, InputMeta &v);
+void Read(Reader &r, StoredInputMeta &v);
 void Read(Reader &r, AssetEvent &v);
 void Read(Reader &r, AssetSummary &v);
 
