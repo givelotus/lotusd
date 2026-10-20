@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "batch": "transaction-validation-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/validation.cpp",
+      "rules": [
+        {
+          "id": "transaction_input_missing",
+          "old": "LogPrintf(\"ERROR: %s: Missing input %d in transaction \\'%s\\'\\n\",\n                      __func__, i, tx.GetHash().GetHex())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"transaction_input_missing\", \"ERROR: {source_function}: Missing input {input_index} in transaction '{tx_hash}'\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::InputIndex, i).Field(BCLog::LogField::TxHash, tx.GetHash())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "ERROR: %s: Missing input %d in transaction '%s'\n",
+            "specifiers": [
+              "%s",
+              "%d",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "i",
+              "tx.GetHash().GetHex()"
+            ]
+          },
+          "review_note": "Keep original Info level, exact error/BUG wording, indices, guards, return/state decisions. Input index is actual size_t UINT. Missing-input transaction serialization GetHash is TxHash (not V2 GetId); mempool identifier remains actual TxId. Hashes copied raw and hex rendered on consumer. No new payloads or consensus behavior."
+        },
+        {
+          "id": "mempool_child_before_parent",
+          "old": "LogPrintf(\"%s: BUG! PLEASE REPORT THIS! Attempt to add txid %s, but \"\n                  \"its outputs are already spent in the \"\n                  \"mempool\\n\",\n                  __func__, txid.ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"mempool_child_before_parent\", \"{source_function}: BUG! PLEASE REPORT THIS! Attempt to add txid {txid}, but its outputs are already spent in the mempool\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::TxId, txid)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: BUG! PLEASE REPORT THIS! Attempt to add txid %s, but its outputs are already spent in the mempool\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "txid.ToString()"
+            ]
+          },
+          "review_note": "Keep original Info level, exact error/BUG wording, indices, guards, return/state decisions. Input index is actual size_t UINT. Missing-input transaction serialization GetHash is TxHash (not V2 GetId); mempool identifier remains actual TxId. Hashes copied raw and hex rendered on consumer. No new payloads or consensus behavior."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Distinguish serialization TxHash from V2 transaction identifier; preserve unsigned input index.",
+          "old": "    X(DataDirectoryArgument, data_directory_argument, STRING, \"\", \"\")\n",
+          "new": "    X(DataDirectoryArgument, data_directory_argument, STRING, \"\", \"\") \\\n    X(InputIndex, input_index, UINT, \"\", \"\") \\\n    X(TxHash, tx_hash, HASH, \"\", \"\")\n"
+        }
+      ]
+    }
+  ]
+}
