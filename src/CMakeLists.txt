@@ -737,7 +737,22 @@ endif()
 # supports zstd content encoding.
 include(BrewHelper)
 find_brew_prefix(OPENSSL_ROOT_DIR openssl)
-find_package(OpenSSL 1.1.1 REQUIRED)
+# OpenSSL 3.0 is the oldest API the TLS code is built for; 1.1.1 is end of
+# life. Release builds use depends' 3.5 LTS. Features that need a newer
+# OpenSSL check for it at run time (the X25519MLKEM768 key exchange needs
+# 3.5).
+find_package(OpenSSL 3.0 REQUIRED)
+if(OPENSSL_VERSION VERSION_LESS 3.5)
+	message(WARNING
+		"OpenSSL ${OPENSSL_VERSION}: the TLS client cannot offer the "
+		"X25519MLKEM768 post-quantum hybrid key exchange (needs OpenSSL 3.5)")
+endif()
+# Search the found OpenSSL's headers before other dependencies' include
+# directories. Homebrew links one OpenSSL's headers into its shared include
+# directory, which other dependencies add, so with OPENSSL_ROOT_DIR pointing
+# elsewhere the build would compile against those headers and link the
+# other OpenSSL's libraries.
+include_directories(BEFORE SYSTEM ${OPENSSL_INCLUDE_DIR})
 find_package(Zstd 1.4.0 REQUIRED)
 target_link_libraries(server OpenSSL::SSL OpenSSL::Crypto Zstd::zstd)
 target_compile_definitions(server PRIVATE HAVE_ZSTD=1)
