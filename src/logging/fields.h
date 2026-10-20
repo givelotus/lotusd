@@ -136,7 +136,9 @@
     X(ExpectedBlockHash, expected_block_hash, HASH, "", "") \
     X(DatabaseKeyPrefix, database_key_prefix, STRING, "", "") \
     X(IndexStartHeight, index_start_height, INT, "", "") \
-    X(IndexStopHeight, index_stop_height, INT, "", "")
+    X(IndexStopHeight, index_stop_height, INT, "", "") \
+    X(MessageText, message_text, STRING, "", "") \
+    X(Caption, caption, STRING, "", "")
 
 namespace BCLog {
 
