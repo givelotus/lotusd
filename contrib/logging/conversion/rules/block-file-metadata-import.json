@@ -1,0 +1,165 @@
+{
+  "schema": 1,
+  "batch": "block-file-metadata-import",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/node/blockstorage.cpp",
+      "rules": [
+        {
+          "id": "snapshot_chain_tx_count_restored",
+          "old": "LogPrintf(\"[snapshot] set m_chain_tx_count=%lu for %s\\n\",\n                  au_data.m_chain_tx_count, snapshot_blockhash->ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_chain_tx_count_restored\", \"[snapshot] set m_chain_tx_count={chain_tx_count} for {block_hash}\").Field(BCLog::LogField::ChainTxCount, au_data.m_chain_tx_count).Field(BCLog::LogField::BlockHash, *snapshot_blockhash)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] set m_chain_tx_count=%lu for %s\n",
+            "specifiers": [
+              "%lu",
+              "%s"
+            ],
+            "arguments": [
+              "au_data.m_chain_tx_count",
+              "snapshot_blockhash->ToString()"
+            ]
+          },
+          "review_note": "Preserve Info, warning wording, exact decimal size/count/file numbers and original summary text. Snapshot/checkpoint hashes are copied as typed raw BlockHash (same GetHex/ToString rendering). Keep locks, import/reconsider/unpark/pruning decisions, disk layout and returns unchanged. Two identical interrupt producers share one event. Reindex zero-padded filename and pruning-role formatting remain explicitly deferred, not silently altered."
+        },
+        {
+          "id": "block_file_last_number",
+          "old": "LogPrintf(\"%s: last block file = %i\\n\", __func__, max_blockfile_num)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_file_last_number\", \"{source_function}: last block file = {file_number}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::FileNumber, max_blockfile_num)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: last block file = %i\n",
+            "specifiers": [
+              "%s",
+              "%i"
+            ],
+            "arguments": [
+              "__func__",
+              "max_blockfile_num"
+            ]
+          },
+          "review_note": "Preserve Info, warning wording, exact decimal size/count/file numbers and original summary text. Snapshot/checkpoint hashes are copied as typed raw BlockHash (same GetHex/ToString rendering). Keep locks, import/reconsider/unpark/pruning decisions, disk layout and returns unchanged. Two identical interrupt producers share one event. Reindex zero-padded filename and pruning-role formatting remain explicitly deferred, not silently altered."
+        },
+        {
+          "id": "block_file_last_info",
+          "old": "LogPrintf(\"%s: last block file info: %s\\n\", __func__,\n              m_blockfile_info[max_blockfile_num].ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_file_last_info\", \"{source_function}: last block file info: {block_file_info}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::BlockFileInfo, m_blockfile_info[max_blockfile_num].ToString()).Field(BCLog::LogField::FileNumber, max_blockfile_num).Field(BCLog::LogField::FileBlocks, m_blockfile_info[max_blockfile_num].nBlocks).Field(BCLog::LogField::BlockFileBytes, m_blockfile_info[max_blockfile_num].nSize).Field(BCLog::LogField::UndoFileBytes, m_blockfile_info[max_blockfile_num].nUndoSize).Field(BCLog::LogField::FileFirstHeight, m_blockfile_info[max_blockfile_num].nHeightFirst).Field(BCLog::LogField::FileLastHeight, m_blockfile_info[max_blockfile_num].nHeightLast).Field(BCLog::LogField::FileFirstTimeSeconds, m_blockfile_info[max_blockfile_num].nTimeFirst).Field(BCLog::LogField::FileLastTimeSeconds, m_blockfile_info[max_blockfile_num].nTimeLast)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: last block file info: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "m_blockfile_info[max_blockfile_num].ToString()"
+            ]
+          },
+          "review_note": "Preserve Info, warning wording, exact decimal size/count/file numbers and original summary text. Snapshot/checkpoint hashes are copied as typed raw BlockHash (same GetHex/ToString rendering). Keep locks, import/reconsider/unpark/pruning decisions, disk layout and returns unchanged. Two identical interrupt producers share one event. Reindex zero-padded filename and pruning-role formatting remain explicitly deferred, not silently altered. Also retain seven actual unsigned metadata members as separately queryable fields, including undo-used bytes; no parsing/reconstruction of summary text and no disk read added."
+        },
+        {
+          "id": "block_file_import_interrupted",
+          "old": "LogPrintf(\"Interrupt requested. Exit %s\\n\", __func__)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_file_import_interrupted\", \"Interrupt requested. Exit {source_function}\").Field(BCLog::LogField::SourceFunction, __func__)",
+          "count": 2,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Interrupt requested. Exit %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve Info, warning wording, exact decimal size/count/file numbers and original summary text. Snapshot/checkpoint hashes are copied as typed raw BlockHash (same GetHex/ToString rendering). Keep locks, import/reconsider/unpark/pruning decisions, disk layout and returns unchanged. Two identical interrupt producers share one event. Reindex zero-padded filename and pruning-role formatting remain explicitly deferred, not silently altered."
+        },
+        {
+          "id": "block_file_import_started",
+          "old": "LogPrintf(\"Importing blocks file %s...\\n\",\n                          fs::PathToString(path))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_file_import_started\", \"Importing blocks file {path}...\").Field(BCLog::LogField::Path, fs::PathToString(path))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Importing blocks file %s...\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(path)"
+            ]
+          },
+          "review_note": "Preserve Info, warning wording, exact decimal size/count/file numbers and original summary text. Snapshot/checkpoint hashes are copied as typed raw BlockHash (same GetHex/ToString rendering). Keep locks, import/reconsider/unpark/pruning decisions, disk layout and returns unchanged. Two identical interrupt producers share one event. Reindex zero-padded filename and pruning-role formatting remain explicitly deferred, not silently altered."
+        },
+        {
+          "id": "block_file_import_open_failed",
+          "old": "LogPrintf(\"Warning: Could not open blocks file %s\\n\",\n                          fs::PathToString(path))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_file_import_open_failed\", \"Warning: Could not open blocks file {path}\").Field(BCLog::LogField::Path, fs::PathToString(path))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Warning: Could not open blocks file %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(path)"
+            ]
+          },
+          "review_note": "Preserve Info, warning wording, exact decimal size/count/file numbers and original summary text. Snapshot/checkpoint hashes are copied as typed raw BlockHash (same GetHex/ToString rendering). Keep locks, import/reconsider/unpark/pruning decisions, disk layout and returns unchanged. Two identical interrupt producers share one event. Reindex zero-padded filename and pruning-role formatting remain explicitly deferred, not silently altered."
+        },
+        {
+          "id": "checkpoint_block_reconsidering",
+          "old": "LogPrintf(\"Reconsidering checkpointed block %s ...\\n\",\n                          hash.GetHex())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"checkpoint_block_reconsidering\", \"Reconsidering checkpointed block {block_hash} ...\").Field(BCLog::LogField::BlockHash, hash)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Reconsidering checkpointed block %s ...\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "hash.GetHex()"
+            ]
+          },
+          "review_note": "Preserve Info, warning wording, exact decimal size/count/file numbers and original summary text. Snapshot/checkpoint hashes are copied as typed raw BlockHash (same GetHex/ToString rendering). Keep locks, import/reconsider/unpark/pruning decisions, disk layout and returns unchanged. Two identical interrupt producers share one event. Reindex zero-padded filename and pruning-role formatting remain explicitly deferred, not silently altered."
+        },
+        {
+          "id": "checkpoint_block_unparking",
+          "old": "LogPrintf(\"Unparking checkpointed block %s ...\\n\",\n                          hash.GetHex())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"checkpoint_block_unparking\", \"Unparking checkpointed block {block_hash} ...\").Field(BCLog::LogField::BlockHash, hash)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Unparking checkpointed block %s ...\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "hash.GetHex()"
+            ]
+          },
+          "review_note": "Preserve Info, warning wording, exact decimal size/count/file numbers and original summary text. Snapshot/checkpoint hashes are copied as typed raw BlockHash (same GetHex/ToString rendering). Keep locks, import/reconsider/unpark/pruning decisions, disk layout and returns unchanged. Two identical interrupt producers share one event. Reindex zero-padded filename and pruning-role formatting remain explicitly deferred, not silently altered."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Name the existing CBlockFileInfo diagnostic summary; numeric file identifier uses existing signed FileNumber key. Expose actual unsigned metadata members separately from the original unchanged summary.",
+          "old": "    X(ListenerKind, listener_kind, STRING, \"\", \"\")\n",
+          "new": "    X(ListenerKind, listener_kind, STRING, \"\", \"\") \\\n    X(BlockFileInfo, block_file_info, STRING, \"\", \"\") \\\n    X(FileBlocks, file_blocks, UINT, \"\", \"\") \\\n    X(BlockFileBytes, block_file_bytes, UINT, \"\", \"\") \\\n    X(UndoFileBytes, undo_file_bytes, UINT, \"\", \"\") \\\n    X(FileFirstHeight, file_first_height, UINT, \"\", \"\") \\\n    X(FileLastHeight, file_last_height, UINT, \"\", \"\") \\\n    X(FileFirstTimeSeconds, file_first_time_seconds, UINT, \"\", \"\") \\\n    X(FileLastTimeSeconds, file_last_time_seconds, UINT, \"\", \"\")\n"
+        }
+      ]
+    }
+  ]
+}
