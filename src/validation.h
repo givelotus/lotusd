@@ -44,6 +44,7 @@
 #include <util/translation.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -475,6 +476,63 @@ ProcessRawTxBatch(
     const std::vector<PrecomputedBatchTxData> *precomputed_batch = nullptr)
     EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
+/** Options for AcceptToMemoryPoolStaged. */
+struct StagedAdmissionOptions {
+    /**
+     * Threads verifying scripts in the unlocked phase, including the
+     * calling thread. 1 verifies on the caller only.
+     */
+    size_t script_threads{1};
+    /**
+     * Called for each transaction, in order, with cs_main held, right before
+     * it is admitted. Returning true skips it (no result). Lets a caller
+     * re-apply checks it made before queueing (e.g. "already have") at the
+     * point where the transaction would have been processed serially.
+     */
+    std::function<bool(const CTransactionRef &)> skip_at_commit;
+    MempoolAdmissionLimits limits{};
+    /** Tests: called with no locks held between phases B and C. */
+    std::function<void()> test_between_phases;
+};
+
+/** Where one AcceptToMemoryPoolStaged call spent its time. */
+struct StagedAdmissionStats {
+    /** Transactions whose checks ran in the unlocked phase. */
+    size_t precomputed{0};
+    /** cs_main held while resolving inputs (phase A). */
+    std::chrono::nanoseconds resolve_locked{0};
+    /** Unlocked parallel checks (phase B), wall time. */
+    std::chrono::nanoseconds verify_unlocked{0};
+    /** cs_main held while committing in order (phase C). */
+    std::chrono::nanoseconds commit_locked{0};
+};
+
+/**
+ * Admit transactions in order with script verification outside cs_main.
+ *
+ *  A. With cs_main and the mempool lock: look up the outputs each
+ *     transaction spends (UTXO set, mempool, or an earlier transaction of
+ *     this call). Transactions that cannot be resolved, conflict with the
+ *     mempool or with an earlier transaction of this call, or are not
+ *     standard skip phase B.
+ *  B. Without locks, on `script_threads` threads: ComputeAdmissionChecks.
+ *  C. With cs_main: for each transaction in order,
+ *     ChainstateManager::ProcessTransaction with its precomputed checks.
+ *
+ * Phase C runs the ordinary admission code under the locks, so every
+ * verdict, reject reason, mempool change and notification is the one that
+ * serial admission in this order at commit time would produce; the
+ * precomputed script outcomes are only used where the flags and spent
+ * outputs match what admission resolves (see PrecomputedAdmissionChecks).
+ * A block connected or a mempool change between A and C (including our own
+ * earlier commits) is therefore handled by phase C itself.
+ *
+ * @returns one entry per transaction, nullopt where skip_at_commit said so.
+ */
+std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
+    ChainstateManager &chainman, const std::vector<CTransactionRef> &txs,
+    const StagedAdmissionOptions &options,
+    StagedAdmissionStats *stats = nullptr) LOCKS_EXCLUDED(cs_main);
 
 /**
  * Simple class for regulating resource usage during CheckInputScripts (and
@@ -1882,7 +1940,8 @@ public:
      */
     [[nodiscard]] MempoolAcceptResult
     ProcessTransaction(const CTransactionRef &tx, bool test_accept = false,
-                       const MempoolAdmissionLimits &limits = {})
+                       const MempoolAdmissionLimits &limits = {},
+                       const PrecomputedAdmissionChecks *precomputed = nullptr)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     //! Load the block tree and coins database from disk, initializing state if
