@@ -38,6 +38,13 @@ adapters retain the full raw WSS host/path payload instead of silently
 shortening it to an unrelated endpoint. If the complete value exceeds the
 record, it is omitted and `fields_truncated` is set; record size is unchanged.
 
+`BCLog::LogHex{bytes}` accepts a byte span and snapshots it before `Field()`
+returns. The caller may immediately mutate or release its buffer. Lowercase
+hex conversion happens on the consumer; both the message and structured field
+match `HexStr`. An oversized value is omitted in full with `fields_truncated`,
+so a diagnostic cannot silently present a shortened byte string as complete.
+Only use this for bytes already intended for logging, never private key material.
+
 A template refers to provided fields by generic name, such as `{peer_id}`.
 Fields not used in the template remain available to structured encoders and
 are appended in text output. Message wording should remain stable during
