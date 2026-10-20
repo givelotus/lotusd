@@ -15,7 +15,7 @@ class ChainTipLoggingTest(BitcoinTestFramework):
     num_nodes = 1
     setup_clean_chain = True
     wallet_names = []
-    extra_args = [["-logformat=json"]]
+    extra_args = [["-logformat=json", "-whitelistforcerelay=1"]]
 
     def run_test(self):
         node = self.nodes[0]
@@ -61,6 +61,15 @@ class ChainTipLoggingTest(BitcoinTestFramework):
         )
         assert f"date='{record['block_time']}'" in record["message"]
         assert "fields_truncated" not in record
+        interaction = next(
+            row
+            for row in records
+            if row.get("event") == "config_parameter_interaction"
+            and row.get("config_option") == "-whitelistrelay"
+            and row.get("trigger_option") == "-whitelistforcerelay"
+        )
+        assert interaction["config_enabled"] is True
+        assert "setting -whitelistrelay=1" in interaction["message"]
         checked = next(
             row
             for row in records
