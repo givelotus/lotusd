@@ -42,6 +42,7 @@ public:
     void operator()(const PKHash &id) { isKey = true; }
     void operator()(const ScriptHash &id) { isScript = true; }
     void operator()(const CNoDestination &) {}
+    void operator()(const NativeDestination &) {}
 
     static bool IsScriptDst(const CTxDestination &d) {
         DstTypeChecker checker;

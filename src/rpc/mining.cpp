@@ -241,6 +241,10 @@ static CTxOut CoinbaseDestination(const std::string &address,
             throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
                                "Error: Invalid legacy address");
         }
+        if (std::holds_alternative<NativeDestination>(destination)) {
+            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                               "Legacy coinbase requires a legacy address");
+        }
         return CTxOut(Amount::zero(), GetScriptForDestination(destination));
     }
     std::string error;
