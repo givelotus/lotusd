@@ -680,6 +680,9 @@ public:
                          std::map<int, std::string> &input_errors) const;
     SigningResult SignMessage(const std::string &message, const PKHash &pkhash,
                               std::string &str_sig) const;
+    SigningResult SignKeyHashMessage(const std::string &message,
+                                     const lotus::v2::Hash32 &key_hash,
+                                     std::string &signature) const;
 
     /**
      * Fills out a PSBT with information from the wallet. Fills in UTXOs if we

@@ -3066,6 +3066,84 @@ BOOST_AUTO_TEST_CASE(test_tracked_vector) {
     BOOST_CHECK_EQUAL(v8[2].copies, 0);
 }
 
+BOOST_AUTO_TEST_CASE(lotus_message_signing) {
+    const auto params = CreateChainParams(*m_node.args, ChainType::REGTEST);
+    const auto other_chain = CreateChainParams(*m_node.args, ChainType::MAIN);
+    const std::string message = "  Lotus message\nwith whitespace\t";
+    std::array<uint8_t, 32> secret{};
+    secret.back() = 1;
+    CKey key;
+    key.Set(secret.begin(), secret.end(), true);
+    const auto hash = LotusMessageKeyHash(key.GetPubKey());
+    BOOST_REQUIRE(hash);
+    const auto address = lotus::v2::EncodeKeyHashAddress(
+        lotus::v2::AddressNetwork::REGTEST, *hash);
+    // Independent hashlib SHA256D oracle over the specified serialization.
+    BOOST_CHECK_EQUAL(
+        HexStr(LotusMessageHash(*params, message)),
+        "7564181309ced3fbd11303d70a957bb62984da700bfd4c6078e16303f66503f7");
+    BOOST_CHECK(LotusMessageHash(*params, message) != MessageHash(message));
+    BOOST_CHECK(LotusMessageHash(*params, message) !=
+                LotusMessageHash(*other_chain, message));
+    std::string signature;
+    BOOST_REQUIRE(LotusMessageSign(*params, key, message, signature));
+    BOOST_CHECK_EQUAL(
+        signature,
+        "IP7/Qe4Hwq9jlGfz3Gm0ADQN7fPip/"
+        "HUDoSvozREAZ4bP2qZWMaD8HPLXthcQS5SPn9j59HTAEBdSsFTX3186ZM=");
+    BOOST_CHECK(LotusMessageVerify(*params, address, signature, message) ==
+                MessageVerificationResult::OK);
+    BOOST_CHECK(
+        LotusMessageVerify(*params, address, signature, message + " ") ==
+        MessageVerificationResult::ERR_NOT_SIGNED);
+    BOOST_CHECK(LotusMessageVerify(*other_chain, address, signature, message) ==
+                MessageVerificationResult::ERR_INVALID_ADDRESS);
+    BOOST_CHECK(
+        LotusMessageVerify(
+            *params,
+            lotus::v2::EncodeAddress(lotus::v2::AddressNetwork::REGTEST, *hash),
+            signature,
+            message) == MessageVerificationResult::ERR_ADDRESS_NO_KEY);
+    auto other_hash = *hash;
+    other_hash[0] ^= 1;
+    BOOST_CHECK(
+        LotusMessageVerify(*params,
+                           lotus::v2::EncodeKeyHashAddress(
+                               lotus::v2::AddressNetwork::REGTEST, other_hash),
+                           signature, message) ==
+        MessageVerificationResult::ERR_NOT_SIGNED);
+    BOOST_CHECK(LotusMessageVerify(*params, address, "!", message) ==
+                MessageVerificationResult::ERR_MALFORMED_SIGNATURE);
+    BOOST_CHECK(
+        LotusMessageVerify(*params, address, signature + "\n", message) ==
+        MessageVerificationResult::ERR_MALFORMED_SIGNATURE);
+    auto bytes = *DecodeBase64(signature);
+    BOOST_REQUIRE_EQUAL(bytes.size(), 65U);
+    BOOST_CHECK(bytes[0] >= 31 && bytes[0] <= 34);
+    for (uint8_t header :
+         {uint8_t(0), uint8_t(27), uint8_t(30), uint8_t(35), uint8_t(255)}) {
+        auto malformed = bytes;
+        malformed[0] = header;
+        BOOST_CHECK(LotusMessageVerify(*params, address,
+                                       EncodeBase64(malformed), message) ==
+                    MessageVerificationResult::ERR_PUBKEY_NOT_RECOVERED);
+    }
+    auto high_s = bytes;
+    high_s[33] = 0xff;
+    BOOST_CHECK(
+        LotusMessageVerify(*params, address, EncodeBase64(high_s), message) ==
+        MessageVerificationResult::ERR_PUBKEY_NOT_RECOVERED);
+    bytes.pop_back();
+    BOOST_CHECK(
+        LotusMessageVerify(*params, address, EncodeBase64(bytes), message) ==
+        MessageVerificationResult::ERR_PUBKEY_NOT_RECOVERED);
+    std::string ecash_signature;
+    BOOST_REQUIRE(MessageSign(key, message, ecash_signature));
+    BOOST_CHECK(
+        LotusMessageVerify(*params, address, ecash_signature, message) ==
+        MessageVerificationResult::ERR_NOT_SIGNED);
+}
+
 BOOST_AUTO_TEST_CASE(message_sign) {
     const std::array<uint8_t, 32> privkey_bytes = {
         {// just some random data

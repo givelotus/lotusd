@@ -573,10 +573,32 @@ SigningResult LegacyScriptPubKeyMan::SignMessage(const std::string &message,
         return SigningResult::PRIVATE_KEY_NOT_AVAILABLE;
     }
 
-    if (MessageSign(key, message, str_sig)) {
+    if (LotusMessageSign(m_storage.GetChainParams(), key, message, str_sig)) {
         return SigningResult::OK;
     }
     return SigningResult::SIGNING_FAILED;
+}
+
+SigningResult
+LegacyScriptPubKeyMan::SignKeyHashMessage(const std::string &message,
+                                          const lotus::v2::Hash32 &key_hash,
+                                          std::string &signature) const {
+    LOCK(cs_KeyStore);
+    for (const auto &id : GetKeys()) {
+        CPubKey pubkey;
+        if (!GetPubKey(id, pubkey)) continue;
+        const auto hash = LotusMessageKeyHash(pubkey);
+        if (!hash || *hash != key_hash) continue;
+        CKey key;
+        if (!GetKey(id, key)) return SigningResult::PRIVATE_KEY_NOT_AVAILABLE;
+        CKey compressed;
+        compressed.Set(key.begin(), key.end(), true);
+        return LotusMessageSign(m_storage.GetChainParams(), compressed, message,
+                                signature)
+                   ? SigningResult::OK
+                   : SigningResult::SIGNING_FAILED;
+    }
+    return SigningResult::PRIVATE_KEY_NOT_AVAILABLE;
 }
 
 std::optional<PSBTError>
@@ -2223,10 +2245,32 @@ DescriptorScriptPubKeyMan::SignMessage(const std::string &message,
         return SigningResult::PRIVATE_KEY_NOT_AVAILABLE;
     }
 
-    if (!MessageSign(key, message, str_sig)) {
+    if (!LotusMessageSign(m_storage.GetChainParams(), key, message, str_sig)) {
         return SigningResult::SIGNING_FAILED;
     }
     return SigningResult::OK;
+}
+
+SigningResult
+DescriptorScriptPubKeyMan::SignKeyHashMessage(const std::string &message,
+                                              const lotus::v2::Hash32 &key_hash,
+                                              std::string &signature) const {
+    LOCK(cs_desc_man);
+    for (const auto &[pubkey, index] : m_map_pubkeys) {
+        const auto hash = LotusMessageKeyHash(pubkey);
+        if (!hash || *hash != key_hash) continue;
+        const auto provider = GetSigningProvider(index, true);
+        CKey key;
+        if (!provider || !provider->GetKey(pubkey.GetID(), key))
+            return SigningResult::PRIVATE_KEY_NOT_AVAILABLE;
+        CKey compressed;
+        compressed.Set(key.begin(), key.end(), true);
+        return LotusMessageSign(m_storage.GetChainParams(), compressed, message,
+                                signature)
+                   ? SigningResult::OK
+                   : SigningResult::SIGNING_FAILED;
+    }
+    return SigningResult::PRIVATE_KEY_NOT_AVAILABLE;
 }
 
 std::optional<PSBTError>

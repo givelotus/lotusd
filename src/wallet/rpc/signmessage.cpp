@@ -54,21 +54,32 @@ RPCHelpMan signmessage() {
             std::string strAddress = request.params[0].get_str();
             std::string strMessage = request.params[1].get_str();
 
-            CTxDestination dest =
-                DecodeDestination(strAddress, wallet->GetChainParams());
-            if (!IsValidDestination(dest)) {
-                throw JSONRPCError(RPC_TYPE_ERROR, "Invalid address");
-            }
-
-            const PKHash *pkhash = std::get_if<PKHash>(&dest);
-            if (!pkhash) {
-                throw JSONRPCError(RPC_TYPE_ERROR,
-                                   "Address does not refer to key");
-            }
-
             std::string signature;
-            SigningResult err =
-                pwallet->SignMessage(strMessage, *pkhash, signature);
+            SigningResult err;
+            std::string decode_error;
+            const auto native =
+                lotus::v2::DecodeAddress(strAddress, decode_error);
+            if (native) {
+                if (native->network !=
+                    LotusAddressNetwork(wallet->GetChainParams()))
+                    throw JSONRPCError(RPC_TYPE_ERROR,
+                                       "Invalid address for this network");
+                if (native->type != 1)
+                    throw JSONRPCError(RPC_TYPE_ERROR,
+                                       "Address does not refer to key");
+                err = pwallet->SignKeyHashMessage(strMessage, native->root,
+                                                  signature);
+            } else {
+                const auto dest =
+                    DecodeDestination(strAddress, wallet->GetChainParams());
+                if (!IsValidDestination(dest))
+                    throw JSONRPCError(RPC_TYPE_ERROR, "Invalid address");
+                const auto pkhash = std::get_if<PKHash>(&dest);
+                if (!pkhash)
+                    throw JSONRPCError(RPC_TYPE_ERROR,
+                                       "Address does not refer to key");
+                err = pwallet->SignMessage(strMessage, *pkhash, signature);
+            }
             if (err == SigningResult::SIGNING_FAILED) {
                 throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
                                    SigningResultString(err));
