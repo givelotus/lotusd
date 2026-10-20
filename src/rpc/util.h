@@ -33,6 +33,9 @@
 #include <variant>
 #include <vector>
 
+/** Currency denomination used by RPC amounts, from the active Currency singleton. */
+UniValue CurrencyInfoToJSON();
+
 class CChainParams;
 class FillableSigningProvider;
 class CPubKey;

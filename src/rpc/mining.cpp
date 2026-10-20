@@ -8,6 +8,7 @@
 #include <cashaddrenc.h>
 #include <chain.h>
 #include <chainparams.h>
+#include <clientversion.h>
 #include <common/args.h>
 #include <common/system.h>
 #include <config.h>
@@ -503,6 +504,104 @@ static RPCHelpMan generateblock() {
     };
 }
 
+// Versioned, declarative inputs for compiled mining implementations. This is
+// not executable code and does not authorize an RPC or relax block validation.
+static UniValue MiningProofOfWork(const CChainParams &) {
+    UniValue pow(UniValue::VOBJ);
+    pow.pushKV("version", 1);
+    pow.pushKV("algorithm", "sha256d");
+    pow.pushKV("headerbytes", 80);
+    pow.pushKV("nonceoffset", 76);
+    pow.pushKV("noncebytes", 4);
+    pow.pushKV("noncebyteorder", "little");
+    pow.pushKV("hashbyteorder", "little");
+    pow.pushKV("targetbyteorder", "big");
+    pow.pushKV("template_rpc", "getrawunsolvedblock");
+    pow.pushKV("submit_rpc", "submitblock");
+    return pow;
+}
+
+static RPCHelpMan getchainconfig() {
+    return RPCHelpMan{
+        "getchainconfig",
+        "Return one versioned chain, currency, address and mining capability "
+        "snapshot.\n"
+        "Clients must reject unknown schema versions or algorithm "
+        "identifiers.\n"
+        "Capabilities describe implementation support, not RPC "
+        "authorization.\n",
+        {},
+        RPCResult{
+            RPCResult::Type::ANY, "",
+            "Schema version 1 configuration; see doc/mining/pow-descriptor.md"},
+        RPCExamples{HelpExampleCli("getchainconfig", "") +
+                    HelpExampleRpc("getchainconfig", "")},
+        [&](const RPCHelpMan &, const Config &config,
+            const JSONRPCRequest &) -> UniValue {
+            const CChainParams &params = config.GetChainParams();
+            const std::string kind = "ecash";
+            const std::string network = params.GetChainTypeString();
+            const std::string genesis =
+                params.GenesisBlock().GetHash().GetHex();
+            UniValue chain(UniValue::VOBJ);
+            chain.pushKV("family", "bitcoin");
+            chain.pushKV("kind", kind);
+            chain.pushKV("network", network);
+            chain.pushKV("identifier", kind + "-" + network + ":" + genesis);
+            chain.pushKV("genesis", genesis);
+
+            const UniValue denomination = CurrencyInfoToJSON();
+            UniValue currency(UniValue::VOBJ);
+            currency.pushKV("ticker", denomination["ticker"]);
+            currency.pushKV("atomsperunit",
+                            denomination["satoshisperunit"].getValStr());
+            currency.pushKV("rpcdecimals", denomination["decimals"]);
+            currency.pushKV("displaydecimals", 2);
+
+            UniValue address(UniValue::VOBJ);
+            address.pushKV("format", config.UseCashAddrEncoding()
+                                         ? "cashaddr"
+                                         : "base58check");
+            address.pushKV("hrp", params.CashAddrPrefix());
+            UniValue types(UniValue::VARR);
+            types.push_back(int(PUBKEY_TYPE));
+            types.push_back(int(SCRIPT_TYPE));
+            address.pushKV("types", std::move(types));
+            UniValue formats(UniValue::VARR);
+            formats.push_back("cashaddr");
+            formats.push_back("base58check");
+            address.pushKV("acceptedformats", std::move(formats));
+            UniValue prefixes(UniValue::VOBJ);
+            prefixes.pushKV("pubkeyhash", HexStr(params.Base58Prefix(
+                                              CChainParams::PUBKEY_ADDRESS)));
+            prefixes.pushKV("scripthash", HexStr(params.Base58Prefix(
+                                              CChainParams::SCRIPT_ADDRESS)));
+            address.pushKV("base58prefixes", std::move(prefixes));
+
+            UniValue mining(UniValue::VOBJ);
+            mining.pushKV("pow", MiningProofOfWork(params));
+            mining.pushKV("testgeneration", params.MineBlocksOnDemand());
+            UniValue features(UniValue::VOBJ);
+            features.pushKV("legacytransactions", true);
+            features.pushKV("nativetransactions", false);
+            features.pushKV("message_signing", "legacy-p2pkh");
+            UniValue node(UniValue::VOBJ);
+            node.pushKV("client", CLIENT_NAME);
+            node.pushKV("version", CLIENT_VERSION);
+
+            UniValue result(UniValue::VOBJ);
+            result.pushKV("version", 1);
+            result.pushKV("chain", std::move(chain));
+            result.pushKV("currency", std::move(currency));
+            result.pushKV("address", std::move(address));
+            result.pushKV("mining", std::move(mining));
+            result.pushKV("features", std::move(features));
+            result.pushKV("node", std::move(node));
+            return result;
+        },
+    };
+}
+
 static RPCHelpMan getmininginfo() {
     return RPCHelpMan{
         "getmininginfo",
@@ -527,6 +626,30 @@ static RPCHelpMan getmininginfo() {
                 {RPCResult::Type::NUM, "pooledtx", "The size of the mempool"},
                 {RPCResult::Type::STR, "chain",
                  "current network name (main, test, regtest)"},
+                {RPCResult::Type::OBJ,
+                 "pow",
+                 "Mining format (schema version 1)",
+                 {
+                     {RPCResult::Type::NUM, "version",
+                      "Descriptor schema version"},
+                     {RPCResult::Type::STR, "algorithm",
+                      "Compiled proof-of-work algorithm identifier"},
+                     {RPCResult::Type::NUM, "headerbytes",
+                      "Serialized header size"},
+                     {RPCResult::Type::NUM, "nonceoffset",
+                      "Nonce byte offset in the header"},
+                     {RPCResult::Type::NUM, "noncebytes", "Nonce byte width"},
+                     {RPCResult::Type::STR, "noncebyteorder",
+                      "Nonce integer byte order"},
+                     {RPCResult::Type::STR, "hashbyteorder",
+                      "Raw digest integer byte order for target comparison"},
+                     {RPCResult::Type::STR, "targetbyteorder",
+                      "getrawunsolvedblock target hex byte order"},
+                     {RPCResult::Type::STR, "template_rpc",
+                      "RPC returning a complete unsolved block"},
+                     {RPCResult::Type::STR, "submit_rpc",
+                      "RPC validating a complete solved block"},
+                 }},
                 {RPCResult::Type::STR, "warnings",
                  "any network and blockchain warnings"},
             }},
@@ -556,6 +679,7 @@ static RPCHelpMan getmininginfo() {
                        getnetworkhashps().HandleRequest(config, request));
             obj.pushKV("pooledtx", uint64_t(mempool.size()));
             obj.pushKV("chain", config.GetChainParams().GetChainTypeString());
+            obj.pushKV("pow", MiningProofOfWork(config.GetChainParams()));
             obj.pushKV("warnings", GetWarnings(false).original);
             return obj;
         },
@@ -2238,6 +2362,7 @@ void RegisterMiningRPCCommands(CRPCTable &t) {
         //  category    actor (function)
         //  ----------  ----------------------
         {"mining",      getnetworkhashps,      },
+        {"mining",      getchainconfig,        },
         {"mining",      getmininginfo,         },
         {"mining",      prioritisetransaction, },
         {"mining",      getblocktemplate,      },
