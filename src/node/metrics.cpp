@@ -580,6 +580,33 @@ NodeMetrics::NodeMetrics(std::vector<std::string> rpc_methods)
                                       "Transactions in the mempool.")},
       mempool_bytes{Add<Gauge>(registry, MetricName("mempool_bytes"),
                                "Total size of the mempool's transactions.")},
+      mempool_admission_lock_hold_seconds{Add<EventHistogram>(
+          registry, MetricName("mempool_admission_lock_hold_seconds"),
+          "cs_main hold time in admission: input snapshots, commits, P2P "
+          "prepare/verdict handling and synchronous RPC admission.",
+          MESSAGE_BUCKETS, 1e9)},
+      mempool_admission_lock_wait_seconds{Add<EventHistogram>(
+          registry, MetricName("mempool_admission_lock_wait_seconds"),
+          "Time waiting for cs_main in staged or serial P2P admission.",
+          MESSAGE_BUCKETS, 1e9)},
+      mempool_admission_verify_seconds{Add<EventHistogram>(
+          registry, MetricName("mempool_admission_verify_seconds"),
+          "Unlocked script verification wall time per staged batch.",
+          MESSAGE_BUCKETS, 1e9)},
+      mempool_admission_queue_depth{
+          Add<Gauge>(registry, MetricName("mempool_admission_queue_depth"),
+                     "Transactions waiting in the P2P admission queue "
+                     "(excludes active batch).")},
+      mempool_admission_queue_bytes{
+          Add<Gauge>(registry, MetricName("mempool_admission_queue_bytes"),
+                     "Serialized bytes waiting in the P2P admission queue.")},
+      mempool_admission_queue_full{
+          Add<Counter>(registry, MetricName("mempool_admission_queue_full_total"),
+                       "P2P admission queue backpressure events; no "
+                       "transaction is discarded.")},
+      mempool_admission_dropped{Add<Counter>(
+          registry, MetricName("mempool_admission_dropped_total"),
+          "Queued transactions skipped because their peer disconnected.")},
       http_requests{Add<Counter>(
           registry, MetricName("http_requests_total"),
           "HTTP requests answered (not WebSocket sessions), by endpoint and "
