@@ -775,17 +775,19 @@ void SetupServerArgs(NodeContext &node) {
         "-parallelmempool",
         strprintf("Admit transactions received from peers on a separate "
                   "thread, verifying their scripts on several threads "
-                  "without holding the chain lock; 0 admits them on the "
-                  "message handler thread (default: %u)",
+                  "without holding the chain lock. Synchronous RPC "
+                  "broadcasts also verify scripts outside that lock; 0 "
+                  "selects locked serial admission (default: %u)",
                   node::DEFAULT_PARALLEL_MEMPOOL),
         ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg(
         "-parallelmempoolthreads=<n>",
-        strprintf("Threads verifying transaction scripts for -parallelmempool, "
-                  "including the admission thread (0 = one per core, up to "
-                  "%d; default: %d)",
-                  node::MAX_PARALLEL_MEMPOOL_THREADS,
-                  node::DEFAULT_PARALLEL_MEMPOOL_THREADS),
+        strprintf(
+            "P2P threads verifying transaction scripts for -parallelmempool, "
+            "including the admission thread (0 = one per core, up to "
+            "%d; default: %d)",
+            node::MAX_PARALLEL_MEMPOOL_THREADS,
+            node::DEFAULT_PARALLEL_MEMPOOL_THREADS),
         ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-mempoolexpiry=<n>",
                    strprintf("Do not keep transactions in the mempool longer "
