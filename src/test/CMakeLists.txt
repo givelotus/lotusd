@@ -160,6 +160,7 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		bitmanip_tests.cpp
 		blockchain_tests.cpp
 		blockcheck_tests.cpp
+		blockprefetch_tests.cpp
 		blockencodings_tests.cpp
 		rpc_snapshot_mining_tests.cpp
 		blockfilter_tests.cpp

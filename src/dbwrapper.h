@@ -13,8 +13,10 @@
 #include <util/fs.h>
 #include <util/strencodings.h>
 
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -60,6 +62,61 @@ public:
 };
 
 class CDBWrapper;
+
+/**
+ * Lets threads that do not own a CDBWrapper read from it while it may be
+ * destroyed meanwhile (e.g. a background prefetch racing a cache resize or
+ * shutdown). Use() runs its function only while the database is open; the
+ * database's destructor first stops new uses, then waits for running ones.
+ * Holding the handle never keeps the database alive.
+ */
+class DBBackgroundHandle {
+public:
+    explicit DBBackgroundHandle(const CDBWrapper &db) : m_db{&db} {}
+
+    /** Run f(db) if the database is still open. Returns whether it ran.
+     * f must not take locks held by whoever destroys the database. */
+    template <typename F> bool Use(F &&f) {
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (!m_db) {
+                return false;
+            }
+            ++m_active;
+        }
+        struct Done {
+            DBBackgroundHandle &h;
+            ~Done() {
+                std::lock_guard<std::mutex> lock(h.m_mutex);
+                if (--h.m_active == 0) {
+                    h.m_idle.notify_all();
+                }
+            }
+        } done{*this};
+        f(*m_db);
+        return true;
+    }
+
+    /** Whether the database is still open. */
+    bool IsOpen() const {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_db != nullptr;
+    }
+
+private:
+    friend class CDBWrapper;
+    //! Called by the database's destructor.
+    void Detach() {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        m_db = nullptr;
+        m_idle.wait(lock, [this] { return m_active == 0; });
+    }
+
+    mutable std::mutex m_mutex;
+    std::condition_variable m_idle;
+    const CDBWrapper *m_db;
+    size_t m_active{0};
+};
 
 namespace dbwrapper {
 struct DestroyOptions {};
@@ -276,6 +333,8 @@ private:
 
     //! Label index of this database in the metrics (MetricDatabaseIndex)
     size_t m_metric_db;
+    //! Shared with background users; detached first in the destructor.
+    std::shared_ptr<DBBackgroundHandle> m_background_handle;
 
     bool ReadRaw(Span<const uint8_t> key, std::vector<uint8_t> &value) const;
     bool ExistsRaw(Span<const uint8_t> key) const;
@@ -338,7 +397,20 @@ public:
 
     void WriteBatch(CDBBatch &batch, bool fSync = false);
 
+    /** Sort and deduplicate keys, then walk them (PrefetchSortedRawKeys). */
     void PrefetchRawKeys(std::vector<std::vector<uint8_t>> &keys) const;
+    /**
+     * Seek a read cursor to each of keys (ascending) and hint the kernel to
+     * read the pages holding them (posix_madvise WILLNEED). The seeks fault
+     * in the B-tree pages synchronously on the calling thread. Thread-safe:
+     * uses its own pooled read transaction and cursor.
+     */
+    void PrefetchSortedRawKeys(Span<const std::vector<uint8_t>> keys) const;
+
+    /** Handle for using this database from threads that do not own it. */
+    std::shared_ptr<DBBackgroundHandle> GetBackgroundHandle() const {
+        return m_background_handle;
+    }
 
     void Sync();
 
