@@ -109,16 +109,12 @@ class ChronikScriptHistoryTest(BitcoinTestFramework):
             chronik.script("p2pk", GENESIS_CB_PK)
             .history(page=2**32 - 1, page_size=200)
             .ok(),
-            pb.TxHistoryPage(num_pages=1, num_txs=1),
+            pb.TxHistoryPage(),
         )
 
         genesis_db_script_history = chronik.script("p2pk", GENESIS_CB_PK).history().ok()
-        from test_framework.chronik.test_data import genesis_cb_tx
-
-        assert_equal(
-            genesis_db_script_history,
-            pb.TxHistoryPage(txs=[genesis_cb_tx()], num_pages=1, num_txs=1),
-        )
+        # The V2 genesis output commits a native branch, not a legacy P2PK.
+        assert_equal(genesis_db_script_history, pb.TxHistoryPage())
 
         script_type = "p2sh"
         payload_hex = P2SH_OP_TRUE[2:-1].hex()
