@@ -4,7 +4,7 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Mining descriptor matches header hashing, target order and template submission."""
 
-from test_framework.messages import hash256
+from test_framework.messages import lotus_v2_tagged_hash
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal
 
@@ -15,43 +15,55 @@ class MiningProofOfWorkTest(BitcoinTestFramework):
     extra_args = [["-avalanche=0"]]
 
     def expected_kind(self):
-        return "ecash"
+        return "lotus-v2"
 
     def expected_currency(self):
-        return ("XEC", "100", 2)
+        return ("XPI", "1000000", 6)
 
     def expected_pow(self):
         return {
             "version": 1,
-            "algorithm": "sha256d",
-            "headerbytes": 80,
-            "nonceoffset": 76,
-            "noncebytes": 4,
+            "algorithm": "lotus-v2-blockid",
+            "headerbytes": 134,
+            "nonceoffset": 42,
+            "noncebytes": 8,
             "noncebyteorder": "little",
             "hashbyteorder": "little",
             "targetbyteorder": "big",
+            "chainid": "00" * 32,
             "template_rpc": "getrawunsolvedblock",
             "submit_rpc": "submitblock",
         }
 
-    def digest(self, header):
-        return hash256(header)
+    def digest(self, header, chainid=bytes(32)):
+        body = lotus_v2_tagged_hash("Lotus/v2/header/body", chainid + header[50:134])
+        work = lotus_v2_tagged_hash("Lotus/v2/header/work", header[32:50] + body)
+        return lotus_v2_tagged_hash("Lotus/v2/blockid", header[:32] + work)
 
     def bits_offset(self):
-        return 72
+        return 32
 
     def check_known_vector(self):
-        # Bitcoin genesis, independently published SHA256d header/hash pair.
+        # Independent Python blake3 1.0.11 vector, also fixed in test_header.cpp.
+        # A nonzero chain id exposes digest-order errors hidden by regtest's zeros.
         header = bytes.fromhex(
-            "01000000"
-            + "00" * 32
-            + "3ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a"
-            + "29ab5f49ffff001d1dac2b7c"
+            "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+            "ffff001d0605040302010f0e0d0c0b0a0908020000008877665544332211"
+            "00ffeeddccbbaa99404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
+            "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f"
         )
-        assert_equal(len(header), 80)
+        assert_equal(len(header), 134)
         assert_equal(
-            self.digest(header)[::-1].hex(),
-            "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
+            self.digest(header, bytes(range(32))).hex(),
+            "fbe9243579627fc3a41043c80395d33a8a01b91a9b86b6c6e629530595c83370",
+        )
+        changed = bytearray(header)
+        changed[42:50] = (int.from_bytes(header[42:50], "little") + 1).to_bytes(
+            8, "little"
+        )
+        assert_equal(
+            self.digest(changed, bytes(range(32))).hex(),
+            "8a967f4522d06f683830cf003b9f456001e045f617bf4d4336754a91c75f5824",
         )
 
     def run_test(self):
