@@ -1151,7 +1151,8 @@ private:
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, g_msgproc_mutex, cs_main);
 
     void ProcessSingleTx(CNode &pfrom, Peer &peer, const CTransactionRef &ptx,
-                         const PrecomputedAdmissionChecks *precomputed = nullptr)
+                         const PrecomputedAdmissionChecks *precomputed = nullptr,
+                         bool measure_lock = true)
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
                                  g_msgproc_mutex);
@@ -3346,7 +3347,14 @@ void PeerManagerImpl::ThreadTxAdmission() {
             if (!sender->node.fDisconnect) {
                 admitted_index[i] = txs.size();
                 txs.push_back(items[i].tx);
+            } else if (auto *metrics = node::GetNodeMetrics()) {
+                metrics->mempool_admission_dropped.Inc();
             }
+        }
+        if (auto *metrics = node::GetNodeMetrics()) {
+            const auto stats = m_tx_admission_queue->GetStats();
+            metrics->mempool_admission_queue_depth.Set(stats.queued);
+            metrics->mempool_admission_queue_bytes.Set(stats.queued_bytes);
         }
         std::vector<std::optional<MempoolAcceptResult>> results;
         if (!txs.empty()) {
@@ -3387,6 +3395,11 @@ bool PeerManagerImpl::QueueTxForAdmission(CNode &pfrom, const PeerRef &peer,
     }
     if (!m_tx_admission_queue->HasRoom(pfrom.GetId(), ptx->GetTotalSize(),
                                        count_full)) {
+        if (count_full) {
+            if (auto *metrics = node::GetNodeMetrics()) {
+                metrics->mempool_admission_queue_full.Inc();
+            }
+        }
         return false;
     }
     if (!PrepareTxAdmission(pfrom, ptx)) {
@@ -3413,7 +3426,9 @@ bool PeerManagerImpl::ProcessTxAdmissionDone() {
     if (done.empty()) {
         return false;
     }
+    const auto waiting = SteadyClock::now();
     LOCK(cs_main);
+    node::AdmissionLockTimer timer(waiting);
     for (TxAdmissionDone &d : done) {
         CNode &node = d.sender->node;
         Peer &peer = *d.sender->peer;
@@ -5511,14 +5526,17 @@ void PeerManagerImpl::ProcessValidTx(NodeId nodeid, const CTransactionRef &tx) {
 
 void PeerManagerImpl::ProcessSingleTx(CNode &pfrom, Peer &peer,
                                       const CTransactionRef &ptx,
-                                      const PrecomputedAdmissionChecks *precomputed) {
+                                      const PrecomputedAdmissionChecks *precomputed,
+                                      bool measure_lock) {
     AssertLockHeld(g_msgproc_mutex);
     if (!ptx) {
         return;
     }
     AddKnownTx(peer, ptx->GetId());
 
+    const auto waiting = SteadyClock::now();
     LOCK(cs_main);
+    node::AdmissionLockTimer timer(waiting, measure_lock);
 
     if (!PrepareTxAdmission(pfrom, ptx)) {
         return;
@@ -5757,7 +5775,9 @@ void PeerManagerImpl::ProcessTxBatch(
     // member otherwise doubles expensive admission work. One pass retains
     // valid members and gives each transaction the ordinary orphan/reject
     // handling, while sharing cs_main and deferring snapshot publication.
+    const auto waiting = SteadyClock::now();
     LOCK(cs_main);
+    node::AdmissionLockTimer timer(waiting);
     struct PublicationScope {
         CTxMemPool &pool;
         std::optional<CTxMemPool::ScopedSnapshotDefer> defer;
@@ -5773,7 +5793,8 @@ void PeerManagerImpl::ProcessTxBatch(
     for (size_t i = 0; i < ptxs.size(); ++i) {
         if (pfrom.fDisconnect) break;
         ProcessSingleTx(pfrom, peer, ptxs[i],
-                        precomputed.empty() ? nullptr : &precomputed[i]);
+                        precomputed.empty() ? nullptr : &precomputed[i],
+                        /*measure_lock=*/false);
     }
 }
 
@@ -9754,7 +9775,9 @@ bool PeerManagerImpl::ProcessMessages(const Config &config, CNode *pfrom,
         // Transactions waiting for an earlier copy's verdict or for room in
         // the admission queue go first, in order.
         if (!peer->m_tx_admission_held_txs.empty()) {
+            const auto waiting = SteadyClock::now();
             LOCK(cs_main);
+            node::AdmissionLockTimer timer(waiting);
             while (!peer->m_tx_admission_held_txs.empty() &&
                    QueueTxForAdmission(*pfrom, peer,
                                        peer->m_tx_admission_held_txs.front(),
@@ -9888,7 +9911,9 @@ bool PeerManagerImpl::ProcessMessages(const Config &config, CNode *pfrom,
                 AddKnownTx(*peer, ptx->GetId());
             }
             {
+                const auto waiting = SteadyClock::now();
                 LOCK(cs_main);
+                node::AdmissionLockTimer timer(waiting);
                 for (auto &ptx : received) {
                     if (!peer->m_tx_admission_held_txs.empty() ||
                         !QueueTxForAdmission(*pfrom, peer, ptx,
