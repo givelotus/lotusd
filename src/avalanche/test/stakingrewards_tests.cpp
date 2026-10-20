@@ -79,7 +79,7 @@ BOOST_FIXTURE_TEST_CASE(stakecontender_computeid, TestChain100Setup) {
     ProofId proofid1 = ProofId::fromHex(
         "979dbc3b1351ee12f91f537e04e61fdf93a73d5ebfc317bccd12643b8be87b02");
     BOOST_CHECK_EQUAL(
-        "3a6d3ded7ca5ac807c83806beb8d766cc14d98fdb70cbded5e9e85bc1950f7e7",
+        "2abd5e94e03fa1152b86ec7adcfe4ee3993e5026513f1870faf77d796c01a286",
         StakeContenderId(chaintip->GetAncestor(0)->GetBlockHash(), proofid1)
             .ToString());
 

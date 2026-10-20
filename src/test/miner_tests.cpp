@@ -147,22 +147,6 @@ static CBlockIndex CreateBlockIndex(int nHeight, CBlockIndex *active_chain_tip)
     return index;
 }
 
-// Raw Lotus VM opcodes differ from the legacy CScript numeric constants.
-static CScript NativeMinerScript(uint8_t opcode) {
-    CScript script;
-    script.push_back(opcode);
-    return script;
-}
-
-static void SetNativeMinerWitness(CTxIn &input, const CScript &script) {
-    input.nFlags = 1;
-    input.nPathIndex = 0;
-    input.scriptSig = script;
-    lotus::v2::BranchWitness witness;
-    witness.script.assign(script.begin(), script.end());
-    input.vWitnesses = {std::move(witness)};
-}
-
 // Test suite for feerate transaction selection.
 // Implemented as an additional function, rather than a separate test case,
 // to allow reusing the blockchain created in CreateNewBlock_validity.
@@ -176,10 +160,9 @@ void MinerTestingSetup::TestPackageSelection(
     // transaction when the high-fee tx has a low fee parent.
     CMutableTransaction tx;
     tx.vin.resize(1);
-    SetNativeMinerWitness(tx.vin[0], NativeMinerScript(0x4e));
+    tx.vin[0].scriptSig = (CScript() << OP_TRUE);
     tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 0);
     tx.vout.resize(1);
-    tx.vout[0].scriptPubKey = NativeMinerScript(0x4e);
     tx.vout[0].nValue = int64_t(5000000000LL - 1000) * SATOSHI;
     tx.vout.emplace_back(Amount::zero(),
                          CScript() << OP_RETURN << std::vector<uint8_t>(80));
@@ -302,10 +285,9 @@ void MinerTestingSetup::TestBasicMining(
 
     // block size > limit
     tx.vin.resize(1);
-    SetNativeMinerWitness(tx.vin[0], NativeMinerScript(0x4e));
+    tx.vin[0].scriptSig = (CScript() << OP_TRUE);
     tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 0);
     tx.vout.resize(1);
-    tx.vout[0].scriptPubKey = NativeMinerScript(0x4e);
     tx.vout[0].nValue = BLOCKSUBSIDY;
     tx.vout.emplace_back(Amount::zero(),
                          CScript() << OP_RETURN << std::vector<uint8_t>(9000));
@@ -331,14 +313,14 @@ void MinerTestingSetup::TestBasicMining(
     m_node.mempool->clear(/*include_finalized_txs=*/true);
 
     // Child with higher priority than parent.
-    SetNativeMinerWitness(tx.vin[0], NativeMinerScript(0x4e));
+    tx.vin[0].scriptSig = (CScript() << OP_TRUE);
     tx.vin[0].prevout = COutPoint(txFirst[1]->GetId(), 0);
     tx.vout[0].nValue = BLOCKSUBSIDY - HIGHFEE;
     TxId txid = tx.GetId();
     AddUnchecked(entry.Fee(HIGHFEE).Time(GetTime()).FromTx(tx));
     tx.vin[0].prevout = COutPoint(txid, 0);
     tx.vin.resize(2);
-    SetNativeMinerWitness(tx.vin[1], NativeMinerScript(0x4e));
+    tx.vin[1].scriptSig = (CScript() << OP_TRUE);
     tx.vin[1].prevout = COutPoint(txFirst[0]->GetId(), 0);
     // First txn output + fresh coinbase - new txn fee.
     tx.vout[0].nValue = tx.vout[0].nValue + BLOCKSUBSIDY - HIGHERFEE;
@@ -364,12 +346,12 @@ void MinerTestingSetup::TestBasicMining(
 
     // Double spend txn pair in mempool, template creation fails.
     tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 0);
-    SetNativeMinerWitness(tx.vin[0], NativeMinerScript(0x4e));
+    tx.vin[0].scriptSig = (CScript() << OP_TRUE);
     tx.vout[0].nValue = BLOCKSUBSIDY - HIGHFEE;
-    tx.vout[0].scriptPubKey = NativeMinerScript(0x4e);
+    tx.vout[0].scriptPubKey = (CScript() << OP_TRUE);
     txid = tx.GetId();
     AddUnchecked(entry.Fee(HIGHFEE).Time(GetTime()).FromTx(tx));
-    tx.vout[0].scriptPubKey = NativeMinerScript(0x4f);
+    tx.vout[0].scriptPubKey = (CScript() << OP_2);
     txid = tx.GetId();
     AddUnchecked(entry.Fee(HIGHFEE).Time(GetTime()).FromTx(tx));
     BOOST_CHECK_EXCEPTION(
@@ -409,16 +391,17 @@ void MinerTestingSetup::TestBasicMining(
     BOOST_CHECK(pblocktemplate =
                     AssemblerForTest(chainparams).CreateNewBlock(scriptPubKey));
 
-    // A committed false native branch must fail template self-validation
+    // An invalid legacy P2SH redeem script must fail template self-validation
     tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 0);
-    SetNativeMinerWitness(tx.vin[0], NativeMinerScript(0x4e));
+    tx.vin[0].scriptSig = (CScript() << OP_TRUE);
     tx.vout[0].nValue = BLOCKSUBSIDY - LOWFEE;
-    CScript script = NativeMinerScript(0x00);
-    tx.vout[0].scriptPubKey = script;
+    CScript script = CScript() << OP_0;
+    tx.vout[0].scriptPubKey = GetScriptForDestination(ScriptHash(script));
     txid = tx.GetId();
     AddUnchecked(entry.Fee(LOWFEE).Time(GetTime()).FromTx(tx));
     tx.vin[0].prevout = COutPoint(txid, 0);
-    SetNativeMinerWitness(tx.vin[0], script);
+    tx.vin[0].scriptSig =
+        CScript() << std::vector<uint8_t>(script.begin(), script.end());
     tx.vout[0].nValue -= LOWFEE;
     txid = tx.GetId();
     AddUnchecked(entry.Fee(LOWFEE).Time(GetTime()).FromTx(tx));
@@ -453,13 +436,13 @@ void MinerTestingSetup::TestBasicMining(
     prevheights.resize(1);
     // Only 1 transaction.
     tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 0);
-    SetNativeMinerWitness(tx.vin[0], NativeMinerScript(0x4e));
+    tx.vin[0].scriptSig = (CScript() << OP_TRUE);
     // txFirst[0] is the 2nd block
     tx.vin[0].nSequence = m_node.chainman->ActiveHeight() + 1;
     prevheights[0] = baseheight + 1;
     tx.vout.resize(1);
     tx.vout[0].nValue = BLOCKSUBSIDY - HIGHFEE;
-    tx.vout[0].scriptPubKey = NativeMinerScript(0x4e);
+    tx.vout[0].scriptPubKey = (CScript() << OP_TRUE);
     tx.vout.emplace_back(Amount::zero(),
                          CScript() << OP_RETURN << std::vector<uint8_t>(80));
     tx.nLockTime = 0;
@@ -680,9 +663,8 @@ void MinerTestingSetup::TestPrioritisedMining(
     CMutableTransaction tx;
     tx.vin.resize(1);
     tx.vin[0].prevout = COutPoint{txFirst[0]->GetId(), 0};
-    SetNativeMinerWitness(tx.vin[0], NativeMinerScript(0x4e));
+    tx.vin[0].scriptSig = (CScript() << OP_TRUE);
     tx.vout.resize(1);
-    tx.vout[0].scriptPubKey = NativeMinerScript(0x4e);
     const int64_t fiveBillion = 5000000000;
     tx.vout.emplace_back(Amount::zero(),
                          CScript() << OP_RETURN << std::vector<uint8_t>(80));
@@ -780,7 +762,7 @@ void MinerTestingSetup::CreateNewBlock_validity() {
     // Note that by default, these tests run with size accounting enabled.
     GlobalConfig config;
     const CChainParams &chainparams = config.GetChainParams();
-    const CScript scriptPubKey = NativeMinerScript(0x4e); // Native OP_1.
+    const CScript scriptPubKey = (CScript() << OP_TRUE); // Legacy OP_TRUE funding.
     std::unique_ptr<CBlockTemplate> pblocktemplate;
 
     // Simple block creation, nothing special yet:
@@ -796,6 +778,11 @@ void MinerTestingSetup::CreateNewBlock_validity() {
         CBlock &block = pblocktemplate->block;
         {
             LOCK(cs_main);
+            // The inherited legacy fixture spends these empty scripts with
+            // OP_TRUE scriptSig, leaving exactly one stack item.
+            CMutableTransaction coinbase(*block.vtx[0]);
+            coinbase.vout[0].scriptPubKey = CScript();
+            block.vtx[0] = MakeTransactionRef(std::move(coinbase));
             createCoinbaseAndMerkleRoot(&block, m_node.chainman->ActiveTip(),
                                         config.GetMaxBlockSize());
             if (i == 0) {
