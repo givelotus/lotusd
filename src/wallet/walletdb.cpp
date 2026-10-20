@@ -965,7 +965,8 @@ DBErrors WalletBatch::FindWalletTx(std::vector<TxId> &txIds,
 
         // Get cursor
         if (!m_batch->StartCursor()) {
-            LogPrintf("Error getting wallet database cursor\n");
+            LogInfoEvent(BCLog::ALL, "wallet_database_cursor_start_failed",
+                         "Error getting wallet database cursor");
             return DBErrors::CORRUPT;
         }
 
@@ -981,7 +982,8 @@ DBErrors WalletBatch::FindWalletTx(std::vector<TxId> &txIds,
 
             if (!ret) {
                 m_batch->CloseCursor();
-                LogPrintf("Error reading next record from wallet database\n");
+                LogInfoEvent(BCLog::ALL, "wallet_database_cursor_read_failed",
+                             "Error reading next record from wallet database");
                 return DBErrors::CORRUPT;
             }
 
