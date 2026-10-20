@@ -5,11 +5,13 @@
 #include <tls_util.h>
 
 #include <logging.h>
+#include <tinyformat.h>
 #include <util/strencodings.h>
 #include <util/string.h>
 
 #include <openssl/bio.h>
 #include <openssl/bn.h>
+#include <openssl/crypto.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -65,6 +67,11 @@ namespace {
 //! ALPN protocol list (length-prefixed): HTTP/1.1, which WebSocket uses
 constexpr unsigned char ALPN_HTTP11[]{8, 'h', 't', 't', 'p', '/', '1', '.', '1'};
 
+//! Key exchange groups the client offers, in Chrome's order
+constexpr const char *GROUPS_HYBRID{"X25519MLKEM768:X25519:P-256:P-384"};
+//! The same without the hybrid group, for OpenSSL < 3.5
+constexpr const char *GROUPS_CLASSIC{"X25519:P-256:P-384"};
+
 int SelectAlpn(SSL *, const unsigned char **out, unsigned char *outlen,
                const unsigned char *in, unsigned int inlen, void *) {
     unsigned char *selected{nullptr};
@@ -96,10 +103,9 @@ void ApplyClientProfile(SSL_CTX *ctx) {
              "ECDHE-RSA-AES128-SHA:ECDHE-RSA-AES256-SHA:AES128-GCM-SHA256:"
              "AES256-GCM-SHA384:AES128-SHA:AES256-SHA");
     // The post-quantum hybrid group needs OpenSSL >= 3.5.
-    if (SSL_CTX_set1_groups_list(ctx, "X25519MLKEM768:X25519:P-256:P-384") !=
-        1) {
+    if (SSL_CTX_set1_groups_list(ctx, GROUPS_HYBRID) != 1) {
         ERR_clear_error();
-        SSL_CTX_set1_groups_list(ctx, "X25519:P-256:P-384");
+        SSL_CTX_set1_groups_list(ctx, GROUPS_CLASSIC);
     }
     SSL_CTX_set1_sigalgs_list(
         ctx, "ECDSA+SHA256:rsa_pss_rsae_sha256:RSA+SHA256:ECDSA+SHA384:"
@@ -421,11 +427,24 @@ std::string CertSha256Hex(X509 *cert) {
 }
 
 X509 *PeerCertificate(const SSL *ssl) {
-#if OPENSSL_VERSION_NUMBER >= 0x30000000L
     return SSL_get1_peer_certificate(ssl);
-#else
-    return SSL_get_peer_certificate(ssl);
-#endif
+}
+
+bool HasHybridKeyExchange() {
+    static const bool has{[] {
+        SslCtxPtr ctx{SSL_CTX_new(TLS_client_method())};
+        const bool ok{ctx &&
+                      SSL_CTX_set1_groups_list(ctx.get(), GROUPS_HYBRID) == 1};
+        ERR_clear_error();
+        return ok;
+    }()};
+    return has;
+}
+
+std::string LibraryDescription() {
+    return strprintf("%s (built with %s), TLS client key exchange %s",
+                     OpenSSL_version(OPENSSL_VERSION), OPENSSL_VERSION_TEXT,
+                     HasHybridKeyExchange() ? GROUPS_HYBRID : GROUPS_CLASSIC);
 }
 
 std::string ErrorString() {
