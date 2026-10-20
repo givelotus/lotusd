@@ -155,7 +155,10 @@ def check(source, names, types=None):
                         continue
                     key = next((key for key in fields
                                 if names[key] == placeholder.group(1)), None)
-                    if re.fullmatch(r"(?:0(?:[1-9]|1[0-6]))?x", spec):
+                    if spec == "fsq":
+                        if types is None or types.get(key) != "STRING":
+                            raise ValueError("fsq format requires a STRING registry field")
+                    elif re.fullmatch(r"(?:0(?:[1-9]|1[0-6]))?x", spec):
                         if types is None or types.get(key) not in {"INT", "UINT"}:
                             raise ValueError("hex format requires an INT/UINT registry field")
                     elif re.fullmatch(r"(?:\.(?:[0-9]|1[0-8]))?[fg]", spec):
@@ -246,6 +249,17 @@ class ContractTests(unittest.TestCase):
         for spec in ["0x", "00x", "017x", "8x", ".2x", "08X"]:
             self.assertTrue(check(source % spec, names, {"Version": "INT"})[1])
         self.assertTrue(check(source % "08x", names, {"Version": "STRING"})[1])
+
+    def test_filesystem_quote_contract(self):
+        names = {"Path": "path"}
+        source = 'LogInfoEvent(BCLog::ALL,"file_loaded","{path:fsq}").Field(LogField::Path, value);'
+        self.assertFalse(check(source, names, {"Path": "STRING"})[1])
+        for wrong in ["INT", "UINT", "FLOAT", "HASH"]:
+            self.assertIn("requires a STRING", check(
+                source, names, {"Path": wrong})[1][0][1])
+        for changed in ["q", "fsquote", "fsq:1"]:
+            self.assertTrue(check(source.replace(":fsq", ":" + changed),
+                                  names, {"Path": "STRING"})[1])
 
     def test_comments_and_strings(self):
         source = '// LogEvent(NET, "peer_bad");\nconst char *x = R"q(LogEvent(NET, "peer_bad"))q";\n/* LogEvent(NET,"bad"); */'
