@@ -167,6 +167,13 @@ struct NodeMetrics {
     metrics::Gauge &initial_block_download;
     metrics::EventHistogram &block_connect_seconds;
 
+    // Background prefetch of the coins a block spends (node/blockprefetch.h)
+    metrics::Counter &block_prefetch_started;
+    metrics::Counter &block_prefetch_dropped;
+    metrics::Counter &block_prefetch_outpoints;
+    metrics::Counter &block_prefetch_errors;
+    metrics::EventHistogram &block_prefetch_seconds;
+
     // Mempool
     metrics::Gauge &mempool_transactions;
     metrics::Gauge &mempool_bytes;

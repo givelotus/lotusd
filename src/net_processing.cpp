@@ -7507,6 +7507,7 @@ void PeerManagerImpl::ProcessMessage(
                 LOCK(cs_main);
                 mapBlockSource.emplace(pblock->GetHash(),
                                        std::make_pair(pfrom.GetId(), false));
+                m_chainman.PrefetchBlockCoinsLocked(pblock);
             }
             // Setting force_processing to true means that we bypass some of
             // our anti-DoS protections in AcceptBlock, which filters
@@ -7625,6 +7626,8 @@ void PeerManagerImpl::ProcessMessage(
                 // it is now an empty pointer
                 RemoveBlockRequest(resp.blockhash, pfrom.GetId());
                 fBlockRead = true;
+                // We requested it: start reading the coins it spends.
+                m_chainman.PrefetchBlockCoinsLocked(pblock);
                 // mapBlockSource is used for potentially punishing peers and
                 // updating which peers send us compact blocks, so the race
                 // between here and cs_main in ProcessNewBlock is fine.
@@ -7716,10 +7719,23 @@ void PeerManagerImpl::ProcessMessage(
         LogDebug(BCLog::NET, "received block %s peer=%d\n",
                  pblock->GetHash().ToString(), pfrom.GetId());
 
-        const CBlockIndex *prev_block{
-            WITH_LOCK(m_chainman.GetMutex(),
-                      return m_chainman.m_blockman.LookupBlockIndex(
-                          pblock->hashPrevBlock))};
+        const CBlockIndex *prev_block{nullptr};
+        {
+            LOCK(m_chainman.GetMutex());
+            prev_block =
+                m_chainman.m_blockman.LookupBlockIndex(pblock->hashPrevBlock);
+            // Start reading the coins it spends now, so the disk reads overlap
+            // with the Merkle check, CheckBlock and storing the block. Only
+            // for blocks we asked for or whose header claims enough work
+            // (PrefetchBlockCoinsLocked also checks its proof of work).
+            if (IsBlockRequested(pblock->GetHash()) ||
+                (prev_block &&
+                 prev_block->nChainWork + CalculateClaimedHeadersWork(
+                                              {pblock->GetBlockHeader()}) >=
+                     GetAntiDoSWorkThreshold())) {
+                m_chainman.PrefetchBlockCoinsLocked(pblock);
+            }
+        }
 
         if (IsBlockMutated(/*block=*/*pblock)) {
             LogPrintLevel(BCLog::NET, BCLog::Level::Debug,

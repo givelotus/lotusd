@@ -300,7 +300,8 @@ Status DestroyDB(const std::string &path_str, const DestroyOptions &) {
 CDBWrapper::CDBWrapper(const DBParams &params)
     : m_name{fs::PathToString(params.path.stem())}, m_path{params.path},
       m_is_memory{params.memory_only},
-      m_metric_db{node::MetricDatabaseIndex(fs::PathToString(params.path))} {
+      m_metric_db{node::MetricDatabaseIndex(fs::PathToString(params.path))},
+      m_background_handle{std::make_shared<DBBackgroundHandle>(*this)} {
     if (m_is_memory) {
         const uint64_t id = ++g_mem_db_counter;
         m_active_path =
@@ -434,6 +435,9 @@ CDBWrapper::CDBWrapper(const DBParams &params)
 }
 
 CDBWrapper::~CDBWrapper() {
+    // No background reader may start or still run once the environment
+    // closes below.
+    m_background_handle->Detach();
     {
         std::lock_guard<std::mutex> lock(m_read_txn_mutex);
         for (MDBX_cursor *cursor : m_read_cursor_pool) {
@@ -588,7 +592,18 @@ void CDBWrapper::PrefetchRawKeys(
     }
     std::sort(keys.begin(), keys.end());
     keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    PrefetchSortedRawKeys(keys);
+}
 
+void CDBWrapper::PrefetchSortedRawKeys(
+    Span<const std::vector<uint8_t>> keys) const {
+    if (keys.empty() || !m_env) {
+        return;
+    }
+    // Read transactions and cursors come from mutex-guarded pools, and the
+    // environment is opened with MDBX_NOSTICKYTHREADS, so this may run on
+    // any thread, concurrently with readers and the writer of other threads
+    // (each uses its own transaction; MDBX readers see a snapshot).
     MDBX_txn *txn = AcquireReadTxn();
     MDBX_cursor *cursor = AcquireReadCursor(txn);
     constexpr uintptr_t kPageMask = ~uintptr_t(4095);

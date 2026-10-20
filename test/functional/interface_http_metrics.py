@@ -173,6 +173,28 @@ class HTTPMetricsTest(BitcoinTestFramework):
         self.generate(node, 1)
         self.wait_until(lambda: self.scrape().value(m("mempool_transactions")) == 0)
 
+        self.log.info("Block coin prefetch")
+        # Blocks so far had at most two transactions: below the prefetch's
+        # minimum, so none was prefetched.
+        samples = self.scrape()
+        assert_equal(samples.value(m("block_prefetch_started_total")), 0)
+        assert_equal(samples.value(m("block_prefetch_dropped_total")), 0)
+        assert_equal(samples.value(m("block_prefetch_errors_total")), 0)
+        for _ in range(10):
+            wallet.send_self_transfer(from_node=node)
+        self.generate(node, 1)
+        self.wait_until(
+            lambda: (
+                self.scrape().value(m("block_prefetch_duration_seconds_count"))
+                == 1
+            )
+        )
+        samples = self.scrape()
+        assert_equal(samples.value(m("block_prefetch_started_total")), 1)
+        assert_equal(samples.value(m("block_prefetch_errors_total")), 0)
+        # Spends of coins created in the same block are not read.
+        assert 1 <= samples.value(m("block_prefetch_outpoints_total")) <= 10
+
         self.log.info("HTTP and RPC requests")
         # Baselines exclude completed setup RPCs and the one-second scrape cache.
         time.sleep(1.1)

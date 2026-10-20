@@ -119,6 +119,12 @@ void CCoinsViewDB::PrefetchOutpointsAsync(
     if (outpoints.empty() || !m_db) {
         return;
     }
+    std::vector<std::vector<uint8_t>> keys{CoinKeys(outpoints)};
+    m_db->PrefetchRawKeys(keys);
+}
+
+std::vector<std::vector<uint8_t>>
+CCoinsViewDB::CoinKeys(Span<const COutPoint> outpoints) {
     std::vector<std::vector<uint8_t>> keys;
     keys.reserve(outpoints.size());
     DataStream ssKey{};
@@ -129,7 +135,7 @@ void CCoinsViewDB::PrefetchOutpointsAsync(
         const auto key_span = MakeUCharSpan(ssKey);
         keys.emplace_back(key_span.begin(), key_span.end());
     }
-    m_db->PrefetchRawKeys(keys);
+    return keys;
 }
 
 BlockHash CCoinsViewDB::GetBestBlock() const {
