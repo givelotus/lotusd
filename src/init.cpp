@@ -1836,9 +1836,9 @@ void SetupServerArgs(NodeContext &node) {
         "-http2",
         strprintf("Offer HTTP/2 (ALPN h2, preferred over http/1.1) on TLS "
                   "listeners, serving the same endpoints with the same "
-                  "access rules as HTTP/1.1. Plain-text listeners stay "
-                  "HTTP/1.1. Only in builds with HTTP/2 support "
-                  "(default: %u)",
+                  "access rules as HTTP/1.1, and offer it when dialing "
+                  "wss:// peers. Plain-text listeners stay HTTP/1.1. Only "
+                  "in builds with HTTP/2 support (default: %u)",
                   DEFAULT_HTTP2),
         ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
     argsman.AddArg("-http2maxstreams=<n>",
@@ -3823,7 +3823,8 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         if (!StartP2PWebSocketDialer(
                 cert, key,
                 args.GetArg("-p2pwebsocketoffer", DEFAULT_P2P_WEBSOCKET_OFFER),
-                args.GetArgs("-p2pwebsocketpin"))) {
+                args.GetArgs("-p2pwebsocketpin"),
+                /*http2=*/args.GetBoolArg("-http2", DEFAULT_HTTP2))) {
             return InitError(Untranslated(
                 "Unable to start the P2P WebSocket dialer (check "
                 "-p2pwebsocketpin; see the debug log)"));

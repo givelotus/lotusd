@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <http2_client.h>
 #include <http2_server.h>
 
 #include <test/util/setup_common.h>
@@ -10,6 +11,7 @@
 
 #include <nghttp2/nghttp2.h>
 
+#include <cerrno>
 #include <cstring>
 #include <map>
 #include <optional>
@@ -814,3 +816,186 @@ BOOST_AUTO_TEST_CASE(protocol_rejected_unless_enabled) {
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+#ifndef WIN32
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+namespace {
+/** A ServerSession on one end of a socketpair, pumped by the test */
+struct SocketServer {
+    TestServer server;
+    int fd;
+    SocketServer(http2::Limits limits, int fd_) : server{limits}, fd{fd_} {
+        // (compat.h may define MSG_DONTWAIT as 0.)
+        fcntl(fd, F_SETFL, O_NONBLOCK);
+    }
+    bool Pump() {
+        uint8_t buf[65536];
+        while (true) {
+            const ssize_t n{::recv(fd, buf, sizeof(buf), MSG_DONTWAIT)};
+            if (n <= 0) {
+                break;
+            }
+            if (!server.session.Receive({buf, size_t(n)})) {
+                return false;
+            }
+        }
+        if (pending.empty()) {
+            http2::Output out;
+            if (!server.session.Collect(out, 1 << 16)) {
+                return false;
+            }
+            pending = out.ToString();
+        }
+        // Non-blocking, like the node: the client runs on this thread.
+        while (!pending.empty()) {
+            const ssize_t n{
+                ::send(fd, pending.data(), pending.size(), MSG_DONTWAIT)};
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                break;
+            }
+            if (n <= 0) {
+                return false;
+            }
+            pending.erase(0, size_t(n));
+        }
+        return true;
+    }
+    std::string pending;
+};
+} // namespace
+
+BOOST_FIXTURE_TEST_SUITE(http2_client_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(client_layer_tunnel) {
+    int sv[2];
+    BOOST_REQUIRE_EQUAL(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+    // Small kernel buffers, so that socket back-pressure is exercised too.
+    for (int fd : sv) {
+        const int size{32 * 1024};
+        setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &size, sizeof(size));
+        setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof(size));
+    }
+    fcntl(sv[0], F_SETFL, O_NONBLOCK);
+    http2::Limits limits;
+    limits.enable_connect_protocol = true;
+    // The smallest windows: the client must wait for window updates.
+    limits.stream_window = 65535;
+    limits.connection_window = 65535;
+    SocketServer srv{limits, sv[1]};
+    Http2ClientLayer client{std::make_unique<PlainByteLayer>()};
+
+    const auto pump_both = [&] {
+        client.Pump(sv[0]);
+        BOOST_REQUIRE(srv.Pump());
+        client.Pump(sv[0]);
+    };
+    for (int i = 0; i < 20 && !client.SettingsReceived(); ++i) {
+        pump_both();
+    }
+    BOOST_REQUIRE(client.SettingsReceived());
+    BOOST_CHECK(client.ConnectProtocolAllowed());
+    BOOST_REQUIRE(
+        client.SubmitConnect("node", "/p2p/ws",
+                             {{"sec-websocket-version", "13"},
+                              {"sec-websocket-protocol", "p2p-zstd-v1"}}));
+    for (int i = 0; i < 20 && srv.server.connects.empty(); ++i) {
+        pump_both();
+    }
+    BOOST_REQUIRE_EQUAL(srv.server.connects.size(), 1U);
+    const int32_t id{srv.server.connects[0].first};
+    BOOST_REQUIRE(srv.server.session.AcceptTunnel(
+        id, 200, {{"sec-websocket-protocol", "p2p-zstd-v1"}}));
+    for (int i = 0; i < 20 && !client.Status(); ++i) {
+        pump_both();
+    }
+    BOOST_REQUIRE(client.Status());
+    BOOST_CHECK_EQUAL(*client.Status(), 200);
+    BOOST_CHECK_EQUAL(client.ResponseHeader("sec-websocket-protocol"),
+                      "p2p-zstd-v1");
+
+    // 3 MB from the client: Write() accepts up to TX_LIMIT ahead of the
+    // window, the rest waits; the server consumes as a reader would.
+    std::string up(3000000, 0);
+    for (size_t i = 0; i < up.size(); ++i) {
+        up[i] = char(i * 7 + i / 1000);
+    }
+    size_t written{0};
+    for (int i = 0; i < 100000 && srv.server.tunnel_in[id].size() < up.size();
+         ++i) {
+        if (written < up.size()) {
+            const ssize_t n{client.Write(
+                sv[0], reinterpret_cast<const uint8_t *>(up.data()) + written,
+                up.size() - written)};
+            if (n > 0) {
+                written += size_t(n);
+            } else {
+                BOOST_REQUIRE(errno == EAGAIN);
+            }
+        }
+        if (client.HasPendingWrite()) {
+            BOOST_REQUIRE(client.FlushBuffered(sv[0]));
+        }
+        BOOST_REQUIRE(srv.Pump());
+        srv.server.session.TunnelConsumed(id, 1 << 30);
+        BOOST_REQUIRE(srv.Pump());
+    }
+    BOOST_CHECK(srv.server.tunnel_in[id] == up);
+
+    // 3 MB to the client, then the end of the server's side: EOF.
+    const std::string down(up.rbegin(), up.rend());
+    size_t queued{0};
+    std::string got;
+    uint8_t buf[65536];
+    for (int i = 0; i < 100000; ++i) {
+        if (queued < down.size() &&
+            srv.server.session.TunnelQueued(id) < 200000) {
+            const size_t n{std::min<size_t>(100000, down.size() - queued)};
+            srv.server.session.TunnelSend(
+                id, std::string_view{down}.substr(queued, n));
+            queued += n;
+            if (queued == down.size()) {
+                srv.server.session.TunnelEnd(id);
+            }
+        }
+        BOOST_REQUIRE(srv.Pump());
+        const ssize_t n{client.Read(sv[0], buf, sizeof(buf))};
+        if (n == 0) {
+            break;
+        }
+        if (n > 0) {
+            got.append(reinterpret_cast<const char *>(buf), size_t(n));
+        } else {
+            BOOST_REQUIRE(errno == EAGAIN);
+        }
+    }
+    BOOST_CHECK(got == down);
+    BOOST_CHECK(client.HasBuffered()); // reports the end, so it is read
+    close(sv[0]);
+    close(sv[1]);
+}
+
+BOOST_AUTO_TEST_CASE(client_layer_refused) {
+    int sv[2];
+    BOOST_REQUIRE_EQUAL(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+    fcntl(sv[0], F_SETFL, O_NONBLOCK);
+    http2::Limits limits;
+    limits.enable_connect_protocol = false;
+    SocketServer srv{limits, sv[1]};
+    Http2ClientLayer client{std::make_unique<PlainByteLayer>()};
+    for (int i = 0; i < 20 && !client.SettingsReceived(); ++i) {
+        client.Pump(sv[0]);
+        BOOST_REQUIRE(srv.Pump());
+        client.Pump(sv[0]);
+    }
+    BOOST_REQUIRE(client.SettingsReceived());
+    // Servers without RFC 8441 are detected before any CONNECT is sent.
+    BOOST_CHECK(!client.ConnectProtocolAllowed());
+    close(sv[0]);
+    close(sv[1]);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+#endif // WIN32

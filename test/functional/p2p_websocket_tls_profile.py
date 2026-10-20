@@ -6,8 +6,8 @@
 
 - The server selects ALPN http/1.1 when offered (h2 first, in builds with
   HTTP/2), and continues without ALPN otherwise.
-- The dialer offers ALPN http/1.1 and sends SNI for host names (and warns
-  when dialing an IP address).
+- The dialer offers ALPN http/1.1 (after h2, in builds with HTTP/2) and
+  sends SNI for host names (and warns when dialing an IP address).
 """
 
 import os
@@ -30,7 +30,9 @@ class ClientHelloCapture:
         self.lock = threading.Lock()
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(cert, key)
-        ctx.set_alpn_protocols(["http/1.1"])
+        # Selects h2 if the client offers it, else http/1.1: which one it
+        # got tells what the client offered.
+        ctx.set_alpn_protocols(["h2", "http/1.1"])
         ctx.sni_callback = self.on_sni
         self.ctx = ctx
         self.server = socket.create_server(("127.0.0.1", port))
@@ -98,15 +100,17 @@ class P2PWebSocketTLSProfileTest(BitcoinTestFramework):
         assert_equal(self.handshake(["http/1.1"]), "http/1.1")
         assert_equal(self.handshake(None), None)
 
-        self.log.info("Node to node, both sides agree on http/1.1")
+        # In HTTP/2 builds the dialer offers h2 first, like a browser.
+        expected = "h2" if self.is_http2_compiled() else "http/1.1"
+        self.log.info(f"Node to node, both sides agree on {expected}")
         self.nodes[1].addnode(
             node=f"wss://localhost:{self.public_port}/p2p/ws", command="onetry"
         )
         self.wait_until(
             lambda: len(self.ws_peers(0)) == 1 and len(self.ws_peers(1)) == 1
         )
-        assert_equal(self.ws_peers(0)[0]["websocket"]["alpn"], "http/1.1")
-        assert_equal(self.ws_peers(1)[0]["websocket"]["alpn"], "http/1.1")
+        assert_equal(self.ws_peers(0)[0]["websocket"]["alpn"], expected)
+        assert_equal(self.ws_peers(1)[0]["websocket"]["alpn"], expected)
 
         # (The cipher order is checked by net_websocket_tests.)
         self.log.info("What the dialer offers: SNI and ALPN")
@@ -121,7 +125,7 @@ class P2PWebSocketTLSProfileTest(BitcoinTestFramework):
         self.wait_until(lambda: len(capture.hellos) == 1)
         hello = capture.hellos[0]
         assert_equal(hello["sni"], "localhost")
-        assert_equal(hello["alpn"], "http/1.1")
+        assert_equal(hello["alpn"], expected)
 
         self.log.info("Dialing an IP address sends no SNI, with a warning")
         ip_url = f"wss://127.0.0.1:{p2p_port(CAPTURE_PORT_INDEX)}/p2p/ws"
