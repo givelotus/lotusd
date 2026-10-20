@@ -1036,13 +1036,17 @@ V1TransportDeserializer::GetMessage(const std::chrono::microseconds time,
 void V1TransportSerializer::prepareForTransport(
     const Config &config, CSerializedNetMsg &msg,
     std::vector<uint8_t> &header) const {
-    // create dbl-sha256 checksum
-    uint256 hash = Hash(msg.data);
-
     // create header
     CMessageHeader hdr(config.GetChainParams().NetMagic(), msg.m_type.c_str(),
                        msg.data.size());
-    memcpy(hdr.pchChecksum, hash.begin(), CMessageHeader::CHECKSUM_SIZE);
+    if (msg.m_checksum) {
+        memcpy(hdr.pchChecksum, msg.m_checksum->data(),
+               CMessageHeader::CHECKSUM_SIZE);
+    } else {
+        // create dbl-sha256 checksum
+        const uint256 hash = Hash(msg.data);
+        memcpy(hdr.pchChecksum, hash.begin(), CMessageHeader::CHECKSUM_SIZE);
+    }
 
     // serialize header
     header.reserve(CMessageHeader::HEADER_SIZE);

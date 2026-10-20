@@ -31,6 +31,7 @@
 #include <kernel/mempool_entry.h>
 #include <lotus_v2/signing.h>
 #include <merkleblock.h>
+#include <net_block_message_cache.h>
 #include <netbase.h>
 #include <netmessagemaker.h>
 #include <node/blockstorage.h>
@@ -1452,6 +1453,17 @@ private:
         EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex);
 
     lotus::v2::net::V2PeerProtocolHandler m_v2_protocol_handler;
+
+    //! Serialized block messages served recently (-blockmessagecache)
+    BlockMessageCache m_block_messages;
+    /** Send a cached block message (a copy of its bytes, checksum known) */
+    void PushBlockMessage(CNode &node, const BlockMessageCache::Message &msg);
+    /**
+     * Send a block message from its serialized payload, keeping it for the
+     * next peers if it is large enough.
+     */
+    void PushBlockMessage(CNode &node, const BlockHash &hash,
+                          std::vector<uint8_t> &&payload);
 
     // All of the following cache a recent block, and are protected by
     // m_most_recent_block_mutex
@@ -2978,7 +2990,8 @@ PeerManagerImpl::PeerManagerImpl(CConnman &connman, AddrMan &addrman,
       m_chainparams(chainman.GetParams()), m_connman(connman),
       m_addrman(addrman), m_banman(banman), m_chainman(chainman),
       m_mempool(pool), m_avalanche(avalanche), m_opts{opts},
-      m_v2_protocol_handler{m_chainman, m_mempool, m_connman, *this} {
+      m_v2_protocol_handler{m_chainman, m_mempool, m_connman, *this},
+      m_block_messages{opts.block_message_cache_bytes} {
     m_v2_protocol_handler.SetAvalancheProcessor(m_avalanche);
 }
 
@@ -3501,6 +3514,31 @@ void PeerManagerImpl::RelayAddress(NodeId originator, const CAddress &addr,
     }
 }
 
+void PeerManagerImpl::PushBlockMessage(CNode &node,
+                                       const BlockMessageCache::Message &msg) {
+    CSerializedNetMsg out;
+    out.m_type = NetMsgType::BLOCK;
+    out.data = *msg.data;
+    out.m_checksum = msg.checksum;
+    m_connman.PushMessage(&node, std::move(out));
+}
+
+void PeerManagerImpl::PushBlockMessage(CNode &node, const BlockHash &hash,
+                                       std::vector<uint8_t> &&payload) {
+    if (!m_block_messages.Enabled() ||
+        payload.size() < BLOCK_MESSAGE_CACHE_MIN_BYTES) {
+        CSerializedNetMsg out;
+        out.m_type = NetMsgType::BLOCK;
+        out.data = std::move(payload);
+        m_connman.PushMessage(&node, std::move(out));
+        return;
+    }
+    if (auto *metrics{node::GetNodeMetrics()}) {
+        metrics->p2p_block_message_cache_misses.Inc();
+    }
+    PushBlockMessage(node, m_block_messages.Put(hash, std::move(payload)));
+}
+
 void PeerManagerImpl::ProcessGetBlockData(const Config &config, CNode &pfrom,
                                           Peer &peer, const CInv &inv) {
     const BlockHash hash(inv.hash);
@@ -3618,7 +3656,18 @@ void PeerManagerImpl::ProcessGetBlockData(const Config &config, CNode &pfrom,
         pfrom.fDisconnect = true;
     };
 
-    if (a_recent_block && a_recent_block->GetHash() == pindex->GetBlockHash()) {
+    std::optional<BlockMessageCache::Message> cached_message;
+    if (inv.IsMsgBlk() && m_block_messages.Enabled()) {
+        cached_message = m_block_messages.Get(pindex->GetBlockHash());
+    }
+    if (cached_message) {
+        // Served to another peer recently: no read, serialization or hash.
+        if (auto *metrics{node::GetNodeMetrics()}) {
+            metrics->p2p_block_message_cache_hits.Inc();
+        }
+        PushBlockMessage(pfrom, *cached_message);
+    } else if (a_recent_block &&
+               a_recent_block->GetHash() == pindex->GetBlockHash()) {
         pblock = a_recent_block;
     } else if (inv.IsMsgBlk()) {
         // Fast-path: in this case it is possible to serve the block directly
@@ -3629,7 +3678,7 @@ void PeerManagerImpl::ProcessGetBlockData(const Config &config, CNode &pfrom,
             handle_block_read_error();
             return;
         }
-        MakeAndPushMessage(pfrom, NetMsgType::BLOCK, Span{block_data});
+        PushBlockMessage(pfrom, pindex->GetBlockHash(), std::move(block_data));
         // Don't set pblock as we've sent the block
     } else {
         // Send block from disk
@@ -3642,7 +3691,9 @@ void PeerManagerImpl::ProcessGetBlockData(const Config &config, CNode &pfrom,
     }
     if (pblock) {
         if (inv.IsMsgBlk()) {
-            MakeAndPushMessage(pfrom, NetMsgType::BLOCK, *pblock);
+            std::vector<uint8_t> payload;
+            VectorWriter{payload, 0, *pblock};
+            PushBlockMessage(pfrom, pindex->GetBlockHash(), std::move(payload));
         } else if (inv.IsMsgFilteredBlk()) {
             bool sendMerkleBlock = false;
             CMerkleBlock merkleBlock;

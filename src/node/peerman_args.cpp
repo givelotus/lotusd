@@ -32,6 +32,11 @@ void ApplyArgsManOptions(const ArgsManager &argsman,
         options.max_addr_to_send = size_t(std::max(int64_t{0}, *value));
     }
 
+    if (auto value{argsman.GetIntArg("-blockmessagecache")}) {
+        options.block_message_cache_bytes =
+            size_t(std::clamp<int64_t>(*value, 0, 65536)) << 20;
+    }
+
     if (auto value{argsman.GetIntArg("-avacooldown")}) {
         options.avalanche_cooldown = std::max(int64_t{0}, *value);
     }
