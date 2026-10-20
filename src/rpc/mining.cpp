@@ -696,7 +696,21 @@ static RPCHelpMan getchainconfig() {
             UniValue features(UniValue::VOBJ);
             features.pushKV("legacytransactions", true);
             features.pushKV("nativetransactions", true);
-            features.pushKV("message_signing", "legacy-p2pkh");
+            features.pushKV("message_signing",
+                            "lotus-chain-bound-compact-ecdsa-v1");
+            features.pushKV("native_keyhash_message_signing", true);
+            // This is a message-proof capability, not native wallet payment
+            // readiness. Keep address.format/acceptedformats truthful above.
+            UniValue message_address(UniValue::VOBJ);
+            message_address.pushKV("format", "xpiaddr");
+            message_address.pushKV("hrp", network == "main"      ? "xpi"
+                                          : network == "regtest" ? "rxpi"
+                                                                 : "txpi");
+            message_address.pushKV("keyhash", "blake3-xonly32");
+            UniValue message_types(UniValue::VARR);
+            message_types.push_back(1);
+            message_address.pushKV("types", std::move(message_types));
+            features.pushKV("message_address", std::move(message_address));
             UniValue node(UniValue::VOBJ);
             node.pushKV("client", CLIENT_NAME);
             node.pushKV("version", CLIENT_VERSION);
