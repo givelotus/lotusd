@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "batch": "block-file-reindex-progress",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "requires": "bounded decimal consumer rendering",
+  "files": [
+    {
+      "path": "src/node/blockstorage.cpp",
+      "rules": [
+        {
+          "id": "block_file_reindexing",
+          "old": "LogPrintf(\"Reindexing block file blk%05u.dat...\\n\",\n                          (unsigned int)nFile)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_file_reindexing\", \"Reindexing block file blk{file_number:05u}.dat...\").Field(BCLog::LogField::FileNumber, (unsigned int)nFile)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Reindexing block file blk%05u.dat...\n",
+            "specifiers": [
+              "%05u"
+            ],
+            "arguments": [
+              "(unsigned int)nFile"
+            ]
+          },
+          "review_note": "Preserve Info, exact zero-padded filename and original explicit unsigned-int cast; no block-file open/read/reindex or interruption behavior changes. The cast value fits the existing signed64 FileNumber field without narrowing. Actual full reindex and numeric/text checks remain pending."
+        }
+      ]
+    }
+  ]
+}
