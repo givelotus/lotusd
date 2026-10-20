@@ -2680,9 +2680,12 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
     if (fAvalanche && maxAvalancheOutbound > nMaxConnections) {
         nMaxConnections = std::max(maxAvalancheOutbound, nMaxConnections);
         // Indicate the value set by the user
-        LogPrintf("Increasing -maxconnections from %d to %d to comply with "
-                  "-maxavalancheoutbound\n",
-                  nUserMaxConnections, nMaxConnections);
+        LogInfoEvent(
+            BCLog::ALL, "connection_limit_increased",
+            "Increasing -maxconnections from {requested_connection_limit} to {connection_limit} to comply with -maxavalancheoutbound")
+            .Field(BCLog::LogField::RequestedConnectionLimit,
+                   nUserMaxConnections)
+            .Field(BCLog::LogField::ConnectionLimit, nMaxConnections);
     }
 
     // Trim requested connection counts, to fit into system limitations
@@ -2712,9 +2715,12 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
         // Not categorizing as "Warning" because this is the normal behavior for
         // platforms using the select() interface for which FD_SETSIZE is
         // usually 1024.
-        LogPrintf("Reducing -maxconnections from %d to %d, because of system "
-                  "limitations.\n",
-                  nUserMaxConnections, nMaxConnections);
+        LogInfoEvent(
+            BCLog::ALL, "connection_limit_reduced",
+            "Reducing -maxconnections from {requested_connection_limit} to {connection_limit}, because of system limitations.")
+            .Field(BCLog::LogField::RequestedConnectionLimit,
+                   nUserMaxConnections)
+            .Field(BCLog::LogField::ConnectionLimit, nMaxConnections);
     }
 
     // Step 3: parameter-to-internal-flags
@@ -2945,22 +2951,22 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         return false;
     }
 
-    LogPrintf("Using at most %i automatic connections (%i file descriptors "
-              "available)\n",
-              nMaxConnections, nFD);
+    LogInfoEvent(
+        BCLog::ALL, "connection_limits_selected",
+        "Using at most {connection_limit} automatic connections ({file_descriptor_limit} file descriptors available)")
+        .Field(BCLog::LogField::ConnectionLimit, nMaxConnections)
+        .Field(BCLog::LogField::FileDescriptorLimit, nFD);
 
     // Warn about relative -datadir path.
     if (args.IsArgSet("-datadir") &&
         !args.GetPathArg("-datadir").is_absolute()) {
-        LogPrintf("Warning: relative datadir option '%s' specified, which will "
-                  "be interpreted relative to the current working directory "
-                  "'%s'. This is fragile, because if bitcoin is started in the "
-                  "future from a different location, it will be unable to "
-                  "locate the current data files. There could also be data "
-                  "loss if bitcoin is started while in a temporary "
-                  "directory.\n",
-                  args.GetArg("-datadir", ""),
-                  fs::PathToString(fs::current_path()));
+        LogInfoEvent(
+            BCLog::ALL, "relative_data_directory",
+            "Warning: relative datadir option '{data_directory_argument}' specified, which will be interpreted relative to the current working directory '{directory}'. This is fragile, because if bitcoin is started in the future from a different location, it will be unable to locate the current data files. There could also be data loss if bitcoin is started while in a temporary directory.")
+            .Field(BCLog::LogField::DataDirectoryArgument,
+                   args.GetArg("-datadir", ""))
+            .Field(BCLog::LogField::Directory,
+                   fs::PathToString(fs::current_path()));
     }
 
     assert(!node.scheduler);
@@ -2987,7 +2993,8 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
             },
             BCLog::RATELIMIT_MAX_BYTES, BCLog::RATELIMIT_WINDOW));
     } else {
-        LogInfo("Log rate limiting disabled\n");
+        LogInfoEvent(BCLog::ALL, "log_rate_limit_disabled",
+                     "Log rate limiting disabled");
     }
 
     // Check disk space every 5 minutes to avoid db corruption.
