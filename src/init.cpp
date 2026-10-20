@@ -232,6 +232,7 @@ static void ShutdownNotify(const ArgsManager &args) {
 #endif
 
 void Interrupt(NodeContext &node) {
+    node::InterruptMiningPool(node);
 #if HAVE_SYSTEM
     ShutdownNotify(*node.args);
 #endif
@@ -285,6 +286,7 @@ void Shutdown(NodeContext &node) {
     StopHTTPServer();
     // HTTP/RPC handlers have drained; no producer still waits on this owner.
     node.rpc_admission.reset();
+    node::StopMiningPool(node);
     // After the HTTP server: no scrape is in progress. Recording continues
     // harmlessly into the (still allocated) metrics until exit.
     StopHTTPMetrics();
@@ -1799,11 +1801,11 @@ void SetupServerArgs(NodeContext &node) {
                    "Override block version to test forking scenarios",
                    ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
                    OptionsCategory::BLOCK_CREATION);
-    argsman.AddArg(
-        "-miningpool=<0|1>",
-        strprintf("Enable built-in HTTP/SSE mining pool engine (default: %d)",
-                  lotus::v2::node::DEFAULT_MINING_POOL_ENABLED),
-        ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
+    argsman.AddArg("-miningpool=<0|1>",
+                   strprintf("Enable built-in HTTP/SSE mining pool engine when "
+                             "RPC is enabled (default: %d)",
+                             lotus::v2::node::DEFAULT_MINING_POOL_ENABLED),
+                   ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
     argsman.AddArg(
         "-pooladdress=<addr>",
         "Fallback Lotus address or script hex for built-in mining pool "
@@ -2711,8 +2713,6 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
                       db_backend));
     }
 
-    node::GetGlobalMiningPool().Configure(args, config);
-
     // parse and validate enabled filter types
     std::string blockfilterindex_value =
         args.GetArg("-blockfilterindex", DEFAULT_BLOCKFILTERINDEX);
@@ -3147,6 +3147,7 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
      * be ready later).  Warmup mode will be completed when initialisation is
      * finished.
      */
+    node::StartMiningPool(node, config);
     if (args.GetBoolArg("-server", false)) {
         uiInterface.InitMessage_connect(SetRPCWarmupStatus);
         if (!AppInitServers(config, httpRPCRequestProcessor, node)) {
