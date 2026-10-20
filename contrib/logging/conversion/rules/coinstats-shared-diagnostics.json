@@ -1,0 +1,143 @@
+{
+  "schema": 1,
+  "batch": "coinstats-shared-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "tier": "shared",
+  "v2_owner": null,
+  "files": [
+    {
+      "path": "src/index/coinstatsindex.cpp",
+      "rules": [
+        {
+          "id": "coinstats_previous_block_unexpected",
+          "old": "LogPrintf(\"WARNING: previous block header belongs to unexpected \"\n                      \"block %s; expected %s\\n\",\n                      read_out.first.ToString(),\n                      expected_block_hash.ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"coinstats_previous_block_unexpected\", \"WARNING: previous block header belongs to unexpected block {block_hash}; expected {expected_block_hash}\").Field(BCLog::LogField::BlockHash, read_out.first).Field(BCLog::LogField::ExpectedBlockHash, expected_block_hash)",
+          "count": 2,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "WARNING: previous block header belongs to unexpected block %s; expected %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "read_out.first.ToString()",
+              "expected_block_hash.ToString()"
+            ]
+          },
+          "review_note": "Keep original levels, warning prose, failure returns and index state. Snapshot raw hash/TxId and unchanged byte prefix. Version is uint32_t and fits existing signed INT Version without loss (UINT32_MAX < INT64_MAX); no database/string library-version field misuse. V2 accounting-specific sites are separated from inherited shared index diagnostics."
+        },
+        {
+          "id": "coinstats_previous_header_missing",
+          "old": "LogError(\"%s: previous block header not found; expected %s\\n\",\n                         __func__, expected_block_hash.ToString())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"coinstats_previous_header_missing\", \"{source_function}: previous block header not found; expected {expected_block_hash}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::ExpectedBlockHash, expected_block_hash)",
+          "count": 2,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: previous block header not found; expected %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "expected_block_hash.ToString()"
+            ]
+          },
+          "review_note": "Keep original levels, warning prose, failure returns and index state. Snapshot raw hash/TxId and unchanged byte prefix. Version is uint32_t and fits existing signed INT Version without loss (UINT32_MAX < INT64_MAX); no database/string library-version field misuse. V2 accounting-specific sites are separated from inherited shared index diagnostics."
+        },
+        {
+          "id": "coinstats_database_key_unexpected",
+          "old": "LogError(\"%s: unexpected key in %s: expected (%c, %d)\\n\", __func__,\n                     index_name, DB_BLOCK_HEIGHT, height)",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"coinstats_database_key_unexpected\", \"{source_function}: unexpected key in {name}: expected ({database_key_prefix}, {height})\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::Name, index_name).Field(BCLog::LogField::DatabaseKeyPrefix, BCLog::LogChar{DB_BLOCK_HEIGHT}).Field(BCLog::LogField::Height, height)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: unexpected key in %s: expected (%c, %d)\n",
+            "specifiers": [
+              "%s",
+              "%s",
+              "%c",
+              "%d"
+            ],
+            "arguments": [
+              "__func__",
+              "index_name",
+              "DB_BLOCK_HEIGHT",
+              "height"
+            ]
+          },
+          "review_note": "Keep original levels, warning prose, failure returns and index state. Snapshot raw hash/TxId and unchanged byte prefix. Version is uint32_t and fits existing signed INT Version without loss (UINT32_MAX < INT64_MAX); no database/string library-version field misuse. V2 accounting-specific sites are separated from inherited shared index diagnostics."
+        },
+        {
+          "id": "coinstats_database_height_read_failed",
+          "old": "LogError(\"%s: unable to read value in %s at key (%c, %d)\\n\",\n                     __func__, index_name, DB_BLOCK_HEIGHT, height)",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"coinstats_database_height_read_failed\", \"{source_function}: unable to read value in {name} at key ({database_key_prefix}, {height})\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::Name, index_name).Field(BCLog::LogField::DatabaseKeyPrefix, BCLog::LogChar{DB_BLOCK_HEIGHT}).Field(BCLog::LogField::Height, height)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: unable to read value in %s at key (%c, %d)\n",
+            "specifiers": [
+              "%s",
+              "%s",
+              "%c",
+              "%d"
+            ],
+            "arguments": [
+              "__func__",
+              "index_name",
+              "DB_BLOCK_HEIGHT",
+              "height"
+            ]
+          },
+          "review_note": "Keep original levels, warning prose, failure returns and index state. Snapshot raw hash/TxId and unchanged byte prefix. Version is uint32_t and fits existing signed INT Version without loss (UINT32_MAX < INT64_MAX); no database/string library-version field misuse. V2 accounting-specific sites are separated from inherited shared index diagnostics."
+        },
+        {
+          "id": "coinstats_block_read_failed",
+          "old": "LogError(\"%s: Failed to read block %s from disk\\n\", __func__,\n                         iter_tip->GetBlockHash().ToString())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"coinstats_block_read_failed\", \"{source_function}: Failed to read block {block_hash} from disk\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::BlockHash, iter_tip->GetBlockHash())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: Failed to read block %s from disk\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "iter_tip->GetBlockHash().ToString()"
+            ]
+          },
+          "review_note": "Keep original levels, warning prose, failure returns and index state. Snapshot raw hash/TxId and unchanged byte prefix. Version is uint32_t and fits existing signed INT Version without loss (UINT32_MAX < INT64_MAX); no database/string library-version field misuse. V2 accounting-specific sites are separated from inherited shared index diagnostics."
+        },
+        {
+          "id": "coinstats_state_read_failed",
+          "old": "LogError(\n                \"%s: Cannot read current %s state; index may be corrupted\\n\",\n                __func__, GetName())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"coinstats_state_read_failed\", \"{source_function}: Cannot read current {name} state; index may be corrupted\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::Name, GetName())",
+          "count": 3,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: Cannot read current %s state; index may be corrupted\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "GetName()"
+            ]
+          },
+          "review_note": "Keep original levels, warning prose, failure returns and index state. Snapshot raw hash/TxId and unchanged byte prefix. Version is uint32_t and fits existing signed INT Version without loss (UINT32_MAX < INT64_MAX); no database/string library-version field misuse. V2 accounting-specific sites are separated from inherited shared index diagnostics."
+        }
+      ],
+      "support_adjustments": [
+        {
+          "purpose": "Snapshot existing ASCII DB prefix into STRING.",
+          "old": "#include <index/coinstatsindex.h>\n",
+          "new": "#include <index/coinstatsindex.h>\n#include <logging/values.h>\n"
+        }
+      ]
+    }
+  ]
+}
