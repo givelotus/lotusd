@@ -22,9 +22,9 @@
 
 namespace node {
 NodeContext::NodeContext()
-    : snapshot_publisher(GetGlobalSnapshotPublisherPtr()),
-      mining_pool(GetGlobalMiningPoolPtr()) {}
+    : snapshot_publisher(GetGlobalSnapshotPublisherPtr()) {}
 NodeContext::~NodeContext() {
     rpc_admission.reset();
+    StopMiningPool(*this);
 }
 } // namespace node
