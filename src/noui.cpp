@@ -43,13 +43,22 @@ bool noui_ThreadSafeMessageBox(const bilingual_str &message,
         // and filtered logs see errors as errors.
         switch (style) {
             case CClientUIInterface::MSG_ERROR:
-                LogError("%s%s\n", strCaption, message.original);
+                LogErrorEvent(BCLog::ALL, "node_ui_message",
+                              "{log_prefix}{message_text}")
+                    .Field(BCLog::LogField::LogPrefix, strCaption)
+                    .Field(BCLog::LogField::MessageText, message.original);
                 break;
             case CClientUIInterface::MSG_WARNING:
-                LogWarning("%s%s\n", strCaption, message.original);
+                LogWarningEvent(BCLog::ALL, "node_ui_message",
+                                "{log_prefix}{message_text}")
+                    .Field(BCLog::LogField::LogPrefix, strCaption)
+                    .Field(BCLog::LogField::MessageText, message.original);
                 break;
             default:
-                LogInfo("%s%s\n", strCaption, message.original);
+                LogInfoEvent(BCLog::ALL, "node_ui_message",
+                             "{log_prefix}{message_text}")
+                    .Field(BCLog::LogField::LogPrefix, strCaption)
+                    .Field(BCLog::LogField::MessageText, message.original);
         }
     }
     tfm::format(std::cerr, "%s%s\n", strCaption, message.original);
@@ -64,7 +73,9 @@ bool noui_ThreadSafeQuestion(
 }
 
 void noui_InitMessage(const std::string &message) {
-    LogPrintf("init message: %s\n", message);
+    LogInfoEvent(BCLog::ALL, "node_ui_init_message",
+                 "init message: {message_text}")
+        .Field(BCLog::LogField::MessageText, message);
 }
 
 void noui_connect() {
@@ -78,7 +89,10 @@ void noui_connect() {
 bool noui_ThreadSafeMessageBoxRedirect(const bilingual_str &message,
                                        const std::string &caption,
                                        unsigned int style) {
-    LogPrintf("%s: %s\n", caption, message.original);
+    LogInfoEvent(BCLog::ALL, "node_ui_redirected_message",
+                 "{caption}: {message_text}")
+        .Field(BCLog::LogField::Caption, caption)
+        .Field(BCLog::LogField::MessageText, message.original);
     return false;
 }
 
@@ -86,12 +100,17 @@ bool noui_ThreadSafeQuestionRedirect(
     const bilingual_str & /* ignored interactive message */,
     const std::string &message, const std::string &caption,
     unsigned int style) {
-    LogPrintf("%s: %s\n", caption, message);
+    LogInfoEvent(BCLog::ALL, "node_ui_redirected_question",
+                 "{caption}: {message_text}")
+        .Field(BCLog::LogField::Caption, caption)
+        .Field(BCLog::LogField::MessageText, message);
     return false;
 }
 
 void noui_InitMessageRedirect(const std::string &message) {
-    LogPrintf("init message: %s\n", message);
+    LogInfoEvent(BCLog::ALL, "node_ui_init_message",
+                 "init message: {message_text}")
+        .Field(BCLog::LogField::MessageText, message);
 }
 
 void noui_test_redirect() {

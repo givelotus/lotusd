@@ -11,11 +11,14 @@
 #include <logging.h>
 #include <logging/values.h>
 #include <netbase.h>
+#include <node/ui_interface.h>
+#include <noui.h>
 #include <primitives/transaction.h>
 #include <test/util/setup_common.h>
 #include <univalue.h>
 #include <util/fs.h>
 #include <util/strencodings.h>
+#include <util/translation.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -30,6 +33,7 @@
 #include <chrono>
 #include <cmath>
 #include <fstream>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <sstream>
@@ -1167,6 +1171,59 @@ BOOST_AUTO_TEST_CASE(
     BOOST_CHECK_EQUAL(
         row["message"].get_str(),
         "LookupRange: start height (5) is greater than stop height (4)");
+    BOOST_CHECK(row["fields_truncated"].isNull());
+}
+
+BOOST_AUTO_TEST_CASE(ui_notifications_preserve_levels_secure_gate_and_stderr) {
+    Format(BCLog::LogFormat::JSON);
+    std::ostringstream captured;
+    struct RestoreStream {
+        std::streambuf *previous;
+        ~RestoreStream() { std::cerr.rdbuf(previous); }
+    } restore{std::cerr.rdbuf(captured.rdbuf())};
+    const std::string body{"ui test % body & \"quoted\""};
+    for (const unsigned int style :
+         {CClientUIInterface::MSG_INFORMATION, CClientUIInterface::MSG_WARNING,
+          CClientUIInterface::MSG_ERROR}) {
+        const std::string level{style == CClientUIInterface::MSG_ERROR ? "error"
+                                : style == CClientUIInterface::MSG_WARNING
+                                    ? "warning"
+                                    : "info"};
+        const std::string prefix{
+            style == CClientUIInterface::MSG_ERROR     ? "Error: "
+            : style == CClientUIInterface::MSG_WARNING ? "Warning: "
+                                                       : "Information: "};
+        captured.str("");
+        BOOST_CHECK(
+            !noui_ThreadSafeMessageBox(Untranslated(body), "unused", style));
+        const auto row{Json()};
+        BOOST_CHECK_EQUAL(row["event"].get_str(), "node_ui_message");
+        BOOST_CHECK_EQUAL(row["level"].get_str(), level);
+        BOOST_CHECK_EQUAL(row["message_text"].get_str(), body);
+        BOOST_CHECK_EQUAL(row["log_prefix"].get_str(), prefix);
+        BOOST_CHECK_EQUAL(row["message"].get_str(), prefix + body);
+        BOOST_CHECK_EQUAL(captured.str(), prefix + body + "\n");
+        BOOST_CHECK(row["fields_truncated"].isNull());
+    }
+    captured.str("");
+    const std::string secure_body{"fake-secure-ui-canary"};
+    BOOST_CHECK(!noui_ThreadSafeMessageBox(Untranslated(secure_body), "unused",
+                                           CClientUIInterface::MSG_ERROR |
+                                               CClientUIInterface::SECURE));
+    BOOST_CHECK_EQUAL(captured.str(), "Error: " + secure_body + "\n");
+    BOOST_CHECK(
+        Lines().empty()); // Guard suppresses all field capture/file output.
+}
+
+BOOST_AUTO_TEST_CASE(ui_init_message_preserves_opaque_untranslated_prose) {
+    Format(BCLog::LogFormat::JSON);
+    const std::string body{"Indexing 50%: value=17\nsecond line"};
+    noui_InitMessage(body);
+    const auto row{Json()};
+    BOOST_CHECK_EQUAL(row["event"].get_str(), "node_ui_init_message");
+    BOOST_CHECK_EQUAL(row["message_text"].get_str(), body);
+    BOOST_CHECK_EQUAL(row["message"].get_str(), "init message: " + body);
+    BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
     BOOST_CHECK(row["fields_truncated"].isNull());
 }
 
