@@ -324,7 +324,10 @@ bool AddLocal(const CService &addr, int nScore) {
         return false;
     }
 
-    LogPrintf("AddLocal(%s,%i)\n", addr.ToStringAddrPort(), nScore);
+    LogInfoEvent(BCLog::ALL, "local_address_added",
+                 "AddLocal({addr},{local_score})")
+        .Field(BCLog::LogField::Addr, addr.ToStringAddrPort())
+        .Field(BCLog::LogField::LocalScore, nScore);
 
     {
         LOCK(g_maplocalhost_mutex);
@@ -1563,8 +1566,9 @@ CNode *CConnman::ConnectWebSocketNode(const std::string &url,
                                       ConnectionType conn_type) {
     const auto parsed{ParseWebSocketURL(url)};
     if (!parsed) {
-        LogPrintf("Not connecting to %s: invalid WebSocket peer URL\n",
-                  RedactWebSocketURL(url));
+        LogInfoEvent(BCLog::ALL, "websocket_peer_url_invalid",
+                     "Not connecting to {addr}: invalid WebSocket peer URL")
+            .Field(BCLog::LogField::Addr, RedactWebSocketURL(url));
         return nullptr;
     }
     const bool onion{parsed->host.ends_with(".onion")};
@@ -1594,8 +1598,10 @@ CNode *CConnman::ConnectWebSocketNode(const std::string &url,
     }
     const WebSocketDialer dialer{GetWebSocketDialer()};
     if (!dialer) {
-        LogPrintf("Cannot connect to %s: P2P over WebSocket is unavailable\n",
-                  RedactWebSocketURL(url));
+        LogInfoEvent(
+            BCLog::ALL, "websocket_transport_unavailable",
+            "Cannot connect to {addr}: P2P over WebSocket is unavailable")
+            .Field(BCLog::LogField::Addr, RedactWebSocketURL(url));
         return nullptr;
     }
     LogPrintLevel(BCLog::NET, BCLog::Level::Debug,
@@ -1610,8 +1616,9 @@ CNode *CConnman::ConnectWebSocketNode(const std::string &url,
     Proxy proxy;
     if (onion) {
         if (!GetProxy(NET_ONION, proxy)) {
-            LogPrintf("Not connecting to %s: no -onion proxy\n",
-                      RedactWebSocketURL(url));
+            LogInfoEvent(BCLog::ALL, "websocket_onion_proxy_missing",
+                         "Not connecting to {addr}: no -onion proxy")
+                .Field(BCLog::LogField::Addr, RedactWebSocketURL(url));
             return nullptr;
         }
         sock = ConnectThroughProxy(proxy, parsed->host, parsed->port,
@@ -2266,9 +2273,13 @@ void CConnman::SocketHandlerConnected(
     bool prev_inflight_throttle = inflight_throttle;
     inflight_throttle = nTotalInflightBytes > max_inflight_bytes;
     if (prev_inflight_throttle != inflight_throttle) {
-        LogPrintf("Inflight throttling %s (%d/%d)\n",
-                  inflight_throttle ? "enabled" : "disabled",
-                  nTotalInflightBytes, max_inflight_bytes);
+        LogInfoEvent(
+            BCLog::ALL, "network_inflight_throttling_changed",
+            "Inflight throttling {inflight_state} ({inflight_bytes}/{inflight_limit_bytes})")
+            .Field(BCLog::LogField::InflightState,
+                   inflight_throttle ? "enabled" : "disabled")
+            .Field(BCLog::LogField::InflightBytes, nTotalInflightBytes)
+            .Field(BCLog::LogField::InflightLimitBytes, max_inflight_bytes);
     }
 }
 
@@ -2348,8 +2359,11 @@ void CConnman::ThreadDNSAddressSeed() {
             seeds_right_now += DNSSEEDS_TO_QUERY_AT_ONCE;
 
             if (addrman.size() > 0) {
-                LogPrintf("Waiting %d seconds before querying DNS seeds.\n",
-                          seeds_wait_time.count());
+                LogInfoEvent(
+                    BCLog::ALL, "dns_seed_query_delayed",
+                    "Waiting {wait_seconds} seconds before querying DNS seeds.")
+                    .Field(BCLog::LogField::WaitSeconds,
+                           seeds_wait_time.count());
                 std::chrono::seconds to_wait = seeds_wait_time;
                 while (to_wait.count() > 0) {
                     // if sleeping for the MANY_PEERS interval, wake up
@@ -3312,13 +3326,19 @@ void Discover() {
 
     for (const CNetAddr &addr : GetLocalAddresses()) {
         if (AddLocal(addr, LOCAL_IF)) {
-            LogPrintf("%s: %s\n", __func__, addr.ToStringAddr());
+            LogInfoEvent(BCLog::ALL, "local_interface_discovered",
+                         "{source_function}: {addr}")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::Addr, addr.ToStringAddr());
         }
     }
 }
 
 void CConnman::SetNetworkActive(bool active) {
-    LogPrintf("%s: %s\n", __func__, active);
+    LogInfoEvent(BCLog::ALL, "network_active_set",
+                 "{source_function}: {network_active}")
+        .Field(BCLog::LogField::SourceFunction, __func__)
+        .Field(BCLog::LogField::NetworkActive, active);
 
     if (fNetworkActive == active) {
         return;
@@ -3470,9 +3490,11 @@ bool CConnman::Start(CScheduler &scheduler, const Options &connOptions) {
     if (!m_socket_wakeup) {
         m_socket_wakeup = SockWakeup::Make();
         if (!m_socket_wakeup) {
-            LogPrintf("Warning: cannot create the network thread's wakeup "
-                      "socket; new connections may wait up to %d ms\n",
-                      SELECT_TIMEOUT_MILLISECONDS);
+            LogInfoEvent(
+                BCLog::ALL, "network_wakeup_socket_unavailable",
+                "Warning: cannot create the network thread's wakeup socket; new connections may wait up to {wait_milliseconds} ms")
+                .Field(BCLog::LogField::WaitMilliseconds,
+                       SELECT_TIMEOUT_MILLISECONDS);
         }
     }
     interruptNet.reset();
