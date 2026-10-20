@@ -431,8 +431,11 @@ void Sock::Close() {
     int ret = close(m_socket);
 #endif
     if (ret) {
-        LogPrintf("Error closing socket %d: %s\n", m_socket,
-                  NetworkErrorString(WSAGetLastError()));
+        const int socket_error{WSAGetLastError()};
+        LogInfoEvent(BCLog::ALL, "network_socket_close_failed",
+                     "Error closing socket {socket_descriptor}: {error}")
+            .Field(BCLog::LogField::SocketDescriptor, m_socket)
+            .Field(BCLog::LogField::Error, NetworkErrorString(socket_error));
     }
     m_socket = INVALID_SOCKET;
 }
