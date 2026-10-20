@@ -646,6 +646,13 @@ void SetupServerArgs(NodeContext &node) {
                   DEFAULT_TXRELAY_SHORTIDS),
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg(
+        "-txrelaypushhb",
+        strprintf("Push bursts of transactions as unsolicited bodies to "
+                  "high-bandwidth peers instead of announcing them "
+                  "(default: %u)",
+                  DEFAULT_TXRELAY_PUSH_HB),
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
         "-txreconinterval=<ms>",
         strprintf("Every this many milliseconds, reconcile recently admitted "
                   "transactions with the next peer that supports it, round "

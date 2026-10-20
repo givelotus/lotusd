@@ -107,6 +107,14 @@ static constexpr uint64_t DEFAULT_TXRELAY_RATE_MAX{250'000};
  */
 static constexpr bool DEFAULT_TXRELAY_SHORTIDS{true};
 /**
+ * Default for -txrelaypushhb: whether bursts of 16 or more transactions are
+ * pushed as unsolicited shorttx bodies to peers that explicitly negotiate
+ * TXRELAY_HIGH_BANDWIDTH instead of being announced. Off:
+ * the relay simulation puts the latency gain at ~0.1 s against a duplicate
+ * body in most cases. Receiving pushed bodies is unchanged.
+ */
+static constexpr bool DEFAULT_TXRELAY_PUSH_HB{false};
+/**
  * Continuous reconciliation (-txreconinterval, -txreconwindow): every
  * interval, send a LIVE_MEMPOOL Merklix summary of the transactions admitted
  * in the last window to the next negotiating peer, round robin, so it can
@@ -196,6 +204,8 @@ public:
         bool txrelay_shortids{DEFAULT_TXRELAY_SHORTIDS};
         //! Short id width; below 64 only in tests, to force collisions
         unsigned txrelay_shortid_bits{64};
+        //! Push bodies to high-bandwidth peers (-txrelaypushhb)
+        bool txrelay_push_hb{DEFAULT_TXRELAY_PUSH_HB};
         //! Reconcile with the next peer every interval; 0 = off
         std::chrono::milliseconds txrecon_interval{DEFAULT_TXRECON_INTERVAL};
         //! Reconciliation set: transactions admitted within this window

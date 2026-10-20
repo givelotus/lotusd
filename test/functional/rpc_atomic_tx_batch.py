@@ -32,11 +32,13 @@ class AtomicTxBatchTest(BitcoinTestFramework):
             [
                 "-avalanche=0",
                 "-highbandwidthtx=1",
+                "-txrelaypushhb=1",
                 "-testdisablehighbandwidthshorttx=0",
             ],
             [
                 "-avalanche=0",
                 "-highbandwidthtx=1",
+                "-txrelaypushhb=1",
                 "-testdisablehighbandwidthshorttx=0",
             ],
         ]
