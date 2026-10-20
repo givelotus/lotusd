@@ -413,6 +413,7 @@ add_library(util
 	logging/encoder.cpp
 	logging/event.cpp
 	metrics/metrics.cpp
+	metrics/process.cpp
 	random.cpp
 	randomenv.cpp
 	rcu.cpp
@@ -962,6 +963,7 @@ if(BUILD_CHAINSTATE)
 		util/threadinterrupt.cpp
 		util/threadnames.cpp
 		metrics/metrics.cpp
+		metrics/process.cpp
 		node/metrics.cpp
 		util/time.cpp
 		util/tokenpipe.cpp
