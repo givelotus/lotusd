@@ -6,12 +6,17 @@
 #include <httpserver.h>
 
 #include <chainparams.h>
+#include <config/bitcoin-config.h>
+
 #include <chainparamsbase.h>
 #include <common/args.h>
 #include <compat/compat.h>
 #include <config.h>
 #include <crypto/sha256.h>
 #include <http_tls_stream.h>
+#ifdef ENABLE_HTTP2
+#include <http2_server.h>
+#endif
 #include <logging.h>
 #include <net.h>
 #include <net_websocket.h>
@@ -67,6 +72,10 @@
 #include <openssl/x509v3.h>
 
 #include <zstd.h>
+
+#ifdef ENABLE_HTTP2
+#include <nghttp2/nghttp2.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -412,6 +421,22 @@ static std::string g_p2p_websocket_path{P2P_WEBSOCKET_PATH};
 static std::vector<uint256> g_p2p_websocket_token_hashes;
 //! Proxies whose PROXY headers and X-Forwarded-For are believed
 static std::vector<CSubNet> g_trusted_proxies;
+
+//! Whether TLS listeners offer HTTP/2 (-http2; needs ENABLE_HTTP2)
+static bool g_http2_enabled{false};
+#ifdef ENABLE_HTTP2
+//! Per-connection HTTP/2 limits (see doc/http2.md)
+static http2::Limits g_http2_limits;
+#endif
+
+/**
+ * Whether a TLS connection on this listener may select ALPN h2. Not where
+ * -publicfallback relays unserved requests: that relay passes the client's
+ * HTTP/1.1 bytes through unchanged, which HTTP/2 cannot do.
+ */
+static bool HTTP2Allowed(bool public_only) {
+    return g_http2_enabled && !(public_only && g_public_fallback.enabled);
+}
 
 //! Whether /livez, /readyz and /healthz are served (-httphealth)
 static bool g_health_enabled{true};
@@ -1627,6 +1652,66 @@ static void RecordHTTPMetrics(node::HTTPEndpoint endpoint, unsigned status,
         std::chrono::steady_clock::now() - start, ep);
 }
 
+/**
+ * Behind trusted proxies, a request's client is found by walking
+ * X-Forwarded-For (see -trustedproxy). Everything that follows uses it:
+ * -rpcallowip, the P2P peer address, logs and forwarded headers.
+ */
+static std::optional<HTTPConnectionInfo>
+ForwardedClient(const BeastRequest &header, const HTTPConnectionInfo &conn) {
+    std::optional<HTTPConnectionInfo> forwarded;
+    if (IsTrustedProxy(conn.peer)) {
+        std::vector<std::string_view> xff;
+        const auto [first, last] = header.equal_range("X-Forwarded-For");
+        for (auto f = first; f != last; ++f) {
+            xff.push_back(f->value());
+        }
+        if (!xff.empty()) {
+            forwarded.emplace(conn);
+            forwarded->peer = proxy_protocol::ResolveForwardedClient(
+                conn.peer, xff, IsTrustedProxy);
+        }
+    }
+    return forwarded;
+}
+
+/**
+ * Whether the WebSocket and Chronik endpoints serve this request: on public
+ * listeners for anyone, on RPC listeners only for -rpcallowip clients.
+ * Other requests go to DispatchRequest, which applies the same rules.
+ */
+static bool EndpointAllowed(const BeastRequest &req,
+                            const HTTPConnectionInfo &conn,
+                            const HTTPConnectionInfo &client) {
+    return conn.p2p_port ? IsP2PWebSocketRequest(req, client)
+           : conn.public_only ? IsPublicPath(req.target()) ||
+                                    IsP2PWebSocketRequest(req, client)
+                              : ClientAllowed(client.peer);
+}
+
+/**
+ * Answer a complete request that is not a WebSocket upgrade: Chronik in
+ * process, else the registered handlers. Counts an active request (see
+ * HTTPConnectionTracker) that the caller removes once the reply is written.
+ */
+static asio::awaitable<BeastResponse>
+RouteRequest(BeastRequest &&req, const HTTPConnectionInfo &client,
+             bool endpoint_allowed) {
+    if (endpoint_allowed && !client.p2p_port && g_chronik_enabled &&
+        !g_reject_requests.load() &&
+        URIHasPathPrefix(req.target(), CHRONIK_PREFIX)) {
+        g_connections.AddRequest();
+        if (auto handlers{GetChronikInProcess()}) {
+            co_return co_await InProcessChronikHTTP(std::move(handlers), req,
+                                                    client);
+        }
+        // Before Chronik started or after it was interrupted
+        co_return MakeSimpleResponse(503, req.version(),
+                                     "Chronik is not running");
+    }
+    co_return co_await DispatchRequest(std::move(req), client);
+}
+
 /** Serve HTTP/1.1 keep-alive requests on an established (TLS or plain) stream */
 template <typename Stream>
 static asio::awaitable<void> ServeHTTP(Stream &stream,
@@ -1678,22 +1763,8 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
                                      ? std::chrono::steady_clock::now()
                                      : std::chrono::steady_clock::time_point{}};
 
-        // Behind trusted proxies, this request's client is found by walking
-        // X-Forwarded-For (see -trustedproxy). Everything below uses it:
-        // -rpcallowip, the P2P peer address, logs and forwarded headers.
-        std::optional<HTTPConnectionInfo> forwarded;
-        if (IsTrustedProxy(conn.peer)) {
-            std::vector<std::string_view> xff;
-            const auto [first, last] = header.equal_range("X-Forwarded-For");
-            for (auto f = first; f != last; ++f) {
-                xff.push_back(f->value());
-            }
-            if (!xff.empty()) {
-                forwarded.emplace(conn);
-                forwarded->peer = proxy_protocol::ResolveForwardedClient(
-                    conn.peer, xff, IsTrustedProxy);
-            }
-        }
+        const std::optional<HTTPConnectionInfo> forwarded{
+            ForwardedClient(header, conn)};
         const HTTPConnectionInfo &client{forwarded ? *forwarded : conn};
 
         if (!conn.p2p_port && IsHealthRequest(header, parser.is_done())) {
@@ -1757,15 +1828,7 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
         const unsigned version{req.version()};
         const bool is_head{req.method() == http::verb::head};
 
-        // WebSocket and Chronik endpoints: on public listeners for anyone,
-        // on RPC listeners only for -rpcallowip clients. Other requests go
-        // to DispatchRequest, which applies the same rules.
-        // On the P2P port, only the P2P WebSocket endpoint.
-        const bool endpoint_allowed{
-            conn.p2p_port      ? IsP2PWebSocketRequest(req, client)
-            : conn.public_only ? IsPublicPath(req.target()) ||
-                                     IsP2PWebSocketRequest(req, client)
-                               : ClientAllowed(client.peer)};
+        const bool endpoint_allowed{EndpointAllowed(req, conn, client)};
 
         // Handlers may take arbitrarily long (e.g. long polling), as may
         // WebSocket sessions.
@@ -1776,22 +1839,8 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
             co_return;
         }
 
-        BeastResponse res;
-        if (endpoint_allowed && !conn.p2p_port && g_chronik_enabled &&
-            !g_reject_requests.load() &&
-            URIHasPathPrefix(req.target(), CHRONIK_PREFIX)) {
-            g_connections.AddRequest();
-            if (auto handlers{GetChronikInProcess()}) {
-                res = co_await InProcessChronikHTTP(std::move(handlers), req,
-                                                    client);
-            } else {
-                // Before Chronik started or after it was interrupted
-                res = MakeSimpleResponse(503, version,
-                                         "Chronik is not running");
-            }
-        } else {
-            res = co_await DispatchRequest(std::move(req), client);
-        }
+        BeastResponse res{
+            co_await RouteRequest(std::move(req), client, endpoint_allowed)};
 
         bool close{!keep_alive || g_reject_requests.load()};
         if (auto c{res.find(http::field::connection)};
@@ -1814,6 +1863,342 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
         }
     }
 }
+
+#ifdef ENABLE_HTTP2
+/**
+ * One HTTP/2 connection (ALPN h2 on a TLS listener). nghttp2 does the
+ * framing (see http2_server.h); this drives it over our TLS stream on the
+ * connection's strand: a reader feeds received bytes in, a writer sends what
+ * it produces, and each stream's request runs as its own coroutine through
+ * the same routing as an HTTP/1.1 request (ACL, -trustedproxy, public
+ * listener rules, Chronik, handlers, zstd, metrics).
+ *
+ * The connection object outlives the stream it was given only as an inert
+ * shell: request coroutines still waiting for a worker's reply when the
+ * connection ends find it closed and drop their reply.
+ */
+class H2Connection : public std::enable_shared_from_this<H2Connection> {
+public:
+    H2Connection(OsslStream &stream, const HTTPConnectionInfo &conn,
+                 asio::any_io_executor ex)
+        : m_stream{stream}, m_conn{conn}, m_ex{ex},
+          m_wake{ex, asio::steady_timer::time_point::max()}, m_deadline{ex},
+          m_session{SessionLimits(), Handlers()} {}
+
+    asio::awaitable<void> Run(beast::flat_buffer &buffer) {
+        auto self{shared_from_this()};
+        LogDebug(BCLog::HTTP, "HTTP/2 connection from %s\n",
+                 m_conn.peer.ToStringAddrPort());
+        // Anything already read past the TLS handshake (normally nothing).
+        if (buffer.size() > 0) {
+            const auto data{buffer.cdata()};
+            m_reading = m_session.Receive(
+                {static_cast<const uint8_t *>(data.data()), data.size()});
+            buffer.consume(buffer.size());
+            SpawnNewRequests();
+        }
+        asio::co_spawn(m_ex, WatchDeadlines(self), asio::detached);
+        co_await (ReadLoop() && WriteLoop());
+        Close();
+    }
+
+private:
+    struct StreamState {
+        //! g_connections.AddRequest() was done for it (see RouteRequest)
+        bool counted{false};
+        //! Its handler has not answered yet
+        bool handler_running{false};
+    };
+
+    static http2::Limits SessionLimits() {
+        http2::Limits limits{g_http2_limits};
+        limits.max_body_size = g_max_body_size;
+        return limits;
+    }
+
+    http2::ServerSession::Handlers Handlers() {
+        http2::ServerSession::Handlers h;
+        h.on_request = [this](int32_t id, BeastRequest &&req) {
+            m_new_requests.emplace_back(id, std::move(req));
+        };
+        h.on_stream_close = [this](int32_t id, uint32_t) {
+            // A complete request and its RST_STREAM may arrive in one read,
+            // before SpawnNewRequests() runs. Do not dispatch closed streams
+            // or recreate their application bookkeeping after this callback.
+            std::erase_if(m_new_requests, [id](const auto &request) {
+                return request.first == id;
+            });
+            const auto it{m_streams.find(id)};
+            if (it == m_streams.end()) {
+                return;
+            }
+            if (it->second.counted) {
+                // Once the bytes already framed for it are written.
+                ++m_removals_after_write;
+            }
+            if (it->second.handler_running) {
+                --m_handlers_running;
+            }
+            m_streams.erase(it);
+        };
+        return h;
+    }
+
+    /** Start the requests the last Receive() completed */
+    void SpawnNewRequests() {
+        auto requests{std::move(m_new_requests)};
+        m_new_requests.clear();
+        for (auto &[id, req] : requests) {
+            m_streams[id].handler_running = true;
+            ++m_handlers_running;
+            asio::co_spawn(
+                m_ex, HandleRequest(shared_from_this(), id, std::move(req)),
+                asio::detached);
+        }
+    }
+
+    /** One stream's request, routed like an HTTP/1.1 request */
+    static asio::awaitable<void>
+    HandleRequest(std::shared_ptr<H2Connection> self, int32_t id,
+                  BeastRequest req) {
+        const auto request_start{node::GetNodeMetrics()
+                                     ? std::chrono::steady_clock::now()
+                                     : std::chrono::steady_clock::time_point{}};
+        const std::optional<HTTPConnectionInfo> forwarded{
+            ForwardedClient(req, self->m_conn)};
+        HTTPConnectionInfo client{forwarded ? *forwarded : self->m_conn};
+        // The work queue runs the requests of one connection id on one
+        // strand, one at a time (right for HTTP/1.1, where they are
+        // sequential anyway). Streams are independent: no id, so each gets
+        // its own strand and they run concurrently.
+        client.connection_id = 0;
+        const bool is_head{req.method() == http::verb::head};
+        BeastResponse res;
+        node::HTTPEndpoint endpoint{node::HTTPEndpoint::HEALTH};
+        if (!self->m_conn.p2p_port && IsHealthRequest(req, /*body_done=*/true)) {
+            res = HealthResponse(req);
+        } else {
+            endpoint = MetricsEndpoint(req.target());
+            const bool allowed{EndpointAllowed(req, self->m_conn, client)};
+            if (auto it{self->m_streams.find(id)};
+                it != self->m_streams.end() && !self->m_closed) {
+                it->second.counted = true;
+            } else {
+                // Reset by the client already: nothing to answer.
+                co_return;
+            }
+            res = co_await RouteRequest(std::move(req), client, allowed);
+        }
+        self->Respond(id, std::move(res), is_head, endpoint, request_start);
+    }
+
+    void Respond(int32_t id, BeastResponse &&res, bool is_head,
+                 node::HTTPEndpoint endpoint,
+                 std::chrono::steady_clock::time_point request_start) {
+        const auto it{m_streams.find(id)};
+        if (it == m_streams.end() || m_closed) {
+            // The stream (and its request count) is gone already.
+            return;
+        }
+        if (it->second.handler_running) {
+            it->second.handler_running = false;
+            --m_handlers_running;
+        }
+        bool close{g_reject_requests.load()};
+        if (auto c{res.find(http::field::connection)};
+            c != res.end() && beast::iequals(c->value(), "close")) {
+            close = true;
+        }
+        const unsigned status{res.result_int()};
+        m_session.SubmitResponse(id, std::move(res), is_head);
+        RecordHTTPMetrics(endpoint, status, request_start);
+        if (close) {
+            // Like Connection: close over HTTP/1.1: finish what is open,
+            // take no new requests.
+            m_session.Shutdown();
+        }
+        // Like HTTP/1.1, idle time counts from the handler's answer.
+        m_last_activity = std::chrono::steady_clock::now();
+        Wake();
+    }
+
+    asio::awaitable<void> ReadLoop() {
+        std::vector<uint8_t> buf(64 * 1024);
+        while (m_reading && m_session.WantsRead()) {
+            auto [ec, n] = co_await m_stream.async_read_some(
+                asio::buffer(buf), asio::as_tuple(asio::use_awaitable));
+            if (ec) {
+                // Gone, or cancelled by the writer or the deadline watcher.
+                break;
+            }
+            m_last_activity = std::chrono::steady_clock::now();
+            if (!m_session.Receive({buf.data(), n})) {
+                LogDebug(BCLog::HTTP, "HTTP/2 connection from %s: %s\n",
+                         m_conn.peer.ToStringAddrPort(),
+                         m_session.Flooded() ? "flood, closing"
+                                             : "protocol error, closing");
+                m_reading = false;
+            }
+            SpawnNewRequests();
+            Wake();
+        }
+        m_reading = false;
+        Wake();
+    }
+
+    asio::awaitable<void> WriteLoop() {
+        while (!m_closed) {
+            http2::Output out;
+            if (!m_session.Collect(out, MAX_WRITE_BATCH)) {
+                break;
+            }
+            if (out.Empty()) {
+                if (!m_reading || !m_session.WantsRead()) {
+                    // Nothing more will come (the client is gone, or the
+                    // session ended with GOAWAY): stop the reader too.
+                    break;
+                }
+                co_await WaitWake();
+                continue;
+            }
+            const auto ec{co_await WriteAll(out)};
+            out.Clear();
+            for (; m_removals_after_write > 0; --m_removals_after_write) {
+                g_connections.RemoveRequest();
+            }
+            if (ec) {
+                break;
+            }
+            m_last_activity = std::chrono::steady_clock::now();
+        }
+        m_reading = false;
+        boost::system::error_code ignored;
+        beast::get_lowest_layer(m_stream).socket().cancel(ignored);
+    }
+
+    /** Write all of `out`: directly while the socket takes it, then async */
+    asio::awaitable<boost::system::error_code>
+    WriteAll(const http2::Output &out) {
+        const auto buffers{out.Buffers()};
+        beast::buffers_suffix<std::vector<asio::const_buffer>> rest{buffers};
+        boost::system::error_code ec;
+        while (!ec && beast::buffer_bytes(rest) > 0) {
+            rest.consume(m_stream.write_some(rest, ec));
+        }
+        if (ec == asio::error::would_block) {
+            auto [wec, n] = co_await asio::async_write(
+                m_stream, rest, asio::as_tuple(asio::use_awaitable));
+            ec = wec;
+        }
+        co_return ec;
+    }
+
+    void Wake() {
+        m_wake_pending = true;
+        m_wake.cancel();
+    }
+
+    asio::awaitable<void> WaitWake() {
+        if (!m_wake_pending) {
+            m_wake.expires_at(asio::steady_timer::time_point::max());
+            co_await m_wake.async_wait(asio::as_tuple(asio::use_awaitable));
+        }
+        m_wake_pending = false;
+    }
+
+    /**
+     * -rpcservertimeout for HTTP/2: the connection is closed when it made no
+     * progress for that long while no handler ran, and a stream whose
+     * request is still arriving after that long is reset (slow clients
+     * cannot hold streams open by sending a byte now and then).
+     */
+    static asio::awaitable<void>
+    WatchDeadlines(std::shared_ptr<H2Connection> self) {
+        using namespace std::chrono_literals;
+        const auto tick{std::min<std::chrono::steady_clock::duration>(
+            g_server_timeout, 1s)};
+        bool goaway_sent{false};
+        while (!self->m_closed) {
+            self->m_deadline.expires_after(tick);
+            co_await self->m_deadline.async_wait(
+                asio::as_tuple(asio::use_awaitable));
+            if (self->m_closed) {
+                break;
+            }
+            const auto now{std::chrono::steady_clock::now()};
+            for (const int32_t id : self->m_session.IncompleteRequestsSince(
+                     now - g_server_timeout)) {
+                LogDebug(BCLog::HTTP,
+                         "HTTP/2 request from %s timed out (stream %d)\n",
+                         self->m_conn.peer.ToStringAddrPort(), id);
+                self->m_session.Reset(id, NGHTTP2_CANCEL);
+                self->Wake();
+            }
+            const bool busy{self->m_handlers_running > 0};
+            if (busy || now < self->m_last_activity + g_server_timeout) {
+                continue;
+            }
+            if (!goaway_sent) {
+                // Idle: say goodbye, then give the client one more timeout.
+                goaway_sent = true;
+                self->m_last_activity = now;
+                self->m_session.Terminate(NGHTTP2_NO_ERROR);
+                self->Wake();
+                continue;
+            }
+            boost::system::error_code ec;
+            auto &socket{beast::get_lowest_layer(self->m_stream).socket()};
+            socket.shutdown(tcp::socket::shutdown_both, ec);
+            socket.cancel(ec);
+            break;
+        }
+    }
+
+    void Close() {
+        m_closed = true;
+        m_deadline.cancel();
+        m_wake.cancel();
+        for (const auto &[id, state] : m_streams) {
+            if (state.counted) {
+                g_connections.RemoveRequest();
+            }
+        }
+        for (; m_removals_after_write > 0; --m_removals_after_write) {
+            g_connections.RemoveRequest();
+        }
+        m_streams.clear();
+        m_handlers_running = 0;
+    }
+
+    //! Bytes framed per write: one write per batch, bounded memory
+    static constexpr size_t MAX_WRITE_BATCH{256 * 1024};
+
+    OsslStream &m_stream;
+    const HTTPConnectionInfo m_conn;
+    asio::any_io_executor m_ex;
+    asio::steady_timer m_wake;
+    bool m_wake_pending{false};
+    asio::steady_timer m_deadline;
+    http2::ServerSession m_session;
+    std::map<int32_t, StreamState> m_streams;
+    std::vector<std::pair<int32_t, BeastRequest>> m_new_requests;
+    size_t m_handlers_running{0};
+    size_t m_removals_after_write{0};
+    std::chrono::steady_clock::time_point m_last_activity{
+        std::chrono::steady_clock::now()};
+    bool m_reading{true};
+    bool m_closed{false};
+};
+
+static asio::awaitable<void> ServeHTTP2(OsslStream &stream,
+                                        beast::flat_buffer &buffer,
+                                        const HTTPConnectionInfo &conn) {
+    beast::get_lowest_layer(stream).expires_never();
+    auto connection{std::make_shared<H2Connection>(
+        stream, conn, co_await asio::this_coro::executor)};
+    co_await connection->Run(buffer);
+}
+#endif // ENABLE_HTTP2
 
 static std::string ClientCertFingerprint(SSL *ssl) {
     X509 *cert{tls::PeerCertificate(ssl)};
@@ -2032,6 +2417,9 @@ HandleConnection(tcp::socket socket, bool public_only, bool p2p_port = false) {
                      "TLS connection from %s rejected: TLS is disabled\n",
                      conn.peer.ToStringAddrPort());
         } else {
+            if (HTTP2Allowed(public_only)) {
+                tls::AllowServerAlpnH2(ssl.get());
+            }
             if (SSL_set_fd(ssl.get(), int(sock.native_handle())) == 1) {
                 OsslStream tls_stream{stream, std::move(ssl)};
                 auto [hs_ec, hs] = co_await tls_stream.async_handshake(
@@ -2059,7 +2447,15 @@ HandleConnection(tcp::socket socket, bool public_only, bool p2p_port = false) {
                             conn.client_cert_spki = EncodeSpkiPin(spki);
                         }
                     }
+#ifdef ENABLE_HTTP2
+                    if (conn.alpn == http2::ALPN_PROTOCOL) {
+                        co_await ServeHTTP2(tls_stream, buffer, conn);
+                    } else {
+                        co_await ServeHTTP(tls_stream, buffer, conn);
+                    }
+#else
                     co_await ServeHTTP(tls_stream, buffer, conn);
+#endif
                     if (tls_stream.native_handle()) {
                         // Not handed off: close_notify after the last
                         // response, even if the send buffer is full now
@@ -2490,6 +2886,21 @@ bool InitHTTPServer(Config &config) {
         // With a token, the path is only public for requests carrying it.
         RegisterPublicHTTPPrefix(g_p2p_websocket_path);
     }
+
+#ifdef ENABLE_HTTP2
+    g_http2_enabled = gArgs.GetBoolArg("-http2", DEFAULT_HTTP2);
+    g_http2_limits = http2::Limits{};
+    if (g_http2_enabled) {
+        LogPrintf("HTTP/2 offered on TLS listeners (nghttp2 %s)\n",
+                  nghttp2_version(0)->version_str);
+    }
+#else
+    g_http2_enabled = false;
+    if (gArgs.GetBoolArg("-http2", false)) {
+        LogPrintf("Warning: -http2 is ignored: this build has no HTTP/2 "
+                  "support (configure with -DENABLE_HTTP2=ON)\n");
+    }
+#endif
 
     g_config = &config;
     g_server_timeout = std::chrono::seconds{std::max<int64_t>(

@@ -780,6 +780,7 @@ target_compile_definitions(server PRIVATE HAVE_ZSTD=1)
 # the library's published advisories (see doc/http2.md).
 if(ENABLE_HTTP2)
 	find_package(NGHTTP2 1.68.1 REQUIRED)
+	target_sources(server PRIVATE http2_server.cpp)
 	target_link_libraries(server NGHTTP2::nghttp2)
 	if(WIN32)
 		# depends builds a static library

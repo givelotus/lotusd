@@ -29,6 +29,8 @@ static const char *const HTTP_TLS_CERT_FILENAME = "node_tls_cert.pem";
 static const char *const HTTP_TLS_KEY_FILENAME = "node_tls_key.pem";
 //! Replies at least this large are zstd-compressed if the client accepts it.
 static const size_t HTTP_ZSTD_MIN_REPLY_SIZE = 512;
+//! Offer HTTP/2 (ALPN h2) on TLS listeners, in builds with HTTP/2
+static const bool DEFAULT_HTTP2 = true;
 //! Serve /chronik/* (incl. /chronik/ws) on the RPC port when Chronik is on.
 static const bool DEFAULT_CHRONIK_PUBLIC_ON_RPC_PORT = true;
 
