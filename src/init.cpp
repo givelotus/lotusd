@@ -1812,6 +1812,12 @@ void SetupServerArgs(NodeContext &node) {
         "pool default, symbolic-worker and newsletter payouts (required for jobs)",
         ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
     argsman.AddArg(
+        "-poolfeepercent=<percent>",
+        "Operator commission from the built-in pool miner reward after required "
+        "payees: exact percent 0..100 with at most two decimals (default: 0). "
+        "Requires an explicit native -pooladdress, also used for fallback payouts",
+        ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
+    argsman.AddArg(
         "-poolpplnswindow=<n>",
         strprintf("Number of shares in the built-in mining pool sliding PPLNS "
                   "window (default: %u)",

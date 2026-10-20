@@ -37,3 +37,26 @@ Missing or invalid configuration leaves statistics available with
 job. Unknown native policies for required legacy miner-fund/staking payees fail
 closed. Configuration becomes immutable on first worker/job use. The pool does
 not add a legacy signing bridge or change consensus reward policy.
+
+`poolfeepercent=1.25` (or `-poolfeepercent=1.25`) allocates 1.25% of the
+existing miner slice to the explicit native `pooladdress`; the default is 0.
+This is an ordinary Bitcoin ABC option: flat config keys, existing network
+sections (for example `[regtest]`), and command-line overrides retain their
+existing behavior. No new section syntax, dotted keys, or option aliases exist.
+The operator destination also receives symbolic/newsletter fallback payouts;
+address workers receive their PPLNS portion directly. Operators should publish
+these terms; workers can read the actual basis points and address in pool stats
+and each immutable job before hashing its committed coinbase/header.
+
+Fee input is an exact decimal percentage from 0 through 100, with at most two
+decimal places (no sign, exponent, or binary floating-point conversion). In
+integer atoms, operator commission is `floor(minerSlice * basisPoints / 10000)`;
+workers divide exactly the remainder through the existing PPLNS weighting.
+Any fractional commission atom remains with workers. Existing deterministic
+PPLNS rounding assigns the final remainder to the last recipient. Positive
+allocations are retained even when small; zero allocations are omitted, except
+an all-zero reward keeps one zero output. No pool-specific dust confiscation or
+fee redirection is added. Coinbase output totals are unchanged by commission,
+and this feature does not modify consensus burn/required-payee/reward rules.
+Configuration freezes on first use; changing the file requires restarting the
+node, and previously issued jobs retain their original outputs and fee terms.
