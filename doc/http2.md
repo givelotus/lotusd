@@ -65,3 +65,46 @@ When updating nghttp2, check the release notes and advisories for every
 release since the pinned one, update the SHA-256 from the release asset (and
 verify it locally), and keep the CMake minimum at the oldest release that has
 every library fix.
+
+Denial-of-service limits
+------------------------
+
+Every HTTP/2 connection is subject to the same limits as HTTP/1.1 before any
+HTTP/2 processing happens: the TLS handshake must finish within
+`-rpcservertimeout`, and requests are then checked per stream against
+`-rpcallowip`, the public-listener rules and authentication exactly as over
+HTTP/1.1, and queued with the same `-rpcworkqueue` bound (503 when full). The
+HTTP server has no per-IP connection limit, for HTTP/1.1 or HTTP/2; put a
+reverse proxy or firewall in front of a public listener if you need one.
+
+On top of that, each HTTP/2 connection is limited as follows. All are
+per connection and configurable; the defaults suit RPC, REST, Chronik and
+P2P WebSocket clients.
+
+| Option | Default | Limits |
+| --- | --- | --- |
+| `-http2maxstreams=<n>` | 100 | Concurrent streams (`SETTINGS_MAX_CONCURRENT_STREAMS`). A client exceeding the limit it acknowledged gets GOAWAY `PROTOCOL_ERROR`. 1-10000. |
+| `-http2maxheaderlistsize=<bytes>` | 16384 | Size of one request's header list, counted as RFC 9113 does (name + value + 32 bytes per field), trailers included. Larger requests get 431 and are not passed on. Advertised as `SETTINGS_MAX_HEADER_LIST_SIZE`. HTTP/1.1 allows 8192 bytes of raw request line and headers; the RFC accounting adds 32 bytes per field, hence the larger figure. 1024-1048576. |
+| `-http2maxcontinuations=<n>` | 8 | CONTINUATION frames after a HEADERS frame (CVE-2024-28182); more ends the connection. With the frame size limit this also bounds the encoded header bytes of one request to (n + 1) frames. 0-1000. |
+| `-http2maxframesize=<bytes>` | 16384 | Largest frame payload accepted (`SETTINGS_MAX_FRAME_SIZE`). 16384-16777215. |
+| `-http2streamwindow=<bytes>` | 1048576 | Receive window of one stream (`SETTINGS_INITIAL_WINDOW_SIZE`): how much a client may send on a stream before the node consumes it. Request bodies are consumed as they arrive (bounded by the RPC body limit, 413 beyond); WebSocket tunnels only once the bytes are delivered. 65535-2147483647. |
+| `-http2connwindow=<bytes>` | 8388608 | Receive window of the whole connection. 65535-2147483647. |
+| `-http2resetburst=<n>` | 200 | Stream resets (RST_STREAM) a client may send in a burst; once spent, the connection ends with GOAWAY (HTTP/2 Rapid Reset, CVE-2023-44487). 1-1000000. |
+| `-http2resetrate=<n>` | 33 | Stream resets per second regained after a burst. 1-1000000. |
+| `-rpcservertimeout=<n>` | 30 | An HTTP/2 connection with no request being handled and no progress for this long gets GOAWAY and is closed one timeout later. A stream whose request (headers and body) is still arriving after this long is reset (`CANCEL`), so a slow client cannot hold streams open by trickling bytes. |
+
+Fixed, not configurable:
+
+- Request bodies are limited as for HTTP/1.1 (32 MiB plus twice the
+  maximum block size); larger ones get 413 and the stream is reset once the
+  reply is sent.
+- Server push is disabled (`SETTINGS_ENABLE_PUSH=0`) and clients may not
+  push either.
+- nghttp2's own flood protection stays at its defaults: at most 32 settings
+  per SETTINGS frame, at most 1000 queued PING/SETTINGS acknowledgements,
+  and a token bucket for other suspicious frames ("glitches": 10000 burst,
+  330 per second).
+- Output is written in batches of at most 256 KiB per connection, framed
+  from the response bodies without copying them.
+
+An invalid value refuses to start the node.
