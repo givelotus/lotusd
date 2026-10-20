@@ -510,6 +510,8 @@ struct StagedAdmissionStats {
     size_t precomputed{0};
     /** cs_main held while resolving inputs (phase A). */
     std::chrono::nanoseconds resolve_locked{0};
+    /** Time waiting to acquire cs_main across phases A and C. */
+    std::chrono::nanoseconds lock_wait{0};
     /** Unlocked parallel checks (phase B), wall time. */
     std::chrono::nanoseconds verify_unlocked{0};
     /** cs_main held while committing in order (phase C). */

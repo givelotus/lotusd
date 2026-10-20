@@ -13,6 +13,7 @@
 #include <net_processing.h>
 #include <node/blockstorage.h>
 #include <node/context.h>
+#include <node/metrics.h>
 #include <node/txadmission.h>
 #include <node/types.h>
 #include <primitives/blockhash.h>
@@ -65,7 +66,9 @@ TransactionError BroadcastTransaction(const NodeContext &node,
     }
 
     {
+        const auto waiting = std::chrono::steady_clock::now();
         LOCK(cs_main);
+        AdmissionLockTimer timer(waiting);
 
         // If the transaction is already confirmed in the chain, don't do
         // anything and return early.

@@ -2739,7 +2739,9 @@ PrecomputeMempoolAdmission(ChainstateManager &chainman,
     bool verify = false;
     uint32_t flags = 0;
     {
+        const auto waiting = SteadyClock::now();
         LOCK(cs_main);
+        node::AdmissionLockTimer timer(waiting);
         auto &chainstate = chainman.ActiveChainstate();
         if (auto *pool = chainstate.GetMempool()) {
             flags = GetMempoolScriptFlags(chainstate);
@@ -2754,8 +2756,13 @@ PrecomputeMempoolAdmission(ChainstateManager &chainman,
         }
     }
     if (verify) {
+        const auto start = SteadyClock::now();
         ComputeAdmissionChecks(*tx, flags, chainman.m_validation_cache,
                                checks[0]);
+        if (auto *metrics = node::GetNodeMetrics()) {
+            metrics->mempool_admission_verify_seconds.RecordDuration(
+                SteadyClock::now() - start);
+        }
     }
     return std::move(checks[0]);
 }
@@ -2782,6 +2789,8 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
     {
         const auto start = SteadyClock::now();
         LOCK(cs_main);
+        const auto acquired = SteadyClock::now();
+        local.lock_wait += acquired - start;
         Chainstate &chainstate = chainman.ActiveChainstate();
         CTxMemPool *pool = chainstate.GetMempool();
         if (pool != nullptr) {
@@ -2790,7 +2799,7 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
                          .PrepareStaged(txs, checks, fetched, script_flags,
                                         options.limits);
         }
-        local.resolve_locked = SteadyClock::now() - start;
+        local.resolve_locked = SteadyClock::now() - acquired;
     }
 
     // Phase B: context-free and script checks, no locks held.
@@ -2828,6 +2837,8 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
     {
         const auto start = SteadyClock::now();
         LOCK(cs_main);
+        const auto acquired = SteadyClock::now();
+        local.lock_wait += acquired - start;
         Chainstate &chainstate = chainman.ActiveChainstate();
         CTxMemPool *pool = chainstate.GetMempool();
         // Publish one mempool snapshot for the whole batch.
@@ -2856,7 +2867,15 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
             LOCK(pool->cs);
             defer.reset();
         }
-        local.commit_locked = SteadyClock::now() - start;
+        local.commit_locked = SteadyClock::now() - acquired;
+    }
+    if (auto *metrics = node::GetNodeMetrics()) {
+        metrics->mempool_admission_lock_hold_seconds.RecordDuration(
+            local.resolve_locked + local.commit_locked);
+        metrics->mempool_admission_lock_wait_seconds.RecordDuration(
+            local.lock_wait);
+        metrics->mempool_admission_verify_seconds.RecordDuration(
+            local.verify_unlocked);
     }
     if (stats != nullptr) {
         *stats = local;
