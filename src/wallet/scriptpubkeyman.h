@@ -294,6 +294,11 @@ public:
                                       std::string &str_sig) const {
         return SigningResult::SIGNING_FAILED;
     };
+    virtual SigningResult SignKeyHashMessage(const std::string &message,
+                                             const lotus::v2::Hash32 &key_hash,
+                                             std::string &signature) const {
+        return SigningResult::PRIVATE_KEY_NOT_AVAILABLE;
+    }
     /**
      * Adds script and derivation path information to a PSBT, and optionally
      * signs it.
@@ -511,6 +516,9 @@ public:
                     std::map<int, std::string> &input_errors) const override;
     SigningResult SignMessage(const std::string &message, const PKHash &pkhash,
                               std::string &str_sig) const override;
+    SigningResult SignKeyHashMessage(const std::string &message,
+                                     const lotus::v2::Hash32 &key_hash,
+                                     std::string &signature) const override;
     std::optional<common::PSBTError>
     FillPSBT(PartiallySignedTransaction &psbt,
              SigHashType sighash_type = SigHashType().withForkId(),
@@ -790,6 +798,9 @@ public:
                     std::map<int, std::string> &input_errors) const override;
     SigningResult SignMessage(const std::string &message, const PKHash &pkhash,
                               std::string &str_sig) const override;
+    SigningResult SignKeyHashMessage(const std::string &message,
+                                     const lotus::v2::Hash32 &key_hash,
+                                     std::string &signature) const override;
     std::optional<common::PSBTError>
     FillPSBT(PartiallySignedTransaction &psbt,
              SigHashType sighash_type = SigHashType().withForkId(),

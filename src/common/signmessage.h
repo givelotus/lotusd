@@ -6,12 +6,14 @@
 #ifndef BITCOIN_COMMON_SIGNMESSAGE_H
 #define BITCOIN_COMMON_SIGNMESSAGE_H
 
+#include <lotus_v2/address.h>
 #include <uint256.h>
 
 #include <string>
 
 class CChainParams;
 class CKey;
+class CPubKey;
 
 extern const std::string MESSAGE_MAGIC;
 
@@ -79,6 +81,20 @@ bool MessageSign(const CKey &privkey, const std::string &message,
  * inadvertently signing a transaction.
  */
 uint256 MessageHash(const std::string &message);
+
+// Lotus V2 application signatures. Transaction signatures remain BIP340.
+// These deliberately do not replace the eCash compatibility primitives above.
+uint256 LotusMessageHash(const CChainParams &params,
+                         const std::string &message);
+bool LotusMessageSign(const CChainParams &params, const CKey &key,
+                      const std::string &message, std::string &signature);
+MessageVerificationResult LotusMessageVerify(const CChainParams &params,
+                                             const std::string &address,
+                                             const std::string &signature,
+                                             const std::string &message);
+lotus::v2::AddressNetwork LotusAddressNetwork(const CChainParams &params);
+// Empty for an invalid key; hashes the 32-byte x coordinate, never SEC bytes.
+std::optional<lotus::v2::Hash32> LotusMessageKeyHash(const CPubKey &pubkey);
 
 std::string SigningResultString(const SigningResult res);
 

@@ -379,8 +379,8 @@ static RPCHelpMan verifymessage() {
             std::string strSign = self.Arg<std::string>("signature");
             std::string strMessage = self.Arg<std::string>("message");
 
-            switch (MessageVerify(config.GetChainParams(), strAddress, strSign,
-                                  strMessage)) {
+            switch (LotusMessageVerify(config.GetChainParams(), strAddress,
+                                       strSign, strMessage)) {
                 case MessageVerificationResult::ERR_INVALID_ADDRESS:
                     throw JSONRPCError(RPC_TYPE_ERROR, "Invalid address");
                 case MessageVerificationResult::ERR_ADDRESS_NO_KEY:
@@ -436,7 +436,8 @@ static RPCHelpMan signmessagewithprivkey() {
 
             std::string signature;
 
-            if (!MessageSign(key, strMessage, signature)) {
+            if (!LotusMessageSign(config.GetChainParams(), key, strMessage,
+                                  signature)) {
                 throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Sign failed");
             }
 
