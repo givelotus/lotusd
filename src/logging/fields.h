@@ -98,7 +98,13 @@
     X(ProgressPercent, progress_percent, INT, "", "") \
     X(TriggerOption, trigger_option, STRING, "", "") \
     X(ConfigOption, config_option, STRING, "", "") \
-    X(ConfigEnabled, config_enabled, BOOL, "", "")
+    X(ConfigEnabled, config_enabled, BOOL, "", "") \
+    X(ForkBaseHeight, fork_base_height, INT, "", "") \
+    X(ForkBaseHash, fork_base_hash, HASH, "", "") \
+    X(ForkTipHeight, fork_tip_height, INT, "", "") \
+    X(ForkTipHash, fork_tip_hash, HASH, "", "") \
+    X(HeaderProgressPercent, header_progress_percent, FLOAT, "", "") \
+    X(ReceivedTimeDifferenceSeconds, received_time_difference_seconds, UINT, "", "")
 
 namespace BCLog {
 
