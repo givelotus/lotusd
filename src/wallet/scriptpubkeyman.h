@@ -183,10 +183,12 @@ public:
     virtual isminetype IsMine(const CScript &script) const { return ISMINE_NO; }
 
     /**
-     * A script this ScriptPubKeyMan recognizes whose V2 branch leaf
-     * (lotus::v2::BranchLeaf) is `branch`, if any. On the V2 wire a
-     * single-branch output commits to BranchLeaf(script) instead of carrying
-     * the script, so a deserialized output must be mapped back to it.
+     * A read-only ownership lookup script for a recognized branch root.
+     * Historical script branches return their known script. For a recognized
+     * native keyhash program this returns the
+     * corresponding legacy key-ownership lookup script, not native bytecode.
+     * It is for read-only ownership queries only and must never be serialized
+     * into the transaction or used as a native VM witness.
      */
     virtual std::optional<CScript>
     GetScriptForV2Branch(const uint256 &branch) const {
