@@ -180,7 +180,8 @@ void TorControlConnection::OnRead(uint64_t gen,
     // long lines. Do this after reading the lines to make sure all full lines
     // have been removed from the buffer. Everything left is an incomplete line.
     if (m_rbuf.size() > size_t(MAX_LINE_LENGTH)) {
-        LogPrintf("tor: Disconnecting because MAX_LINE_LENGTH exceeded\n");
+        LogInfoEvent(BCLog::ALL, "tor_control_line_limit_disconnect",
+                     "tor: Disconnecting because MAX_LINE_LENGTH exceeded");
         Disconnect();
         return;
     }
@@ -600,7 +601,8 @@ void TorController::add_onion_cb(TorControlConnection &_conn,
             }
         }
         if (service_id.empty()) {
-            LogPrintf("tor: Error parsing ADD_ONION parameters:\n");
+            LogInfoEvent(BCLog::ALL, "tor_add_onion_parameters_invalid",
+                         "tor: Error parsing ADD_ONION parameters:");
             for (const std::string &s : reply.lines) {
                 LogPrintf("    %s\n", SanitizeString(s));
             }
@@ -620,8 +622,9 @@ void TorController::add_onion_cb(TorControlConnection &_conn,
         AddLocal(service, LOCAL_MANUAL);
         // ... onion requested - keep connection open
     } else if (reply.code == 510) { // 510 Unrecognized command
-        LogPrintf("tor: Add onion failed with unrecognized command (You "
-                  "probably need to upgrade Tor)\n");
+        LogInfoEvent(
+            BCLog::ALL, "tor_add_onion_command_unsupported",
+            "tor: Add onion failed with unrecognized command (You probably need to upgrade Tor)");
     } else {
         LogPrintf("tor: Add onion failed; error code %d\n", reply.code);
     }
@@ -674,7 +677,8 @@ void TorController::auth_cb(TorControlConnection &_conn,
                       std::bind(&TorController::add_onion_cb, this,
                                 std::placeholders::_1, std::placeholders::_2));
     } else {
-        LogPrintf("tor: Authentication failed\n");
+        LogInfoEvent(BCLog::ALL, "tor_authentication_failed",
+                     "tor: Authentication failed");
     }
 }
 
@@ -728,8 +732,9 @@ void TorController::authchallenge_cb(TorControlConnection &_conn,
                      "tor: AUTHCHALLENGE ServerHash %s ServerNonce %s\n",
                      HexStr(serverHash), HexStr(serverNonce));
             if (serverNonce.size() != 32) {
-                LogPrintf(
-                    "tor: ServerNonce is not 32 bytes, as required by spec\n");
+                LogInfoEvent(
+                    BCLog::ALL, "tor_authchallenge_server_nonce_size_invalid",
+                    "tor: ServerNonce is not 32 bytes, as required by spec");
                 return;
             }
 
@@ -749,10 +754,12 @@ void TorController::authchallenge_cb(TorControlConnection &_conn,
                                     std::placeholders::_1,
                                     std::placeholders::_2));
         } else {
-            LogPrintf("tor: Invalid reply to AUTHCHALLENGE\n");
+            LogInfoEvent(BCLog::ALL, "tor_authchallenge_reply_invalid",
+                         "tor: Invalid reply to AUTHCHALLENGE");
         }
     } else {
-        LogPrintf("tor: SAFECOOKIE authentication challenge failed\n");
+        LogInfoEvent(BCLog::ALL, "tor_safecookie_challenge_failed",
+                     "tor: SAFECOOKIE authentication challenge failed");
     }
 }
 
@@ -812,8 +819,9 @@ void TorController::protocolinfo_cb(TorControlConnection &_conn,
                                         std::placeholders::_1,
                                         std::placeholders::_2));
             } else {
-                LogPrintf("tor: Password provided with -torpassword, but "
-                          "HASHEDPASSWORD authentication is not available\n");
+                LogInfoEvent(
+                    BCLog::ALL, "tor_password_authentication_unsupported",
+                    "tor: Password provided with -torpassword, but HASHEDPASSWORD authentication is not available");
             }
         } else if (methods.count("NULL")) {
             LogDebug(BCLog::TOR, "tor: Using NULL authentication\n");
@@ -853,14 +861,16 @@ void TorController::protocolinfo_cb(TorControlConnection &_conn,
                 }
             }
         } else if (methods.count("HASHEDPASSWORD")) {
-            LogPrintf("tor: The only supported authentication mechanism left "
-                      "is password, but no password provided with "
-                      "-torpassword\n");
+            LogInfoEvent(
+                BCLog::ALL, "tor_authentication_password_missing",
+                "tor: The only supported authentication mechanism left is password, but no password provided with -torpassword");
         } else {
-            LogPrintf("tor: No supported authentication method\n");
+            LogInfoEvent(BCLog::ALL, "tor_authentication_methods_unsupported",
+                         "tor: No supported authentication method");
         }
     } else {
-        LogPrintf("tor: Requesting protocol info failed\n");
+        LogInfoEvent(BCLog::ALL, "tor_protocol_info_failed",
+                     "tor: Requesting protocol info failed");
     }
 }
 
@@ -872,7 +882,8 @@ void TorController::connected_cb(TorControlConnection &_conn) {
                        std::bind(&TorController::protocolinfo_cb, this,
                                  std::placeholders::_1,
                                  std::placeholders::_2))) {
-        LogPrintf("tor: Error sending initial protocolinfo command\n");
+        LogInfoEvent(BCLog::ALL, "tor_protocol_info_send_failed",
+                     "tor: Error sending initial protocolinfo command");
     }
 }
 
@@ -945,7 +956,8 @@ void StartTorControl(CService onion_service_target) {
 
 void InterruptTorControl() {
     if (g_tor_io) {
-        LogPrintf("tor: Thread interrupt\n");
+        LogInfoEvent(BCLog::ALL, "tor_control_thread_interrupted",
+                     "tor: Thread interrupt");
         // Thread-safe; if the loop has not started yet, run() returns at once.
         g_tor_io->stop();
     }
