@@ -52,7 +52,9 @@ bool VerifyWallets(WalletContext &context) {
         gArgs.ForceSetArg("-walletdir", fs::PathToString(canonical_wallet_dir));
     }
 
-    LogPrintf("Using wallet directory %s\n", fs::PathToString(GetWalletDir()));
+    LogInfoEvent(BCLog::ALL, "wallet_directory_selected",
+                 "Using wallet directory {directory}")
+        .Field(BCLog::LogField::Directory, fs::PathToString(GetWalletDir()));
 
     chain.initMessage(_("Verifying wallet(s)...").translated);
 
