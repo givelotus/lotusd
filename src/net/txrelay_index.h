@@ -123,8 +123,12 @@ public:
                 std::vector<TxId> *out = nullptr) const
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
-    /** Transactions admitted at or after `since`, still in the mempool */
-    std::vector<TxId> AdmittedSince(Clock since) const
+    /**
+     * Transactions admitted at or after `since` (and before `until`), still
+     * in the mempool
+     */
+    std::vector<TxId> AdmittedSince(Clock since,
+                                    Clock until = Clock::max()) const
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
     /** Forget window entries older than `before` */
     void PruneWindow(Clock before) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);

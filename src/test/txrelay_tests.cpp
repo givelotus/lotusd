@@ -73,6 +73,8 @@ struct Sent {
     std::vector<std::pair<uint256, uint64_t>> short_ids;
     //! getshorttx requests
     std::vector<lotus::v2::net::ShortTxRequest> short_requests;
+    //! merklixsync summaries
+    std::vector<lotus::v2::net::MerklixSyncSummary> summaries;
     size_t Total() const {
         return inv_txids.size() + shorttx_txids.size() + short_ids.size();
     }
@@ -83,7 +85,8 @@ struct RelayHarness {
     const Config &config;
     std::unique_ptr<ConnmanTestMsg> connman;
     std::unique_ptr<PeerManager> peerman;
-    std::vector<std::unique_ptr<CNode>> nodes;
+    //! Owned by connman (deleted by ClearTestNodes)
+    std::vector<CNode *> nodes;
 
     RelayHarness(node::NodeContext &node_ctx, PeerManager::Options peer_opts)
         : config{node_ctx.chainman->GetConfig()} {
@@ -100,9 +103,10 @@ struct RelayHarness {
     }
 
     ~RelayHarness() {
-        for (auto &node : nodes) {
+        for (CNode *node : nodes) {
             peerman->FinalizeNode(config, *node);
         }
+        connman->ClearTestNodes();
     }
 
     CNode &AddPeer(ConnectionType type = ConnectionType::OUTBOUND_FULL_RELAY)
@@ -110,12 +114,12 @@ struct RelayHarness {
         const NodeId id = NodeId(500 + nodes.size());
         CAddress addr(MakeTestIp(0x0a000001 + uint32_t(nodes.size())),
                       NODE_NONE);
-        nodes.push_back(
-            std::make_unique<CNode>(id, nullptr, addr, 0, 0, 0, CAddress(), "",
-                                    type, type == ConnectionType::INBOUND));
+        nodes.push_back(new CNode(id, nullptr, addr, 0, 0, 0, CAddress(), "",
+                                  type, type == ConnectionType::INBOUND));
         CNode &node = *nodes.back();
         connman->Handshake(node, true, NODE_NETWORK, NODE_NETWORK,
                            PROTOCOL_VERSION, true);
+        connman->AddTestNode(node);
         return node;
     }
 
@@ -124,7 +128,7 @@ struct RelayHarness {
         EXCLUSIVE_LOCKS_REQUIRED(NetEventsInterface::g_msgproc_mutex) {
         std::map<NodeId, Sent> out;
         for (auto &node : nodes) {
-            BOOST_CHECK(peerman->SendMessages(config, node.get()));
+            BOOST_CHECK(peerman->SendMessages(config, node));
             out[node->GetId()] = Drain(*node);
         }
         return out;
@@ -159,6 +163,10 @@ struct RelayHarness {
                     for (const uint64_t id : ids) {
                         sent.short_ids.emplace_back(epoch_id, id);
                     }
+                } else if (msg.m_type == NetMsgType::MERKLIXSYNC) {
+                    lotus::v2::net::MerklixSyncSummary summary;
+                    msg.m_recv >> summary;
+                    sent.summaries.push_back(std::move(summary));
                 } else if (msg.m_type == NetMsgType::GETSHORTTX) {
                     lotus::v2::net::ShortTxRequest req;
                     msg.m_recv >> req;
@@ -674,6 +682,73 @@ BOOST_AUTO_TEST_CASE(shorttx_fetch_publishes_unbroadcast_batch) {
     BOOST_CHECK(node::GetGlobalSnapshotPublisher().Load().get() == after.get());
     BOOST_CHECK_EQUAL(node::GetGlobalSnapshotPublisher().PublicationCount(),
                       publications + 1);
+    chainman.ResetIbd();
+}
+
+BOOST_AUTO_TEST_CASE(reconciliation_round_robin) {
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    auto &chainman{static_cast<TestChainstateManager &>(*m_node.chainman)};
+    chainman.JumpOutOfIbd();
+    MockTick clock{6'000'000ms};
+    PeerManager::Options opts;
+    opts.txrecon_interval = 250ms;
+    RelayHarness h{m_node, opts};
+    // Three peers: two negotiate reconciliation, one only short ids.
+    std::vector<CNode *> peers;
+    const uint64_t flags[]{txrelay::TXRELAY_INVSHORT | txrelay::TXRELAY_RECON,
+                           txrelay::TXRELAY_INVSHORT,
+                           txrelay::TXRELAY_INVSHORT | txrelay::TXRELAY_RECON};
+    for (const uint64_t f : flags) {
+        CNode &node{h.AddPeer()};
+        DataStream offer{};
+        offer << txrelay::SENDINVSHORT_VERSION << f;
+        std::atomic<bool> interrupt{false};
+        h.peerman->ProcessMessage(h.config, node, NetMsgType::SENDINVSHORT,
+                                  offer, 0us, interrupt);
+        peers.push_back(&node);
+    }
+    FastRandomContext rng{true};
+    auto tx{MakeTx(rng)};
+    const auto t0{GetTime<std::chrono::seconds>()};
+    SetMockTime(t0);
+    AddToMempool(m_node, tx);
+    h.peerman->RelayTransaction(tx->GetId());
+    // The newest two intervals are left out of the summary: be past them.
+    SetMockTime(t0 + 1s);
+
+    // One round per interval, alternating between the two that negotiated.
+    std::vector<NodeId> order;
+    auto ms{6'000'000ms};
+    for (int round = 0; round < 6; ++round) {
+        clock.Set(ms += 250ms);
+        auto sent{h.SendAll()};
+        for (const auto &[id, s] : sent) {
+            BOOST_CHECK_LE(s.summaries.size(), 1U);
+            if (!s.summaries.empty()) {
+                order.push_back(id);
+                const auto &summary{s.summaries[0]};
+                BOOST_CHECK_EQUAL(
+                    summary.scope,
+                    uint8_t(lotus::v2::net::ReconScope::LIVE_MEMPOOL));
+                // The window holds the relayed transaction.
+                uint32_t count{0};
+                for (const auto &b : summary.buckets) {
+                    count += b.count;
+                }
+                BOOST_CHECK_EQUAL(count, 1U);
+            }
+        }
+        // Within the interval: no second round.
+        clock.Set(ms + 100ms);
+        for (const auto &[id, s] : h.SendAll()) {
+            BOOST_CHECK(s.summaries.empty());
+        }
+    }
+    BOOST_REQUIRE_EQUAL(order.size(), 6U);
+    for (size_t i = 0; i < order.size(); ++i) {
+        BOOST_CHECK_EQUAL(order[i], peers[i % 2 ? 2 : 0]->GetId());
+    }
+    SetMockTime(0);
     chainman.ResetIbd();
 }
 

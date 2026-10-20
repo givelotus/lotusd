@@ -184,7 +184,7 @@ TxRelayIndex::Lookup TxRelayIndex::Find(const uint256 &epoch_id,
     return Lookup::HAVE;
 }
 
-std::vector<TxId> TxRelayIndex::AdmittedSince(Clock since) const {
+std::vector<TxId> TxRelayIndex::AdmittedSince(Clock since, Clock until) const {
     LOCK(m_mutex);
     std::vector<TxId> out;
     if (!m_current) {
@@ -194,6 +194,9 @@ std::vector<TxId> TxRelayIndex::AdmittedSince(Clock since) const {
     for (auto it = m_window.rbegin(); it != m_window.rend(); ++it) {
         if (it->first < since) {
             break;
+        }
+        if (it->first >= until) {
+            continue;
         }
         if (m_current->short_id_of.count(it->second) &&
             seen.insert(it->second).second) {

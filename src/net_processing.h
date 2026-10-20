@@ -106,6 +106,14 @@ static constexpr uint64_t DEFAULT_TXRELAY_RATE_MAX{250'000};
  * ordinary 36-byte INVs.
  */
 static constexpr bool DEFAULT_TXRELAY_SHORTIDS{true};
+/**
+ * Continuous reconciliation (-txreconinterval, -txreconwindow): every
+ * interval, send a LIVE_MEMPOOL Merklix summary of the transactions admitted
+ * in the last window to the next negotiating peer, round robin, so it can
+ * fetch what relay did not bring it. The safety net under fan-out.
+ */
+static constexpr std::chrono::milliseconds DEFAULT_TXRECON_INTERVAL{250};
+static constexpr std::chrono::seconds DEFAULT_TXRECON_WINDOW{30};
 
 /** Number of peers to announce a relayed transaction to (see above) */
 size_t TxRelayFanout(size_t relay_peers, size_t fanout_min, double fanout_pct,
@@ -188,6 +196,10 @@ public:
         bool txrelay_shortids{DEFAULT_TXRELAY_SHORTIDS};
         //! Short id width; below 64 only in tests, to force collisions
         unsigned txrelay_shortid_bits{64};
+        //! Reconcile with the next peer every interval; 0 = off
+        std::chrono::milliseconds txrecon_interval{DEFAULT_TXRECON_INTERVAL};
+        //! Reconciliation set: transactions admitted within this window
+        std::chrono::seconds txrecon_window{DEFAULT_TXRECON_WINDOW};
     };
 
     static std::unique_ptr<PeerManager>
@@ -249,6 +261,13 @@ public:
         bool allow_unsolicited) = 0;
     virtual void ProcessShortTxResponse(CNode &node,
                                         std::span<const CTransactionRef> txs) {}
+    /**
+     * Short ids of a relay epoch that reconciliation found this peer has
+     * and we lack: fetched as if the peer had announced them.
+     */
+    virtual void
+    AddRelayShortIdAnnouncements(const CNode &node, const uint256 &epoch_id,
+                                 const std::vector<uint64_t> &short_ids) {}
     virtual void MarkPeerKnownTxBatch(NodeId peer_id,
                                       std::span<const CTransactionRef> txs) {
         for (const auto &tx : txs) {
