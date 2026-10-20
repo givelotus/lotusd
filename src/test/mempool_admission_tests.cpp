@@ -381,7 +381,14 @@ BOOST_AUTO_TEST_CASE(staged_cheap_rejects_do_not_run_unlocked_scripts) {
         BOOST_CHECK_EQUAL(stats.precomputed, 0U);
         CheckSameResult(serial, *staged[0]);
     }
-
+    const auto tx = SignedSpend(wallet, {wallet.outputs[2]}, 1, true);
+    MempoolAdmissionLimits limits;
+    limits.max_fee = 1 * SATOSHI;
+    const auto checks =
+        PrecomputeMempoolAdmission(*m_node.chainman, tx, limits);
+    BOOST_CHECK(!checks.standard.ran);
+    // Advisory work cannot insert or skip the caller's authoritative fee check.
+    BOOST_CHECK(!m_node.mempool->exists(tx->GetId()));
 }
 
 BOOST_AUTO_TEST_CASE(staged_double_spend_race_first_in_order_wins) {
