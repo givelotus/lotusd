@@ -12,6 +12,7 @@
 #include <util/translation.h>
 
 class ArgsManager;
+class BanMan;
 class CConnman;
 class QuicEngine;
 
@@ -21,7 +22,7 @@ class QuicEngine;
  * failure.
  */
 bool StartNodeWebTransport(const ArgsManager &args, CConnman &connman,
-                           bilingual_str &error);
+                           BanMan *banman, bilingual_str &error);
 /** Unregister from CConnman; call before CConnman::Stop() */
 void InterruptNodeWebTransport();
 /** Stop the engine (idempotent); call after CConnman::Stop() */
