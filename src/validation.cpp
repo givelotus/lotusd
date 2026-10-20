@@ -3207,10 +3207,13 @@ ValidationCache::ValidationCache(const size_t script_execution_cache_bytes,
 
     const auto [num_elems, approx_size_bytes] =
         m_script_execution_cache.setup_bytes(script_execution_cache_bytes);
-    LogPrintf("Using %zu MiB out of %zu MiB requested for script execution "
-              "cache, able to store %zu elements\n",
-              approx_size_bytes >> 20, script_execution_cache_bytes >> 20,
-              num_elems);
+    LogInfoEvent(
+        BCLog::ALL, "script_execution_cache_initialized",
+        "Using {cache_allocated_mib} MiB out of {cache_requested_mib} MiB requested for script execution cache, able to store {cache_capacity} elements")
+        .Field(BCLog::LogField::CacheAllocatedMiB, approx_size_bytes >> 20)
+        .Field(BCLog::LogField::CacheRequestedMiB,
+               script_execution_cache_bytes >> 20)
+        .Field(BCLog::LogField::CacheCapacity, num_elems);
 }
 
 bool CheckInputScripts(const CTransaction &tx, TxValidationState &state,
@@ -4257,8 +4260,11 @@ Chainstate::GetCoinsCacheSizeState(size_t max_coins_cache_size_bytes,
         (9 * nTotalSpace) / 10, nTotalSpace - MAX_BLOCK_COINSDB_USAGE_BYTES);
 
     if (cacheSize > nTotalSpace) {
-        LogPrintf("Cache size (%s) exceeds total space (%s)\n", cacheSize,
-                  nTotalSpace);
+        LogInfoEvent(
+            BCLog::ALL, "coins_cache_budget_exceeded",
+            "Cache size ({cache_size_bytes}) exceeds total space ({cache_budget_bytes})")
+            .Field(BCLog::LogField::CacheSizeBytes, cacheSize)
+            .Field(BCLog::LogField::CacheBudgetBytes, nTotalSpace);
         return CoinsCacheSizeState::CRITICAL;
     } else if (cacheSize > large_threshold) {
         return CoinsCacheSizeState::LARGE;
@@ -8487,10 +8493,18 @@ bool Chainstate::ResizeCoinsCaches(size_t coinstip_size, size_t coinsdb_size) {
     m_coinsdb_cache_size_bytes = coinsdb_size;
     CoinsDB().ResizeCache(coinsdb_size);
 
-    LogPrintf("[%s] resized coinsdb cache to %.1f MiB\n", this->ToString(),
-              coinsdb_size * (1.0 / 1024 / 1024));
-    LogPrintf("[%s] resized coinstip cache to %.1f MiB\n", this->ToString(),
-              coinstip_size * (1.0 / 1024 / 1024));
+    LogInfoEvent(
+        BCLog::ALL, "coins_database_cache_resized",
+        "[{chainstate_description}] resized coinsdb cache to {database_cache_mib:.1f} MiB")
+        .Field(BCLog::LogField::ChainstateDescription, this->ToString())
+        .Field(BCLog::LogField::DatabaseCacheMiB,
+               coinsdb_size * (1.0 / 1024 / 1024));
+    LogInfoEvent(
+        BCLog::ALL, "coins_tip_cache_resized",
+        "[{chainstate_description}] resized coinstip cache to {coins_tip_cache_budget_mib:.1f} MiB")
+        .Field(BCLog::LogField::ChainstateDescription, this->ToString())
+        .Field(BCLog::LogField::CoinsTipCacheBudgetMiB,
+               coinstip_size * (1.0 / 1024 / 1024));
 
     BlockValidationState state;
     bool ret;

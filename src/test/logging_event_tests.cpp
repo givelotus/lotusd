@@ -1540,4 +1540,35 @@ BOOST_AUTO_TEST_CASE(
     BOOST_CHECK(row["fields_truncated"].isNull());
 }
 
+BOOST_AUTO_TEST_CASE(
+    actual_validation_caches_keep_integer_budgets_and_capacity) {
+    Format(BCLog::LogFormat::JSON);
+    const ValidationCache cache{2 * 1024 * 1024, 2 * 1024 * 1024};
+    const auto lines{Lines()};
+    BOOST_REQUIRE_EQUAL(lines.size(), 2U);
+    for (size_t index{0}; index < lines.size(); ++index) {
+        UniValue row;
+        BOOST_REQUIRE(row.read(lines[index]));
+        const std::string kind{index == 0 ? "signature" : "script execution"};
+        BOOST_CHECK_EQUAL(row["event"].get_str(),
+                          index == 0 ? "signature_cache_initialized"
+                                     : "script_execution_cache_initialized");
+        BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
+        BOOST_CHECK(row["cache_requested_mib"].isNum());
+        BOOST_CHECK_EQUAL(row["cache_requested_mib"].getInt<uint64_t>(), 2U);
+        BOOST_CHECK(row["cache_allocated_mib"].isNum());
+        const auto allocated{row["cache_allocated_mib"].getInt<uint64_t>()};
+        BOOST_CHECK(allocated <= 2U);
+        BOOST_CHECK(row["cache_capacity"].isNum());
+        const auto capacity{row["cache_capacity"].getInt<uint64_t>()};
+        BOOST_CHECK(capacity > 0);
+        BOOST_CHECK_EQUAL(
+            row["message"].get_str(),
+            strprintf(
+                "Using %zu MiB out of %zu MiB requested for %s cache, able to store %zu elements",
+                size_t(allocated), size_t(2), kind, size_t(capacity)));
+        BOOST_CHECK(row["fields_truncated"].isNull());
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
