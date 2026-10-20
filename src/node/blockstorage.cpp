@@ -671,8 +671,38 @@ uint64_t BlockManager::CalculateCurrentUsage() {
     return retval;
 }
 
+uint64_t
+BlockManager::RegisterUnlinkFilesCallback(UnlinkFilesCallback callback) {
+    LOCK(m_unlink_callbacks_mutex);
+    const uint64_t handle = m_next_unlink_callback++;
+    m_unlink_callbacks.emplace(handle, std::move(callback));
+    return handle;
+}
+
+void BlockManager::UnregisterUnlinkFilesCallback(uint64_t handle) {
+    LOCK(m_unlink_callbacks_mutex);
+    m_unlink_callbacks.erase(handle);
+}
+
+bool BlockManager::MayAppendToBlockFile(int file_num) {
+    LOCK(cs_LastBlockFile);
+    for (const auto &cursor : m_blockfile_cursors) {
+        if (cursor && cursor->file_num == file_num) {
+            return true;
+        }
+    }
+    return file_num > MaxBlockfileNum();
+}
+
 void BlockManager::UnlinkPrunedFiles(
     const std::set<int> &setFilesToPrune) const {
+    {
+        // Under the mutex, so no callback runs after its unregistration.
+        LOCK(m_unlink_callbacks_mutex);
+        for (const auto &[handle, callback] : m_unlink_callbacks) {
+            callback(setFilesToPrune);
+        }
+    }
     std::error_code error_code;
     for (const int i : setFilesToPrune) {
         FlatFilePos pos(i, 0);
@@ -710,6 +740,10 @@ AutoFile BlockManager::OpenUndoFile(const FlatFilePos &pos,
 
 fs::path BlockManager::GetBlockPosFilename(const FlatFilePos &pos) const {
     return BlockFileSeq().FileName(pos);
+}
+
+fs::path BlockManager::GetUndoPosFilename(const FlatFilePos &pos) const {
+    return UndoFileSeq().FileName(pos);
 }
 
 FlatFilePos BlockManager::FindNextBlockPos(unsigned int nAddSize,
