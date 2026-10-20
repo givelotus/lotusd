@@ -1,0 +1,112 @@
+{
+  "schema": 1,
+  "batch": "connection-startup-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/init.cpp",
+      "rules": [
+        {
+          "id": "connection_limit_increased",
+          "old": "LogPrintf(\"Increasing -maxconnections from %d to %d to comply with \"\n                  \"-maxavalancheoutbound\\n\",\n                  nUserMaxConnections, nMaxConnections)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"connection_limit_increased\", \"Increasing -maxconnections from {requested_connection_limit} to {connection_limit} to comply with -maxavalancheoutbound\").Field(BCLog::LogField::RequestedConnectionLimit, nUserMaxConnections).Field(BCLog::LogField::ConnectionLimit, nMaxConnections)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Increasing -maxconnections from %d to %d to comply with -maxavalancheoutbound\n",
+            "specifiers": [
+              "%d",
+              "%d"
+            ],
+            "arguments": [
+              "nUserMaxConnections",
+              "nMaxConnections"
+            ]
+          },
+          "review_note": "Preserve original Info level, exact human text, option interactions, descriptors and startup ordering. Connection/descriptor limits remain signed ints. Relative datadir argument remains raw nonabsolute STRING, not file.path; current working directory is Directory. No additional option values or filesystem calls."
+        },
+        {
+          "id": "connection_limit_reduced",
+          "old": "LogPrintf(\"Reducing -maxconnections from %d to %d, because of system \"\n                  \"limitations.\\n\",\n                  nUserMaxConnections, nMaxConnections)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"connection_limit_reduced\", \"Reducing -maxconnections from {requested_connection_limit} to {connection_limit}, because of system limitations.\").Field(BCLog::LogField::RequestedConnectionLimit, nUserMaxConnections).Field(BCLog::LogField::ConnectionLimit, nMaxConnections)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Reducing -maxconnections from %d to %d, because of system limitations.\n",
+            "specifiers": [
+              "%d",
+              "%d"
+            ],
+            "arguments": [
+              "nUserMaxConnections",
+              "nMaxConnections"
+            ]
+          },
+          "review_note": "Preserve original Info level, exact human text, option interactions, descriptors and startup ordering. Connection/descriptor limits remain signed ints. Relative datadir argument remains raw nonabsolute STRING, not file.path; current working directory is Directory. No additional option values or filesystem calls."
+        },
+        {
+          "id": "connection_limits_selected",
+          "old": "LogPrintf(\"Using at most %i automatic connections (%i file descriptors \"\n              \"available)\\n\",\n              nMaxConnections, nFD)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"connection_limits_selected\", \"Using at most {connection_limit} automatic connections ({file_descriptor_limit} file descriptors available)\").Field(BCLog::LogField::ConnectionLimit, nMaxConnections).Field(BCLog::LogField::FileDescriptorLimit, nFD)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Using at most %i automatic connections (%i file descriptors available)\n",
+            "specifiers": [
+              "%i",
+              "%i"
+            ],
+            "arguments": [
+              "nMaxConnections",
+              "nFD"
+            ]
+          },
+          "review_note": "Preserve original Info level, exact human text, option interactions, descriptors and startup ordering. Connection/descriptor limits remain signed ints. Relative datadir argument remains raw nonabsolute STRING, not file.path; current working directory is Directory. No additional option values or filesystem calls."
+        },
+        {
+          "id": "relative_data_directory",
+          "old": "LogPrintf(\"Warning: relative datadir option '%s' specified, which will \"\n                  \"be interpreted relative to the current working directory \"\n                  \"'%s'. This is fragile, because if bitcoin is started in the \"\n                  \"future from a different location, it will be unable to \"\n                  \"locate the current data files. There could also be data \"\n                  \"loss if bitcoin is started while in a temporary \"\n                  \"directory.\\n\",\n                  args.GetArg(\"-datadir\", \"\"),\n                  fs::PathToString(fs::current_path()))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"relative_data_directory\", \"Warning: relative datadir option '{data_directory_argument}' specified, which will be interpreted relative to the current working directory '{directory}'. This is fragile, because if bitcoin is started in the future from a different location, it will be unable to locate the current data files. There could also be data loss if bitcoin is started while in a temporary directory.\").Field(BCLog::LogField::DataDirectoryArgument, args.GetArg(\"-datadir\", \"\")).Field(BCLog::LogField::Directory, fs::PathToString(fs::current_path()))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Warning: relative datadir option '%s' specified, which will be interpreted relative to the current working directory '%s'. This is fragile, because if bitcoin is started in the future from a different location, it will be unable to locate the current data files. There could also be data loss if bitcoin is started while in a temporary directory.\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "args.GetArg(\"-datadir\", \"\")",
+              "fs::PathToString(fs::current_path())"
+            ]
+          },
+          "review_note": "Preserve original Info level, exact human text, option interactions, descriptors and startup ordering. Connection/descriptor limits remain signed ints. Relative datadir argument remains raw nonabsolute STRING, not file.path; current working directory is Directory. No additional option values or filesystem calls."
+        },
+        {
+          "id": "log_rate_limit_disabled",
+          "old": "LogInfo(\"Log rate limiting disabled\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"log_rate_limit_disabled\", \"Log rate limiting disabled\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogInfo",
+            "format": "Log rate limiting disabled\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve original Info level, exact human text, option interactions, descriptors and startup ordering. Connection/descriptor limits remain signed ints. Relative datadir argument remains raw nonabsolute STRING, not file.path; current working directory is Directory. No additional option values or filesystem calls."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Signed connection and descriptor limits retain original int semantics; relative datadir argument is not an absolute file.path.",
+          "old": "    X(FileOffset, file_offset, UINT, \"\", \"\")\n",
+          "new": "    X(FileOffset, file_offset, UINT, \"\", \"\") \\\n    X(RequestedConnectionLimit, requested_connection_limit, INT, \"\", \"\") \\\n    X(ConnectionLimit, connection_limit, INT, \"\", \"\") \\\n    X(FileDescriptorLimit, file_descriptor_limit, INT, \"\", \"\") \\\n    X(DataDirectoryArgument, data_directory_argument, STRING, \"\", \"\")\n"
+        }
+      ]
+    }
+  ]
+}
