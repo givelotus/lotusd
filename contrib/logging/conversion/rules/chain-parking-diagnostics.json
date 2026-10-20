@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+  "batch": "chain-parking-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/validation.cpp",
+      "rules": [
+        {
+          "id": "block_parked_policy",
+          "old": "LogPrintf(\n                                             \"Park block because it \"\n                                             \"violated a block policy: %s\\n\",\n                                             blockPolicyState.ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_parked_policy\", \"Park block because it violated a block policy: {reason}\").Field(BCLog::LogField::Reason, blockPolicyState.ToString())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Park block because it violated a block policy: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "blockPolicyState.ToString()"
+            ]
+          },
+          "review_note": "Logging only: preserve Info, policy/finality/work/reorg predicates, status changes, returns and exact readable diagnostics. BlockPolicyValidationState keeps its existing ToString call (no new producer formatting); raw BlockHash snapshot replaces existing hex formatting. No consensus or parking policy change."
+        },
+        {
+          "id": "block_parked_before_finalized_tip",
+          "old": "LogPrintf(\"Park block %s because it forks prior to the \"\n                          \"avalanche finalized chaintip.\\n\",\n                          pindexNew->GetBlockHash().ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_parked_before_finalized_tip\", \"Park block {block_hash} because it forks prior to the avalanche finalized chaintip.\").Field(BCLog::LogField::BlockHash, pindexNew->GetBlockHash())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Park block %s because it forks prior to the avalanche finalized chaintip.\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "pindexNew->GetBlockHash().ToString()"
+            ]
+          },
+          "review_note": "Logging only: preserve Info, policy/finality/work/reorg predicates, status changes, returns and exact readable diagnostics. BlockPolicyValidationState keeps its existing ToString call (no new producer formatting); raw BlockHash snapshot replaces existing hex formatting. No consensus or parking policy change."
+        },
+        {
+          "id": "chain_unparked_by_work",
+          "old": "LogPrintf(\"Unpark chain up to block %s as it has \"\n                              \"accumulated enough PoW.\\n\",\n                              pindexNew->GetBlockHash().ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_unparked_by_work\", \"Unpark chain up to block {block_hash} as it has accumulated enough PoW.\").Field(BCLog::LogField::BlockHash, pindexNew->GetBlockHash())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Unpark chain up to block %s as it has accumulated enough PoW.\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "pindexNew->GetBlockHash().ToString()"
+            ]
+          },
+          "review_note": "Logging only: preserve Info, policy/finality/work/reorg predicates, status changes, returns and exact readable diagnostics. BlockPolicyValidationState keeps its existing ToString call (no new producer formatting); raw BlockHash snapshot replaces existing hex formatting. No consensus or parking policy change."
+        },
+        {
+          "id": "block_parked_deep_reorg",
+          "old": "LogPrintf(\"Park block %s as it would cause a deep reorg.\\n\",\n                      pindex->GetBlockHash().ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_parked_deep_reorg\", \"Park block {block_hash} as it would cause a deep reorg.\").Field(BCLog::LogField::BlockHash, pindex->GetBlockHash())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Park block %s as it would cause a deep reorg.\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "pindex->GetBlockHash().ToString()"
+            ]
+          },
+          "review_note": "Logging only: preserve Info, policy/finality/work/reorg predicates, status changes, returns and exact readable diagnostics. BlockPolicyValidationState keeps its existing ToString call (no new producer formatting); raw BlockHash snapshot replaces existing hex formatting. No consensus or parking policy change."
+        }
+      ]
+    }
+  ]
+}
