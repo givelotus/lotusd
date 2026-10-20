@@ -338,6 +338,24 @@ static GlobalMutex g_wt_registry_mutex;
 static P2PWebTransportAcceptor
     g_wt_acceptor GUARDED_BY(g_wt_registry_mutex);
 static WebTransportDialer g_wt_dialer GUARDED_BY(g_wt_registry_mutex);
+static WebTransportInfoProvider g_wt_info GUARDED_BY(g_wt_registry_mutex);
+
+void SetWebTransportInfoProvider(WebTransportInfoProvider provider) {
+    LOCK(g_wt_registry_mutex);
+    g_wt_info = std::move(provider);
+}
+
+UniValue GetWebTransportInfo(bool public_only) {
+    WebTransportInfoProvider provider;
+    {
+        LOCK(g_wt_registry_mutex);
+        provider = g_wt_info;
+    }
+    if (provider) return provider(public_only);
+    UniValue result{UniValue::VOBJ};
+    result.pushKV("enabled", false);
+    return result;
+}
 
 void SetP2PWebTransportAcceptor(P2PWebTransportAcceptor acceptor) {
     LOCK(g_wt_registry_mutex);
