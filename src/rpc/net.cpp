@@ -13,6 +13,7 @@
 #include <net_permissions.h>
 #include <net_processing.h>
 #include <net_types.h> // For banmap_t
+#include <net_webtransport.h>
 #include <netbase.h>
 #include <node/context.h>
 #include <node/protocol_version.h>
@@ -60,8 +61,9 @@ static RPCHelpMan getconnectioncount() {
 static RPCHelpMan getwebtransportinfo() {
     return RPCHelpMan{
         "getwebtransportinfo",
-        "Returns WebTransport dialing availability and automatic fallback "
-        "counters.\n",
+        "Returns WebTransport endpoint, certificate and protocol information, "
+        "connection counts and automatic fallback counters. H3 serves "
+        "WebTransport P2P only.\n",
         {},
         RPCResult{
             RPCResult::Type::OBJ,
@@ -70,6 +72,46 @@ static RPCHelpMan getwebtransportinfo() {
             {
                 {RPCResult::Type::BOOL, "enabled",
                  "The WebTransport dialer is running"},
+                {RPCResult::Type::BOOL, "browsercert", /*optional=*/true,
+                 "Browser hash certificate mode"},
+                {RPCResult::Type::STR, "h3_service", /*optional=*/true,
+                 "webtransport-p2p; no generic H3 RPC service"},
+                {RPCResult::Type::ARR,
+                 "binds",
+                 /*optional=*/true,
+                 "Bound UDP listener addresses",
+                 {{RPCResult::Type::STR, "", "Address and port"}}},
+                {RPCResult::Type::STR, "path", /*optional=*/true,
+                 "Extended CONNECT request path"},
+                {RPCResult::Type::ARR,
+                 "protocols",
+                 /*optional=*/true,
+                 "Current application protocols",
+                 {{RPCResult::Type::STR, "", "Protocol token"}}},
+                {RPCResult::Type::ARR,
+                 "cert_sha256",
+                 /*optional=*/true,
+                 "Current and next full leaf DER SHA-256 hashes (hex)",
+                 {{RPCResult::Type::STR, "", "Certificate hash"}}},
+                {RPCResult::Type::STR, "spki", /*optional=*/true,
+                 "Current certificate SPKI pin"},
+                {RPCResult::Type::ARR,
+                 "origins",
+                 /*optional=*/true,
+                 "Allowed Origins (empty accepts any)",
+                 {{RPCResult::Type::STR, "", "Origin"}}},
+                {RPCResult::Type::ARR,
+                 "draft_codepoints",
+                 /*optional=*/true,
+                 "Public WebTransport standards SETTINGS identifiers",
+                 {{RPCResult::Type::NUM, "", "SETTINGS identifier"}}},
+                {RPCResult::Type::OBJ,
+                 "connections",
+                 /*optional=*/true,
+                 "Private current QUIC counts (not published over HTTP)",
+                 {{RPCResult::Type::NUM, "inbound", "Inbound connections"},
+                  {RPCResult::Type::NUM, "outbound", "Outbound connections"},
+                  {RPCResult::Type::NUM, "handshaking", "Pending handshakes"}}},
                 {RPCResult::Type::NUM, "negative_cache",
                  "Unexpired automatic UDP failure entries"},
                 {RPCResult::Type::OBJ,
@@ -87,8 +129,8 @@ static RPCHelpMan getwebtransportinfo() {
         [&](const RPCHelpMan &, const Config &,
             const JSONRPCRequest &request) -> UniValue {
             auto &connman{EnsureConnman(EnsureAnyNodeContext(request.context))};
-            UniValue result{UniValue::VOBJ}, fallback{UniValue::VOBJ};
-            result.pushKV("enabled", bool(GetWebTransportDialer()));
+            UniValue result{GetWebTransportInfo(/*public_only=*/false)},
+                fallback{UniValue::VOBJ};
             result.pushKV("negative_cache",
                           uint64_t(connman.WebTransportNegativeCacheSize()));
             const auto counts{connman.WebTransportFallbackCounts()};

@@ -212,3 +212,112 @@ test, and the existing HTTP metrics functional test. The opt-in capture-server
 case remained inactive; no new browser cohort or broad benchmark ran. Linux,
 Guix, cross-lane admission integration and the remaining W9–W12 gates are
 separate from these focused results.
+
+## Browser certificates and discovery (W9)
+
+For normal Web PKI, provide `-tlscert` and `-tlskey` with a certificate
+trusted by the browser for the node's hostname. The H3 listener uses the same
+certificate as HTTP/WebSocket unless browser hash mode is enabled. H3 serves
+WebTransport P2P sessions only; it does not serve generic RPC or wallet HTTP
+resources. No blanket `Alt-Svc: h3` is emitted for those resources.
+
+`-p2pwebtransportbrowsercert=1` creates `node_wt_cert.pem` and
+`node_wt_cert_next.pem` in the network datadir. Each leaf is valid for ten
+days. The next begins four days before current expiry; at that point it is
+promoted and another successor is prepared. Both hashes survive restart.
+Refresh happens on discovery requests or new TLS handshakes, using the node's
+clock, and changed generations reload before the new handshake. Existing TLS
+sessions keep their original context. Each certificate uses the existing
+`node_tls_key.pem` (or explicit `-tlskey`), preserving its SPKI. HTTP/WSS
+certificates and the shared private key are not rewritten. Browser hash mode
+fails clearly for a key other than EC P-256; it does not silently rotate keys.
+On storage failure, discovery retains the hash of the actual published leaf
+and logs the failure; publishing its successor is retried on a later refresh.
+
+Browser hash authentication requires a full leaf DER SHA-256, not an SPKI
+hash. The [WebTransport specification](https://www.w3.org/TR/webtransport/)
+requires a currently valid X.509v3 leaf lasting at most two weeks, includes
+P-256 as an interoperable key type, and excludes RSA in this mode. Normal CA
+authentication has its normal certificate rules. Certificate hashes must
+arrive over a trusted channel, such as the application's authenticated
+configuration. Fetching a hash from an unauthenticated endpoint cannot
+authenticate that same endpoint, and knowing a hash does not grant client
+permissions.
+
+`getwebtransportinfo` reports binds, path, `p2p-v1`, current/next certificate
+hashes, SPKI, allowed Origins, public WT standards SETTINGS identifiers and
+private connection/fallback/cache counts. `GET` or `HEAD /p2p/wt/info` exposes
+only discovery metadata on public listeners and on allowed RPC listeners.
+It contains no URL token or connection/cache/fallback counters, permits
+noncredentialed cross-origin reads, and uses `Cache-Control: no-store`.
+Other methods return 405. WT Origin enforcement remains independent of this
+public metadata endpoint.
+
+```js
+// Supplied by the application's authenticated configuration, not TOFU fetch.
+const info = trustedApplicationConfig.webtransport;
+const transport = new WebTransport(`https://node.example${info.path}`, {
+  protocols: ["p2p-v1"],
+  serverCertificateHashes: info.cert_sha256.map(hex => ({
+    algorithm: "sha-256",
+    value: Uint8Array.from(hex.match(/../g), pair => parseInt(pair, 16)),
+  })),
+});
+await transport.ready;
+// P2P class streams and framing follow the protocol above.
+```
+
+Allow the advertised UDP port through the firewall. The QUIC listener does
+not accept PROXY protocol or infer UDP peer identity from `-trustedproxy`.
+UDP passthrough preserves the node's TLS identity; a terminating proxy must
+itself support WebTransport extended CONNECT, WT/H3 SETTINGS, stream and
+connection flow control, sufficient handshake/idle timeouts and orderly
+session shutdown. Ordinary HTTP/2 support or RFC 8441 WebSocket support alone
+does not establish HTTP/3 WebTransport support. Native H2/TCP fallback and
+cross-lane proxy integration require their own interoperability checks.
+
+The bounded actual-node browser gate creates its own regtest datadir and
+fresh profile, then checks authentication, `p2p-v1`, readiness and clean close:
+
+```sh
+contrib/devtools/webtransport-browser-test/run.sh \
+  --node build/src/bitcoind --kind chrome \
+  --browser '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' \
+  --out /tmp/wt-browser-gate-fresh
+```
+
+It prints PASS/FAIL JSON and records commands, binary hashes, browser version,
+timing and summed process-group RSS. It does not use a default profile or
+modify global trust. Supply `--ca-cert` and `--ca-key` for the CA path, omitting
+hash overrides; the browser must genuinely trust that leaf. Firefox can
+import a local root using `--ca-root` and an NSS `--certutil` into only the
+fresh profile. For current Chrome, the test root can instead be stored in the
+fresh profile's `ServerCertificate` database, constrained to `localhost`,
+using the schema observed in the isolated Chrome 155 baseline and documented
+by Chromium's certificate database sources. This is test tooling, not a
+system/user keychain change or a certificate-error bypass. Run the same leaf
+without `--ca-root`, with `--expect-reject`, as the paired untrusted-root
+control. A negative result alone does not distinguish authentication failure
+from a reachability failure; the paired trusted run checks that distinction.
+No browser/CA result is claimed until those actual gates pass.
+
+Chrome's stock WebTransport CA path additionally requires a *known* root,
+not merely a locally trusted one. Chromium documents this in its
+[WebTransport switch](https://chromium.googlesource.com/chromium/src/+/refs/tags/140.0.7339.19/components/network_session_configurator/common/network_switch_list.h)
+and [proof-verifier selection](https://chromium.googlesource.com/chromium/src/+/d50147ff3e3622ef1a527c07d1442504a21a7c91/net/quic/dedicated_web_transport_http3_client.cc).
+For an explicit isolated local-CA development test only,
+`--local-ca-development` adds the documented browser developer switch.
+Certificate-chain and hostname verification still run; use the paired
+untrusted-root negative control in that mode too. Such a result is a
+development-CA result, not stock public-CA or browser-fingerprint equivalence.
+The node's TLS policy and browser defaults are unchanged.
+
+Focused W9 validation passes daemon/unit builds, 37 selected cases (13,630
+assertions), browser-certificate rotation/public-info/live-leaf checks, and
+unchanged fallback/HTTP metrics tests. Chrome 155 on an actual isolated node
+passes hash authentication, p2p-v1 and clean close. Stock local-CA attempts
+reject with and without the profile root. With explicit local-CA development
+mode, the untrusted control rejects and the profile-trusted control passes.
+This does not establish stock publicly trusted CA or reverse-proxy acceptance.
+Raw development NetLogs have unfinished JSON envelopes after browser SIGTERM;
+complete event records and the browser's final result are preserved separately.

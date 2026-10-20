@@ -10,6 +10,7 @@
 #include <protocol.h>
 #include <span.h>
 #include <sync.h>
+#include <univalue.h>
 #include <util/sock.h>
 #include <util/threadinterrupt.h>
 
@@ -237,5 +238,13 @@ using WebTransportDialer = std::function<std::optional<WebTransportDialResult>(
     WebTransportDialError &error)>;
 void SetWebTransportDialer(WebTransportDialer dialer);
 WebTransportDialer GetWebTransportDialer();
+
+/** Discovery metadata. The copied provider owns everything it
+ * accesses across shutdown; never include access tokens. Public snapshots
+ * omit connection counters and other private node state.
+ * An unset provider returns {enabled:false}. */
+using WebTransportInfoProvider = std::function<UniValue(bool public_only)>;
+void SetWebTransportInfoProvider(WebTransportInfoProvider provider);
+UniValue GetWebTransportInfo(bool public_only);
 
 #endif // BITCOIN_NET_WEBTRANSPORT_H

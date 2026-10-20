@@ -58,6 +58,9 @@ struct QuicEngineOptions {
     //! minute.
     std::optional<fs::path> cert_file;
     std::optional<fs::path> key_file;
+    //! Refresh owned certificate state before new inbound TLS sessions.
+    //! A changed generation bypasses the normal file-reload interval.
+    std::function<uint64_t()> certificate_generation;
     QuicApplication application{QuicApplication::WEBTRANSPORT};
     QuicRetryMode retry{QuicRetryMode::AUTO};
     //! BBR instead of CUBIC

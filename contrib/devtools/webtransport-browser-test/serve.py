@@ -24,7 +24,9 @@ def main():
 
         def do_GET(self):
             if self.path.startswith("/result?"):
-                result.write_text(urllib.parse.unquote(self.path[len("/result?"):]))
+                temporary = result.with_suffix(result.suffix + ".tmp")
+                temporary.write_text(urllib.parse.unquote(self.path[len("/result?") :]))
+                temporary.replace(result)
                 self.send_response(204)
                 self.end_headers()
                 return
