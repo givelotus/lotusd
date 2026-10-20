@@ -610,6 +610,7 @@ public:
                         ": " + why;
                 return false;
             }
+            if (m_opts.gso) sock->EnableGso();
             m_listeners.push_back(std::make_unique<UdpSocket>(std::move(*sock)));
         }
         m_client_ctx = NewClientContext();
@@ -1025,6 +1026,7 @@ private:
                           error);
                 return nullptr;
             }
+            if (m_opts.gso) sock->EnableGso();
             slot = std::make_unique<UdpSocket>(std::move(*sock));
         }
         return slot.get();

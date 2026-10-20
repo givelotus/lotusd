@@ -214,6 +214,10 @@ public:
 private:
     bool InitTls(bool server, const std::string &sni);
     void SendPacket(const uint8_t *data, size_t len);
+    UdpDatagram Packet(const uint8_t *data, size_t len, const ngtcp2_path *path,
+                       size_t segment_size = 0) const;
+    ngtcp2_ssize WritePacket(ngtcp2_path *path, ngtcp2_pkt_info *pi,
+                             uint8_t *buffer, size_t capacity, uint64_t now);
     void StartClosing(const ngtcp2_ccerr &err);
     void EnterDraining(uint64_t now);
     QuicStream *PickOwnStream();
