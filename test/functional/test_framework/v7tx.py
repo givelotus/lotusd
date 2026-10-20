@@ -441,15 +441,51 @@ class LegacyMiniWallet:
 class MiniWalletV7:
     """V2 anyone-can-spend (OP_TRUE) coins and version 7 transfers.
 
-    Funded by bridging coins of a legacy MiniWallet (ADDRESS_OP_TRUE mode,
-    P2SH of OP_TRUE): the P2SH bridge runs the redeem script OP_TRUE.
+    Coins come from two sources:
+    - bridging a legacy MiniWallet's P2SH(OP_TRUE) coins (fund_from): the
+      P2SH bridge runs the redeem script OP_TRUE;
+    - version 7 coinbases mined to raw(4e) by a node started with
+      -coinbaseversion=7 (generate). scantxoutset matches legacy scripts
+      only, so generate reads the coinbases of the blocks it mines.
     """
 
     FEE = 10000
+    DESCRIPTOR = "raw(4e)"
 
     def __init__(self, node):
         self._node = node
         self._utxos = []
+
+    @staticmethod
+    def is_own_output(value, script_hex):
+        """Whether an output (as RPC hex) is a V2 OP_TRUE output."""
+        raw = bytes.fromhex(script_hex)
+        branched = _lotus_v2_encode_output(
+            (0, value, b"\x00" * 32, [lotus_v2_branch_leaf(V2_OP_TRUE)], [[0]])
+        )
+        # A coinbase output may also carry the plain script with no branches.
+        plain = b"\x00" + value.to_bytes(8, "little") + ser_string(V2_OP_TRUE)
+        return raw in (branched, plain)
+
+    def generate(self, num_blocks, **kwargs):
+        """Mine version 7 coinbases to raw(4e) and record their outputs."""
+        blocks = self._node.generatetodescriptor(num_blocks, self.DESCRIPTOR, **kwargs)
+        for blockhash in blocks:
+            block = self._node.getblock(blockhash, 2)
+            coinbase = block["tx"][0]
+            for out in coinbase["vout"]:
+                value = int(out["value"] * XEC)
+                if self.is_own_output(value, out["scriptPubKey"]["hex"]):
+                    self._utxos.append(
+                        {
+                            "txid": coinbase["txid"],
+                            "vout": out["n"],
+                            "value": value,
+                            "height": block["height"],
+                            "coinbase": True,
+                        }
+                    )
+        return blocks
 
     def fund_from(self, legacy_wallet, count=1):
         """Bridge count legacy MiniWallet coins into V2 OP_TRUE coins."""
@@ -475,11 +511,24 @@ class MiniWalletV7:
         txid = (from_node or self._node).sendrawtransaction(tx.serialize().hex())
         assert txid == tx.txid_hex
         for n, out in enumerate(tx.vout):
-            self._utxos.append({"txid": txid, "vout": n, "value": int(out.nValue)})
+            self._utxos.append(
+                {
+                    "txid": txid,
+                    "vout": n,
+                    "value": int(out.nValue),
+                    "height": None,
+                    "coinbase": False,
+                }
+            )
         return txid
 
     def get_utxo(self):
-        return self._utxos.pop(0)
+        """Pop the first spendable coin (coinbases need 100 confirmations)."""
+        height = self._node.getblockcount()
+        for i, utxo in enumerate(self._utxos):
+            if not utxo["coinbase"] or height - utxo["height"] + 1 >= 100:
+                return self._utxos.pop(i)
+        raise StopIteration("no spendable V2 coin")
 
     def create_self_transfer(self, utxo=None):
         utxo = utxo or self.get_utxo()
