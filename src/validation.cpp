@@ -2485,6 +2485,9 @@ CoinsViews::CoinsViews(DBParams db_params, CoinsViewOptions options)
 void CoinsViews::InitCache() {
     AssertLockHeld(::cs_main);
     m_cacheview = std::make_unique<CCoinsViewCache>(&m_catcherview);
+    if (auto *metrics{node::GetNodeMetrics()}) {
+        m_cacheview->SetLookupMetric(&metrics->utxo_cache_lookups);
+    }
     m_connect_block_view = std::make_unique<CCoinsViewCache>(&*m_cacheview);
 }
 
@@ -2685,6 +2688,9 @@ void Chainstate::InvalidBlockFound(CBlockIndex *pindex,
                                    const BlockValidationState &state) {
     AssertLockHeld(cs_main);
     if (state.GetResult() != BlockValidationResult::BLOCK_MUTATED) {
+        if (auto *metrics{node::GetNodeMetrics()}) {
+            metrics->blocks_invalid.Add(/*validation=*/0);
+        }
         pindex->nStatus = pindex->nStatus.withFailed();
         m_chainman.m_failed_blocks.insert(pindex);
         m_blockman.m_dirty_blockindex.insert(pindex);
@@ -2800,6 +2806,7 @@ bool CheckInputScripts(const CTransaction &tx, TxValidationState &state,
     ScriptCacheElement elem(hashCacheEntry, 0);
     bool found_in_cache = validation_cache.m_script_execution_cache.get(
         elem, /*erase=*/!scriptCacheStore);
+    node::CountValidationCacheLookup(/*script_execution=*/true, found_in_cache);
     nSigChecksOut = elem.nSigChecks;
     if (found_in_cache) {
         if (!txLimitSigChecks.consume_and_check(nSigChecksOut) ||
@@ -3552,8 +3559,12 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
                     tx, flags,
                     m_chainman.m_validation_cache.ScriptExecutionCacheHasher());
                 ScriptCacheElement elem(hashCacheEntry, 0);
-                if (m_chainman.m_validation_cache.m_script_execution_cache.get(
-                        elem, /*erase=*/!fCacheResults)) {
+                const bool script_cache_hit{
+                    m_chainman.m_validation_cache.m_script_execution_cache.get(
+                        elem, /*erase=*/!fCacheResults)};
+                node::CountValidationCacheLookup(/*script_execution=*/true,
+                                                 script_cache_hit);
+                if (script_cache_hit) {
                     nSigChecksRet = elem.nSigChecks;
                     if (!nSigChecksTxLimiters[txIndex].consume_and_check(
                             nSigChecksRet) ||
@@ -3646,6 +3657,10 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
             }
         };
 
+        if (auto *metrics{node::GetNodeMetrics()}; metrics && !fJustCheck) {
+            metrics->script_check_transactions.Record(n_pending);
+            metrics->script_check_workers.Record(num_workers);
+        }
         ParallelScriptWorkerPool::Instance().Run(num_workers, worker_fn);
 
         for (size_t k = 0; k < n_pending; ++k) {
@@ -3760,6 +3775,11 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
 
     const auto time_5{SteadyClock::now()};
     m_chainman.time_index += time_5 - time_4;
+    node::RecordBlockStage(node::BlockStage::CHECK, time_1 - time_start);
+    node::RecordBlockStage(node::BlockStage::FORKS, time_2 - time_1);
+    node::RecordBlockStage(node::BlockStage::CONNECT, time_3 - time_2);
+    node::RecordBlockStage(node::BlockStage::VERIFY, time_4 - time_3);
+    node::RecordBlockStage(node::BlockStage::INDEX, time_5 - time_4);
     LogDebug(BCLog::BENCH, "    - Index writing: %.2fms [%.2fs (%.2fms/blk)]\n",
              Ticks<MillisecondsDouble>(time_5 - time_4),
              Ticks<SecondsDouble>(m_chainman.time_index),
@@ -3817,6 +3837,11 @@ bool Chainstate::FlushStateToDisk(BlockValidationState &state,
     [[maybe_unused]] const size_t coins_count{CoinsTip().GetCacheSize()};
     [[maybe_unused]] const size_t coins_mem_usage{
         CoinsTip().DynamicMemoryUsage()};
+    auto *const metrics{node::GetNodeMetrics()};
+    if (metrics && this == &m_chainman.ActiveChainstate()) {
+        metrics->utxo_cache_entries.Set(double(coins_count));
+        metrics->utxo_cache_bytes.Set(double(coins_mem_usage));
+    }
 
     try {
         {
@@ -3953,8 +3978,14 @@ bool Chainstate::FlushStateToDisk(BlockValidationState &state,
                     // entries).
                     const auto empty_cache{(mode == FlushStateMode::ALWAYS) ||
                                            fCacheLarge || fCacheCritical};
+                    const auto flush_start{SteadyClock::now()};
                     empty_cache ? CoinsTip().Flush() : CoinsTip().Sync();
                     full_flush_completed = true;
+                    if (metrics) {
+                        metrics->utxo_flush_seconds.RecordDuration(
+                            SteadyClock::now() - flush_start,
+                            empty_cache ? 0 : 1);
+                    }
                     TRACE5(utxocache, flush,
                            int64_t{Ticks<std::chrono::microseconds>(
                                SteadyClock::now() - nNow)},
@@ -4314,6 +4345,7 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
                                      }
                                      return ret;
                                  }) != parkingPolicies.end()) {
+                node::CountParkedBlock(node::BlockParkReason::POLICY);
                 pindexNew->nStatus = pindexNew->nStatus.withParked();
                 pindexNew->m_preconsensus_policy_parked =
                     blockPolicyState.GetRejectReason() == "finalized-batch-mismatch";
@@ -4384,6 +4416,10 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
 
     const auto time_6{SteadyClock::now()};
     m_chainman.time_post_connect += time_6 - time_5;
+    node::RecordBlockStage(node::BlockStage::LOAD, time_2 - time_1);
+    node::RecordBlockStage(node::BlockStage::FLUSH, time_4 - time_3);
+    node::RecordBlockStage(node::BlockStage::CHAINSTATE, time_5 - time_4);
+    node::RecordBlockStage(node::BlockStage::POST_CONNECT, time_6 - time_5);
     m_chainman.time_total += time_6 - time_1;
     LogDebug(BCLog::BENCH,
              "  - Connect postprocess: %.2fms [%.2fs (%.2fms/blk)]\n",
@@ -4447,6 +4483,8 @@ CBlockIndex *Chainstate::FindMostWorkChain(
                 LogPrintf("Park block %s because it forks prior to the "
                           "avalanche finalized chaintip.\n",
                           pindexNew->GetBlockHash().ToString());
+                node::CountParkedBlock(
+                    node::BlockParkReason::FINALIZATION_CONFLICT);
                 pindexNew->nStatus = pindexNew->nStatus.withParked();
                 m_blockman.m_dirty_blockindex.insert(pindexNew);
             }
@@ -4677,6 +4715,14 @@ bool Chainstate::ActivateBestChainStep(
         }
 
         fBlocksDisconnected = true;
+    }
+    if (fBlocksDisconnected && pindexOldTip) {
+        if (auto *metrics{node::GetNodeMetrics()}) {
+            metrics->chain_reorgs.Inc();
+            metrics->chain_reorg_depth.Record(
+                uint64_t(pindexOldTip->nHeight -
+                         (pindexFork ? pindexFork->nHeight : -1)));
+        }
     }
 
     // Build list of new blocks to connect.
@@ -5355,6 +5401,9 @@ bool Chainstate::InvalidateBlock(BlockValidationState &state,
     // See 'Note for backport of Core PR16849' in Chainstate::UnwindBlock
     LOCK(m_chainstate_mutex);
 
+    if (auto *metrics{node::GetNodeMetrics()}) {
+        metrics->blocks_invalid.Add(/*invalidateblock=*/1);
+    }
     return UnwindBlock(state, pindex, true);
 }
 
@@ -5364,6 +5413,7 @@ bool Chainstate::ParkBlock(BlockValidationState &state, CBlockIndex *pindex) {
     // See 'Note for backport of Core PR16849' in Chainstate::UnwindBlock
     LOCK(m_chainstate_mutex);
 
+    node::CountParkedBlock(node::BlockParkReason::REQUESTED);
     return UnwindBlock(state, pindex, false);
 }
 
@@ -6348,6 +6398,7 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock> &pblock,
             pindexFork->nHeight + 1 < ActiveHeight()) {
             LogPrintf("Park block %s as it would cause a deep reorg.\n",
                       pindex->GetBlockHash().ToString());
+            node::CountParkedBlock(node::BlockParkReason::DEEP_REORG);
             pindex->nStatus = pindex->nStatus.withParked();
             m_blockman.m_dirty_blockindex.insert(pindex);
         }
