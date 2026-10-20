@@ -2,6 +2,7 @@
 // In-memory ConnectOrdinaryBlock spend of one BIP340 CHECKSIG witness.
 // Not lotusd ConnectTip and not a claim that lotusd accepted a block.
 #include "block.h"
+#include "address.h"
 
 #include "commitment.h"
 #include "signing.h"
@@ -228,18 +229,30 @@ SignedSpend SignSpend(const World &world, const std::vector<uint8_t> &script,
     return spend;
 }
 
-void ChecksigSpendConnectsAndMutationRestoresParent() {
+void ChecksigSpendConnectsAndMutationRestoresParent(bool keyhash_template = false) {
     const std::vector<uint8_t> pubkey = XOnlyPublicKey(SecretKey());
     const auto vector_key = std::vector<uint8_t>{
         0xf9, 0x30, 0x8a, 0x01, 0x92, 0x58, 0xc3, 0x10, 0x49, 0x34, 0x4f,
         0x85, 0xf8, 0x9d, 0x52, 0x29, 0xb5, 0x31, 0xc8, 0x45, 0x83, 0x6f,
         0x99, 0xb0, 0x86, 0x01, 0xf1, 0x13, 0xbc, 0xe0, 0x36, 0xf9};
     Check(pubkey == vector_key, "linked library x-only key is not BIP340 vector 0");
-    const std::vector<uint8_t> script = ChecksigScript(pubkey);
+    const auto script = keyhash_template
+        ? KeyHashProgram(NativeKeyHash(std::span<const uint8_t, 32>(pubkey.data(), 32)))
+        : ChecksigScript(pubkey);
     const OrdinaryCandidateProfile profile = MakeProfile();
     World world(script);
     const ParentBytes parent = Capture(world);
-    const SignedSpend spend = SignSpend(world, script, pubkey, profile);
+    SignedSpend spend = SignSpend(world, script, pubkey, profile);
+    if (keyhash_template) {
+        spend.tx.inputs[0].witnesses[0].arguments.push_back(pubkey);
+        auto wrong_key = spend.tx;
+        wrong_key.inputs[0].witnesses[0].arguments.back()[0] ^= 1;
+        OrdinaryBlockConnected discarded;
+        std::string error;
+        Check(!Connect(world, wrong_key, profile, discarded, error), "wrong keyhash key accepted");
+        Check(error == "witness VM invalid/unsupported: EQUALVERIFY false", "wrong keyhash error: " + error);
+        ExpectParent(world, parent, "wrong keyhash key");
+    }
 
     Transaction mutated = spend.tx;
     mutated.inputs[0].witnesses[0].arguments[0][0] ^= 0x01;
@@ -284,6 +297,7 @@ void ChecksigSpendConnectsAndMutationRestoresParent() {
 int main() {
     try {
         ChecksigSpendConnectsAndMutationRestoresParent();
+        ChecksigSpendConnectsAndMutationRestoresParent(true);
         std::cout << "ordinary CHECKSIG connect checks passed\n";
         return 0;
     } catch (const std::exception &failure) {
