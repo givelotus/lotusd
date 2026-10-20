@@ -43,7 +43,9 @@ util::Result<void> StartHTTPMetrics(
     node::NodeMetrics &m{**started};
     m.process_start_time.Set(double(GetStartupTime()));
     RegisterHTTPHandler("/metrics", true, HTTPReqMetrics);
-    LogPrintf("Serving metrics at /metrics on the RPC listeners\n");
+    LogInfoEvent(BCLog::ALL, "http_metrics_serving",
+                 "Serving metrics at /metrics on the RPC listeners")
+        .Field(BCLog::LogField::HttpPath, BCLog::LogStatic("/metrics"));
     return {};
 }
 

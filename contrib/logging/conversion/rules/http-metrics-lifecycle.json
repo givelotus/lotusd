@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "batch": "http-metrics-lifecycle",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/httpmetrics.cpp",
+      "rules": [
+        {
+          "id": "http_metrics_serving",
+          "old": "LogPrintf(\"Serving metrics at /metrics on the RPC listeners\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"http_metrics_serving\", \"Serving metrics at /metrics on the RPC listeners\").Field(BCLog::LogField::HttpPath, BCLog::LogStatic(\"/metrics\"))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Serving metrics at /metrics on the RPC listeners\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve Info, exact statictext, metrics registry/handler/ACL/authentication/listener behavior. Existing fixed public HTTP path is queryable, not a filesystem file.path. No collection or metric-name changes."
+        }
+      ]
+    }
+  ]
+}
