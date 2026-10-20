@@ -4,6 +4,13 @@ check-doc.py
 ============
 Check for missing documentation of command line options.
 
+lint-v2-tx-hybrid.py
+====================
+Check that the removed hybrid-transaction forms (the wrapped versions
+0x80000007/0xC0000007, AdaptLegacy, HasStructuralV2Identity,
+IsDisallowedNonV7Tx, bad-txns-non-v7-format) do not return to `src/` or
+`test/functional/`.
+
 git-subtree-check.sh
 ====================
 Run this script from the root of the repository to verify that a subtree matches the contents of
