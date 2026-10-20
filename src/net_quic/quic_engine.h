@@ -46,6 +46,9 @@ enum class QuicApplication {
 struct QuicEngineOptions {
     //! UDP addresses to accept connections on (none: outbound only)
     std::vector<CService> binds;
+    //! A bind that fails is logged and skipped instead of failing Start()
+    //! (e.g. the UDP port is taken or IPv6 is off)
+    bool bind_optional{false};
     //! Server certificate chain and key (PEM); also presented to servers
     //! that ask for a client certificate. Checked for replacement once a
     //! minute.
@@ -61,6 +64,39 @@ struct QuicEngineOptions {
     std::chrono::milliseconds handshake_timeout{std::chrono::seconds{10}};
     //! Stateless resets sent per second at most
     uint32_t stateless_reset_rate{10};
+
+    //! WebTransport (server): request path of the extended CONNECT,
+    //! accepted Origin values (empty: any) and required access token
+    //! (?t=; empty: none)
+    std::string wt_path{"/p2p/wt"};
+    std::vector<std::string> wt_origins;
+    std::string wt_token;
+    //! Tests and browser interop: echo WebTransport streams and datagrams
+    //! instead of running P2P sessions
+    bool wt_echo{false};
+};
+
+/** Tests: an extended CONNECT made by WebTransportProbeForTest() */
+struct WtProbeOptions {
+    std::string path{"/p2p/wt"};
+    std::string origin;
+    std::string token;
+    std::string protocol_token{"webtransport-h3"};
+    std::vector<std::string> offer{"p2p-v1"};
+    //! After a 200, send a second CONNECT on the same connection
+    bool second_connect{false};
+};
+
+struct WtProbeResult {
+    //! :status of the CONNECT (0: no answer / no WebTransport)
+    int status{0};
+    int second_status{0};
+    //! wt-protocol chosen by the server
+    std::string protocol;
+    //! Newest WebTransport SETTINGS codepoint the server announced
+    uint64_t peer_draft_setting{0};
+    //! Bytes sent on each of the five class streams came back (echo server)
+    bool classes_echoed{false};
 };
 
 /** Engine-wide counters (all connections, since start) */
@@ -111,6 +147,15 @@ public:
     EchoForTest(const CService &target, const std::vector<uint8_t> &payload,
                 std::chrono::milliseconds timeout,
                 const std::optional<std::vector<uint8_t>> &cert_sha256 = {});
+
+    /**
+     * Tests: QUIC + HTTP/3 + extended CONNECT to `target`; on a 200 open
+     * the five class streams and send a few bytes on each.
+     */
+    std::optional<WtProbeResult>
+    WebTransportProbeForTest(const CService &target,
+                             const WtProbeOptions &options,
+                             std::chrono::milliseconds timeout);
 
     class Impl;
 

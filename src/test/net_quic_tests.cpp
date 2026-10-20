@@ -5,11 +5,13 @@
 // Built only with -DENABLE_WEBTRANSPORT=ON.
 
 #include <net_quic/quic_engine.h>
+#include <net_quic/webtransport_wire.h>
 
 #include <netaddress.h>
 #include <random.h>
 #include <tls_util.h>
 #include <util/fs.h>
+#include <util/strencodings.h>
 
 #include <test/util/setup_common.h>
 
@@ -347,6 +349,249 @@ BOOST_AUTO_TEST_CASE(idle_timeout) {
     BOOST_CHECK_EQUAL(server->Stats().connections, 0U);
     BOOST_CHECK_GE(server->Stats().idle_closed, 1U);
     BOOST_CHECK_GE(client->Stats().idle_closed, 1U);
+}
+
+BOOST_AUTO_TEST_CASE(wt_varints_and_stream_prefixes) {
+    // RFC 9000 §16 examples.
+    const std::vector<std::pair<uint64_t, std::string>> vectors{
+        {37, "25"},
+        {15293, "7bbd"},
+        {494878333, "9d7f3e7d"},
+        {151288809941952652ULL, "c2197c5eff14e88c"},
+    };
+    for (const auto &[v, hex] : vectors) {
+        std::vector<uint8_t> enc;
+        wt::PutVarint(enc, v);
+        BOOST_CHECK_EQUAL(HexStr(enc), hex);
+        uint64_t dec{0};
+        BOOST_CHECK_EQUAL(wt::GetVarint(enc, dec), enc.size());
+        BOOST_CHECK_EQUAL(dec, v);
+        // Truncated: incomplete, never a wrong value.
+        BOOST_CHECK_EQUAL(
+            wt::GetVarint(Span<const uint8_t>{enc}.first(enc.size() - 1), dec),
+            0U);
+    }
+
+    using S = wt::StreamPrefix::Status;
+    struct Case {
+        std::string hex;
+        bool uni;
+        S status;
+        uint64_t session;
+        size_t header_len;
+    };
+    const std::vector<Case> cases{
+        // 0x41 and 0x54 are 2-byte varints (>= 64).
+        {"404100", false, S::WEBTRANSPORT, 0, 3},
+        {"40410401", false, S::WEBTRANSPORT, 4, 3},       // + class byte
+        {"405400", true, S::WEBTRANSPORT, 0, 3},
+        {"40414004", false, S::WEBTRANSPORT, 4, 4},       // 2-byte session
+        {"4041" "80000004", false, S::WEBTRANSPORT, 4, 6}, // 4-byte session
+        {"4041" "c000000000000008", false, S::WEBTRANSPORT, 8, 10},
+        {"80000041" "00", false, S::WEBTRANSPORT, 0, 5},  // 4-byte signal
+        {"4041", false, S::INCOMPLETE, 0, 0},
+        {"40", false, S::INCOMPLETE, 0, 0},
+        {"4041c0", false, S::INCOMPLETE, 0, 0},
+        {"", false, S::INCOMPLETE, 0, 0},
+        {"00", true, S::HTTP3, 0, 0},     // control stream
+        {"02", true, S::HTTP3, 0, 0},     // QPACK encoder
+        {"405400", false, S::HTTP3, 0, 0}, // 0x54 on a bidi stream
+        {"404100", true, S::HTTP3, 0, 0},  // 0x41 on a uni stream
+        {"01", false, S::HTTP3, 0, 0},     // HEADERS frame
+    };
+    for (const auto &c : cases) {
+        const auto bytes{ParseHex(c.hex)};
+        const auto p{wt::ParseStreamPrefix(bytes, c.uni)};
+        BOOST_CHECK_MESSAGE(p.status == c.status, c.hex);
+        if (c.status == S::WEBTRANSPORT) {
+            BOOST_CHECK_EQUAL(p.session_id, c.session);
+            BOOST_CHECK_EQUAL(p.header_len, c.header_len);
+        }
+    }
+    BOOST_CHECK_EQUAL(HexStr(wt::BidiStreamHeader(4)), "404104");
+    BOOST_CHECK_EQUAL(HexStr(wt::UniStreamHeader(64)), "40544040");
+}
+
+BOOST_AUTO_TEST_CASE(wt_capsules) {
+    const auto close{wt::EncodeCloseSession(7, "bye")};
+    // type 0x2843 (2-byte varint 0x6843), length 7, code, reason
+    BOOST_CHECK_EQUAL(HexStr(close), "68430700000007627965");
+    auto parsed{wt::ParseCapsule(close)};
+    BOOST_REQUIRE(parsed.status == wt::CapsuleParse::Status::OK);
+    BOOST_CHECK_EQUAL(parsed.consumed, close.size());
+    BOOST_CHECK_EQUAL(parsed.capsule.type, wt::CAPSULE_CLOSE_SESSION);
+    const auto decoded{wt::DecodeCloseSession(parsed.capsule.value)};
+    BOOST_REQUIRE(decoded);
+    BOOST_CHECK_EQUAL(decoded->code, 7U);
+    BOOST_CHECK_EQUAL(decoded->reason, "bye");
+
+    // Truncated at every position: incomplete, never OK or an error.
+    for (size_t n = 0; n < close.size(); ++n) {
+        BOOST_CHECK(
+            wt::ParseCapsule(Span<const uint8_t>{close}.first(n)).status ==
+            wt::CapsuleParse::Status::INCOMPLETE);
+    }
+    // Two capsules back to back, an unknown one first.
+    std::vector<uint8_t> two;
+    wt::EncodeCapsule(two, 0x190B4D3D, std::vector<uint8_t>{1, 2, 3});
+    two.insert(two.end(), close.begin(), close.end());
+    parsed = wt::ParseCapsule(two);
+    BOOST_REQUIRE(parsed.status == wt::CapsuleParse::Status::OK);
+    BOOST_CHECK_EQUAL(parsed.capsule.type, 0x190B4D3DU);
+    parsed = wt::ParseCapsule(Span<const uint8_t>{two}.subspan(parsed.consumed));
+    BOOST_CHECK(parsed.status == wt::CapsuleParse::Status::OK);
+    BOOST_CHECK_EQUAL(parsed.capsule.type, wt::CAPSULE_CLOSE_SESSION);
+
+    // A reason over 1024 bytes is invalid; so is a value without a code.
+    std::vector<uint8_t> long_value(4 + 1025, 'x');
+    BOOST_CHECK(!wt::DecodeCloseSession(long_value));
+    long_value.resize(4 + 1024);
+    BOOST_CHECK(wt::DecodeCloseSession(long_value));
+    BOOST_CHECK(!wt::DecodeCloseSession(std::vector<uint8_t>{0, 0, 1}));
+    // Encoding truncates an over-long reason.
+    const auto enc{wt::EncodeCloseSession(1, std::string(2000, 'y'))};
+    parsed = wt::ParseCapsule(enc);
+    BOOST_REQUIRE(parsed.status == wt::CapsuleParse::Status::OK);
+    BOOST_CHECK_EQUAL(parsed.capsule.value.size(), 4U + wt::MAX_CLOSE_REASON);
+    // A capsule claiming more than we buffer is an error, not a wait.
+    std::vector<uint8_t> huge;
+    wt::PutVarint(huge, 0x2843);
+    wt::PutVarint(huge, wt::MAX_CAPSULE_SIZE + 1);
+    BOOST_CHECK(wt::ParseCapsule(huge).status ==
+                wt::CapsuleParse::Status::ERROR);
+}
+
+BOOST_AUTO_TEST_CASE(wt_error_code_mapping) {
+    BOOST_CHECK_EQUAL(wt::WebTransportCodeToHttp(0), 0x52e4a40fa8dbULL);
+    BOOST_CHECK_EQUAL(wt::WebTransportCodeToHttp(0xffffffff),
+                      0x52e5ac983162ULL);
+    for (uint32_t code = 0; code <= 0x1000; ++code) {
+        const uint64_t h{wt::WebTransportCodeToHttp(code)};
+        // Never a reserved (grease) HTTP/3 codepoint 0x1f * N + 0x21.
+        BOOST_CHECK((h - 0x21) % 0x1f != 0);
+        BOOST_CHECK(wt::HttpCodeToWebTransport(h) == code);
+    }
+    BOOST_CHECK(wt::HttpCodeToWebTransport(0xffffffff) == std::nullopt);
+    BOOST_CHECK(wt::HttpCodeToWebTransport(wt::WebTransportCodeToHttp(
+                    0xffffffff)) == 0xffffffffU);
+    // Below/above the range and a grease codepoint inside it.
+    BOOST_CHECK(!wt::HttpCodeToWebTransport(0x52e4a40fa8da));
+    BOOST_CHECK(!wt::HttpCodeToWebTransport(0x52e5ac983163));
+    uint64_t grease{0x52e4a40fa8db};
+    while ((grease - 0x21) % 0x1f != 0) {
+        ++grease;
+    }
+    BOOST_CHECK(!wt::HttpCodeToWebTransport(grease));
+}
+
+BOOST_AUTO_TEST_CASE(wt_protocol_lists) {
+    auto l{wt::ParseProtocolList(R"("alpha", "beta")")};
+    BOOST_REQUIRE(l);
+    BOOST_CHECK(*l == (std::vector<std::string>{"alpha", "beta"}));
+    l = wt::ParseProtocolList(R"("a";q=1,"b\"c")");
+    BOOST_REQUIRE(l);
+    BOOST_CHECK(*l == (std::vector<std::string>{"a", "b\"c"}));
+    BOOST_CHECK(wt::ParseProtocolList("")->empty());
+    for (const char *bad : {"p2p-v1", R"("p2p-v1)", R"("a" "b")", R"("a",)",
+                            R"("a\x")"}) {
+        BOOST_CHECK_MESSAGE(!wt::ParseProtocolList(bad), bad);
+    }
+    BOOST_CHECK_EQUAL(wt::SerializeProtocol("p2p-v1"), "\"p2p-v1\"");
+    BOOST_CHECK_EQUAL(wt::SerializeProtocol("a\"b"), "\"a\\\"b\"");
+}
+
+BOOST_AUTO_TEST_CASE(webtransport_session_establishment) {
+    auto options{ServerOptions()};
+    options.application = QuicApplication::WEBTRANSPORT;
+    options.wt_echo = true;
+    options.wt_origins = {"https://wallet.example"};
+    auto server{StartEngine(options)};
+    auto client{StartEngine(QuicEngineOptions{})};
+    const CService addr{server->BoundAddresses().at(0)};
+
+    // A node: webtransport-h3, no Origin, p2p-v1 offered.
+    WtProbeOptions probe;
+    auto r{client->WebTransportProbeForTest(addr, probe, 10s)};
+    BOOST_REQUIRE(r);
+    BOOST_CHECK_EQUAL(r->status, 200);
+    BOOST_CHECK_EQUAL(r->protocol, "p2p-v1");
+    // The server announces every draft; the newest is draft-15/16's.
+    BOOST_CHECK_EQUAL(r->peer_draft_setting, 0x2c7cf000U);
+    BOOST_CHECK(r->classes_echoed);
+
+    // A browser of today: :protocol webtransport, an allowed Origin, no
+    // protocol list (no application protocol selected).
+    probe.protocol_token = "webtransport";
+    probe.origin = "https://wallet.example";
+    probe.offer = {};
+    r = client->WebTransportProbeForTest(addr, probe, 10s);
+    BOOST_REQUIRE(r);
+    BOOST_CHECK_EQUAL(r->status, 200);
+    BOOST_CHECK(r->classes_echoed);
+
+    // Refusals.
+    probe = WtProbeOptions{};
+    probe.second_connect = true;
+    r = client->WebTransportProbeForTest(addr, probe, 10s);
+    BOOST_REQUIRE(r);
+    BOOST_CHECK_EQUAL(r->status, 200);
+    BOOST_CHECK_EQUAL(r->second_status, 429);
+
+    probe = WtProbeOptions{};
+    probe.path = "/p2p/other";
+    r = client->WebTransportProbeForTest(addr, probe, 10s);
+    BOOST_REQUIRE(r);
+    BOOST_CHECK_EQUAL(r->status, 404);
+
+    probe = WtProbeOptions{};
+    probe.origin = "https://evil.example";
+    r = client->WebTransportProbeForTest(addr, probe, 10s);
+    BOOST_REQUIRE(r);
+    BOOST_CHECK_EQUAL(r->status, 403);
+
+    probe = WtProbeOptions{};
+    probe.offer = {"unsupported-test-protocol"};
+    r = client->WebTransportProbeForTest(addr, probe, 10s);
+    BOOST_REQUIRE(r);
+    BOOST_CHECK_EQUAL(r->status, 400);
+}
+
+BOOST_AUTO_TEST_CASE(webtransport_token_and_no_acceptor) {
+    auto options{ServerOptions()};
+    options.application = QuicApplication::WEBTRANSPORT;
+    options.wt_echo = true;
+    options.wt_token = "s3cret";
+    auto server{StartEngine(options)};
+    auto client{StartEngine(QuicEngineOptions{})};
+    const CService addr{server->BoundAddresses().at(0)};
+    WtProbeOptions probe;
+    auto r{client->WebTransportProbeForTest(addr, probe, 10s)};
+    BOOST_REQUIRE(r);
+    BOOST_CHECK_EQUAL(r->status, 403);
+    probe.token = "wrong";
+    r = client->WebTransportProbeForTest(addr, probe, 10s);
+    BOOST_REQUIRE(r);
+    BOOST_CHECK_EQUAL(r->status, 403);
+    probe.token = "s3cret";
+    r = client->WebTransportProbeForTest(addr, probe, 10s);
+    BOOST_REQUIRE(r);
+    BOOST_CHECK_EQUAL(r->status, 200);
+
+    // A P2P server with nobody taking sessions answers 503.
+    auto p2p_options{ServerOptions()};
+    p2p_options.application = QuicApplication::WEBTRANSPORT;
+    auto p2p{StartEngine(p2p_options)};
+    r = client->WebTransportProbeForTest(p2p->BoundAddresses().at(0),
+                                         WtProbeOptions{}, 10s);
+    BOOST_REQUIRE(r);
+    BOOST_CHECK_EQUAL(r->status, 503);
+
+    // An HTTP/3 server without WebTransport SETTINGS: the echo test server
+    // speaks raw QUIC, so no SETTINGS ever arrive and the probe fails.
+    auto raw{StartEngine(ServerOptions())};
+    r = client->WebTransportProbeForTest(raw->BoundAddresses().at(0),
+                                         WtProbeOptions{}, 5s);
+    BOOST_CHECK(!r || r->status == 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
