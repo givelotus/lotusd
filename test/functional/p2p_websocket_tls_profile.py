@@ -4,8 +4,8 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test the TLS profile of P2P WebSocket connections.
 
-- The server selects ALPN http/1.1 when offered, and continues without ALPN
-  otherwise.
+- The server selects ALPN http/1.1 when offered (h2 first, in builds with
+  HTTP/2), and continues without ALPN otherwise.
 - The dialer offers ALPN http/1.1 and sends SNI for host names (and warns
   when dialing an IP address).
 """
@@ -86,9 +86,16 @@ class P2PWebSocketTLSProfileTest(BitcoinTestFramework):
         return [p for p in self.nodes[n].getpeerinfo() if p["transport"] != "tcp"]
 
     def run_test(self):
-        self.log.info("The server selects http/1.1, and nothing else")
-        assert_equal(self.handshake(["h2", "http/1.1"]), "http/1.1")
-        assert_equal(self.handshake(["h2"]), None)
+        if self.is_http2_compiled():
+            self.log.info("The server prefers h2, then http/1.1 (HTTP/2 build)")
+            assert_equal(self.handshake(["h2", "http/1.1"]), "h2")
+            assert_equal(self.handshake(["http/1.1", "h2"]), "h2")
+            assert_equal(self.handshake(["h2"]), "h2")
+        else:
+            self.log.info("The server selects http/1.1, and nothing else")
+            assert_equal(self.handshake(["h2", "http/1.1"]), "http/1.1")
+            assert_equal(self.handshake(["h2"]), None)
+        assert_equal(self.handshake(["http/1.1"]), "http/1.1")
         assert_equal(self.handshake(None), None)
 
         self.log.info("Node to node, both sides agree on http/1.1")
