@@ -1,0 +1,242 @@
+{
+  "schema": 1,
+  "batch": "http-listener-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/httpserver.cpp",
+      "rules": [
+        {
+          "id": "p2p_websocket_socketpair_failed",
+          "old": "LogPrintf(\"P2P WebSocket: socketpair failed: %s\\n\",\n                  NetworkErrorString(WSAGetLastError()))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"p2p_websocket_socketpair_failed\", \"P2P WebSocket: socketpair failed: {error}\").Field(BCLog::LogField::Error, socketpair_error)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "P2P WebSocket: socketpair failed: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "NetworkErrorString(WSAGetLastError())"
+            ]
+          },
+          "review_note": "Keep Info, exact existing text and argument types, guards, listener/TLS behavior and error returns. Typed local listener addresses are not remote peers; URL paths are not file.path. Certificate/key path names are public existing diagnostics, never PEM/private-key/cookie content. Capture OS/OpenSSL error before event construction."
+        },
+        {
+          "id": "rpc_listener_bind_failed",
+          "old": "LogPrintf(\"Binding RPC on address %s port %i failed.\\n\", i->first,\n                      i->second)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"rpc_listener_bind_failed\", \"Binding RPC on address {listen_address} port {listen_port} failed.\").Field(BCLog::LogField::ListenAddress, i->first).Field(BCLog::LogField::ListenPort, i->second)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Binding RPC on address %s port %i failed.\n",
+            "specifiers": [
+              "%s",
+              "%i"
+            ],
+            "arguments": [
+              "i->first",
+              "i->second"
+            ]
+          },
+          "review_note": "Keep Info, exact existing text and argument types, guards, listener/TLS behavior and error returns. Typed local listener addresses are not remote peers; URL paths are not file.path. Certificate/key path names are public existing diagnostics, never PEM/private-key/cookie content. Capture OS/OpenSSL error before event construction."
+        },
+        {
+          "id": "public_listener_port_missing",
+          "old": "LogPrintf(\"Error: -publicbind=%s needs an explicit port\\n\",\n                      strBind)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"public_listener_port_missing\", \"Error: -publicbind={listen_address} needs an explicit port\").Field(BCLog::LogField::ListenAddress, strBind)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Error: -publicbind=%s needs an explicit port\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "strBind"
+            ]
+          },
+          "review_note": "Keep Info, exact existing text and argument types, guards, listener/TLS behavior and error returns. Typed local listener addresses are not remote peers; URL paths are not file.path. Certificate/key path names are public existing diagnostics, never PEM/private-key/cookie content. Capture OS/OpenSSL error before event construction."
+        },
+        {
+          "id": "public_listener_bind_failed",
+          "old": "LogPrintf(\"Binding public HTTP endpoints on %s failed.\\n\", strBind)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"public_listener_bind_failed\", \"Binding public HTTP endpoints on {listen_address} failed.\").Field(BCLog::LogField::ListenAddress, strBind)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Binding public HTTP endpoints on %s failed.\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "strBind"
+            ]
+          },
+          "review_note": "Keep Info, exact existing text and argument types, guards, listener/TLS behavior and error returns. Typed local listener addresses are not remote peers; URL paths are not file.path. Certificate/key path names are public existing diagnostics, never PEM/private-key/cookie content. Capture OS/OpenSSL error before event construction."
+        },
+        {
+          "id": "public_listener_serving",
+          "old": "LogPrintf(\"Serving %s on public listener %s (RPC, wallet and REST \"\n                  \"are not served there)\\n\",\n                  util::Join(g_public_prefixes, \", \"), strBind)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"public_listener_serving\", \"Serving {public_prefixes} on public listener {listen_address} (RPC, wallet and REST are not served there)\").Field(BCLog::LogField::PublicPrefixes, util::Join(g_public_prefixes, \", \")).Field(BCLog::LogField::ListenAddress, strBind)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Serving %s on public listener %s (RPC, wallet and REST are not served there)\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "util::Join(g_public_prefixes, \", \")",
+              "strBind"
+            ]
+          },
+          "review_note": "Keep Info, exact existing text and argument types, guards, listener/TLS behavior and error returns. Typed local listener addresses are not remote peers; URL paths are not file.path. Certificate/key path names are public existing diagnostics, never PEM/private-key/cookie content. Capture OS/OpenSSL error before event construction."
+        },
+        {
+          "id": "chronik_rpc_prefix_serving",
+          "old": "LogPrintf(\"Serving Chronik on the RPC port at %s\\n\", CHRONIK_PREFIX)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chronik_rpc_prefix_serving\", \"Serving Chronik on the RPC port at {http_path}\").Field(BCLog::LogField::HttpPath, CHRONIK_PREFIX)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Serving Chronik on the RPC port at %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "CHRONIK_PREFIX"
+            ]
+          },
+          "review_note": "Keep Info, exact existing text and argument types, guards, listener/TLS behavior and error returns. Typed local listener addresses are not remote peers; URL paths are not file.path. Certificate/key path names are public existing diagnostics, never PEM/private-key/cookie content. Capture OS/OpenSSL error before event construction."
+        },
+        {
+          "id": "trusted_proxy_invalid",
+          "old": "LogPrintf(\"Error: invalid -trustedproxy '%s' (an address or \"\n                      \"subnet, e.g. 10.0.0.0/8)\\n\",\n                      entry)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"trusted_proxy_invalid\", \"Error: invalid -trustedproxy '{addr}' (an address or subnet, e.g. 10.0.0.0/8)\").Field(BCLog::LogField::Addr, entry)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Error: invalid -trustedproxy '%s' (an address or subnet, e.g. 10.0.0.0/8)\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "entry"
+            ]
+          },
+          "review_note": "Keep Info, exact existing text and argument types, guards, listener/TLS behavior and error returns. Typed local listener addresses are not remote peers; URL paths are not file.path. Certificate/key path names are public existing diagnostics, never PEM/private-key/cookie content. Capture OS/OpenSSL error before event construction."
+        },
+        {
+          "id": "p2p_websocket_path_invalid",
+          "old": "LogPrintf(\"Error: invalid -p2pwebsocketpath '%s' (an absolute path \"\n                  \"such as /p2p/ws, not / and without query or trailing /)\\n\",\n                  g_p2p_websocket_path)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"p2p_websocket_path_invalid\", \"Error: invalid -p2pwebsocketpath '{http_path}' (an absolute path such as /p2p/ws, not / and without query or trailing /)\").Field(BCLog::LogField::HttpPath, g_p2p_websocket_path)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Error: invalid -p2pwebsocketpath '%s' (an absolute path such as /p2p/ws, not / and without query or trailing /)\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "g_p2p_websocket_path"
+            ]
+          },
+          "review_note": "Keep Info, exact existing text and argument types, guards, listener/TLS behavior and error returns. Typed local listener addresses are not remote peers; URL paths are not file.path. Certificate/key path names are public existing diagnostics, never PEM/private-key/cookie content. Capture OS/OpenSSL error before event construction."
+        },
+        {
+          "id": "public_fallback_invalid",
+          "old": "LogPrintf(\"Error: invalid -publicfallback '%s' (host:port)\\n\",\n                      fallback)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"public_fallback_invalid\", \"Error: invalid -publicfallback '{addr}' (host:port)\").Field(BCLog::LogField::Addr, fallback)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Error: invalid -publicfallback '%s' (host:port)\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fallback"
+            ]
+          },
+          "review_note": "Keep Info, exact existing text and argument types, guards, listener/TLS behavior and error returns. Typed local listener addresses are not remote peers; URL paths are not file.path. Certificate/key path names are public existing diagnostics, never PEM/private-key/cookie content. Capture OS/OpenSSL error before event construction."
+        },
+        {
+          "id": "http_worker_threads_started",
+          "old": "LogInfo(\"Starting HTTP server with %d coroutine worker threads and %d I/O threads\\n\",\n            rpcThreads, ioThreads)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"http_worker_threads_started\", \"Starting HTTP server with {coroutine_worker_threads} coroutine worker threads and {io_threads} I/O threads\").Field(BCLog::LogField::CoroutineWorkerThreads, rpcThreads).Field(BCLog::LogField::IOThreads, ioThreads)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogInfo",
+            "format": "Starting HTTP server with %d coroutine worker threads and %d I/O threads\n",
+            "specifiers": [
+              "%d",
+              "%d"
+            ],
+            "arguments": [
+              "rpcThreads",
+              "ioThreads"
+            ]
+          },
+          "review_note": "Keep Info, exact existing text and argument types, guards, listener/TLS behavior and error returns. Typed local listener addresses are not remote peers; URL paths are not file.path. Certificate/key path names are public existing diagnostics, never PEM/private-key/cookie content. Capture OS/OpenSSL error before event construction."
+        },
+        {
+          "id": "p2p_listener_shared",
+          "old": "LogPrintf(\"P2P on %s shares the %s listener\\n\",\n                      addr.ToStringAddrPort(),\n                      listener.public_only ? \"public\" : \"RPC\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"p2p_listener_shared\", \"P2P on {listen_address} shares the {listener_kind} listener\").Field(BCLog::LogField::ListenAddress, addr.ToStringAddrPort()).Field(BCLog::LogField::ListenerKind, listener.public_only ? \"public\" : \"RPC\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "P2P on %s shares the %s listener\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "addr.ToStringAddrPort()",
+              "listener.public_only ? \"public\" : \"RPC\""
+            ]
+          },
+          "review_note": "Keep Info, exact existing text and argument types, guards, listener/TLS behavior and error returns. Typed local listener addresses are not remote peers; URL paths are not file.path. Certificate/key path names are public existing diagnostics, never PEM/private-key/cookie content. Capture OS/OpenSSL error before event construction."
+        },
+        {
+          "id": "http_request_unhandled",
+          "old": "LogPrintf(\"%s: Unhandled request\\n\", __func__)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"http_request_unhandled\", \"{source_function}: Unhandled request\").Field(BCLog::LogField::SourceFunction, __func__)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: Unhandled request\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Keep Info, exact existing text and argument types, guards, listener/TLS behavior and error returns. Typed local listener addresses are not remote peers; URL paths are not file.path. Certificate/key path names are public existing diagnostics, never PEM/private-key/cookie content. Capture OS/OpenSSL error before event construction."
+        }
+      ],
+      "support_adjustments": [
+        {
+          "purpose": "Capture socket last-error and its existing readable string before EventBuilder construction can touch errno/WSA last error.",
+          "old": "LogInfoEvent(BCLog::ALL, \"p2p_websocket_socketpair_failed\", \"P2P WebSocket: socketpair failed: {error}\").Field(BCLog::LogField::Error, socketpair_error);",
+          "new": "const auto socketpair_error{NetworkErrorString(WSAGetLastError())};\n        LogInfoEvent(BCLog::ALL, \"p2p_websocket_socketpair_failed\", \"P2P WebSocket: socketpair failed: {error}\").Field(BCLog::LogField::Error, socketpair_error);"
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Append distinct semantic roles without changing existing field IDs or conflating URL paths, local listeners and remote peer addresses.",
+          "old": "    X(CertificateValidityDays, certificate_validity_days, INT, \"\", \"\")\n",
+          "new": "    X(CertificateValidityDays, certificate_validity_days, INT, \"\", \"\") \\\n    X(ListenAddress, listen_address, STRING, \"\", \"\") \\\n    X(ListenPort, listen_port, INT, \"\", \"\") \\\n    X(PublicPrefixes, public_prefixes, STRING, \"\", \"\") \\\n    X(HttpPath, http_path, STRING, \"\", \"\") \\\n    X(CoroutineWorkerThreads, coroutine_worker_threads, INT, \"\", \"\") \\\n    X(IOThreads, io_threads, INT, \"\", \"\") \\\n    X(ListenerKind, listener_kind, STRING, \"\", \"\")\n"
+        }
+      ]
+    }
+  ]
+}

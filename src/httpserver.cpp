@@ -1343,8 +1343,10 @@ static asio::awaitable<void> AcceptP2PWebSocket(Stream &stream,
     // through a socketpair, with Beast doing the WebSocket framing.
     const auto pair{p2pws::CreateBridgeSocketPair()};
     if (!pair) {
-        LogPrintf("P2P WebSocket: socketpair failed: %s\n",
-                  NetworkErrorString(WSAGetLastError()));
+        const auto socketpair_error{NetworkErrorString(WSAGetLastError())};
+        LogInfoEvent(BCLog::ALL, "p2p_websocket_socketpair_failed",
+                     "P2P WebSocket: socketpair failed: {error}")
+            .Field(BCLog::LogField::Error, socketpair_error);
         co_return;
     }
     p2pws::LocalSocket local{co_await asio::this_coro::executor};
@@ -3133,8 +3135,11 @@ static bool HTTPBindAddresses() {
                              "untrusted networks such as the public internet");
             }
         } else {
-            LogPrintf("Binding RPC on address %s port %i failed.\n", i->first,
-                      i->second);
+            LogInfoEvent(
+                BCLog::ALL, "rpc_listener_bind_failed",
+                "Binding RPC on address {listen_address} port {listen_port} failed.")
+                .Field(BCLog::LogField::ListenAddress, i->first)
+                .Field(BCLog::LogField::ListenPort, i->second);
         }
     }
     if (g_acceptors.empty()) {
@@ -3146,18 +3151,25 @@ static bool HTTPBindAddresses() {
         uint16_t port{0};
         std::string host;
         if (!SplitHostPort(strBind, port, host) || port == 0) {
-            LogPrintf("Error: -publicbind=%s needs an explicit port\n",
-                      strBind);
+            LogInfoEvent(
+                BCLog::ALL, "public_listener_port_missing",
+                "Error: -publicbind={listen_address} needs an explicit port")
+                .Field(BCLog::LogField::ListenAddress, strBind);
             return false;
         }
         if (!BindEndpoint(host, port, /*public_only=*/true)) {
-            LogPrintf("Binding public HTTP endpoints on %s failed.\n",
-                      strBind);
+            LogInfoEvent(
+                BCLog::ALL, "public_listener_bind_failed",
+                "Binding public HTTP endpoints on {listen_address} failed.")
+                .Field(BCLog::LogField::ListenAddress, strBind);
             return false;
         }
-        LogPrintf("Serving %s on public listener %s (RPC, wallet and REST "
-                  "are not served there)\n",
-                  util::Join(g_public_prefixes, ", "), strBind);
+        LogInfoEvent(
+            BCLog::ALL, "public_listener_serving",
+            "Serving {public_prefixes} on public listener {listen_address} (RPC, wallet and REST are not served there)")
+            .Field(BCLog::LogField::PublicPrefixes,
+                   util::Join(g_public_prefixes, ", "))
+            .Field(BCLog::LogField::ListenAddress, strBind);
     }
     return true;
 }
@@ -3372,7 +3384,9 @@ bool InitHTTPServer(Config &config) {
                          DEFAULT_CHRONIK_PUBLIC_ON_RPC_PORT);
     if (g_chronik_enabled) {
         RegisterPublicHTTPPrefix(CHRONIK_PREFIX);
-        LogPrintf("Serving Chronik on the RPC port at %s\n", CHRONIK_PREFIX);
+        LogInfoEvent(BCLog::ALL, "chronik_rpc_prefix_serving",
+                     "Serving Chronik on the RPC port at {http_path}")
+            .Field(BCLog::LogField::HttpPath, CHRONIK_PREFIX);
     }
 
     g_p2p_websocket_enabled = GetP2PWebSocketListen(gArgs);
@@ -3380,9 +3394,10 @@ bool InitHTTPServer(Config &config) {
     for (const std::string &entry : gArgs.GetArgs("-trustedproxy")) {
         CSubNet subnet;
         if (!LookupSubNet(entry, subnet) || !subnet.IsValid()) {
-            LogPrintf("Error: invalid -trustedproxy '%s' (an address or "
-                      "subnet, e.g. 10.0.0.0/8)\n",
-                      entry);
+            LogInfoEvent(
+                BCLog::ALL, "trusted_proxy_invalid",
+                "Error: invalid -trustedproxy '{addr}' (an address or subnet, e.g. 10.0.0.0/8)")
+                .Field(BCLog::LogField::Addr, entry);
             return false;
         }
         g_trusted_proxies.push_back(subnet);
@@ -3411,9 +3426,10 @@ bool InitHTTPServer(Config &config) {
     if (g_p2p_websocket_path.size() < 2 || g_p2p_websocket_path[0] != '/' ||
         g_p2p_websocket_path.find_first_of("?#% \t\r\n") != std::string::npos ||
         g_p2p_websocket_path.back() == '/') {
-        LogPrintf("Error: invalid -p2pwebsocketpath '%s' (an absolute path "
-                  "such as /p2p/ws, not / and without query or trailing /)\n",
-                  g_p2p_websocket_path);
+        LogInfoEvent(
+            BCLog::ALL, "p2p_websocket_path_invalid",
+            "Error: invalid -p2pwebsocketpath '{http_path}' (an absolute path such as /p2p/ws, not / and without query or trailing /)")
+            .Field(BCLog::LogField::HttpPath, g_p2p_websocket_path);
         return false;
     }
     g_public_fallback = {};
@@ -3422,8 +3438,9 @@ bool InitHTTPServer(Config &config) {
         uint16_t port{0};
         std::string host;
         if (!SplitHostPort(fallback, port, host) || host.empty() || port == 0) {
-            LogPrintf("Error: invalid -publicfallback '%s' (host:port)\n",
-                      fallback);
+            LogInfoEvent(BCLog::ALL, "public_fallback_invalid",
+                         "Error: invalid -publicfallback '{addr}' (host:port)")
+                .Field(BCLog::LogField::Addr, fallback);
             return false;
         }
         g_public_fallback = {.enabled = true, .host = host, .port = port};
@@ -3532,8 +3549,11 @@ void StartHTTPServer() {
         (long)gArgs.GetIntArg("-rpcthreads", DEFAULT_HTTP_THREADS), 1L);
     const int ioThreads = std::max(
         (long)gArgs.GetIntArg("-rpciothreads", DEFAULT_HTTP_IO_THREADS), 1L);
-    LogInfo("Starting HTTP server with %d coroutine worker threads and %d I/O threads\n",
-            rpcThreads, ioThreads);
+    LogInfoEvent(
+        BCLog::ALL, "http_worker_threads_started",
+        "Starting HTTP server with {coroutine_worker_threads} coroutine worker threads and {io_threads} I/O threads")
+        .Field(BCLog::LogField::CoroutineWorkerThreads, rpcThreads)
+        .Field(BCLog::LogField::IOThreads, ioThreads);
     if (g_work_queue) g_work_queue->Start(rpcThreads);
     g_io_work.emplace(asio::make_work_guard(*g_io));
     for (auto &listener : g_acceptors) {
@@ -3673,7 +3693,9 @@ HTTPRequest::HTTPRequest(std::unique_ptr<HTTPRequestImpl> impl,
 HTTPRequest::~HTTPRequest() {
     if (!replySent) {
         // Keep track of whether reply was sent to avoid request leaks
-        LogPrintf("%s: Unhandled request\n", __func__);
+        LogInfoEvent(BCLog::ALL, "http_request_unhandled",
+                     "{source_function}: Unhandled request")
+            .Field(BCLog::LogField::SourceFunction, __func__);
         WriteReply(HTTP_INTERNAL_SERVER_ERROR, "Unhandled request");
     }
 }
