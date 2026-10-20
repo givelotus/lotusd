@@ -920,6 +920,15 @@ private:
         return true;
     }
 
+public:
+    std::vector<bool>
+    PrepareStaged(const std::vector<CTransactionRef> &txs,
+                  std::vector<PrecomputedAdmissionChecks> &checks,
+                  std::vector<std::vector<COutPoint>> &fetched,
+                  uint32_t script_flags, const MempoolAdmissionLimits &limits)
+        EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
+private:
     ValidationCache &GetValidationCache() {
         return m_active_chainstate.m_chainman.m_validation_cache;
     }
@@ -2654,6 +2663,174 @@ ProcessRawTxBatch(
     BlockValidationState state_dummy;
     active_chainstate.FlushStateToDisk(state_dummy, FlushStateMode::PERIODIC);
     return result;
+}
+
+std::vector<bool>
+MemPoolAccept::PrepareStaged(const std::vector<CTransactionRef> &txs,
+                             std::vector<PrecomputedAdmissionChecks> &checks,
+                             std::vector<std::vector<COutPoint>> &fetched,
+                             uint32_t script_flags,
+                             const MempoolAdmissionLimits &limits) {
+    AssertLockHeld(cs_main);
+    LOCK(m_pool.cs);
+    const size_t n = txs.size();
+    std::vector<bool> verify(n, false);
+    // Reuse the ordinary deferred PreChecks: reject cheap invalid
+    // work before it consumes script workers. Phase C still repeats
+    // every check and produces the authoritative verdict.
+    size_t table_size = 1;
+    while (table_size < n * 2) {
+        table_size *= 2;
+    }
+    std::vector<TxIdIndexSlot> table(table_size);
+    for (size_t i = 0; i < n; ++i) {
+        const auto &id = txs[i]->GetId();
+        size_t slot = id.GetUint64(0) & (table_size - 1);
+        while (table[slot].occupied && table[slot].txid != id) {
+            slot = (slot + 1) & (table_size - 1);
+        }
+        if (!table[slot].occupied) {
+            table[slot] = {id, i, true};
+        }
+    }
+    BatchLookupContext context{txs, table, table_size - 1};
+    std::unordered_set<COutPoint, SaltedOutpointHasher> claimed;
+    for (size_t i = 0; i < n; ++i) {
+        const auto &tx = txs[i];
+        if (std::any_of(tx->vin.begin(), tx->vin.end(), [&](const auto &input) {
+                return !claimed.insert(input.prevout).second;
+            })) {
+            continue;
+        }
+        context.current_tx_idx = i;
+        auto args =
+            ATMPArgs::SingleAccept(m_active_chainstate.m_chainman.GetConfig(),
+                                   GetTime(), false, fetched[i], false, 0);
+        Workspace ws(tx, script_flags);
+        if (!PreChecks(args, ws, /*defer_script_checks=*/true, &context)) {
+            continue;
+        }
+        // Serialized-size relay minimum is independent of script
+        // sigchecks. The exact virtual-size minimum, fee limits and
+        // package policy are evaluated again at commit time.
+        if (ws.m_modified_fees <
+                m_pool.m_opts.min_relay_feerate.GetFee(tx->GetTotalSize()) ||
+            (limits.max_fee > Amount::zero() &&
+             ws.m_base_fees > limits.max_fee)) {
+            continue;
+        }
+        auto &spent = checks[i].spent_outputs;
+        spent.reserve(ws.m_resolved_inputs.size());
+        for (const auto &coin : ws.m_resolved_inputs) {
+            spent.push_back(coin.GetTxOut());
+        }
+        verify[i] = true;
+    }
+    return verify;
+}
+
+std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
+    ChainstateManager &chainman, const std::vector<CTransactionRef> &txs,
+    const StagedAdmissionOptions &options, StagedAdmissionStats *stats) {
+    AssertLockNotHeld(cs_main);
+    const size_t n = txs.size();
+    std::vector<std::optional<MempoolAcceptResult>> results(n);
+    if (n == 0) {
+        return results;
+    }
+    StagedAdmissionStats local;
+    std::vector<PrecomputedAdmissionChecks> checks(n);
+    std::vector<bool> verify(n, false);
+    // Coins phase A brought into the coins cache, per transaction, so they
+    // can be evicted again if that transaction is not admitted (as
+    // AcceptToMemoryPool does for the coins it fetches).
+    std::vector<std::vector<COutPoint>> fetched(n);
+    uint32_t script_flags = 0;
+
+    // Phase A: resolve spent outputs under the locks.
+    {
+        const auto start = SteadyClock::now();
+        LOCK(cs_main);
+        Chainstate &chainstate = chainman.ActiveChainstate();
+        CTxMemPool *pool = chainstate.GetMempool();
+        if (pool != nullptr) {
+            script_flags = GetMempoolScriptFlags(chainstate);
+            verify = MemPoolAccept(*pool, chainstate)
+                         .PrepareStaged(txs, checks, fetched, script_flags,
+                                        options.limits);
+        }
+        local.resolve_locked = SteadyClock::now() - start;
+    }
+
+    // Phase B: context-free and script checks, no locks held.
+    std::vector<size_t> work;
+    work.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        if (verify[i]) {
+            work.push_back(i);
+        }
+    }
+    local.precomputed = work.size();
+    if (!work.empty()) {
+        const auto start = SteadyClock::now();
+        ValidationCache &validation_cache = chainman.m_validation_cache;
+        std::atomic<size_t> next{0};
+        const size_t threads =
+            std::clamp<size_t>(options.script_threads, 1, work.size());
+        ParallelScriptWorkerPool::Instance().Run(threads, [&](size_t) {
+            for (size_t k = next.fetch_add(1, std::memory_order_relaxed);
+                 k < work.size();
+                 k = next.fetch_add(1, std::memory_order_relaxed)) {
+                const size_t i = work[k];
+                ComputeAdmissionChecks(*txs[i], script_flags, validation_cache,
+                                       checks[i]);
+            }
+        });
+        local.verify_unlocked = SteadyClock::now() - start;
+    }
+
+    if (options.test_between_phases) {
+        options.test_between_phases();
+    }
+
+    // Phase C: ordinary admission, in order, reusing matching checks.
+    {
+        const auto start = SteadyClock::now();
+        LOCK(cs_main);
+        Chainstate &chainstate = chainman.ActiveChainstate();
+        CTxMemPool *pool = chainstate.GetMempool();
+        // Publish one mempool snapshot for the whole batch.
+        std::optional<CTxMemPool::ScopedSnapshotDefer> defer;
+        if (pool != nullptr) {
+            LOCK(pool->cs);
+            defer.emplace(*pool);
+        }
+        for (size_t i = 0; i < n; ++i) {
+            if (options.skip_at_commit && options.skip_at_commit(txs[i])) {
+                continue;
+            }
+            results[i].emplace(chainman.ProcessTransaction(
+                txs[i], /*test_accept=*/false, options.limits,
+                verify[i] ? &checks[i] : nullptr));
+        }
+        for (size_t i = 0; i < n; ++i) {
+            if (!results[i] || results[i]->m_result_type !=
+                                   MempoolAcceptResult::ResultType::VALID) {
+                for (const COutPoint &outpoint : fetched[i]) {
+                    chainstate.CoinsTip().Uncache(outpoint);
+                }
+            }
+        }
+        if (pool != nullptr) {
+            LOCK(pool->cs);
+            defer.reset();
+        }
+        local.commit_locked = SteadyClock::now() - start;
+    }
+    if (stats != nullptr) {
+        *stats = local;
+    }
+    return results;
 }
 
 Amount GetBlockSubsidy(int nHeight, const Consensus::Params &consensusParams) {
@@ -6750,10 +6927,10 @@ bool ChainstateManager::ProcessNewBlock(
     return true;
 }
 
-MempoolAcceptResult
-ChainstateManager::ProcessTransaction(const CTransactionRef &tx,
-                                      bool test_accept,
-                                      const MempoolAdmissionLimits &limits) {
+MempoolAcceptResult ChainstateManager::ProcessTransaction(
+    const CTransactionRef &tx, bool test_accept,
+    const MempoolAdmissionLimits &limits,
+    const PrecomputedAdmissionChecks *precomputed) {
     AssertLockHeld(cs_main);
     Chainstate &active_chainstate = ActiveChainstate();
     if (!active_chainstate.GetMempool()) {
@@ -6762,7 +6939,8 @@ ChainstateManager::ProcessTransaction(const CTransactionRef &tx,
         return MempoolAcceptResult::Failure(state);
     }
     auto result = AcceptToMemoryPool(active_chainstate, tx, GetTime(),
-                                     /*bypass_limits=*/false, test_accept, 0, limits);
+                                     /*bypass_limits=*/false, test_accept, 0,
+                                     limits, precomputed);
     active_chainstate.GetMempool()->check(
         active_chainstate.CoinsTip(), active_chainstate.m_chain.Height() + 1);
     return result;

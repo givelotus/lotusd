@@ -11,6 +11,8 @@
 #include <util/time.h>
 #include <validation.h>
 
+#include <algorithm>
+#include <thread>
 #include <vector>
 
 /**
@@ -49,7 +51,9 @@ SignedSets MakeSets(TestChain100Setup &setup) {
 } // namespace
 
 static void MempoolAdmissionSignedSerial(benchmark::Bench &bench) {
-    auto setup = MakeNoLogFileContext<TestChain100Setup>();
+    // No per-admission mempool consistency check (regtest defaults to one).
+    auto setup = MakeNoLogFileContext<TestChain100Setup>(ChainType::REGTEST,
+                                                         {"-checkmempool=0"});
     const SignedSets sets = MakeSets(*setup);
     Chainstate &chainstate = setup->m_node.chainman->ActiveChainstate();
     CTxMemPool &mempool = *setup->m_node.mempool;
@@ -68,4 +72,55 @@ static void MempoolAdmissionSignedSerial(benchmark::Bench &bench) {
     });
 }
 
+/**
+ * The same sets through AcceptToMemoryPoolStaged in batches of 256: inputs
+ * resolved under cs_main, scripts verified on `threads` threads without
+ * locks, then committed in order. Reports the same per-transaction cost.
+ */
+static void StagedAdmission(benchmark::Bench &bench, size_t threads) {
+    // No per-admission mempool consistency check (regtest defaults to one).
+    auto setup = MakeNoLogFileContext<TestChain100Setup>(ChainType::REGTEST,
+                                                         {"-checkmempool=0"});
+    const SignedSets sets = MakeSets(*setup);
+    CTxMemPool &mempool = *setup->m_node.mempool;
+    StagedAdmissionOptions options;
+    options.script_threads =
+        threads ? threads : std::max(1U, std::thread::hardware_concurrency());
+    size_t next = 0;
+    bench.epochs(SETS).epochIterations(1).batch(TXS_PER_SET).unit("tx");
+    bench.run([&] {
+        const auto &set = sets.sets.at(next++ % SETS);
+        constexpr size_t BATCH = 256;
+        for (size_t pos = 0; pos < set.size(); pos += BATCH) {
+            std::vector<CTransactionRef> batch(
+                set.begin() + pos,
+                set.begin() + std::min(set.size(), pos + BATCH));
+            const auto results = AcceptToMemoryPoolStaged(
+                *setup->m_node.chainman, batch, options);
+            for (const auto &r : results) {
+                Assert(r && r->m_result_type ==
+                                MempoolAcceptResult::ResultType::VALID);
+            }
+        }
+        mempool.clear();
+    });
+}
+
+static void MempoolAdmissionSignedStaged1(benchmark::Bench &bench) {
+    StagedAdmission(bench, 1);
+}
+static void MempoolAdmissionSignedStaged4(benchmark::Bench &bench) {
+    StagedAdmission(bench, 4);
+}
+static void MempoolAdmissionSignedStaged8(benchmark::Bench &bench) {
+    StagedAdmission(bench, 8);
+}
+static void MempoolAdmissionSignedStagedAll(benchmark::Bench &bench) {
+    StagedAdmission(bench, 0);
+}
+
 BENCHMARK(MempoolAdmissionSignedSerial);
+BENCHMARK(MempoolAdmissionSignedStaged1);
+BENCHMARK(MempoolAdmissionSignedStaged4);
+BENCHMARK(MempoolAdmissionSignedStaged8);
+BENCHMARK(MempoolAdmissionSignedStagedAll);
