@@ -41,6 +41,7 @@
 #include <interfaces/chain.h>
 #include <interfaces/node.h>
 #include <kernel/caches.h>
+#include <logging/values.h>
 #include <lotus_v2/fee_hysteresis.h>
 #include <mapport.h>
 #include <mempool_args.h>
@@ -3076,8 +3077,9 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
                 return false;
             }
             const uint256 asmap_version = (HashWriter{} << asmap).GetHash();
-            LogPrintf("Using asmap version %s for IP bucketing\n",
-                      asmap_version.ToString());
+            LogInfoEvent(BCLog::ALL, "asmap_version_selected",
+                         "Using asmap version {asmap_hash} for IP bucketing")
+                .Field(BCLog::LogField::ASMapHash, asmap_version);
         } else {
             LogInfoEvent(BCLog::ALL, "ip_bucketing_legacy",
                          "Using /16 prefix for IP bucketing");
