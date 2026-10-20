@@ -427,6 +427,7 @@ mod tests {
                     height: 0,
                 },
                 vec![ConfirmedTx {
+                    pos: chronik_db::v2_branch::TxPos::default(),
                     location: loc([2; 32], 0, 4),
                     outputs: vec![output(), output()],
                     spends: vec![],
@@ -492,7 +493,6 @@ mod tests {
                         },
                         arguments_count: 0,
                     }],
-                    resolved_creation: None,
                 })
                 .collect(),
         }
@@ -577,6 +577,7 @@ mod tests {
                 child,
                 parent,
                 vec![ConfirmedTx {
+                    pos: chronik_db::v2_branch::TxPos::default(),
                     location: loc([6; 32], 1, 7),
                     outputs: vec![],
                     spends: vec![SpentInput {
