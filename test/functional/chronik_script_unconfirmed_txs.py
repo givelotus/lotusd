@@ -142,6 +142,7 @@ class ChronikScriptUnconfirmedTxsTest(BitcoinTestFramework):
                     version=1,
                     inputs=[
                         pb.TxInput(
+                            is_legacy=True,
                             prev_out=pb.OutPoint(
                                 txid=bytes.fromhex(cointxid)[::-1],
                                 out_idx=0,
@@ -154,10 +155,12 @@ class ChronikScriptUnconfirmedTxsTest(BitcoinTestFramework):
                     ],
                     outputs=[
                         pb.TxOutput(
+                            is_legacy=True,
                             sats=coinvalue - 1000,
                             output_script=bytes(P2SH_OP_TRUE),
                         ),
                         pb.TxOutput(
+                            is_legacy=True,
                             sats=0,
                             output_script=bytes(pad_script),
                         ),

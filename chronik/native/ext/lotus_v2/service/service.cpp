@@ -260,7 +260,9 @@ CommittedBlock V2Service::Block(const ffi::NativeBlock &block) const {
             Fail("block input bound");
         }
         for (const ffi::NativeOutput &output : tx.outputs) {
-            if (output.wire.size() > MAX_OUTPUT_BYTES) {
+            const size_t output_cap = !output.wire.empty() && output.wire[0] == 0x80
+                                   ? m_bounds.BlockBytes() + 1 : MAX_OUTPUT_BYTES;
+            if (output.wire.size() > output_cap) {
                 Fail("output bound");
             }
             bytes += 4 + output.wire.size();

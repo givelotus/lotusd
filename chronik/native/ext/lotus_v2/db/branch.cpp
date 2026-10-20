@@ -208,7 +208,7 @@ Coin DecodeCoin(ByteView bytes) {
         ThrowCorrupt();
     }
     Coin coin = Dec<Coin>(bytes);
-    if ((coin.flags & ~7) != 0 ||
+    if (((coin.flags & ~7) != 0 && coin.flags != 0x80 && coin.flags != 0x82) ||
         coin.token_id.has_value() != ((coin.flags & 1) != 0)) {
         ThrowCorrupt();
     }
@@ -355,10 +355,10 @@ AssetEntries(const CommittedBlock &block, const std::vector<size_t> &order,
 }
 
 /**
- * Check that an undo log inverts exactly the indexed tip block. The block is
- * rebuilt from the node through `source` (its receipt keeps only positions),
- * and every key the block wrote must hold the value it wrote, with the
- * undo's prior value being the one connect replaced.
+ * Check that an undo log inverts exactly the indexed tip block. The block
+ * is rebuilt from the node through `source` (its receipt keeps only
+ * positions), and every key the block wrote must hold the value it wrote,
+ * with the undo's prior value being the one connect replaced.
  */
 void ValidateUndo(const V2Env &db, const TxSource &source,
                   const Binding &binding, const Bounds &bounds,
@@ -714,7 +714,7 @@ void V2Db::ConnectImpl(const CommittedBlock &block, bool genesis) {
         const ConfirmedTx &tx = block.transactions[tx_index];
         for (size_t index = 0; index < tx.explorer.inputs.size(); ++index) {
             const InputFact &input = tx.explorer.inputs[index];
-            if (input.flags != 1) {
+            if (input.flags != 1 && input.flags != 4) {
                 continue;
             }
             const OutPoint op{TxId{H(input.prev_txid)}, input.prev_index};
@@ -737,7 +737,8 @@ void V2Db::ConnectImpl(const CommittedBlock &block, bool genesis) {
         }
         for (const SpentInput &s : tx.spends) {
             if (s.input_index >= tx.explorer.inputs.size() ||
-                tx.explorer.inputs[s.input_index].flags != 1) {
+                (tx.explorer.inputs[s.input_index].flags != 1 &&
+                 tx.explorer.inputs[s.input_index].flags != 4)) {
                 ThrowInvalid("full spend missing");
             }
         }

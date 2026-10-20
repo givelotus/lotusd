@@ -133,6 +133,7 @@ UtxoPlan<P> GroupUtxosQuery::Utxos(ByteView member) const {
 
         const bool is_final_height = avalanche.IsFinalHeight(db_tx->block_height);
         P utxo;
+        utxo.set_is_legacy(db_tx->entry.is_legacy);
         SetCommon(utxo, OutPoint{txid, out_idx}, db_tx->block_height,
                   db_tx->entry.is_coinbase, db_utxo.sats, is_final_height,
                   ReadDbTokenOutput(snap.Store(), snap.Txn(), tx_num, out_idx,
@@ -174,6 +175,7 @@ UtxoPlan<P> GroupUtxosQuery::Utxos(ByteView member) const {
             token = std::move(result.value());
         }
         P utxo;
+        utxo.set_is_legacy(mempool_tx->tx->version != 7);
         SetCommon(utxo, mempool_outpoint, -1, false, output.sats, false, token);
         if constexpr (kOutput) {
             utxo.set_script(BytesStr(output.script));

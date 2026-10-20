@@ -9,7 +9,10 @@ struct Memory {
     outputs: BTreeMap<OutPoint, OutputRecord>,
     calls: Cell<usize>,
 }
-fn next<T: Clone>(map: &BTreeMap<Vec<u8>, T>, after: Option<&[u8]>) -> Option<(Vec<u8>, T)> {
+fn next<T: Clone>(
+    map: &BTreeMap<Vec<u8>, T>,
+    after: Option<&[u8]>,
+) -> Option<(Vec<u8>, T)> {
     map.iter()
         .find(|(k, _)| after.is_none_or(|a| k.as_slice() > a))
         .map(|(k, v)| (k.clone(), v.clone()))
@@ -147,6 +150,7 @@ fn empty_unspent_page_advances_and_history_keeps_zero_burns() {
                 creation,
                 spend: None,
                 output: Output {
+                    legacy_script: None,
                     flags: if i < 4 { 3 } else { 1 },
                     value: 0,
                     token_id: token,
@@ -230,6 +234,7 @@ fn output_creation_identity_and_join_read_budget_are_enforced() {
             creation: forged,
             spend: None,
             output: Output {
+                legacy_script: None,
                 flags: 1,
                 value: 0,
                 token_id: token,

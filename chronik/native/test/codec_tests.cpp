@@ -455,12 +455,14 @@ BOOST_AUTO_TEST_CASE(db_value_structs_golden) {
                    w.U32(81);
                    w.U32(0);
                    w.I64(0);
+                   w.Bool(false);
                }));
     CheckBytes("SerTx/normal", Enc([](auto &w) {
                    w.Raw(AsView(Arr32(5, 7)));
                    w.U32(0x00ffff00);
                    w.U32(0x1234);
                    w.I64(1699999999);
+                   w.Bool(false);
                }));
     // SpentByEntry {out_idx u32, tx_num u64, input_idx u32}, concatenated
     CheckBytes("SpentByEntries/three", Enc([](auto &w) {
