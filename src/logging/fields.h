@@ -165,7 +165,12 @@
     X(SHA256Implementation, sha256_implementation, STRING, "", "") \
     X(ScriptWorkerThreads, script_worker_threads, INT, "", "") \
     X(SourcePath, source_path, STRING, "", "") \
-    X(DestinationPath, destination_path, STRING, "", "")
+    X(DestinationPath, destination_path, STRING, "", "") \
+    X(CertificateAction, certificate_action, STRING, "", "") \
+    X(CertificatePath, certificate_path, STRING, "", "") \
+    X(KeyPath, key_path, STRING, "", "") \
+    X(ServerName, server_name, STRING, "", "") \
+    X(CertificateValidityDays, certificate_validity_days, INT, "", "")
 
 namespace BCLog {
 
