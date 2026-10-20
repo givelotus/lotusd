@@ -1,7 +1,9 @@
 #include <node/peerman_args.h>
 
+#include <chainparams.h>
 #include <common/args.h>
 #include <net_processing.h>
+#include <util/chaintype.h>
 #include <util/strencodings.h>
 #include <util/time.h>
 
@@ -62,6 +64,15 @@ void ApplyArgsManOptions(const ArgsManager &argsman,
     }
     if (auto value{argsman.GetIntArg("-txrelayratemax")}) {
         options.txrelay_rate_max = uint64_t(std::max<int64_t>(*value, 1));
+    }
+
+    if (auto value{argsman.GetBoolArg("-txrelayshortids")}) {
+        options.txrelay_shortids = *value;
+    }
+    if (auto value{argsman.GetIntArg("-txrelaytestshortidbits")};
+        value && Params().GetChainType() == ChainType::REGTEST) {
+        options.txrelay_shortid_bits =
+            unsigned(std::clamp<int64_t>(*value, 1, 64));
     }
 
     if (auto value{argsman.GetIntArg("-avacooldown")}) {
