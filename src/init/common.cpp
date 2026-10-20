@@ -300,7 +300,9 @@ void LogPackageVersion() {
 #else
     version_string += " (release build)";
 #endif
-    LogPrintf("%s version %s for the eCash network\n", CLIENT_NAME,
-              version_string);
+    LogInfoEvent(BCLog::ALL, "client_version_announced",
+                 "{client_name} version {client_version} for the eCash network")
+        .Field(BCLog::LogField::ClientName, CLIENT_NAME)
+        .Field(BCLog::LogField::ClientVersion, version_string);
 }
 } // namespace init

@@ -1,0 +1,102 @@
+{
+  "schema": 1,
+  "batch": "startup-completion-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "requires": "logging: retain integral values in bounded numeric message formats",
+  "files": [
+    {
+      "path": "src/init.cpp",
+      "rules": [
+        {
+          "id": "node_memory_exhausted",
+          "old": "LogPrintf(\"Error: Out of memory. Terminating.\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"node_memory_exhausted\", \"Error: Out of memory. Terminating.\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Error: Out of memory. Terminating.\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve Info, exact diagnostic words/spacing and existing failure/startup flow. Startup elapsed milliseconds remain signed wall-clock subtraction and consumer width15; no clock or timing-policy change. Client name/version are strings, not integer protocol versions. OOM reporting adds no new string construction before existing log-builder path; no shutdown/index decisions change. Rare allocation/index-restart failures not newly forced."
+        },
+        {
+          "id": "snapshot_index_restart_failed",
+          "old": "LogPrintf(\"[snapshot] WARNING failed to restart index %s \"\n                              \"on snapshot chain\\n\",\n                              index->GetName())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_index_restart_failed\", \"[snapshot] WARNING failed to restart index {name} on snapshot chain\").Field(BCLog::LogField::Name, index->GetName())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] WARNING failed to restart index %s on snapshot chain\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "index->GetName()"
+            ]
+          },
+          "review_note": "Preserve Info, exact diagnostic words/spacing and existing failure/startup flow. Startup elapsed milliseconds remain signed wall-clock subtraction and consumer width15; no clock or timing-policy change. Client name/version are strings, not integer protocol versions. OOM reporting adds no new string construction before existing log-builder path; no shutdown/index decisions change. Rare allocation/index-restart failures not newly forced."
+        },
+        {
+          "id": "block_index_startup_completed",
+          "old": "LogPrintf(\" block index %15dms\\n\",\n                          GetTimeMillis() - load_block_index_start_time)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_index_startup_completed\", \" block index {elapsed_milliseconds:15d}ms\").Field(BCLog::LogField::ElapsedMilliseconds, GetTimeMillis() - load_block_index_start_time)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": " block index %15dms\n",
+            "specifiers": [
+              "%15d"
+            ],
+            "arguments": [
+              "GetTimeMillis() - load_block_index_start_time"
+            ]
+          },
+          "review_note": "Preserve Info, exact diagnostic words/spacing and existing failure/startup flow. Startup elapsed milliseconds remain signed wall-clock subtraction and consumer width15; no clock or timing-policy change. Client name/version are strings, not integer protocol versions. OOM reporting adds no new string construction before existing log-builder path; no shutdown/index decisions change. Rare allocation/index-restart failures not newly forced."
+        }
+      ],
+      "support_adjustments": [
+        {
+          "purpose": "Keep the allocation-failure comment correct after changing its logging API; preserve handler ordering.",
+          "old": "    // immediately to (try to) avoid chain corruption. Since LogPrintf may\n",
+          "new": "    // immediately to (try to) avoid chain corruption. Since logging may\n"
+        }
+      ]
+    },
+    {
+      "path": "src/init/common.cpp",
+      "rules": [
+        {
+          "id": "client_version_announced",
+          "old": "LogPrintf(\"%s version %s for the eCash network\\n\", CLIENT_NAME,\n              version_string)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"client_version_announced\", \"{client_name} version {client_version} for the eCash network\").Field(BCLog::LogField::ClientName, CLIENT_NAME).Field(BCLog::LogField::ClientVersion, version_string)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s version %s for the eCash network\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "CLIENT_NAME",
+              "version_string"
+            ]
+          },
+          "review_note": "Preserve Info, exact diagnostic words/spacing and existing failure/startup flow. Startup elapsed milliseconds remain signed wall-clock subtraction and consumer width15; no clock or timing-policy change. Client name/version are strings, not integer protocol versions. OOM reporting adds no new string construction before existing log-builder path; no shutdown/index decisions change. Rare allocation/index-restart failures not newly forced."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Append string software identity fields; distinguish them from integer protocol/database versions.",
+          "old": "    X(ElapsedMilliseconds, elapsed_milliseconds, INT, \"\", \"\")\n",
+          "new": "    X(ElapsedMilliseconds, elapsed_milliseconds, INT, \"\", \"\") \\\n    X(ClientName, client_name, STRING, \"\", \"\") \\\n    X(ClientVersion, client_version, STRING, \"\", \"\")\n"
+        }
+      ]
+    }
+  ]
+}
