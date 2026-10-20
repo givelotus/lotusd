@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "batch": "batch-scheduler-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/util/batchpriority.cpp",
+      "rules": [
+        {
+          "id": "batch_thread_scheduler_failed",
+          "old": "LogPrintf(\"Failed to pthread_setschedparam: %s\\n\", SysErrorString(rc))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"batch_thread_scheduler_failed\", \"Failed to pthread_setschedparam: {error}\").Field(BCLog::LogField::Error, SysErrorString(rc)).Field(BCLog::LogField::ErrorCode, rc)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Failed to pthread_setschedparam: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "SysErrorString(rc)"
+            ]
+          },
+          "review_note": "Preserve Info, SysErrorString of the returned pthread error (not ambient errno), original rc!=0/SCHED_BATCH guards and scheduling call/parameters. Additional numeric error is the same stable return code. macOS SCHED_BATCH branch is absent; real Linux/BSD scheduling-failure runtime not newly forced."
+        }
+      ]
+    }
+  ]
+}
