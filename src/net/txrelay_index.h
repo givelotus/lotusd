@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -93,14 +94,20 @@ public:
         return ComputeShortId(key.k0, key.k1, txid, m_bits);
     }
 
+    using Snapshot = std::vector<std::pair<TxId, Clock>>;
+
     /**
-     * Start a new epoch indexing `txs` (the mempool, with admission times).
+     * Start a new epoch from a mempool snapshot obtained by `snapshot`.
+     * The callback runs without the index lock, after mutation tracking starts.
+     * Concurrent additions/removals are replayed before publication. If the
+     * bounded mutation journal overflows, retain the old epoch and retry on
+     * the next normal update; do not publish an incomplete index.
      * The current epoch becomes the previous one; an older one is dropped.
      * A no-op if `key` already is the current epoch.
      */
     void SetEpoch(const EpochKey &key,
-                  const std::vector<std::pair<TxId, Clock>> &txs)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+                  const std::function<Snapshot()> &snapshot)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex, !m_rebuild_mutex);
     /** The current epoch, if any */
     std::optional<EpochKey> Current() const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
     /** The current and the previous epoch (those indexed) */
@@ -147,18 +154,29 @@ private:
         std::unordered_map<uint64_t, std::vector<TxId>> by_short_id;
         std::unordered_map<TxId, uint64_t, SaltedTxIdHasher> short_id_of;
     };
-    void Insert(Epoch &epoch, const TxId &txid)
+    //! Index txid in epoch (which the caller owns or guards with m_mutex)
+    void InsertUnlocked(Epoch &epoch, const TxId &txid) const;
+    static void RemoveFromEpoch(Epoch &epoch, const TxId &txid);
+    void RecordEpochChange(const TxId &txid, bool present)
         EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
     const Epoch *Get(const uint256 &epoch_id) const
         EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
 
     const unsigned m_bits;
+    //! Only builders take this lock; never held by Add/Remove or snapshot
+    //! callers.
+    Mutex m_rebuild_mutex;
     mutable Mutex m_mutex;
+    //! Bounded mutation count, independent of churn or rebuild duration.
+    static constexpr size_t MAX_EPOCH_CHANGES{65'536};
+    bool m_rebuilding GUARDED_BY(m_mutex){false};
+    bool m_epoch_overflow GUARDED_BY(m_mutex){false};
+    std::vector<std::pair<TxId, bool>> m_epoch_changes GUARDED_BY(m_mutex);
     std::unique_ptr<Epoch> m_current GUARDED_BY(m_mutex);
     std::unique_ptr<Epoch> m_previous GUARDED_BY(m_mutex);
     //! (admission time, txid), in admission order
     std::deque<std::pair<Clock, TxId>> m_window GUARDED_BY(m_mutex);
-    std::atomic<uint64_t> m_collisions{0};
+    mutable std::atomic<uint64_t> m_collisions{0};
 };
 
 } // namespace txrelay
