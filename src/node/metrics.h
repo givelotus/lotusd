@@ -87,6 +87,12 @@ namespace metric_labels {
     const std::vector<std::string> &AvalancheVotes();
     //! Index = AvalancheProofPool
     const std::vector<std::string> &AvalancheProofPools();
+    //! Index = TxValidationResult - 1 (TX_RESULT_UNSET counts as unknown)
+    const std::vector<std::string> &MempoolRejectReasons();
+    //! Index = MemPoolRemovalReason
+    const std::vector<std::string> &MempoolRemovalReasons();
+    //! 0 = orphan, 1 = conflicting (TxPool kinds)
+    const std::vector<std::string> &TxPools();
 } // namespace metric_labels
 
 enum class HTTPEndpoint : size_t {
@@ -157,6 +163,21 @@ struct NodeMetrics {
     //! By item type: time from first poll registration to finalization
     metrics::EventHistogram &avalanche_finalization_seconds;
 
+    // Mempool admission
+    metrics::Counter &mempool_accepted;
+    //! By MempoolRejectReasons
+    metrics::Counter &mempool_rejected;
+    //! Accepted transactions' own fee rate, in satoshis per 1000 bytes
+    metrics::EventHistogram &mempool_accepted_fee_rate;
+    //! By MemPoolRemovalReason
+    metrics::Counter &mempool_removed;
+    //! By kind: 0 = rolling (mempool full), 1 = effective admission floor
+    metrics::Gauge &mempool_min_fee_rate;
+    //! By TxPools
+    metrics::Gauge &tx_pool_transactions;
+    //! By TxPools x reason (0 = expired, 1 = evicted)
+    metrics::Counter &tx_pool_removed;
+
     /** Label index of an RPC method ("other" if not in the set) */
     size_t RPCMethodIndex(std::string_view method) const noexcept;
 
@@ -213,6 +234,18 @@ inline size_t AvalancheVoteSeries(uint32_t error) noexcept {
     }
     return int32_t(error) > 0 ? 1 : 2;
 }
+
+/** Series of mempool_rejected for a TxValidationResult (as an integer) */
+inline size_t MempoolRejectSeries(int result) noexcept {
+    // TX_RESULT_UNSET (0) and out-of-range values count as the last
+    // ("unknown", TX_UNKNOWN)
+    constexpr int LAST{13};
+    return size_t((result >= 1 && result <= LAST ? result : LAST) - 1);
+}
+
+/** Count a transaction pool's (orphans, conflicting) removals */
+void RecordTxPoolRemovals(std::string_view pool_kind, unsigned expired,
+                          unsigned evicted) noexcept;
 
 /** Label index of a P2P message type ("other" for unknown types) */
 size_t MetricMsgTypeIndex(std::string_view msg_type) noexcept;

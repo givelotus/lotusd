@@ -291,6 +291,11 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason) {
     totalTxSize -= (*it)->GetTxSize();
     // (one entry is about to leave mapTx)
     node::SetMempoolMetrics(mapTx.size() - 1, totalTxSize);
+    if (auto *metrics{node::GetNodeMetrics()}) {
+        static_assert(int(MemPoolRemovalReason::MANUAL) == 6,
+                      "update MempoolRemovalReasons() in node/metrics.cpp");
+        metrics->mempool_removed.Add(size_t(reason));
+    }
     m_total_fee -= (*it)->GetFee();
     cachedInnerUsage -= (*it)->DynamicMemoryUsage();
     cachedInnerUsage -=
