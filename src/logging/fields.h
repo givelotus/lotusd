@@ -139,7 +139,8 @@
     X(IndexStopHeight, index_stop_height, INT, "", "") \
     X(MessageText, message_text, STRING, "", "") \
     X(Caption, caption, STRING, "", "") \
-    X(Directory, directory, STRING, "", "")
+    X(Directory, directory, STRING, "", "") \
+    X(StartupTime, startup_time, STRING, "", "")
 
 namespace BCLog {
 
