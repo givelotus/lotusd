@@ -7,6 +7,7 @@
 #include <clientversion.h>
 #include <config/bitcoin-config.h>
 #include <logging.h>
+#include <metrics/process.h>
 #include <protocol.h>
 #include <tinyformat.h>
 #include <util/time.h>
@@ -843,6 +844,33 @@ NodeMetrics::NodeMetrics(std::vector<std::string> rpc_methods)
           registry, MetricName("chronik_lag_blocks"),
           "Blocks Chronik's index is behind the chain tip, at scrape time "
           "(0 without Chronik).")},
+      rpc_work_queue_depth{
+          Add<Gauge>(registry, MetricName("rpc_work_queue_depth"),
+                     "HTTP requests (RPC, REST, ...) queued for a worker.")},
+      rpc_work_queue_capacity{
+          Add<Gauge>(registry, MetricName("rpc_work_queue_capacity"),
+                     "Requests the work queue holds before refusing more "
+                     "(-rpcworkqueue).")},
+      rpc_work_in_flight{Add<Gauge>(registry, MetricName("rpc_work_in_flight"),
+                                    "HTTP requests queued or being handled.")},
+      rpc_work_suspended{Add<Gauge>(
+          registry, MetricName("rpc_work_suspended"),
+          "HTTP requests suspended without a worker (long polls such as "
+          "waitforblockheight).")},
+      rpc_work_queue_rejected{Add<Counter>(
+          registry, MetricName("rpc_work_queue_rejected_total"),
+          "HTTP requests refused (503) because the work queue was full.")},
+      process_resident_memory{Add<Gauge>(registry,
+                                         "process_resident_memory_bytes",
+                                         "Resident memory size in bytes.")},
+      process_virtual_memory{Add<Gauge>(registry,
+                                        "process_virtual_memory_bytes",
+                                        "Virtual memory size in bytes.")},
+      process_open_fds{Add<Gauge>(registry, "process_open_fds",
+                                  "Number of open file descriptors.")},
+      process_max_fds{
+          Add<Gauge>(registry, "process_max_fds",
+                     "Maximum number of open file descriptors (soft limit).")},
       m_rpc_methods{SortedWithOther(std::move(rpc_methods))} {
     build_info.Set(1);
     registry.Add(std::make_unique<metrics::FunctionCounter>(
@@ -855,6 +883,18 @@ NodeMetrics::NodeMetrics(std::vector<std::string> rpc_methods)
         "Journal sends that failed and fell back to stderr.",
         [] { return LogInstance().JournalFailures(); }));
     initial_block_download.Set(1);
+    registry.AddCollector([this] {
+        const auto process{metrics::ReadProcessStats()};
+        const auto set{[](Gauge &g, const std::optional<uint64_t> &v) {
+            if (v) {
+                g.Set(double(*v));
+            }
+        }};
+        set(process_resident_memory, process.resident_bytes);
+        set(process_virtual_memory, process.virtual_bytes);
+        set(process_open_fds, process.open_fds);
+        set(process_max_fds, process.max_fds);
+    });
     registry.AddCollector([this] {
         if (chronik_indexed_height_known.load(std::memory_order_relaxed)) {
             chronik_lag.Set(std::max(0.0, tip_height.Value() -

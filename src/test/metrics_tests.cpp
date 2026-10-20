@@ -6,10 +6,12 @@
 #include <config/bitcoin-config.h>
 #include <consensus/validation.h>
 #include <metrics/metrics.h>
+#include <metrics/process.h>
 #include <node/metrics.h>
 #include <protocol.h>
 #include <script/script.h>
 #include <txmempool.h>
+#include <util/fs.h>
 
 #include <test/util/setup_common.h>
 
@@ -561,6 +563,26 @@ BOOST_AUTO_TEST_CASE(chronik_endpoints) {
     for (const auto &[route, expected] : routes) {
         BOOST_CHECK_EQUAL(label(route), expected);
     }
+}
+
+BOOST_AUTO_TEST_CASE(process_stats) {
+    const ProcessStats before{ReadProcessStats()};
+#if defined(__APPLE__) || defined(__linux__)
+    BOOST_REQUIRE(before.resident_bytes && before.virtual_bytes);
+    BOOST_CHECK(*before.resident_bytes > 0);
+    BOOST_CHECK(*before.virtual_bytes >= *before.resident_bytes);
+    BOOST_REQUIRE(before.open_fds);
+    // A descriptor more while a file is open
+    FILE *f{fsbridge::fopen(m_args.GetDataDirBase() / "fd_test", "wb")};
+    BOOST_REQUIRE(f);
+    const ProcessStats during{ReadProcessStats()};
+    BOOST_REQUIRE(during.open_fds);
+    BOOST_CHECK_EQUAL(*during.open_fds, *before.open_fds + 1);
+    fclose(f);
+#endif
+#ifndef WIN32
+    BOOST_CHECK(!before.max_fds || *before.max_fds > 0);
+#endif
 }
 
 BOOST_AUTO_TEST_SUITE_END()
