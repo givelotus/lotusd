@@ -3,6 +3,10 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#if defined(HAVE_CONFIG_H)
+#include <config/bitcoin-config.h>
+#endif
+
 #include <avalanche/avalanche.h>
 #include <avalanche/processor.h>
 #include <blockvalidity.h>
@@ -686,6 +690,9 @@ static RPCHelpMan getchainconfig() {
             UniValue formats(UniValue::VARR);
             formats.push_back("cashaddr");
             formats.push_back("base58check");
+            formats.push_back("xpiaddr");
+            address.pushKV("nativehrp", std::string(lotus::v2::AddressPrefix(
+                                            NativeAddressNetwork(params))));
             address.pushKV("acceptedformats", std::move(formats));
             UniValue prefixes(UniValue::VOBJ);
             prefixes.pushKV("pubkeyhash", HexStr(params.Base58Prefix(
@@ -726,6 +733,18 @@ static RPCHelpMan getchainconfig() {
             result.pushKV("address", std::move(address));
             result.pushKV("mining", std::move(mining));
             result.pushKV("features", std::move(features));
+            UniValue receiving(UniValue::VOBJ);
+#ifdef ENABLE_WALLET
+            receiving.pushKV("available", true);
+#else
+            receiving.pushKV("available", false);
+#endif
+            receiving.pushKV("address_type", "native");
+            receiving.pushKV("format", "xpiaddr");
+            receiving.pushKV("template", "keyhash");
+            UniValue wallet(UniValue::VOBJ);
+            wallet.pushKV("native_receiving", std::move(receiving));
+            result.pushKV("wallet", std::move(wallet));
             result.pushKV("node", std::move(node));
             return result;
         },
