@@ -330,6 +330,9 @@ void Shutdown(NodeContext &node) {
         node.peerman->StopTxAdmission();
     }
     if (node.connman) {
+#ifdef ENABLE_WEBTRANSPORT
+        InterruptNodeWebTransport();
+#endif
         node.connman->Stop();
     }
     StopP2PWebSocketDialer();
@@ -1381,12 +1384,6 @@ void SetupServerArgs(NodeContext &node) {
                    "QUIC idle timeout for WebTransport (default: 30)",
                    ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
                    OptionsCategory::CONNECTION);
-    argsman.AddArg("-p2pwebtransportecho",
-                   "Echo WebTransport streams and datagrams instead of "
-                   "running P2P sessions (browser interop tests only) "
-                   "(default: 0)",
-                   ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
-                   OptionsCategory::DEBUG_TEST);
     argsman.AddArg(
         "-listenonion",
         strprintf("Automatically create Tor onion service (default: %d)",
@@ -4184,7 +4181,7 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
     if (args.GetBoolArg("-p2pwebtransport", false)) {
 #ifdef ENABLE_WEBTRANSPORT
         bilingual_str error;
-        if (!StartNodeWebTransport(args, error)) {
+        if (!StartNodeWebTransport(args, *node.connman, error)) {
             return InitError(error);
         }
 #else

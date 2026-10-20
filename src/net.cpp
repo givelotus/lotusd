@@ -271,7 +271,8 @@ std::optional<CService> GetLocalAddrForPeer(CNode &node) {
     if (IsPeerAddrLocalGood(&node) &&
         (!addrLocal.IsRoutable() ||
          rng.randbits((GetnScore(addrLocal) > LOCAL_MANUAL) ? 3 : 1) == 0)) {
-        if (node.IsInboundConn() && !node.m_websocket_info) {
+        if (node.IsInboundConn() && !node.m_websocket_info &&
+            !node.m_quic_info) {
             // For inbound connections, assume both the address and the port
             // as seen from the peer.
             addrLocal = CService{node.GetAddrLocal()};
@@ -521,6 +522,10 @@ CNode *CConnman::ConnectNode(CAddress addrConnect, const char *pszDest,
     AssertLockNotHeld(m_unused_i2p_sessions_mutex);
     assert(conn_type != ConnectionType::INBOUND);
 
+    // P2P over WebTransport: wt:// URLs.
+    if (pszDest != nullptr && IsWebTransportURL(pszDest)) {
+        return ConnectWebTransportNode(pszDest, fCountFailure, conn_type);
+    }
     // P2P over WebSocket: ws:// and wss:// URLs, and NET_WSS addresses.
     if (pszDest != nullptr && IsWebSocketURL(pszDest)) {
         return ConnectWebSocketNode(pszDest, nullptr, fCountFailure,
@@ -836,6 +841,7 @@ void CNode::copyStats(CNodeStats &stats) {
 
     stats.m_conn_type = m_conn_type;
     stats.m_websocket_info = m_websocket_info;
+    stats.m_quic_info = m_quic_info;
 
     stats.m_availabilityScore = m_avalanche_enabled
                                     ? std::make_optional(getAvailabilityScore())
@@ -1738,10 +1744,151 @@ void CConnman::AcceptWebSocketPeer(
                                  std::move(info));
 }
 
+void CConnman::AcceptWebTransportPeer(
+    std::unique_ptr<Sock> &&sock, const CAddress &addr,
+    const CAddress &addr_bind, std::shared_ptr<QuicTransportInfo> info) {
+    NetPermissionFlags flags{NetPermissionFlags::None};
+    for (const auto &bind : gArgs.GetArgs("-whitebind")) {
+        NetWhitebindPermissions parsed;
+        bilingual_str error;
+        if (NetWhitebindPermissions::TryParse(bind, parsed, error) &&
+            parsed.m_service.GetPort() == addr_bind.GetPort() &&
+            (parsed.m_service == addr_bind ||
+             (parsed.m_service.IsBindAny() &&
+              parsed.m_service.IsIPv4() == addr_bind.IsIPv4() &&
+              parsed.m_service.IsIPv6() == addr_bind.IsIPv6()))) {
+            NetPermissions::AddFlag(flags, parsed.m_flags);
+        }
+    }
+    bool known{false};
+    if (info && !info->peer_spki.empty()) {
+        for (const auto &key : vWhitelistedKeys) {
+            if (key.m_key == info->peer_spki) {
+                NetPermissions::AddFlag(flags, key.m_flags);
+                known = true;
+            }
+        }
+        info->pinned = known;
+    }
+    if (m_websocket_require_known_key && !known) {
+        LogDebug(BCLog::NET,
+                 "WebTransport peer %s dropped: %s (-p2pwebsocketrequirecert)\n",
+                 addr.ToStringAddrPort(),
+                 info && !info->peer_spki.empty()
+                     ? "its key is not listed in -p2pwebsocketpeer"
+                     : "no client certificate");
+        return;
+    }
+    CreateNodeFromAcceptedSocket(std::move(sock), flags, addr_bind, addr,
+                                 nullptr, /*classify=*/false, std::move(info));
+}
+
+CNode *CConnman::ConnectWebTransportNode(const std::string &url,
+                                         bool fCountFailure,
+                                         ConnectionType conn_type) {
+    const auto parsed{ParseWebTransportURL(url)};
+    if (!parsed) {
+        LogPrintf("Not connecting to %s: invalid WebTransport peer URL\n",
+                  RedactWebTransportURL(url));
+        return nullptr;
+    }
+    const WebTransportDialer dialer{GetWebTransportDialer()};
+    if (!dialer) {
+        LogPrintf("Cannot connect to %s: P2P over WebTransport is "
+                  "unavailable (-p2pwebtransport)\n",
+                  RedactWebTransportURL(url));
+        return nullptr;
+    }
+    // QUIC is UDP: it cannot go through a SOCKS5 proxy. Fail closed
+    // rather than reveal our address by dialing directly.
+    Proxy proxy;
+    if (parsed->host.ends_with(".onion") || GetNameProxy(proxy)) {
+        LogPrintf("Not connecting to %s: WebTransport cannot use a proxy\n",
+                  RedactWebTransportURL(url));
+        return nullptr;
+    }
+    std::optional<CService> target;
+    for (const CService &candidate :
+         Lookup(parsed->host, parsed->port, fNameLookup, 8)) {
+        if (!candidate.IsValid()) {
+            continue;
+        }
+        // GetNetwork() calls private/loopback addresses UNROUTABLE;
+        // policy still applies to their underlying IP family.
+        const Network network{candidate.IsIPv4() ? NET_IPV4
+                              : candidate.IsIPv6() ? NET_IPV6
+                                                   : candidate.GetNetwork()};
+        if (GetProxy(network, proxy)) {
+            LogPrintf("Not connecting to %s: WebTransport cannot use a "
+                      "proxy\n",
+                      RedactWebTransportURL(url));
+            return nullptr;
+        }
+        if (!IsReachable(network)) {
+            continue;
+        }
+        target = candidate;
+        break;
+    }
+    if (!target) {
+        LogDebug(BCLog::NET, "Cannot resolve %s or its network is not "
+                             "reachable (-onlynet)\n",
+                 parsed->host);
+        return nullptr;
+    }
+    if (FindNode(*target)) {
+        LogPrintf("Failed to open new connection, already connected\n");
+        return nullptr;
+    }
+    LogPrintLevel(BCLog::NET, BCLog::Level::Debug,
+                  "trying WebTransport connection %s\n",
+                  RedactWebTransportURL(url));
+    WebTransportDialError error{WebTransportDialError::NONE};
+    std::optional<WebTransportDialResult> dialed{
+        dialer(*target, *parsed, WEBTRANSPORT_DIAL_TIMEOUT, interruptNet,
+               error)};
+    if (!dialed) {
+        LogDebug(BCLog::NET, "WebTransport connection to %s failed: %s\n",
+                 RedactWebTransportURL(url), WebTransportDialErrorName(error));
+        return nullptr;
+    }
+    const CAddress addrConnect{*target, NODE_NONE};
+    NetPermissionFlags permission_flags = NetPermissionFlags::None;
+    std::vector<NetWhitelistPermissions> whitelist_permissions =
+        conn_type == ConnectionType::MANUAL
+            ? vWhitelistedRangeOutgoing
+            : std::vector<NetWhitelistPermissions>{};
+    AddWhitelistPermissionFlags(permission_flags, addrConnect,
+                                whitelist_permissions);
+
+    NodeId id = GetNewNodeId();
+    uint64_t nonce = GetDeterministicRandomizer(RANDOMIZER_ID_LOCALHOSTNONCE)
+                         .Write(id)
+                         .Finalize();
+    uint64_t extra_entropy =
+        GetDeterministicRandomizer(RANDOMIZER_ID_EXTRAENTROPY)
+            .Write(id)
+            .Finalize();
+    CNode *pnode = new CNode(
+        id, std::move(dialed->sock), addrConnect,
+        CalculateKeyedNetGroup(addrConnect), nonce, extra_entropy,
+        CAddress{dialed->local, NODE_NONE}, url, conn_type,
+        /* inbound_onion */ false,
+        CNodeOptions{
+            .permission_flags = permission_flags,
+            .recv_flood_size = nReceiveFloodSize,
+            .quic_info = std::move(dialed->info),
+        });
+    pnode->AddRef();
+    RandAddEvent(uint32_t(id));
+    return pnode;
+}
+
 void CConnman::CreateNodeFromAcceptedSocket(
     std::unique_ptr<Sock> &&sock, NetPermissionFlags permission_flags,
     const CAddress &addr_bind, const CAddress &addr,
-    std::shared_ptr<WebSocketTransportInfo> websocket_info, bool classify) {
+    std::shared_ptr<WebSocketTransportInfo> websocket_info, bool classify,
+    std::shared_ptr<QuicTransportInfo> quic_info) {
     int nInbound = 0;
     int nMaxInbound = nMaxConnections - m_max_outbound;
 
@@ -1774,9 +1921,10 @@ void CConnman::CreateNodeFromAcceptedSocket(
 
     // According to the internet TCP_NODELAY is not carried into accepted
     // sockets on all platforms.  Set it again here just to be sure.
-    // (WebSocket peers use a local socketpair, which has no such option.)
+    // (WebSocket and WebTransport peers use a local socketpair, which has no
+    // such option.)
     const int on{1};
-    if (!websocket_info &&
+    if (!websocket_info && !quic_info &&
         sock->SetSockOpt(IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on)) ==
             SOCKET_ERROR) {
         LogEvent(BCLog::NET, "connection_tcp_nodelay_failed",
@@ -1836,6 +1984,7 @@ void CConnman::CreateNodeFromAcceptedSocket(
             .prefer_evict = discouraged,
             .recv_flood_size = nReceiveFloodSize,
             .websocket_info = std::move(websocket_info),
+            .quic_info = std::move(quic_info),
         });
     pnode->AddRef();
     if (classify) {
@@ -1849,7 +1998,9 @@ void CConnman::CreateNodeFromAcceptedSocket(
 
     LogDebug(BCLog::NET, "connection from %s accepted%s\n",
              addr.ToStringAddrPort(),
-             pnode->m_websocket_info ? " (WebSocket)" : "");
+             pnode->m_websocket_info ? " (WebSocket)"
+             : pnode->m_quic_info    ? " (WebTransport)"
+                                     : "");
 
     {
         LOCK(m_nodes_mutex);
@@ -4002,7 +4153,8 @@ CNode::CNode(NodeId idIn, std::shared_ptr<Sock> sock, const CAddress &addrIn,
       m_addr_name{addrNameIn.empty() ? addr.ToStringAddrPort() : addrNameIn},
       m_inbound_onion{inbound_onion}, m_prefer_evict{node_opts.prefer_evict},
       nKeyedNetGroup{nKeyedNetGroupIn}, m_conn_type{conn_type_in},
-      m_websocket_info{std::move(node_opts.websocket_info)}, id{idIn},
+      m_websocket_info{std::move(node_opts.websocket_info)},
+      m_quic_info{std::move(node_opts.quic_info)}, id{idIn},
       nLocalHostNonce{nLocalHostNonceIn},
       nLocalExtraEntropy{nLocalExtraEntropyIn},
       m_recv_flood_size{node_opts.recv_flood_size},

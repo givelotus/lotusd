@@ -12,11 +12,19 @@
 #include <util/translation.h>
 
 class ArgsManager;
+class CConnman;
 class QuicEngine;
 
-/** Start the QUIC engine per -p2pwebtransport*; false + error on failure */
-bool StartNodeWebTransport(const ArgsManager &args, bilingual_str &error);
-/** Stop it (idempotent); call after CConnman::Stop() */
+/**
+ * Start the QUIC engine per -p2pwebtransport* and register it with
+ * CConnman (inbound acceptor, outbound wt:// dialer); false + error on
+ * failure.
+ */
+bool StartNodeWebTransport(const ArgsManager &args, CConnman &connman,
+                           bilingual_str &error);
+/** Unregister from CConnman; call before CConnman::Stop() */
+void InterruptNodeWebTransport();
+/** Stop the engine (idempotent); call after CConnman::Stop() */
 void StopNodeWebTransport();
 /** The running engine, or nullptr */
 QuicEngine *GetNodeQuicEngine();

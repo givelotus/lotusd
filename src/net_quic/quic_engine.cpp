@@ -5,10 +5,16 @@
 #include <net_quic/quic_engine.h>
 
 #include <net_quic/quic_connection.h>
+#include <net_quic/quic_peer_sock.h>
 #include <net_quic/udp_socket.h>
 #include <net_quic/webtransport_h3.h>
+#include <net_quic/webtransport_wire.h>
+#include <net_websocket.h>
+#include <protocol.h>
 
 #include <logging.h>
+#include <netbase.h>
+#include <util/strencodings.h>
 #include <random.h>
 #include <sync.h>
 #include <tinyformat.h>
@@ -25,6 +31,7 @@
 #include <array>
 #include <cerrno>
 #include <deque>
+#include <fcntl.h>
 #include <functional>
 #include <future>
 #include <list>
@@ -217,6 +224,271 @@ private:
     std::shared_ptr<Result> m_result;
 };
 
+/** Wakes the engine thread; outlives it (channels keep a reference) */
+class EngineWaker {
+public:
+    explicit EngineWaker(int fd) : m_fd{fd} {}
+    void Wake() EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
+        if (pending.exchange(true)) {
+            return;
+        }
+        LOCK(m_mutex);
+        if (m_fd >= 0) {
+            const uint8_t b{1};
+#ifdef MSG_NOSIGNAL
+            constexpr int flags{MSG_DONTWAIT | MSG_NOSIGNAL};
+#else
+            constexpr int flags{MSG_DONTWAIT};
+#endif
+            [[maybe_unused]] auto r{::send(m_fd, &b, 1, flags)};
+        }
+    }
+    void Close() EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
+        LOCK(m_mutex);
+        if (m_fd >= 0) {
+            ::close(m_fd);
+            m_fd = -1;
+        }
+    }
+    std::atomic<bool> pending{false};
+
+private:
+    Mutex m_mutex;
+    int m_fd GUARDED_BY(m_mutex);
+};
+
+/** Result of an outbound dial, completed on the engine thread */
+struct DialState {
+    std::promise<std::optional<WebTransportDialResult>> promise;
+    WebTransportDialError error{WebTransportDialError::TIMEOUT};
+    bool done{false};
+    void Finish(std::optional<WebTransportDialResult> result,
+                WebTransportDialError why) {
+        if (!done) {
+            done = true;
+            error = result ? WebTransportDialError::NONE : why;
+            promise.set_value(std::move(result));
+        }
+    }
+};
+
+/**
+ * A P2P session: bridges the five class streams of one WebTransport
+ * session to a QuicPeerSock through a QuicPeerChannel (engine thread).
+ */
+class P2PSessionHandler final : public WtSessionHandler {
+public:
+    P2PSessionHandler(std::shared_ptr<EngineWaker> waker, bool compress,
+                      std::shared_ptr<DialState> dial = nullptr,
+                      std::optional<std::vector<unsigned char>> spki_pin = {},
+                      std::optional<std::vector<unsigned char>> cert_pin = {})
+        : m_waker{std::move(waker)}, m_compress{compress},
+          m_dial{std::move(dial)}, m_spki_pin{std::move(spki_pin)},
+          m_cert_pin{std::move(cert_pin)},
+          m_info{std::make_shared<QuicTransportInfo>()} {}
+
+    bool OnHandshake(H3Session &session, QuicConnection &conn) override {
+        m_info->alpn = tls::NegotiatedAlpn(conn.Ssl());
+        X509 *cert{tls::PeerCertificate(conn.Ssl())};
+        std::vector<unsigned char> spki;
+        if (cert) {
+            m_info->peer_cert_fingerprint_hex = tls::CertSha256Hex(cert);
+            spki = tls::SpkiSha256(cert);
+            if (!spki.empty()) {
+                m_info->peer_spki = EncodeSpkiPin(spki);
+            }
+        }
+        bool ok{true};
+        if (m_spki_pin) {
+            ok = spki.size() == m_spki_pin->size() &&
+                 CRYPTO_memcmp(spki.data(), m_spki_pin->data(),
+                               spki.size()) == 0;
+            if (!ok) {
+                LogPrintf("WebTransport peer %s: TLS key %s does not match "
+                          "the pinned key %s\n",
+                          conn.Remote().ToStringAddrPort(), m_info->peer_spki,
+                          EncodeSpkiPin(*m_spki_pin));
+            }
+            m_info->pinned = ok;
+        }
+        if (ok && m_cert_pin) {
+            const auto digest{ParseHex(m_info->peer_cert_fingerprint_hex)};
+            ok = digest.size() == m_cert_pin->size() &&
+                 CRYPTO_memcmp(digest.data(), m_cert_pin->data(),
+                               digest.size()) == 0;
+            if (!ok) {
+                LogPrintf("WebTransport peer %s: certificate %s does not "
+                          "match the pinned hash\n",
+                          conn.Remote().ToStringAddrPort(),
+                          m_info->peer_cert_fingerprint_hex);
+            }
+            m_info->pinned = ok;
+        }
+        if (cert) {
+            X509_free(cert);
+        }
+        if (!ok && m_dial) {
+            m_dial->Finish(std::nullopt, WebTransportDialError::HANDSHAKE);
+        }
+        return ok;
+    }
+
+    int OnConnect(H3Session &, const WtRequest &) override {
+        return GetP2PWebTransportAcceptor() ? 200 : 503;
+    }
+
+    void OnConnectResponse(H3Session &, int status) override {
+        if (status != 200 && m_dial) {
+            m_dial->Finish(std::nullopt, status == 0
+                                             ? WebTransportDialError::UNSUPPORTED
+                                             : WebTransportDialError::REFUSED);
+        }
+    }
+
+    void OnSessionReady(H3Session &session) override {
+        QuicConnection &conn{*session.Conn()};
+        int sv[2];
+        if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+            session.CloseSession(0, "no socketpair");
+            return;
+        }
+        for (int fd : sv) {
+            const int fl{::fcntl(fd, F_GETFL, 0)};
+            ::fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+            ::fcntl(fd, F_SETFD, FD_CLOEXEC);
+        }
+        m_info->protocol = session.Protocol();
+        m_info->draft = session.PeerDraftSetting();
+        m_info->origin = session.Request().origin;
+        m_channel = std::make_shared<QuicPeerChannel>(
+            sv[1], m_info, [waker = m_waker] { waker->Wake(); });
+        // QUIC may deliver CONTROL data before the other four stream
+        // prefixes. Retain it until the session has its node socket.
+        for (auto &frame : m_early_rx) {
+            m_channel->PushRx(std::move(frame));
+        }
+        m_early_rx.clear();
+        auto sock{std::make_unique<QuicPeerSock>(static_cast<SOCKET>(sv[0]),
+                                                 m_channel, m_compress)};
+        if (m_dial) {
+            WebTransportDialResult result;
+            result.sock = std::move(sock);
+            result.info = m_info;
+            result.local = conn.Local();
+            m_dial->Finish(std::move(result), WebTransportDialError::NONE);
+            return;
+        }
+        const P2PWebTransportAcceptor acceptor{GetP2PWebTransportAcceptor()};
+        if (!acceptor) {
+            session.CloseSession(0, "not accepting peers");
+            return;
+        }
+        acceptor(std::move(sock), CAddress{conn.Remote(), NODE_NONE},
+                 CAddress{conn.Local(), NODE_NONE}, m_info);
+    }
+
+    void OnClassData(H3Session &session, StreamClass cls, const uint8_t *data,
+                     size_t len, bool) override {
+        std::vector<FrameReassembler::Frame> frames;
+        if (!m_reassembler[StreamClassIndex(cls)].Feed({data, len}, frames)) {
+            LogDebug(BCLog::WEBTRANSPORT,
+                     "WebTransport peer %s sent a bad frame on %s\n",
+                     session.Conn()->Remote().ToStringAddrPort(),
+                     StreamClassName(cls));
+            session.CloseSession(wt::WT_P2P_BAD_STREAM, "bad frame");
+            return;
+        }
+        for (auto &f : frames) {
+            QuicPeerChannel::RxFrame rx;
+            rx.cls = cls;
+            rx.flags = f.flags;
+            rx.body = std::move(f.body);
+            rx.wire_size = f.wire_size;
+            if (m_channel) {
+                m_channel->PushRx(std::move(rx));
+            } else {
+                m_early_rx.push_back(std::move(rx));
+            }
+        }
+        // Credit for received bytes, unless the node is not keeping up
+        // (then the peer is back-pressured; given back as it consumes).
+        if (m_channel && m_channel->RxHasRoom()) {
+            session.ExtendCredit(cls, len);
+        } else {
+            m_deferred_credit[StreamClassIndex(cls)] += len;
+        }
+    }
+
+    void BeforeWrite(H3Session &session) override {
+        if (!m_channel) {
+            return;
+        }
+        if (m_channel->SockGone()) {
+            session.CloseSession(0, "disconnected");
+            return;
+        }
+        for (const StreamClass cls : ALL_STREAM_CLASSES) {
+            for (auto &frame : m_channel->TakeTx(cls)) {
+                session.QueueClassData(cls, std::move(frame));
+            }
+            m_channel->SetEngineUnsent(cls, session.ClassUnsent(cls));
+        }
+        if (m_channel->send_blocked &&
+            m_channel->TxPending(static_cast<StreamClass>(
+                m_channel->blocked_class.load())) <=
+                QuicPeerChannel::MAX_PENDING_SEND / 2) {
+            m_channel->send_blocked = false;
+            m_channel->Notify();
+        }
+        if (m_channel->RxHasRoom()) {
+            m_channel->credit_wanted = false;
+            for (const StreamClass cls : ALL_STREAM_CLASSES) {
+                uint64_t &deferred{m_deferred_credit[StreamClassIndex(cls)]};
+                if (deferred > 0) {
+                    session.ExtendCredit(cls, deferred);
+                    deferred = 0;
+                }
+            }
+        }
+        ngtcp2_conn_info ci;
+        ngtcp2_conn_get_conn_info2(session.Conn()->Conn(), &ci);
+        m_info->rtt_us = ci.smoothed_rtt / NGTCP2_MICROSECONDS;
+        m_info->min_rtt_us = ci.min_rtt / NGTCP2_MICROSECONDS;
+        m_info->cwnd = ci.cwnd;
+        m_info->lost_pkts = ci.pkt_lost;
+        m_info->udp_bytes_sent = ci.bytes_sent;
+        m_info->udp_bytes_recv = ci.bytes_recv;
+    }
+
+    void OnSessionClosed(H3Session &session, uint32_t code,
+                         const std::string &reason) override {
+        if (m_channel) {
+            LogDebug(BCLog::WEBTRANSPORT,
+                     "WebTransport session with %s ended: code %u (%s)\n",
+                     session.Conn() ? session.Conn()->Remote().ToStringAddrPort()
+                                    : "?",
+                     code, reason);
+            m_channel->MarkClosed();
+        }
+        if (m_dial) {
+            m_dial->Finish(std::nullopt, WebTransportDialError::REFUSED);
+        }
+    }
+
+private:
+    const std::shared_ptr<EngineWaker> m_waker;
+    const bool m_compress;
+    const std::shared_ptr<DialState> m_dial;
+    const std::optional<std::vector<unsigned char>> m_spki_pin;
+    const std::optional<std::vector<unsigned char>> m_cert_pin;
+    const std::shared_ptr<QuicTransportInfo> m_info;
+    std::shared_ptr<QuicPeerChannel> m_channel;
+    //! Bounded by initial QUIC credit until all five stream prefixes arrive.
+    std::deque<QuicPeerChannel::RxFrame> m_early_rx;
+    std::array<FrameReassembler, NUM_STREAM_CLASSES> m_reassembler;
+    std::array<uint64_t, NUM_STREAM_CLASSES> m_deferred_credit{};
+};
+
 std::string CidKey(const uint8_t *data, size_t len) {
     return std::string(reinterpret_cast<const char *>(data), len);
 }
@@ -255,8 +527,13 @@ public:
             error = "socketpair failed";
             return false;
         }
+#ifdef SO_NOSIGPIPE
+        const int no_sigpipe{1};
+        ::setsockopt(sv[1], SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe,
+                     sizeof(no_sigpipe));
+#endif
         m_wake_read = sv[0];
-        m_wake_write = sv[1];
+        m_waker = std::make_shared<EngineWaker>(sv[1]);
         for (int fd : sv) {
             const int fl{::fcntl(fd, F_GETFL, 0)};
             ::fcntl(fd, F_SETFL, fl | O_NONBLOCK);
@@ -305,12 +582,11 @@ public:
         m_stop = true;
         Wake();
         m_thread.join();
-        for (int fd : {m_wake_read, m_wake_write}) {
-            if (fd >= 0) {
-                ::close(fd);
-            }
+        if (m_wake_read >= 0) {
+            ::close(m_wake_read);
+            m_wake_read = -1;
         }
-        m_wake_read = m_wake_write = -1;
+        m_waker->Close();
     }
 
     /** Run `fn` on the engine thread */
@@ -322,12 +598,7 @@ public:
         Wake();
     }
 
-    void Wake() {
-        if (!m_wake_pending.exchange(true)) {
-            const uint8_t b{1};
-            [[maybe_unused]] auto r{::send(m_wake_write, &b, 1, MSG_DONTWAIT)};
-        }
-    }
+    void Wake() { m_waker->Wake(); }
 
     std::vector<CService> BoundAddresses() const {
         std::vector<CService> out;
@@ -386,6 +657,50 @@ public:
             return std::nullopt;
         }
         return future.get();
+    }
+
+    std::optional<WebTransportDialResult>
+    Dial(const CService &target, const ParsedWebTransportURL &url,
+         std::chrono::milliseconds timeout, CThreadInterrupt &interrupt,
+         WebTransportDialError &error) EXCLUSIVE_LOCKS_REQUIRED(!m_tasks_mutex) {
+        auto state{std::make_shared<DialState>()};
+        auto future{state->promise.get_future()};
+        auto cancel{std::make_shared<std::atomic<bool>>(false)};
+        const std::string sni{LookupHost(url.host, false).has_value() ||
+                                      url.host.find(':') != std::string::npos
+                                  ? ""
+                                  : url.host};
+        Post([this, target, url, sni, state, cancel] {
+            QuicConnection *conn{CreateClient(target, sni)};
+            if (!conn) {
+                state->Finish(std::nullopt, WebTransportDialError::HANDSHAKE);
+                return;
+            }
+            conn->CancelFlag() = cancel;
+            H3Options h3;
+            h3.server = false;
+            h3.path = url.path;
+            h3.token = url.token;
+            h3.authority = url.authority;
+            conn->SetApp(std::make_unique<H3Session>(
+                h3, std::make_unique<P2PSessionHandler>(
+                        m_waker, m_opts.compress, state, url.spki_pin,
+                        url.cert_sha256)));
+        });
+        const auto deadline{std::chrono::steady_clock::now() + timeout};
+        while (future.wait_for(std::chrono::milliseconds{50}) !=
+               std::future_status::ready) {
+            if (interrupt || std::chrono::steady_clock::now() >= deadline) {
+                *cancel = true;
+                Wake();
+                error = interrupt ? WebTransportDialError::INTERRUPTED
+                                  : WebTransportDialError::TIMEOUT;
+                return std::nullopt;
+            }
+        }
+        auto result{future.get()};
+        error = state->error;
+        return result;
     }
 
     std::optional<WtProbeResult>
@@ -489,17 +804,67 @@ public:
     }
 
 private:
+    static void ObserveHandshake(int write, int, int content_type,
+                                 const void *data, size_t len, SSL *ssl,
+                                 void *arg) noexcept {
+        auto &self{*static_cast<Impl *>(arg)};
+        if (content_type != SSL3_RT_HANDSHAKE || len == 0 ||
+            !self.m_opts.handshake_observer ||
+            self.m_observer_records >= 256 || self.m_observer_bytes >= 8 * 1024 * 1024) {
+            return;
+        }
+        const auto *bytes{static_cast<const uint8_t *>(data)};
+        if (bytes[0] != SSL3_MT_CLIENT_HELLO && bytes[0] != SSL3_MT_SERVER_HELLO &&
+            bytes[0] != SSL3_MT_CERTIFICATE && bytes[0] != SSL3_MT_ENCRYPTED_EXTENSIONS) {
+            return;
+        }
+        const size_t copied{std::min({len, size_t{64 * 1024},
+                                      size_t{8 * 1024 * 1024} - self.m_observer_bytes})};
+        ++self.m_observer_records;
+        self.m_observer_bytes += copied;
+        try {
+            QuicHandshakeObservation observed;
+            observed.outbound = write != 0;
+            observed.server = SSL_is_server(ssl);
+            observed.tls_version = SSL_version(ssl);
+            observed.original_size = len;
+            observed.truncated = copied != len;
+            observed.handshake.assign(bytes, bytes + copied);
+            self.m_opts.handshake_observer(std::move(observed));
+        } catch (...) {
+            // Never unwind a C callback or affect TLS authentication.
+            LogPrintf("WebTransport test handshake observer failed\n");
+        }
+    }
+
+    void ConfigureHandshakeObserver(SSL_CTX *ctx) {
+        if (m_opts.handshake_observer) {
+            // Impl owns contexts and connections and joins the sole engine
+            // thread before destruction. No global callback state or borrows
+            // of callback buffers survive this call.
+            SSL_CTX_set_msg_callback(ctx, ObserveHandshake);
+            SSL_CTX_set_msg_callback_arg(ctx, this);
+        }
+    }
+
     bool LoadServerContext(std::string &error) {
         tls::SslCtxPtr ctx{SSL_CTX_new(TLS_server_method())};
         if (!ctx) {
             error = tls::ErrorString();
             return false;
         }
+        ConfigureHandshakeObserver(ctx.get());
         SSL_CTX_set_min_proto_version(ctx.get(), TLS1_3_VERSION);
         SSL_CTX_set_max_proto_version(ctx.get(), TLS1_3_VERSION);
         SSL_CTX_set_options(ctx.get(), SSL_OP_CIPHER_SERVER_PREFERENCE |
                                            SSL_OP_NO_ANTI_REPLAY);
         SSL_CTX_set_alpn_select_cb(ctx.get(), SelectH3Alpn, nullptr);
+        if (m_opts.request_client_cert) {
+            // Any certificate (node certificates are self-signed); its key
+            // is matched against -p2pwebsocketpeer by CConnman.
+            SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_PEER,
+                               [](int, X509_STORE_CTX *) { return 1; });
+        }
         if (!tls::UseCertificateFiles(ctx.get(), *m_opts.cert_file,
                                       *m_opts.key_file)) {
             error = "unable to load " + fs::PathToString(*m_opts.cert_file) +
@@ -539,11 +904,12 @@ private:
         }
     }
 
-    static tls::SslCtxPtr NewClientContext() {
+    tls::SslCtxPtr NewClientContext() {
         tls::SslCtxPtr ctx{SSL_CTX_new(TLS_client_method())};
         if (!ctx) {
             return {};
         }
+        ConfigureHandshakeObserver(ctx.get());
         SSL_CTX_set_min_proto_version(ctx.get(), TLS1_3_VERSION);
         SSL_CTX_set_max_proto_version(ctx.get(), TLS1_3_VERSION);
         // Complete the handshake whatever the chain; the dialer then checks
@@ -551,6 +917,14 @@ private:
         SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_PEER,
                            [](int, X509_STORE_CTX *) { return 1; });
         SSL_CTX_set_default_verify_paths(ctx.get());
+        // Present our certificate to servers that ask (-p2pwebsocketpeer).
+        if (m_opts.cert_file && m_opts.key_file &&
+            !tls::UseCertificateFiles(ctx.get(), *m_opts.cert_file,
+                                      *m_opts.key_file)) {
+            LogPrintf("WebTransport: unable to load the client certificate "
+                      "%s\n",
+                      fs::PathToString(*m_opts.cert_file));
+        }
         return ctx;
     }
 
@@ -803,7 +1177,12 @@ private:
                 h3.origins = m_opts.wt_origins;
                 h3.token = m_opts.wt_token;
                 h3.echo = m_opts.wt_echo;
-                conn->SetApp(std::make_unique<H3Session>(h3, nullptr));
+                std::unique_ptr<WtSessionHandler> handler;
+                if (!m_opts.wt_echo) {
+                    handler = std::make_unique<P2PSessionHandler>(
+                        m_waker, m_opts.compress);
+                }
+                conn->SetApp(std::make_unique<H3Session>(h3, std::move(handler)));
                 break;
             }
         }
@@ -934,7 +1313,7 @@ private:
                        0) {
                 }
             }
-            m_wake_pending = false;
+            m_waker->pending = false;
             if (m_stop) {
                 break;
             }
@@ -978,11 +1357,13 @@ private:
     }
 
     const QuicEngineOptions m_opts;
+    //! Only the engine thread invokes TLS callbacks, including on reload.
+    size_t m_observer_records{0};
+    size_t m_observer_bytes{0};
     std::thread m_thread;
     std::atomic<bool> m_stop{false};
     int m_wake_read{-1};
-    int m_wake_write{-1};
-    std::atomic<bool> m_wake_pending{false};
+    std::shared_ptr<EngineWaker> m_waker;
 
     Mutex m_tasks_mutex;
     std::deque<std::function<void()>> m_tasks GUARDED_BY(m_tasks_mutex);
@@ -1039,6 +1420,13 @@ std::vector<CService> QuicEngine::BoundAddresses() const {
 
 QuicEngineStats QuicEngine::Stats() const {
     return m_impl->Stats();
+}
+
+std::optional<WebTransportDialResult>
+QuicEngine::Dial(const CService &target, const ParsedWebTransportURL &url,
+                 std::chrono::milliseconds timeout, CThreadInterrupt &interrupt,
+                 WebTransportDialError &error) {
+    return m_impl->Dial(target, url, timeout, interrupt, error);
 }
 
 std::optional<WtProbeResult>

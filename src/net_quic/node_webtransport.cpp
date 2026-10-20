@@ -13,8 +13,11 @@
 #include <netbase.h>
 #include <random.h>
 #include <tls_util.h>
+#include <util/strencodings.h>
 #include <util/string.h>
 
+#include <algorithm>
+#include <map>
 #include <memory>
 
 namespace {
@@ -52,7 +55,8 @@ bool CertificateFiles(const ArgsManager &args, fs::path &cert, fs::path &key,
 }
 } // namespace
 
-bool StartNodeWebTransport(const ArgsManager &args, bilingual_str &error) {
+bool StartNodeWebTransport(const ArgsManager &args, CConnman &connman,
+                           bilingual_str &error) {
     QuicEngineOptions opts;
     fs::path cert, key;
     if (!CertificateFiles(args, cert, key, error)) {
@@ -61,23 +65,50 @@ bool StartNodeWebTransport(const ArgsManager &args, bilingual_str &error) {
     opts.cert_file = cert;
     opts.key_file = key;
     opts.application = QuicApplication::WEBTRANSPORT;
-    if (args.IsArgSet("-p2pwebtransportbind")) {
-        for (const std::string &bind : args.GetArgs("-p2pwebtransportbind")) {
-            const std::optional<CService> addr{
-                Lookup(bind, GetListenPort(), false)};
-            if (!addr || !addr->IsValid()) {
-                error = strprintf(
-                    Untranslated("Invalid -p2pwebtransportbind '%s'"), bind);
+    // -listen=0 suppresses every P2P listener, including explicit UDP
+    // binds. Outbound WebTransport remains available.
+    if (args.GetBoolArg("-listen", true)) {
+        const auto add_bind = [&](const CService &addr) {
+            if (std::find(opts.binds.begin(), opts.binds.end(), addr) ==
+                opts.binds.end()) {
+                opts.binds.push_back(addr);
+            }
+        };
+        const bool explicit_wt{args.IsArgSet("-p2pwebtransportbind")};
+        std::vector<std::string> binds{args.GetArgs(
+            explicit_wt ? "-p2pwebtransportbind" : "-bind")};
+        if (!explicit_wt) {
+            for (const auto &bind : args.GetArgs("-publicbind")) {
+                binds.push_back(bind);
+            }
+            for (const auto &bind : args.GetArgs("-whitebind")) {
+                NetWhitebindPermissions parsed;
+                bilingual_str why;
+                if (NetWhitebindPermissions::TryParse(bind, parsed, why)) {
+                    add_bind(parsed.m_service);
+                }
+            }
+        }
+        for (const std::string &bind : binds) {
+            // Onion-only TCP listeners have no direct QUIC counterpart.
+            if (!explicit_wt && bind.ends_with("=onion")) {
+                continue;
+            }
+            const auto addr{Lookup(bind, GetListenPort(), false)};
+            if (!addr || (!addr->IsValid() && !addr->IsBindAny()) ||
+                addr->GetPort() == 0) {
+                error = strprintf(Untranslated("Invalid WebTransport bind '%s'"), bind);
                 return false;
             }
-            opts.binds.push_back(*addr);
+            add_bind(*addr);
         }
-    } else if (args.GetBoolArg("-listen", true)) {
-        // UDP on the P2P port, beside the TCP listener.
-        in_addr any4{};
-        any4.s_addr = htonl(INADDR_ANY);
-        opts.binds.emplace_back(any4, GetListenPort());
-        opts.binds.emplace_back(in6addr_any, GetListenPort());
+        if (!explicit_wt && !args.IsArgSet("-bind") &&
+            !args.IsArgSet("-whitebind")) {
+            in_addr any4{};
+            any4.s_addr = htonl(INADDR_ANY);
+            add_bind(CService{any4, GetListenPort()});
+            add_bind(CService{in6addr_any, GetListenPort()});
+        }
     }
     opts.bind_optional = true;
     opts.wt_path = args.GetArg("-p2pwebtransportpath", P2P_WEBTRANSPORT_PATH);
@@ -109,7 +140,20 @@ bool StartNodeWebTransport(const ArgsManager &args, bilingual_str &error) {
     opts.bbr = cc == "bbr";
     opts.idle_timeout = std::chrono::seconds{
         std::max<int64_t>(5, args.GetIntArg("-p2pwebtransportidle", 30))};
-    opts.wt_echo = args.GetBoolArg("-p2pwebtransportecho", false);
+    // Ask for client certificates when keys grant permissions.
+    opts.request_client_cert = args.IsArgSet("-p2pwebsocketpeer") ||
+                               args.GetBoolArg("-tlsmutual", false);
+    // -p2pwebsocketpin=<host>=<pin> applies to wt:// dials of that host.
+    std::map<std::string, std::vector<unsigned char>> host_pins;
+    for (const std::string &entry : args.GetArgs("-p2pwebsocketpin")) {
+        const size_t eq{entry.find('=')};
+        if (eq == std::string::npos || eq == 0) {
+            continue;
+        }
+        if (const auto pin{DecodeSpkiPin(entry.substr(eq + 1))}) {
+            host_pins[ToLower(entry.substr(0, eq))] = *pin;
+        }
+    }
 
     std::string why;
     g_engine = QuicEngine::Start(opts, why);
@@ -120,14 +164,41 @@ bool StartNodeWebTransport(const ArgsManager &args, bilingual_str &error) {
         return false;
     }
     for (const CService &addr : g_engine->BoundAddresses()) {
-        LogPrintf("P2P over WebTransport listening on UDP %s%s\n",
-                  addr.ToStringAddrPort(),
-                  opts.wt_echo ? " (echo mode, for tests)" : "");
+        LogPrintf("P2P over WebTransport listening on UDP %s\n",
+                  addr.ToStringAddrPort());
     }
+    SetP2PWebTransportAcceptor(
+        [&connman](std::unique_ptr<Sock> &&sock, const CAddress &addr,
+                   const CAddress &addr_bind,
+                   std::shared_ptr<QuicTransportInfo> info) {
+            connman.AcceptWebTransportPeer(std::move(sock), addr, addr_bind,
+                                           std::move(info));
+        });
+    SetWebTransportDialer(
+        [engine = g_engine.get(), host_pins](
+            const CService &target, const ParsedWebTransportURL &url,
+            std::chrono::milliseconds timeout, CThreadInterrupt &interrupt,
+            WebTransportDialError &error)
+            -> std::optional<WebTransportDialResult> {
+            ParsedWebTransportURL u{url};
+            if (!u.spki_pin && !u.cert_sha256) {
+                if (const auto it{host_pins.find(ToLower(u.host))};
+                    it != host_pins.end()) {
+                    u.spki_pin = it->second;
+                }
+            }
+            return engine->Dial(target, u, timeout, interrupt, error);
+        });
     return true;
 }
 
+void InterruptNodeWebTransport() {
+    SetP2PWebTransportAcceptor(nullptr);
+    SetWebTransportDialer(nullptr);
+}
+
 void StopNodeWebTransport() {
+    InterruptNodeWebTransport();
     if (g_engine) {
         g_engine->Stop();
         g_engine.reset();
