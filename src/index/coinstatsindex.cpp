@@ -3,6 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <index/coinstatsindex.h>
+#include <logging/values.h>
 
 #include <chainparams.h>
 #include <coins.h>
@@ -131,14 +132,19 @@ bool CoinStatsIndex::WriteBlock(const CBlock &block,
 
         BlockHash expected_block_hash{pindex->pprev->GetBlockHash()};
         if (read_out.first != expected_block_hash) {
-            LogPrintf("WARNING: previous block header belongs to unexpected "
-                      "block %s; expected %s\n",
-                      read_out.first.ToString(),
-                      expected_block_hash.ToString());
+            LogInfoEvent(
+                BCLog::ALL, "coinstats_previous_block_unexpected",
+                "WARNING: previous block header belongs to unexpected block {block_hash}; expected {expected_block_hash}")
+                .Field(BCLog::LogField::BlockHash, read_out.first)
+                .Field(BCLog::LogField::ExpectedBlockHash, expected_block_hash);
 
             if (!m_db->Read(DBHashKey(expected_block_hash), read_out)) {
-                LogError("%s: previous block header not found; expected %s\n",
-                         __func__, expected_block_hash.ToString());
+                LogErrorEvent(
+                    BCLog::ALL, "coinstats_previous_header_missing",
+                    "{source_function}: previous block header not found; expected {expected_block_hash}")
+                    .Field(BCLog::LogField::SourceFunction, __func__)
+                    .Field(BCLog::LogField::ExpectedBlockHash,
+                           expected_block_hash);
                 return false;
             }
         }
@@ -265,15 +271,27 @@ static bool CopyHeightIndexToHashIndex(CDBIterator &db_it, CDBBatch &batch,
 
     for (int height = start_height; height <= stop_height; ++height) {
         if (!db_it.GetKey(key) || key.height != height) {
-            LogError("%s: unexpected key in %s: expected (%c, %d)\n", __func__,
-                     index_name, DB_BLOCK_HEIGHT, height);
+            LogErrorEvent(
+                BCLog::ALL, "coinstats_database_key_unexpected",
+                "{source_function}: unexpected key in {name}: expected ({database_key_prefix}, {height})")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::Name, index_name)
+                .Field(BCLog::LogField::DatabaseKeyPrefix,
+                       BCLog::LogChar{DB_BLOCK_HEIGHT})
+                .Field(BCLog::LogField::Height, height);
             return false;
         }
 
         std::pair<BlockHash, DBVal> value;
         if (!db_it.GetValue(value)) {
-            LogError("%s: unable to read value in %s at key (%c, %d)\n",
-                     __func__, index_name, DB_BLOCK_HEIGHT, height);
+            LogErrorEvent(
+                BCLog::ALL, "coinstats_database_height_read_failed",
+                "{source_function}: unable to read value in {name} at key ({database_key_prefix}, {height})")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::Name, index_name)
+                .Field(BCLog::LogField::DatabaseKeyPrefix,
+                       BCLog::LogChar{DB_BLOCK_HEIGHT})
+                .Field(BCLog::LogField::Height, height);
             return false;
         }
 
@@ -310,8 +328,12 @@ bool CoinStatsIndex::Rewind(const CBlockIndex *current_tip,
             CBlock block;
 
             if (!m_chainstate->m_blockman.ReadBlock(block, *iter_tip)) {
-                LogError("%s: Failed to read block %s from disk\n", __func__,
-                         iter_tip->GetBlockHash().ToString());
+                LogErrorEvent(
+                    BCLog::ALL, "coinstats_block_read_failed",
+                    "{source_function}: Failed to read block {block_hash} from disk")
+                    .Field(BCLog::LogField::SourceFunction, __func__)
+                    .Field(BCLog::LogField::BlockHash,
+                           iter_tip->GetBlockHash());
                 return false;
             }
 
@@ -382,9 +404,11 @@ bool CoinStatsIndex::CustomInit(
         // exist. Any other errors indicate database corruption or a disk
         // failure, and starting the index would cause further corruption.
         if (m_db->Exists(DB_MUHASH)) {
-            LogError(
-                "%s: Cannot read current %s state; index may be corrupted\n",
-                __func__, GetName());
+            LogErrorEvent(
+                BCLog::ALL, "coinstats_state_read_failed",
+                "{source_function}: Cannot read current {name} state; index may be corrupted")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::Name, GetName());
             return false;
         }
     }
@@ -392,18 +416,22 @@ bool CoinStatsIndex::CustomInit(
     if (block) {
         DBVal entry;
         if (!LookUpOne(*m_db, *block, entry)) {
-            LogError(
-                "%s: Cannot read current %s state; index may be corrupted\n",
-                __func__, GetName());
+            LogErrorEvent(
+                BCLog::ALL, "coinstats_state_read_failed",
+                "{source_function}: Cannot read current {name} state; index may be corrupted")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::Name, GetName());
             return false;
         }
 
         uint256 out;
         m_muhash.Finalize(out);
         if (entry.muhash != out) {
-            LogError(
-                "%s: Cannot read current %s state; index may be corrupted\n",
-                __func__, GetName());
+            LogErrorEvent(
+                BCLog::ALL, "coinstats_state_read_failed",
+                "{source_function}: Cannot read current {name} state; index may be corrupted")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::Name, GetName());
             return false;
         }
 
@@ -456,14 +484,19 @@ bool CoinStatsIndex::ReverseBlock(const CBlock &block,
 
         BlockHash expected_block_hash{pindex->pprev->GetBlockHash()};
         if (read_out.first != expected_block_hash) {
-            LogPrintf("WARNING: previous block header belongs to unexpected "
-                      "block %s; expected %s\n",
-                      read_out.first.ToString(),
-                      expected_block_hash.ToString());
+            LogInfoEvent(
+                BCLog::ALL, "coinstats_previous_block_unexpected",
+                "WARNING: previous block header belongs to unexpected block {block_hash}; expected {expected_block_hash}")
+                .Field(BCLog::LogField::BlockHash, read_out.first)
+                .Field(BCLog::LogField::ExpectedBlockHash, expected_block_hash);
 
             if (!m_db->Read(DBHashKey(expected_block_hash), read_out)) {
-                LogError("%s: previous block header not found; expected %s\n",
-                         __func__, expected_block_hash.ToString());
+                LogErrorEvent(
+                    BCLog::ALL, "coinstats_previous_header_missing",
+                    "{source_function}: previous block header not found; expected {expected_block_hash}")
+                    .Field(BCLog::LogField::SourceFunction, __func__)
+                    .Field(BCLog::LogField::ExpectedBlockHash,
+                           expected_block_hash);
                 return false;
             }
         }
