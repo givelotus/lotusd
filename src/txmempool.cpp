@@ -799,8 +799,9 @@ bool CTxMemPool::setAvalancheFinalized(const CTxMemPoolEntryRef &tx,
     auto it = mapTx.find(tx->GetTx().GetId());
     if (it == mapTx.end()) {
         // Trying to finalize a tx that is not in the mempool !
-        LogPrintf("Trying to finalize tx %s that is not in the mempool\n",
-                  tx->GetTx().GetId().ToString());
+        LogInfoEvent(BCLog::ALL, "mempool_finalization_transaction_missing",
+                     "Trying to finalize tx {txid} that is not in the mempool")
+            .Field(BCLog::LogField::TxId, tx->GetTx().GetId());
         return false;
     }
 
@@ -998,8 +999,11 @@ void CTxMemPool::PrioritiseTransaction(const TxId &txid,
         }
         node::PublishMempoolSnapshot(*this);
     }
-    LogPrintf("PrioritiseTransaction: %s fee += %s\n", txid.ToString(),
-              FormatMoney(nFeeDelta));
+    LogInfoEvent(BCLog::ALL, "mempool_transaction_priority_changed",
+                 "PrioritiseTransaction: {txid} fee += {fee_delta}")
+        .Field(BCLog::LogField::TxId, txid)
+        .Field(BCLog::LogField::FeeDelta, FormatMoney(nFeeDelta))
+        .Field(BCLog::LogField::AmountSats, nFeeDelta / SATOSHI);
 }
 
 void CTxMemPool::ApplyDelta(const TxId &txid, Amount &nFeeDelta) const {
