@@ -57,18 +57,20 @@ def symbols_to_root(symbols):
     return (acc >> 4).to_bytes(32, "big")
 
 
-def encode(hrp, root):
+def encode(hrp, root, address_type=0):
     if hrp not in K:
         raise ValueError("unknown prefix")
     if len(root) != 32:
         raise ValueError("root must be 32 bytes")
-    data = [VERSION_ROOT] + root_to_symbols(root)
+    if address_type not in (0, 1):
+        raise ValueError("unknown version")
+    data = [address_type] + root_to_symbols(root)
     mod = polymod(data + [0] * 8) ^ K[hrp]
     checksum = [(mod >> (5 * (7 - i))) & 31 for i in range(8)]
     return hrp + "1" + "".join(CHARSET[s] for s in data + checksum)
 
 
-def decode(addr, expected_hrp=None):
+def decode_typed(addr, expected_hrp=None):
     """Returns (hrp, root).  Raises ValueError with a stable reason string.
     Callers strip surrounding whitespace and URI framing before calling."""
     # 1. case: all lower or all upper; normalize to lower.
@@ -93,10 +95,18 @@ def decode(addr, expected_hrp=None):
     if polymod(symbols) != K[hrp]:
         raise ValueError("bad checksum")
     # 6. version.
-    if symbols[0] != VERSION_ROOT:
+    if symbols[0] not in (0, 1):
         raise ValueError("unknown version")
     # 7. payload (padding bits must be zero).
-    return hrp, symbols_to_root(symbols[1 : 1 + PAYLOAD_LEN])
+    return hrp, symbols[0], symbols_to_root(symbols[1 : 1 + PAYLOAD_LEN])
+
+
+def decode(addr, expected_hrp=None):
+    """Decode an explicit root; use decode_typed for template addresses."""
+    hrp, address_type, payload = decode_typed(addr, expected_hrp)
+    if address_type != 0:
+        raise ValueError("not an explicit root")
+    return hrp, payload
 
 
 class TestFrameworkXpiAddr(unittest.TestCase):
