@@ -1210,8 +1210,10 @@ void ImportBlocks(ChainstateManager &chainman,
                     // This error is logged in OpenBlockFile
                     break;
                 }
-                LogPrintf("Reindexing block file blk%05u.dat...\n",
-                          (unsigned int)nFile);
+                LogInfoEvent(
+                    BCLog::ALL, "block_file_reindexing",
+                    "Reindexing block file blk{file_number:05u}.dat...")
+                    .Field(BCLog::LogField::FileNumber, (unsigned int)nFile);
                 chainman.LoadExternalBlockFile(
                     file, &pos, &blocks_with_unknown_parent, avalanche);
                 if (chainman.m_interrupt) {
