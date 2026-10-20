@@ -19,7 +19,7 @@ These are the dependencies currently used by Bitcoin ABC. You can find instructi
 | libpng |  |  |  |  | Yes |
 | librsvg | |  |  |  |  |
 | Ninja |  | [1.5.1](https://github.com/ninja-build/ninja/releases) |  |  |  |
-| OpenSSL | [3.5.9](https://openssl-library.org/source/) |  | No |  |  |
+| OpenSSL | [3.5.9](https://openssl-library.org/source/) | 3.0 | No |  |  |
 | PCRE |  |  |  |  | Yes |
 | protobuf | [21.12](https://github.com/protocolbuffers/protobuf/releases/tag/v21.12) |  | No |  |  |
 | Python (tests) |  | [3.10](https://www.python.org/downloads) |  |  |  |
@@ -39,7 +39,8 @@ factors that affect the dependency list.
 
 #### Options passed to `cmake`
 * Berkeley DB and SQLite are not needed with `-DBUILD_WALLET=OFF`.
-* OpenSSL is not needed with `-DENABLE_BIP70=OFF`.
+* OpenSSL is always needed: the node terminates TLS itself (RPC, `-publicbind`
+  and WebSocket P2P listeners, and `wss://` dialing).
 * protobuf is not needed with `-DENABLE_BIP70=OFF`.
 * Qt is not needed with `-DBUILD_QT=OFF`.
 * qrencode is not needed with `-DENABLE_QRCODE=OFF`.
