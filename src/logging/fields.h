@@ -115,7 +115,10 @@
     X(DatabaseCacheMiB, database_cache_mib, FLOAT, "", "") \
     X(UnusedMempoolCacheMiB, unused_mempool_cache_mib, FLOAT, "", "") \
     X(Subnet, subnet, STRING, "", "") \
-    X(DatabaseOperationMs, database_operation_ms, INT, "", "")
+    X(DatabaseOperationMs, database_operation_ms, INT, "", "") \
+    X(MaxOpenFiles, max_open_files, INT, "", "") \
+    X(DefaultOpenFiles, default_open_files, INT, "", "") \
+    X(ObfuscationKey, obfuscation_key, STRING, "", "")
 
 namespace BCLog {
 
