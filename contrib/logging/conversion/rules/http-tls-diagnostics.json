@@ -1,0 +1,125 @@
+{
+  "schema": 1,
+  "batch": "http-tls-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/httpserver.cpp",
+      "rules": [
+        {
+          "id": "tls_certificate_issued",
+          "old": "LogPrintf(\"%s TLS certificate %s for %s (valid %d days)\\n\",\n                  key_pem ? \"Renewed\" : \"Generated\",\n                  fs::PathToString(files.cert), name,\n                  std::chrono::duration_cast<std::chrono::hours>(\n                      GENERATED_CERT_VALIDITY)\n                          .count() /\n                      24)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"tls_certificate_issued\", \"{certificate_action} TLS certificate {certificate_path} for {server_name} (valid {certificate_validity_days} days)\").Field(BCLog::LogField::CertificateAction, key_pem ? \"Renewed\" : \"Generated\").Field(BCLog::LogField::CertificatePath, fs::PathToString(files.cert)).Field(BCLog::LogField::ServerName, name).Field(BCLog::LogField::CertificateValidityDays, std::chrono::duration_cast<std::chrono::hours>(\n                      GENERATED_CERT_VALIDITY)\n                          .count() /\n                      24)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s TLS certificate %s for %s (valid %d days)\n",
+            "specifiers": [
+              "%s",
+              "%s",
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "key_pem ? \"Renewed\" : \"Generated\"",
+              "fs::PathToString(files.cert)",
+              "name",
+              "std::chrono::duration_cast<std::chrono::hours>(\n                      GENERATED_CERT_VALIDITY)\n                          .count() /\n                      24"
+            ]
+          },
+          "review_note": "Keep Info, exact existing text and argument types, guards, listener/TLS behavior and error returns. Typed local listener addresses are not remote peers; URL paths are not file.path. Certificate/key path names are public existing diagnostics, never PEM/private-key/cookie content. Capture OS/OpenSSL error before event construction."
+        },
+        {
+          "id": "tls_certificate_load_failed",
+          "old": "LogPrintf(\"Error: unable to load TLS certificate %s / key %s: %s\\n\",\n                  fs::PathToString(files.cert), fs::PathToString(files.key),\n                  tls::ErrorString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"tls_certificate_load_failed\", \"Error: unable to load TLS certificate {certificate_path} / key {key_path}: {error}\").Field(BCLog::LogField::CertificatePath, fs::PathToString(files.cert)).Field(BCLog::LogField::KeyPath, fs::PathToString(files.key)).Field(BCLog::LogField::Error, tls_error)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Error: unable to load TLS certificate %s / key %s: %s\n",
+            "specifiers": [
+              "%s",
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(files.cert)",
+              "fs::PathToString(files.key)",
+              "tls::ErrorString()"
+            ]
+          },
+          "review_note": "Keep Info, exact existing text and argument types, guards, listener/TLS behavior and error returns. Typed local listener addresses are not remote peers; URL paths are not file.path. Certificate/key path names are public existing diagnostics, never PEM/private-key/cookie content. Capture OS/OpenSSL error before event construction."
+        },
+        {
+          "id": "tls_certificate_renew_failed",
+          "old": "LogPrintf(\"Error: failed to renew the TLS certificate %s\\n\",\n                      fs::PathToString(files.cert))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"tls_certificate_renew_failed\", \"Error: failed to renew the TLS certificate {certificate_path}\").Field(BCLog::LogField::CertificatePath, fs::PathToString(files.cert))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Error: failed to renew the TLS certificate %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(files.cert)"
+            ]
+          },
+          "review_note": "Keep Info, exact existing text and argument types, guards, listener/TLS behavior and error returns. Typed local listener addresses are not remote peers; URL paths are not file.path. Certificate/key path names are public existing diagnostics, never PEM/private-key/cookie content. Capture OS/OpenSSL error before event construction."
+        },
+        {
+          "id": "tls_certificate_reloaded",
+          "old": "LogPrintf(\"Reloaded TLS certificate %s\\n\",\n                  fs::PathToString(files.cert))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"tls_certificate_reloaded\", \"Reloaded TLS certificate {certificate_path}\").Field(BCLog::LogField::CertificatePath, fs::PathToString(files.cert))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Reloaded TLS certificate %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(files.cert)"
+            ]
+          },
+          "review_note": "Keep Info, exact existing text and argument types, guards, listener/TLS behavior and error returns. Typed local listener addresses are not remote peers; URL paths are not file.path. Certificate/key path names are public existing diagnostics, never PEM/private-key/cookie content. Capture OS/OpenSSL error before event construction."
+        },
+        {
+          "id": "rpc_tls_enabled",
+          "old": "LogPrintf(\"TLS enabled on the RPC port using %s\\n\",\n              fs::PathToString(files.cert))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"rpc_tls_enabled\", \"TLS enabled on the RPC port using {certificate_path}\").Field(BCLog::LogField::CertificatePath, fs::PathToString(files.cert))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "TLS enabled on the RPC port using %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(files.cert)"
+            ]
+          },
+          "review_note": "Keep Info, exact existing text and argument types, guards, listener/TLS behavior and error returns. Typed local listener addresses are not remote peers; URL paths are not file.path. Certificate/key path names are public existing diagnostics, never PEM/private-key/cookie content. Capture OS/OpenSSL error before event construction."
+        }
+      ],
+      "support_adjustments": [
+        {
+          "purpose": "OpenSSL error queue is sampled before the event builder; preserve its original failure-branch timing.",
+          "old": "LogInfoEvent(BCLog::ALL, \"tls_certificate_load_failed\", \"Error: unable to load TLS certificate {certificate_path} / key {key_path}: {error}\").Field(BCLog::LogField::CertificatePath, fs::PathToString(files.cert)).Field(BCLog::LogField::KeyPath, fs::PathToString(files.key)).Field(BCLog::LogField::Error, tls_error);",
+          "new": "const auto tls_error{tls::ErrorString()};\n        LogInfoEvent(BCLog::ALL, \"tls_certificate_load_failed\", \"Error: unable to load TLS certificate {certificate_path} / key {key_path}: {error}\").Field(BCLog::LogField::CertificatePath, fs::PathToString(files.cert)).Field(BCLog::LogField::KeyPath, fs::PathToString(files.key)).Field(BCLog::LogField::Error, tls_error);"
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Append distinct semantic roles without changing existing field IDs or conflating URL paths, local listeners and remote peer addresses.",
+          "old": "    X(DestinationPath, destination_path, STRING, \"\", \"\")\n",
+          "new": "    X(DestinationPath, destination_path, STRING, \"\", \"\") \\\n    X(CertificateAction, certificate_action, STRING, \"\", \"\") \\\n    X(CertificatePath, certificate_path, STRING, \"\", \"\") \\\n    X(KeyPath, key_path, STRING, \"\", \"\") \\\n    X(ServerName, server_name, STRING, \"\", \"\") \\\n    X(CertificateValidityDays, certificate_validity_days, INT, \"\", \"\")\n"
+        }
+      ]
+    }
+  ]
+}
