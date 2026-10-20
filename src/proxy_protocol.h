@@ -41,6 +41,9 @@ struct Header {
     //! The client, or std::nullopt for LOCAL/UNKNOWN (health checks from the
     //! proxy itself): keep the connection's own peer address.
     std::optional<CService> source;
+    //! The client reached the proxy over TLS: a v2 PP2_TYPE_SSL TLV with
+    //! PP2_CLIENT_SSL set (v1 headers cannot say).
+    bool client_tls{false};
 };
 
 /**
