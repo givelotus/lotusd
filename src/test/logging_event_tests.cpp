@@ -7,6 +7,7 @@
 #include <chainparams.h>
 #include <common/args.h>
 #include <flatfile.h>
+#include <headerssync.h>
 #include <index/blockfilterindex.h>
 #include <interfaces/chain.h>
 #include <logging.h>
@@ -15,9 +16,11 @@
 #include <node/ui_interface.h>
 #include <node/utxo_snapshot.h>
 #include <noui.h>
+#include <pow/pow.h>
 #include <primitives/transaction.h>
 #include <streams.h>
 #include <test/util/setup_common.h>
+#include <timedata.h>
 #include <univalue.h>
 #include <util/asmap.h>
 #include <util/fs.h>
@@ -1437,5 +1440,76 @@ BOOST_AUTO_TEST_CASE(
     BOOST_CHECK(row["fields_truncated"].isNull());
 }
 #endif
+
+BOOST_AUTO_TEST_CASE(
+    headers_presync_rejections_keep_peer_height_and_final_state) {
+    Format(BCLog::LogFormat::JSON);
+    LogInstance().DisableCategory(
+        BCLog::NET); // Leave only actual Info failures.
+    CBlockIndex base{Params().GenesisBlock()};
+    BlockHash base_hash{base.GetBlockHeader().GetHash()};
+    base.phashBlock = &base_hash;
+    base.nChainWork = GetBlockProof(base);
+    auto params{Params().GetConsensus()};
+    params.fPowAllowMinDifficultyBlocks = false;
+    HeadersSyncState invalid{-7, params, &base, arith_uint256{1} << 255};
+    CBlockHeader bad{base.GetBlockHeader()};
+    bad.hashPrevBlock = base_hash;
+    bad.nBits = 0; // Actual invalid target is rejected before storing a header.
+    const auto rejected{invalid.ProcessNextHeaders({bad}, true)};
+    BOOST_CHECK(!rejected.success);
+    BOOST_CHECK(invalid.GetState() == HeadersSyncState::State::FINAL);
+    auto row{Json()};
+    BOOST_CHECK_EQUAL(row["event"].get_str(),
+                      "headers_presync_difficulty_invalid");
+    BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
+    BOOST_CHECK(row["peer_id"].isNum());
+    BOOST_CHECK_EQUAL(row["peer_id"].getInt<int64_t>(), -7);
+    BOOST_CHECK(row["height"].isNum());
+    BOOST_CHECK_EQUAL(row["height"].getInt<int64_t>(), base.nHeight + 1);
+    BOOST_CHECK_EQUAL(
+        row["message"].get_str(),
+        strprintf(
+            "Initial headers sync aborted with peer=%d: invalid difficulty transition at height=%i (presync phase)",
+            -7, base.nHeight + 1));
+    BOOST_CHECK(row["fields_truncated"].isNull());
+
+    // A synthetic starting tip at the future-time bound leaves zero allowed
+    // commitments. One commitment is attempted within each 610-header period,
+    // regardless of randomized offset. HeadersSyncState assumes its caller has
+    // already checked PoW; no claim that these synthetic headers are valid.
+    base.nTime =
+        Ticks<std::chrono::seconds>(GetAdjustedTime().time_since_epoch()) + MAX_FUTURE_BLOCK_TIME;
+    base_hash = base.GetBlockHeader().GetHash();
+    params.fPowAllowMinDifficultyBlocks = true;
+    HeadersSyncState bounded{8, params, &base, arith_uint256{1} << 255};
+    std::vector<CBlockHeader> headers;
+    BlockHash previous{base_hash};
+    for (unsigned i{0}; i < 610; ++i) {
+        CBlockHeader header{base.GetBlockHeader()};
+        header.hashPrevBlock = previous;
+        header.nNonce += i + 1;
+        previous = header.GetHash();
+        headers.push_back(header);
+    }
+    const auto exceeded{bounded.ProcessNextHeaders(headers, true)};
+    BOOST_CHECK(!exceeded.success);
+    BOOST_CHECK(bounded.GetState() == HeadersSyncState::State::FINAL);
+    row = Json();
+    BOOST_CHECK_EQUAL(row["event"].get_str(),
+                      "headers_presync_commitments_exceeded");
+    BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
+    BOOST_CHECK(row["peer_id"].isNum());
+    BOOST_CHECK_EQUAL(row["peer_id"].getInt<int64_t>(), 8);
+    BOOST_CHECK(row["height"].isNum());
+    const auto height{row["height"].getInt<int64_t>()};
+    BOOST_CHECK(height >= base.nHeight + 1 && height <= base.nHeight + 610);
+    BOOST_CHECK_EQUAL(
+        row["message"].get_str(),
+        strprintf(
+            "Initial headers sync aborted with peer=%d: exceeded max commitments at height=%i (presync phase)",
+            8, height));
+    BOOST_CHECK(row["fields_truncated"].isNull());
+}
 
 BOOST_AUTO_TEST_SUITE_END()
