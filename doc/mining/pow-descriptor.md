@@ -49,3 +49,22 @@ the compact target in the supplied header before starting work.
 The descriptor is separate from `getcurrencyinfo`: currency symbols and display
 precision do not identify a proof-of-work algorithm. Network identity remains
 `getmininginfo.chain`. This interface changes no chain parameters or consensus.
+
+## Lotus V2 adapter
+
+`lotus-v2-blockid` uses a 134-byte header, an eight-byte little-endian nonce
+at byte 42, and the selected network's raw 32-byte `chainid` (hex without reversal).
+Do not hash the flat header with BLAKE3. For raw header bytes `H`, compute:
+
+```
+Body = BLAKE3("Lotus/v2/header/body" || 0x00 || chainid || H[50:134])
+Work = BLAKE3("Lotus/v2/header/work" || 0x00 || H[32:50] || Body)
+ID   = BLAKE3("Lotus/v2/blockid"     || 0x00 || H[0:32] || Work)
+```
+
+Tags are ASCII; BLAKE3 is the unkeyed 32-byte output. Interpret raw `ID` as a
+little-endian integer for the target comparison, just as SHA256d above. The
+compact target occupies bytes 32–35. Regtest's chain id is all zeros; mainnet
+and testnet have distinct nonzero chain ids. Derive it from the descriptor,
+never from a currency ticker. Nonce work must preserve all other header and
+transaction bytes, including the state root and serialized block size.
