@@ -17,6 +17,8 @@ sqlite_packages=sqlite
 
 zmq_packages=zeromq
 
+http2_packages = nghttp2
+
 jemalloc_packages = jemalloc
 
 ifeq ($(host_os),linux)
