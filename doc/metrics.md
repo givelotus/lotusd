@@ -168,6 +168,29 @@ one `_bucket` per bound plus `+Inf`, a `_sum` and a `_count`.
 | `fullnode_db_size_bytes` | gauge | `db` (6) | 6 | Size of each MDBX database (the data file's current geometry), as of its last commit. Databases: `chainstate`, `block_index`, `txindex`, `blockfilterindex`, `coinstatsindex`, `other`. Two databases of one kind (e.g. a snapshot chainstate and the background one) share a series: the last commit sets it. |
 | `fullnode_db_commit_seconds` | histogram | `db` (6) | 6 | Time to write and commit a batch (and sync it when asked). `_count` counts commits. 50 µs to 120 s. |
 
+### This tier's features
+
+Transaction-relay announcement metrics are added by the Nucleation relay
+work, under this naming scheme; they are not listed here.
+
+| Name | Type | Labels | Max series | Meaning |
+|---|---|---|---|---|
+| `fullnode_sealed_headers_total` | counter | `outcome` (`rebuilt`, `already_have`, `fallback`, `invalid`, `rejected`) | 5 | Sealed headers received: block rebuilt from the mempool overlay, already had its data, fell back to requesting the compact block, malformed, or header/coinbase refused. |
+| `fullnode_merklix_rounds_total` | counter | `round` (`summary`, `bucket`), `result` (`matched`, `differences`) | 4 | Merklix reconciliation rounds received (merklixsync, merklixbuck). |
+| `fullnode_merklix_difference_size` | histogram | `round` (2) | 2 | Short ids found missing per round that decoded some. |
+| `fullnode_merklix_overflows_total` | counter | | 1 | Sub-buckets with more differences than their sketch decodes. |
+| `fullnode_snapshot_publications_total` | counter | `kind` (`chain_tip`, `best_header`, `mempool`) | 3 | Chain/mempool snapshots published for lock-free RPC reads. |
+| `fullnode_snapshot_publish_seconds` | histogram | `kind` (3) | 3 | Time to build and publish a snapshot. 5 µs to 10 s. |
+| `fullnode_snapshot_sync_state` | gauge | `state` (`idle`, `fetching_roots`, `fetching_shards`, `pivot_active_peeling`, `completed`, `failed`) | 6 | UTXO snapshot (fast) sync swarm state, one-hot. |
+| `fullnode_snapshot_sync_pivot_height` | gauge | | 1 | Height of the fast sync pivot (0 if none). |
+| `fullnode_snapshot_sync_shards` | gauge | `status` (`total`, `verified`, `pending`, `in_flight`) | 4 | Fast sync UTXO shards. |
+| `fullnode_snapshot_sync_coins_imported` | gauge | | 1 | Coins imported by the current session. |
+| `fullnode_snapshot_sync_blocks_peeled` | gauge | | 1 | Blocks peeled back from the pivot. |
+| `fullnode_snapshot_sync_peers` | gauge | `status` (`active`, `banned`) | 2 | Fast sync swarm peers. |
+| `fullnode_block_template_build_seconds` | histogram | `stage` (`select`, `validity`, `total`) | 3 | Time to build a block template (CreateNewBlock). |
+| `fullnode_adaptive_block_size_bytes` | gauge | `limit` (`max`, `target`, `max_generated`, `ema`) | 4 | Adaptive block capacity: the consensus limit it allows, its target, the mining limit with `-adaptiveblocksize`, and the moving average of block sizes. |
+| `fullnode_adaptive_block_size_history_complete` | gauge | | 1 | 1 once the adaptive capacity has a complete history. |
+
 
 ## Tests
 
