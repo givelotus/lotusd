@@ -60,8 +60,10 @@ from test_framework.messages import (
     msg_getblocktxn,
     msg_getdata,
     msg_getheaders,
+    msg_getshorttx,
     msg_headers,
     msg_inv,
+    msg_invshort,
     msg_mempool,
     msg_merkleblock,
     msg_notfound,
@@ -70,6 +72,7 @@ from test_framework.messages import (
     msg_sendaddrv2,
     msg_sendcmpct,
     msg_sendheaders,
+    msg_sendinvshort,
     msg_tcpavaresponse,
     msg_tx,
     msg_verack,
@@ -139,8 +142,10 @@ MESSAGEMAP = {
     b"getblocktxn": msg_getblocktxn,
     b"getdata": msg_getdata,
     b"getheaders": msg_getheaders,
+    b"getshorttx": msg_getshorttx,
     b"headers": msg_headers,
     b"inv": msg_inv,
+    b"invshort": msg_invshort,
     b"mempool": msg_mempool,
     b"merkleblock": msg_merkleblock,
     b"notfound": msg_notfound,
@@ -148,6 +153,7 @@ MESSAGEMAP = {
     b"pong": msg_pong,
     b"sendaddrv2": msg_sendaddrv2,
     b"sendcmpct": msg_sendcmpct,
+    b"sendinvshort": msg_sendinvshort,
     b"sendheaders": msg_sendheaders,
     b"tx": msg_tx,
     b"verack": msg_verack,
@@ -606,6 +612,15 @@ class P2PInterface(P2PConnection):
         pass
 
     def on_sendcmpct(self, message):
+        pass
+
+    def on_sendinvshort(self, message):
+        pass
+
+    def on_invshort(self, message):
+        pass
+
+    def on_getshorttx(self, message):
         pass
 
     def on_sendheaders(self, message):

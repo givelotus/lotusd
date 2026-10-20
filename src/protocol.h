@@ -361,6 +361,25 @@ extern const char *GETSHORTTX;
 extern const char *SHORTTX;
 
 /**
+ * Nucleation relay capability (sent after verack): {uint32 version, uint64
+ * flags}. A peer that receives it with a flag it also supports may use that
+ * feature towards the sender: TXRELAY_INVSHORT (short-id announcements) and
+ * TXRELAY_RECON (continuous LIVE_MEMPOOL reconciliation), and
+ * TXRELAY_HIGH_BANDWIDTH (sealedheader announcements and unsolicited shorttx
+ * bodies). High-bandwidth formats require explicit remote advertisement;
+ * ordinary BIP152 negotiation does not opt into them. Stock peers ignore the
+ * unknown message and keep receiving ordinary INVs/compact blocks.
+ */
+extern const char *SENDINVSHORT;
+/**
+ * Short-id transaction announcements: {uint256 epoch_id, vector<uint64>
+ * short_ids}. epoch_id names the key the ids were computed with (the
+ * sender's chain tip, see net/txrelay_index.h). Missing transactions are
+ * fetched with getshorttx (scope LIVE_MEMPOOL, context_id = epoch_id).
+ */
+extern const char *INVSHORT;
+
+/**
  * Requests the 256 depth-8 UTXO shard roots and 56-byte monetary state for a
  * fast-sync pivot block.
  */
