@@ -5379,9 +5379,10 @@ bool Chainstate::ActivateBestChain(BlockValidationState &state,
     // Belt-and-suspenders check that we aren't attempting to advance the
     // background chainstate past the snapshot base block.
     if (WITH_LOCK(::cs_main, return m_disabled)) {
-        LogPrintf("m_disabled is set - this chainstate should not be in "
-                  "operation. Please report this as a bug. %s\n",
-                  PACKAGE_BUGREPORT);
+        LogInfoEvent(
+            BCLog::ALL, "disabled_chainstate_advance_refused",
+            "m_disabled is set - this chainstate should not be in operation. Please report this as a bug. {bug_report_url}")
+            .Field(BCLog::LogField::BugReportURL, PACKAGE_BUGREPORT);
         return false;
     }
 
@@ -6097,11 +6098,14 @@ void ChainstateManager::ReceivedBlockTransactions(const CBlock &block,
     if (!Assume(pindexNew->m_chain_tx_count == 0 ||
                 pindexNew->m_chain_tx_count == prev_tx_sum(*pindexNew) ||
                 pindexNew == GetSnapshotBaseBlock())) {
-        LogPrintf("Internal bug detected: block %d has unexpected "
-                  "m_chain_tx_count %lu that should be %lu. Please report "
-                  "this issue here: %s\n",
-                  pindexNew->nHeight, pindexNew->m_chain_tx_count,
-                  prev_tx_sum(*pindexNew), PACKAGE_BUGREPORT);
+        LogInfoEvent(
+            BCLog::ALL, "block_chain_tx_count_unexpected",
+            "Internal bug detected: block {height} has unexpected m_chain_tx_count {chain_tx_count} that should be {expected_chain_tx_count}. Please report this issue here: {bug_report_url}")
+            .Field(BCLog::LogField::Height, pindexNew->nHeight)
+            .Field(BCLog::LogField::ChainTxCount, pindexNew->m_chain_tx_count)
+            .Field(BCLog::LogField::ExpectedChainTxCount,
+                   prev_tx_sum(*pindexNew))
+            .Field(BCLog::LogField::BugReportURL, PACKAGE_BUGREPORT);
         pindexNew->m_chain_tx_count = 0;
     }
     pindexNew->nSize = ::GetSerializeSize(block);
@@ -6130,11 +6134,15 @@ void ChainstateManager::ReceivedBlockTransactions(const CBlock &block,
             if (!Assume(pindex->m_chain_tx_count == 0 ||
                         pindex->m_chain_tx_count == prev_tx_sum(*pindex) ||
                         pindex == GetSnapshotBaseBlock())) {
-                LogPrintf("Internal bug detected: block %d has unexpected "
-                          "m_chain_tx_count %lu that should be %lu. Please "
-                          "report this issue here: %s\n",
-                          pindex->nHeight, pindex->m_chain_tx_count,
-                          prev_tx_sum(*pindex), PACKAGE_BUGREPORT);
+                LogInfoEvent(
+                    BCLog::ALL, "block_chain_tx_count_unexpected",
+                    "Internal bug detected: block {height} has unexpected m_chain_tx_count {chain_tx_count} that should be {expected_chain_tx_count}. Please report this issue here: {bug_report_url}")
+                    .Field(BCLog::LogField::Height, pindex->nHeight)
+                    .Field(BCLog::LogField::ChainTxCount,
+                           pindex->m_chain_tx_count)
+                    .Field(BCLog::LogField::ExpectedChainTxCount,
+                           prev_tx_sum(*pindex))
+                    .Field(BCLog::LogField::BugReportURL, PACKAGE_BUGREPORT);
             }
             pindex->m_chain_tx_count = prev_tx_sum(*pindex);
             if (pindex->nSequenceId == 0) {
