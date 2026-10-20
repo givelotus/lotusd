@@ -198,6 +198,27 @@ namespace {
             field.AppendText(out);
             return true;
         }
+        // Bounded zero-padded hexadecimal preserves diagnostic bit patterns
+        // without turning the structured integer into a string. Signed values
+        // must be nonnegative; callers cast a signed bitfield to its wire type.
+        if (format.back() == 'x' &&
+            (field.kind == FieldKind::I64 || field.kind == FieldKind::U64)) {
+            if (field.kind == FieldKind::I64 && field.I64() < 0) return false;
+            format.remove_suffix(1);
+            int width{0};
+            if (!format.empty()) {
+                if (format.front() != '0' || format.size() < 2) return false;
+                format.remove_prefix(1);
+                const auto [end, error]{std::from_chars(
+                    format.data(), format.data() + format.size(), width)};
+                if (error != std::errc{} || end != format.data() + format.size() ||
+                    width < 1 || width > 16) return false;
+            }
+            const uint64_t value{field.kind == FieldKind::U64
+                                     ? field.U64() : uint64_t(field.I64())};
+            out += strprintf("%0*x", width, value);
+            return true;
+        }
         if (field.kind != FieldKind::F64 ||
             (format.back() != 'f' && format.back() != 'g')) return false;
         const char kind{format.back()};

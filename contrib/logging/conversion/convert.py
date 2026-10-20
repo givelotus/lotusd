@@ -26,9 +26,11 @@ LEGACY = {
     "LogTrace",
     "LogPrint",
     "LogPrintLevel",
+    "LogPrintLevel_",
 }
 EVENTS = {
     "LogInfoEvent",
+    "LogInfoEventNoRateLimit",
     "LogWarningEvent",
     "LogErrorEvent",
     "LogEvent",
@@ -62,7 +64,8 @@ def calls(source, names):
 
 
 def args(node):
-    return node.field("arguments").named_children()
+    return [child for child in node.field("arguments").named_children()
+            if child.kind() != "comment"]
 
 
 def literal(node):
@@ -108,7 +111,7 @@ def format_parts(message):
 def describe(node):
     name = node.field("function").text()
     index = (
-        2
+        3 if name == "LogPrintLevel_" else 2
         if name == "LogPrintLevel"
         else 1 if name in {"LogPrint", "LogDebug", "LogTrace"} else 0
     )
@@ -144,6 +147,8 @@ def validate_mapping(old, event):
     def rendering(spec):
         if spec == "%s" or re.fullmatch(r"%(?:ll|l|z|t|j)?[diu]", spec):
             return None
+        if re.fullmatch(r"%(?:0(?:[1-9]|1[0-6]))?x", spec):
+            return spec[1:]
         if re.fullmatch(r"%(?:\.(?:[0-9]|1[0-8]))?[fg]", spec):
             return spec[1:]
         raise ValueError("format width/precision/type needs manual rendering support")
@@ -154,7 +159,7 @@ def validate_mapping(old, event):
     macro = description["macro"]
     category = (
         oldargs[0].text()
-        if macro in {"LogDebug", "LogTrace", "LogPrint", "LogPrintLevel"}
+        if macro in {"LogDebug", "LogTrace", "LogPrint", "LogPrintLevel", "LogPrintLevel_"}
         else "BCLog::ALL"
     )
     expected = {
@@ -174,6 +179,11 @@ def validate_mapping(old, event):
             "BCLog::Level::Debug": "LogEvent",
             "BCLog::Level::Trace": "LogTraceEvent",
         }.get(oldargs[1].text())
+    if macro == "LogPrintLevel_":
+        if oldargs[1].text() == "BCLog::Level::Info" and oldargs[2].text() == "false":
+            expected = "LogInfoEventNoRateLimit"
+        else:
+            raise ValueError("unreviewed low-level logging rate-limit contract")
     if event.field("function").text() != expected or newargs[0].text() != category:
         raise ValueError("severity/category changed")
     message = literal(newargs[2])
