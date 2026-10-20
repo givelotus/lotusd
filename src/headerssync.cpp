@@ -237,9 +237,11 @@ bool HeadersSyncState::ValidateAndProcessSingleHeader(
     if (!PermittedDifficultyTransition(m_consensus_params, next_height,
                                        m_last_header_received.nBits,
                                        current.nBits)) {
-        LogPrintf("Initial headers sync aborted with peer=%d: invalid "
-                  "difficulty transition at height=%i (presync phase)\n",
-                  m_id, next_height);
+        LogInfoEvent(
+            BCLog::ALL, "headers_presync_difficulty_invalid",
+            "Initial headers sync aborted with peer={peer_id}: invalid difficulty transition at height={height} (presync phase)")
+            .Field(BCLog::LogField::PeerId, m_id)
+            .Field(BCLog::LogField::Height, next_height);
         return false;
     }
 
@@ -251,9 +253,11 @@ bool HeadersSyncState::ValidateAndProcessSingleHeader(
             // It's possible the chain grew since we started the sync; so
             // potentially we could succeed in syncing the peer's chain if we
             // try again later.
-            LogPrintf("Initial headers sync aborted with peer=%d: exceeded max "
-                      "commitments at height=%i (presync phase)\n",
-                      m_id, next_height);
+            LogInfoEvent(
+                BCLog::ALL, "headers_presync_commitments_exceeded",
+                "Initial headers sync aborted with peer={peer_id}: exceeded max commitments at height={height} (presync phase)")
+                .Field(BCLog::LogField::PeerId, m_id)
+                .Field(BCLog::LogField::Height, next_height);
             return false;
         }
     }
