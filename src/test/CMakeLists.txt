@@ -47,6 +47,7 @@ add_dependencies(check check-bitcoin)
 
 # An utility library for bitcoin related test suites.
 add_library(testutil OBJECT
+	util/admission.cpp
 	util/blockfilter.cpp
 	util/blockindex.cpp
 	util/coins.cpp
