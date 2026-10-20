@@ -1118,6 +1118,26 @@ private:
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
                                  g_msgproc_mutex);
+    /**
+     * The part of handling a received transaction that comes before mempool
+     * admission: request bookkeeping, and the already-have handling (force
+     * relay, reconsiderable 1p1c packages). Returns whether the transaction
+     * should be submitted to the mempool.
+     */
+    bool PrepareTxAdmission(CNode &pfrom, const CTransactionRef &ptx)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
+                                 !m_recent_confirmed_transactions_mutex,
+                                 g_msgproc_mutex, cs_main);
+    /**
+     * The part of handling a received transaction that comes after mempool
+     * admission: relay, orphans, reject filters, conflicting pool, package
+     * reconsideration and misbehavior, all driven by `result`.
+     */
+    void FinishTxAdmission(CNode &pfrom, Peer &peer, const CTransactionRef &ptx,
+                           const MempoolAcceptResult &result)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
+                                 !m_recent_confirmed_transactions_mutex,
+                                 g_msgproc_mutex, cs_main);
     void ProcessTxBatch(CNode &pfrom, Peer &peer,
                         const std::vector<CTransactionRef> &ptxs)
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
@@ -5236,11 +5256,23 @@ void PeerManagerImpl::ProcessSingleTx(CNode &pfrom, Peer &peer,
     if (!ptx) {
         return;
     }
-    const CTransaction &tx = *ptx;
-    const TxId &txid = tx.GetId();
-    AddKnownTx(peer, txid);
+    AddKnownTx(peer, ptx->GetId());
 
     LOCK(cs_main);
+
+    if (!PrepareTxAdmission(pfrom, ptx)) {
+        return;
+    }
+    const MempoolAcceptResult result = m_chainman.ProcessTransaction(ptx);
+    FinishTxAdmission(pfrom, peer, ptx, result);
+}
+
+bool PeerManagerImpl::PrepareTxAdmission(CNode &pfrom,
+                                         const CTransactionRef &ptx) {
+    AssertLockHeld(g_msgproc_mutex);
+    AssertLockHeld(cs_main);
+    const CTransaction &tx = *ptx;
+    const TxId &txid = tx.GetId();
 
     m_txrequest.ReceivedResponse(pfrom.GetId(), txid);
     // Whichever way it came, it answers announcements of its short id.
@@ -5285,10 +5317,18 @@ void PeerManagerImpl::ProcessSingleTx(CNode &pfrom, Peer &peer,
                                      package_result);
             }
         }
-        return;
+        return false;
     }
+    return true;
+}
 
-    const MempoolAcceptResult result = m_chainman.ProcessTransaction(ptx);
+void PeerManagerImpl::FinishTxAdmission(CNode &pfrom, Peer &peer,
+                                        const CTransactionRef &ptx,
+                                        const MempoolAcceptResult &result) {
+    AssertLockHeld(g_msgproc_mutex);
+    AssertLockHeld(cs_main);
+    const CTransaction &tx = *ptx;
+    const TxId &txid = tx.GetId();
     const TxValidationState &state = result.m_state;
 
     if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
