@@ -14,7 +14,9 @@ argument fixture. No claim that Comby could not implement these rules is made.
 
 Reviewed mappings support plain decimal integer length modifiers and explicit
 FLOAT `f`/`g` precision 0..18. A floating placeholder must preserve the original
-printf precision exactly. Other width/sign/type formatting remains rejected;
+printf precision exactly. Bounded integer `%x`/`%0Nx` (width 1..16) is also supported with
+`:x`/`:0Nx` placeholders; signed header bitfields must be explicitly cast to
+their wire-width unsigned type. Other width/sign/type formatting remains rejected;
 this capability does not infer a field type or domain from its label.
 
 The checked-in JSON rules are reviewed semantic mappings, not inferred schemas.
@@ -69,3 +71,28 @@ codemod consumers. Record structured-event lint, relevant native and focused
 behavior checks, and any pending combined-source validation gate separately.
 The script's textual checks do not replace behavioral validation or justify
 claiming a native/runtime pass that has not run.
+
+## Coverage inventory
+
+`inventory.py` scans an immutable committed tree, including tests, benchmarks,
+Chronik bridges, wallet member wrappers, continuation aliases, seeder, tools
+and vendor C/C++ sources. It records typed events separately from pending
+legacy calls; a JSON envelope does not count as a typed conversion. Every
+pending site has a stable source identity and explicit deferred reason. Parser
+errors remain annotated rather than silently excluded. Timing producer
+macros (`LOG_TIME_SECONDS` and the three category/duration variants) are counted
+at their application call sites too. Their generic `logging/timer.h` forwarding
+calls have explicit infrastructure dispositions; this does not count a timer
+producer as converted. Expanding the known alias set can increase the deferred
+count without adding source logging or regressing a conversion.
+
+```sh
+/path/to/logging-conversion-venv/bin/python contrib/logging/conversion/test_inventory.py
+/path/to/logging-conversion-venv/bin/python contrib/logging/conversion/inventory.py --root . --revision HEAD --output /path/to/coverage.json
+```
+
+The `chain-tip-progress` rule retains the existing low-level unthrottled Info
+contract through `LogInfoEventNoRateLimit`. The converter rejects other
+low-level combinations until separately reviewed. This bypass applies only to
+the site rate limiter, with the same ring-full/drop policy as existing Info
+events; it is not a blocking mode.
