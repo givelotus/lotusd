@@ -145,6 +145,16 @@ struct NodeMetrics {
     metrics::Counter &p2p_connections;
     //! WebSocket peers, by compression x tls (0 = plain, 1 = TLS)
     metrics::Gauge &websocket_peers;
+    //! Independent frames, by direction (0 = sent, 1 = received)
+    metrics::Counter &websocket_independent_frames;
+
+    // Compress-once block frames (net_zstd_independent.h)
+    metrics::Counter &p2p_compress_once_cache_hits;
+    metrics::Counter &p2p_compress_once_cache_misses;
+    metrics::Counter &p2p_compress_once_cache_evictions;
+    metrics::Gauge &p2p_compress_once_cache_bytes;
+    metrics::Gauge &p2p_compress_once_cache_entries;
+    metrics::Counter &p2p_compress_once_encodes;
 
     // Chain
     metrics::Gauge &tip_height;
