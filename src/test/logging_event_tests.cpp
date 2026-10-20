@@ -220,6 +220,48 @@ BOOST_AUTO_TEST_CASE(validation_state_snapshot_preserves_canonical_text) {
                       BCLog::LogValue<TxValidationState>::MAX_SIZE);
 }
 
+BOOST_AUTO_TEST_CASE(explicit_info_bypass_preserves_progress_delivery) {
+    Format(BCLog::LogFormat::TEXT);
+    // Hold one window throughout this test; no timer/reset race is involved.
+    LogInstance().SetRateLimiting(BCLog::LogRateLimiter::Create(
+        [](auto, auto) {}, 1000, 1h));
+    for (int i = 0; i < 30; ++i) {
+        LogInfoEventNoRateLimit(BCLog::ALL, "progress_unthrottled", "{name}")
+            .Field(LogField::Name, std::string(99, 'p'));
+    }
+    LogInstance().Flush();
+    LogInstance().SetRateLimiting(nullptr);
+    const auto lines{Lines()};
+    BOOST_REQUIRE_EQUAL(lines.size(), 30U);
+    for (const auto &line : lines) {
+        BOOST_CHECK_EQUAL(line, std::string(99, 'p'));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(integer_hex_keeps_numeric_fields) {
+    Format(BCLog::LogFormat::JSON);
+    LogInfoEventNoRateLimit(BCLog::ALL, "hex_fixture", "version=0x{version:08x}")
+        .Field(LogField::Version, uint32_t{0x80000002});
+    const auto record{Json()};
+    BOOST_CHECK_EQUAL(record["message"].get_str(), "version=0x80000002");
+    BOOST_CHECK(record["version"].isNum());
+    BOOST_CHECK_EQUAL(record["version"].getInt<int64_t>(), 2147483650);
+    Format(BCLog::LogFormat::TEXT);
+    LogInfoEventNoRateLimit(BCLog::ALL, "hex_fixture", "version=0x{version:08x}")
+        .Field(LogField::Version, uint32_t{2});
+    BOOST_CHECK_EQUAL(Lines().at(0), "version=0x00000002");
+    for (const char *invalid : {"{version:017x}", "{version:00x}",
+                                "{version:8x}", "{version:08X}"}) {
+        const BCLog::LogEventSite site{"hex_invalid", invalid, BCLog::ALL,
+                                      BCLog::Level::Info};
+        BCLog::EventBuilder{site, nullptr}.Field(LogField::Version, 2);
+        BOOST_CHECK(Lines().at(0).starts_with(invalid));
+    }
+    LogInfoEventNoRateLimit(BCLog::ALL, "hex_signed", "{version:08x}")
+        .Field(LogField::Version, -1);
+    BOOST_CHECK(Lines().at(0).starts_with("{version:08x}"));
+}
+
 BOOST_AUTO_TEST_CASE(event_text_and_json) {
     const CService addr{LookupNumeric("203.0.113.7", 10605)};
     for (const auto format : {BCLog::LogFormat::TEXT, BCLog::LogFormat::JSON}) {

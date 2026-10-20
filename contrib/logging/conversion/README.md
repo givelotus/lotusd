@@ -56,12 +56,16 @@ The first invocation prints a unified diff without editing. The report records
 the engine version, script/rules SHA256, input/output hashes, converted calls,
 and rejected calls with reasons. All files are prepared and validated before
 any write. Run against a clean parent checkout and inspect the diff. A second
-application produces an empty diff. No clang-format invocation or temporary
-draft is required to reproduce the checked-in mappings.
+application produces an empty diff. If a consumer commit records a
+`git clang-format` command, run it after the conversion to reproduce that
+commit's whitespace. AST matching remains insensitive to whitespace; keep
+string-literal splitting disabled when the recorded command requires it.
 
-Each consumer commit records its exact shell-quoted command, engine version,
-script/rules hashes, input scope, and explicit support adjustments. Earlier
+Each consumer commit records its exact command, engine version, input scope,
+and explicit support adjustments. Its machine receipt records script/rules
+hashes and input/output source hashes. Earlier
 manual/reviewed conversions are not retroactively described as reproducible
-codemod consumers. Conversion commits still require structured-event lint,
-relevant native tests, and their own unchanged-source full functional gate;
-the script's textual checks do not replace behavioral validation.
+codemod consumers. Record structured-event lint, relevant native and focused
+behavior checks, and any pending combined-source validation gate separately.
+The script's textual checks do not replace behavioral validation or justify
+claiming a native/runtime pass that has not run.
