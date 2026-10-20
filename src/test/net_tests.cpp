@@ -2240,4 +2240,102 @@ BOOST_AUTO_TEST_CASE(precomputed_checksum_is_used) {
     BOOST_CHECK(msg.Copy().m_checksum == msg.m_checksum);
 }
 
+namespace {
+/**
+ * A user-space transport whose Send() fails with EAGAIN while blocked and
+ * that signals "can send again" by making its descriptor readable, like
+ * the WebTransport peer socket.
+ */
+class TransportBlockedSock final : public Sock {
+public:
+    explicit TransportBlockedSock(SOCKET s) : Sock{s} {}
+    ssize_t Send(const void *, size_t len, int) const override {
+        ++m_send_calls;
+        if (m_blocked) {
+            errno = EAGAIN;
+            return -1;
+        }
+        m_sent += len;
+        return len;
+    }
+    ssize_t Recv(void *buf, size_t len, int) const override {
+        Drain();
+        errno = EAGAIN;
+        return -1;
+    }
+    bool SendBlockedByTransport() const override { return m_blocked; }
+    Event PendingEvents() const override { return m_blocked ? RECV : 0; }
+    bool FlushPending() const override {
+        Drain();
+        return true;
+    }
+    void Drain() const {
+        uint8_t b[64];
+        while (::recv(m_socket, b, sizeof(b), MSG_DONTWAIT) > 0) {
+        }
+    }
+    mutable std::atomic<bool> m_blocked{true};
+    mutable std::atomic<int> m_send_calls{0};
+    mutable std::atomic<size_t> m_sent{0};
+};
+} // namespace
+
+BOOST_AUTO_TEST_CASE(sock_send_blocked_by_transport) {
+    int sv[2];
+    BOOST_REQUIRE_EQUAL(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+    const Config &config{m_node.chainman->GetConfig()};
+    ConnmanTestMsg connman{config, 0x1337, 0x1337, *m_node.addrman};
+    auto sock{std::make_shared<TransportBlockedSock>(SOCKET(sv[0]))};
+    CNode *node = new CNode{/*id=*/0,
+                            sock,
+                            CAddress{},
+                            /*nKeyedNetGroupIn=*/0,
+                            /*nLocalHostNonceIn=*/0,
+                            /*nLocalExtraEntropyIn=*/0,
+                            CAddress{},
+                            /*addrNameIn=*/"",
+                            ConnectionType::INBOUND,
+                            /*inbound_onion=*/false};
+    connman.AddTestNode(*node);
+    std::vector<CNode *> nodes{node};
+
+    // The optimistic send in PushMessage() is refused: the message stays
+    // queued.
+    connman.PushMessage(node, NetMsg::Make(NetMsgType::PING, uint64_t{42}));
+    BOOST_CHECK(WITH_LOCK(node->cs_vSend, return !node->vSendMsg.empty()));
+    const int after_push{sock->m_send_calls};
+    BOOST_CHECK_LE(after_push, 1);
+
+    // While blocked the socket is waited on for RECV, not SEND (whose
+    // descriptor is writable, so polling it would spin).
+    auto events{connman.GenerateWaitSocketsForTest(nodes)};
+    BOOST_REQUIRE_EQUAL(events.size(), 1U);
+    BOOST_CHECK_EQUAL(events.begin()->second.requested, Sock::RECV);
+
+    // Nothing readable for 200 ms: the handler waits out its timeouts and
+    // does not retry Send() in a loop.
+    const auto start{SteadyClock::now()};
+    int loops{0};
+    while (SteadyClock::now() - start < 200ms) {
+        connman.SocketHandlerForTest();
+        ++loops;
+    }
+    BOOST_CHECK_GE(loops, 2);
+    BOOST_CHECK_LE(sock->m_send_calls - after_push, 1);
+    BOOST_CHECK(WITH_LOCK(node->cs_vSend, return !node->vSendMsg.empty()));
+
+    // The transport takes data again and says so through its descriptor:
+    // the queue drains on the next pass, even with receiving paused.
+    node->fPauseRecv = true;
+    sock->m_blocked = false;
+    const uint8_t token{1};
+    BOOST_REQUIRE_EQUAL(::send(sv[1], &token, 1, 0), 1);
+    connman.SocketHandlerForTest();
+    BOOST_CHECK(WITH_LOCK(node->cs_vSend, return node->vSendMsg.empty()));
+    BOOST_CHECK_GT(sock->m_sent.load(), 0U);
+
+    connman.ClearTestNodes();
+    close(sv[1]);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

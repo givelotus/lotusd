@@ -271,6 +271,15 @@ public:
     [[nodiscard]] virtual bool FlushPending() const { return true; }
 
     /**
+     * Whether a user-space transport cannot accept more data from Send()
+     * now (its Send() would fail with EAGAIN) and will report RECV readiness
+     * on its descriptor when it can. CConnman then waits for RECV instead
+     * of SEND for it: its descriptor (e.g. one end of a socketpair) may be
+     * always writable, and polling SEND would spin.
+     */
+    [[nodiscard]] virtual bool SendBlockedByTransport() const { return false; }
+
+    /**
      * Wait until the socket is readable or has an exceptional condition,
      * or the timeout expires,
      * via select(m_socket, &fdsetRecv, nullptr, &fdsetError, timeout).
