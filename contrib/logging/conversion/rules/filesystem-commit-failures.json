@@ -1,0 +1,137 @@
+{
+  "schema": 1,
+  "batch": "filesystem-commit-failures",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/util/fs_helpers.cpp",
+      "rules": [
+        {
+          "id": "file_commit_stdio_flush_failed",
+          "old": "LogPrintf(\"fflush failed: %s\\n\", SysErrorString(errno))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"file_commit_stdio_flush_failed\", \"fflush failed: {error}\").Field(BCLog::LogField::Error, commit_error)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "fflush failed: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "SysErrorString(errno)"
+            ]
+          },
+          "review_note": "Preserve Info level, exact text and failure return. Explicit reviewed support adjustment evaluates the original error-string argument at failure-branch entry before EventBuilder is constructed, preserving errno/GetLastError observation timing; no private paths or raw FILE pointers added. Platform guards and ignored EINVAL cases unchanged."
+        },
+        {
+          "id": "file_commit_windows_flush_failed",
+          "old": "LogPrintf(\"FlushFileBuffers failed: %s\\n\",\n                  Win32ErrorString(GetLastError()))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"file_commit_windows_flush_failed\", \"FlushFileBuffers failed: {error}\").Field(BCLog::LogField::Error, commit_error)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "FlushFileBuffers failed: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "Win32ErrorString(GetLastError())"
+            ]
+          },
+          "review_note": "Preserve Info level, exact text and failure return. Explicit reviewed support adjustment evaluates the original error-string argument at failure-branch entry before EventBuilder is constructed, preserving errno/GetLastError observation timing; no private paths or raw FILE pointers added. Platform guards and ignored EINVAL cases unchanged."
+        },
+        {
+          "id": "file_commit_fullfsync_failed",
+          "old": "LogPrintf(\"fcntl F_FULLFSYNC failed: %s\\n\", SysErrorString(errno))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"file_commit_fullfsync_failed\", \"fcntl F_FULLFSYNC failed: {error}\").Field(BCLog::LogField::Error, commit_error)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "fcntl F_FULLFSYNC failed: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "SysErrorString(errno)"
+            ]
+          },
+          "review_note": "Preserve Info level, exact text and failure return. Explicit reviewed support adjustment evaluates the original error-string argument at failure-branch entry before EventBuilder is constructed, preserving errno/GetLastError observation timing; no private paths or raw FILE pointers added. Platform guards and ignored EINVAL cases unchanged."
+        },
+        {
+          "id": "file_commit_fdatasync_failed",
+          "old": "LogPrintf(\"fdatasync failed: %s\\n\", SysErrorString(errno))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"file_commit_fdatasync_failed\", \"fdatasync failed: {error}\").Field(BCLog::LogField::Error, commit_error)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "fdatasync failed: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "SysErrorString(errno)"
+            ]
+          },
+          "review_note": "Preserve Info level, exact text and failure return. Explicit reviewed support adjustment evaluates the original error-string argument at failure-branch entry before EventBuilder is constructed, preserving errno/GetLastError observation timing; no private paths or raw FILE pointers added. Platform guards and ignored EINVAL cases unchanged."
+        },
+        {
+          "id": "file_commit_fsync_failed",
+          "old": "LogPrintf(\"fsync failed: %s\\n\", SysErrorString(errno))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"file_commit_fsync_failed\", \"fsync failed: {error}\").Field(BCLog::LogField::Error, commit_error)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "fsync failed: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "SysErrorString(errno)"
+            ]
+          },
+          "review_note": "Preserve Info level, exact text and failure return. Explicit reviewed support adjustment evaluates the original error-string argument at failure-branch entry before EventBuilder is constructed, preserving errno/GetLastError observation timing; no private paths or raw FILE pointers added. Platform guards and ignored EINVAL cases unchanged."
+        },
+        {
+          "id": "windows_special_folder_path_failed",
+          "old": "LogPrintf(\n        \"SHGetSpecialFolderPathW() failed, could not obtain requested path.\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"windows_special_folder_path_failed\", \"SHGetSpecialFolderPathW() failed, could not obtain requested path.\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "SHGetSpecialFolderPathW() failed, could not obtain requested path.\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve Info level, exact text and failure return. Explicit reviewed support adjustment evaluates the original error-string argument at failure-branch entry before EventBuilder is constructed, preserving errno/GetLastError observation timing; no private paths or raw FILE pointers added. Platform guards and ignored EINVAL cases unchanged."
+        }
+      ],
+      "support_adjustments": [
+        {
+          "purpose": "Capture exactly the old error-string expression before typed builder construction; keep error code timing and guarded branch unchanged.",
+          "old": "if (fflush(file) != 0) {\n",
+          "new": "if (fflush(file) != 0) {\n        const auto commit_error{SysErrorString(errno)};\n"
+        },
+        {
+          "purpose": "Capture exactly the old error-string expression before typed builder construction; keep error code timing and guarded branch unchanged.",
+          "old": "if (FlushFileBuffers(hFile) == 0) {\n",
+          "new": "if (FlushFileBuffers(hFile) == 0) {\n        const auto commit_error{Win32ErrorString(GetLastError())};\n"
+        },
+        {
+          "purpose": "Capture exactly the old error-string expression before typed builder construction; keep error code timing and guarded branch unchanged.",
+          "old": "if (fcntl(fileno(file), F_FULLFSYNC, 0) == -1) {\n",
+          "new": "if (fcntl(fileno(file), F_FULLFSYNC, 0) == -1) {\n        const auto commit_error{SysErrorString(errno)};\n"
+        },
+        {
+          "purpose": "Capture exactly the old error-string expression before typed builder construction; keep error code timing and guarded branch unchanged.",
+          "old": "if (fdatasync(fileno(file)) != 0 && errno != EINVAL) {\n",
+          "new": "if (fdatasync(fileno(file)) != 0 && errno != EINVAL) {\n        const auto commit_error{SysErrorString(errno)};\n"
+        },
+        {
+          "purpose": "Capture exactly the old error-string expression before typed builder construction; keep error code timing and guarded branch unchanged.",
+          "old": "if (fsync(fileno(file)) != 0 && errno != EINVAL) {\n",
+          "new": "if (fsync(fileno(file)) != 0 && errno != EINVAL) {\n        const auto commit_error{SysErrorString(errno)};\n"
+        }
+      ]
+    }
+  ]
+}

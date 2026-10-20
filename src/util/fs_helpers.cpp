@@ -111,31 +111,45 @@ std::streampos GetFileSize(const char *path, std::streamsize max) {
 bool FileCommit(FILE *file) {
     // harmless if redundantly called
     if (fflush(file) != 0) {
-        LogPrintf("fflush failed: %s\n", SysErrorString(errno));
+        const auto commit_error{SysErrorString(errno)};
+        LogInfoEvent(BCLog::ALL, "file_commit_stdio_flush_failed",
+                     "fflush failed: {error}")
+            .Field(BCLog::LogField::Error, commit_error);
         return false;
     }
 #ifdef WIN32
     HANDLE hFile = (HANDLE)_get_osfhandle(_fileno(file));
     if (FlushFileBuffers(hFile) == 0) {
-        LogPrintf("FlushFileBuffers failed: %s\n",
-                  Win32ErrorString(GetLastError()));
+        const auto commit_error{Win32ErrorString(GetLastError())};
+        LogInfoEvent(BCLog::ALL, "file_commit_windows_flush_failed",
+                     "FlushFileBuffers failed: {error}")
+            .Field(BCLog::LogField::Error, commit_error);
         return false;
     }
 #elif defined(MAC_OSX) && defined(F_FULLFSYNC)
     // Manpage says "value other than -1" is returned on success
     if (fcntl(fileno(file), F_FULLFSYNC, 0) == -1) {
-        LogPrintf("fcntl F_FULLFSYNC failed: %s\n", SysErrorString(errno));
+        const auto commit_error{SysErrorString(errno)};
+        LogInfoEvent(BCLog::ALL, "file_commit_fullfsync_failed",
+                     "fcntl F_FULLFSYNC failed: {error}")
+            .Field(BCLog::LogField::Error, commit_error);
         return false;
     }
 #elif HAVE_FDATASYNC
     // Ignore EINVAL for filesystems that don't support sync
     if (fdatasync(fileno(file)) != 0 && errno != EINVAL) {
-        LogPrintf("fdatasync failed: %s\n", SysErrorString(errno));
+        const auto commit_error{SysErrorString(errno)};
+        LogInfoEvent(BCLog::ALL, "file_commit_fdatasync_failed",
+                     "fdatasync failed: {error}")
+            .Field(BCLog::LogField::Error, commit_error);
         return false;
     }
 #else
     if (fsync(fileno(file)) != 0 && errno != EINVAL) {
-        LogPrintf("fsync failed: %s\n", SysErrorString(errno));
+        const auto commit_error{SysErrorString(errno)};
+        LogInfoEvent(BCLog::ALL, "file_commit_fsync_failed",
+                     "fsync failed: {error}")
+            .Field(BCLog::LogField::Error, commit_error);
         return false;
     }
 #endif
@@ -249,8 +263,9 @@ fs::path GetSpecialFolderPath(int nFolder, bool fCreate) {
         return fs::path(pszPath);
     }
 
-    LogPrintf(
-        "SHGetSpecialFolderPathW() failed, could not obtain requested path.\n");
+    LogInfoEvent(
+        BCLog::ALL, "windows_special_folder_path_failed",
+        "SHGetSpecialFolderPathW() failed, could not obtain requested path.");
     return fs::path("");
 }
 #endif
