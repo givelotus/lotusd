@@ -38,12 +38,16 @@ FILE *FlatFileSeq::Open(const FlatFilePos &pos, bool read_only) {
         file = fsbridge::fopen(path, "wb+");
     }
     if (!file) {
-        LogPrintf("Unable to open file %s\n", fs::PathToString(path));
+        LogInfoEvent(BCLog::ALL, "flatfile_open_failed",
+                     "Unable to open file {path}")
+            .Field(BCLog::LogField::Path, fs::PathToString(path));
         return nullptr;
     }
     if (pos.nPos && fseek(file, pos.nPos, SEEK_SET)) {
-        LogPrintf("Unable to seek to position %u of %s\n", pos.nPos,
-                  fs::PathToString(path));
+        LogInfoEvent(BCLog::ALL, "flatfile_seek_failed",
+                     "Unable to seek to position {file_offset} of {path}")
+            .Field(BCLog::LogField::FileOffset, pos.nPos)
+            .Field(BCLog::LogField::Path, fs::PathToString(path));
         fclose(file);
         return nullptr;
     }
