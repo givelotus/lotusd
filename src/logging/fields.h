@@ -140,7 +140,11 @@
     X(MessageText, message_text, STRING, "", "") \
     X(Caption, caption, STRING, "", "") \
     X(Directory, directory, STRING, "", "") \
-    X(StartupTime, startup_time, STRING, "", "")
+    X(StartupTime, startup_time, STRING, "", "") \
+    X(ChainstateDescription, chainstate_description, STRING, "", "") \
+    X(MinimumChainWorkHex, minimum_chain_work_hex, STRING, "", "") \
+    X(ExpectedMinimumChainWorkHex, expected_minimum_chain_work_hex, STRING, "", "") \
+    X(PruneTargetMiB, prune_target_mib, UINT, "", "")
 
 namespace BCLog {
 

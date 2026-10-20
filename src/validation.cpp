@@ -7175,11 +7175,15 @@ bool Chainstate::LoadChainTip() {
     if (this == &m_chainman.ActiveChainstate()) {
         SyncAdaptiveCapacityTip(tip);
     }
-    LogPrintf(
-        "Loaded best chain: hashBestChain=%s height=%d date=%s progress=%f\n",
-        tip->GetBlockHash().ToString(), m_chain.Height(),
-        FormatISO8601DateTime(tip->GetBlockTime()),
-        GuessVerificationProgress(m_chainman.GetParams().TxData(), tip));
+    LogInfoEvent(
+        BCLog::ALL, "chainstate_best_chain_loaded",
+        "Loaded best chain: hashBestChain={block_hash} height={height} date={block_time} progress={verification_progress:f}")
+        .Field(BCLog::LogField::BlockHash, tip->GetBlockHash())
+        .Field(BCLog::LogField::Height, m_chain.Height())
+        .Field(BCLog::LogField::BlockTime,
+               FormatISO8601DateTime(tip->GetBlockTime()))
+        .Field(BCLog::LogField::VerificationProgress,
+               GuessVerificationProgress(m_chainman.GetParams().TxData(), tip));
     return true;
 }
 

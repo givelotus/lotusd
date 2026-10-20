@@ -8,6 +8,7 @@
 #include <config.h>
 #include <consensus/params.h>
 #include <kernel/caches.h>
+#include <logging/values.h>
 #include <node/blockstorage.h>
 #include <util/fs.h>
 #include <validation.h>
@@ -114,7 +115,10 @@ static ChainstateLoadResult CompleteChainstateInitialization(
     // block tree into BlockIndex()!
 
     for (Chainstate *chainstate : chainman.GetAll()) {
-        LogPrintf("Initializing chainstate %s\n", chainstate->ToString());
+        LogInfoEvent(BCLog::ALL, "chainstate_initializing",
+                     "Initializing chainstate {chainstate_description}")
+            .Field(BCLog::LogField::ChainstateDescription,
+                   chainstate->ToString());
 
         chainstate->InitCoinsDB(
             /* cache_size_bytes */ chainman.m_total_coinsdb_cache *
@@ -173,18 +177,25 @@ ChainstateLoadResult LoadChainstate(ChainstateManager &chainman,
                                     const CacheSizes &cache_sizes,
                                     const ChainstateLoadOptions &options) {
     if (!chainman.AssumedValidBlock().IsNull()) {
-        LogPrintf("Assuming ancestors of block %s have valid signatures.\n",
-                  chainman.AssumedValidBlock().GetHex());
+        LogInfoEvent(
+            BCLog::ALL, "chainstate_assumed_valid_block",
+            "Assuming ancestors of block {block_hash} have valid signatures.")
+            .Field(BCLog::LogField::BlockHash, chainman.AssumedValidBlock());
     } else {
         LogInfoEvent(BCLog::ALL, "chainstate_all_signatures_enabled",
                      "Validating signatures for all blocks.");
     }
-    LogPrintf("Setting nMinimumChainWork=%s\n",
-              chainman.MinimumChainWork().GetHex());
+    LogInfoEvent(BCLog::ALL, "chainstate_minimum_work",
+                 "Setting nMinimumChainWork={minimum_chain_work_hex}")
+        .Field(BCLog::LogField::MinimumChainWorkHex,
+               chainman.MinimumChainWork().GetHex());
     if (chainman.MinimumChainWork() <
         UintToArith256(chainman.GetConsensus().nMinimumChainWork)) {
-        LogPrintf("Warning: nMinimumChainWork set below default value of %s\n",
-                  chainman.GetConsensus().nMinimumChainWork.GetHex());
+        LogInfoEvent(
+            BCLog::ALL, "chainstate_minimum_work_below_default",
+            "Warning: nMinimumChainWork set below default value of {expected_minimum_chain_work_hex}")
+            .Field(BCLog::LogField::ExpectedMinimumChainWorkHex,
+                   chainman.GetConsensus().nMinimumChainWork.GetHex());
     }
     if (chainman.m_blockman.GetPruneTarget() ==
         BlockManager::PRUNE_TARGET_MANUAL) {
@@ -193,9 +204,11 @@ ChainstateLoadResult LoadChainstate(ChainstateManager &chainman,
             "Block pruning enabled.  Use RPC call pruneblockchain(height) to "
             "manually prune block and undo files.");
     } else if (chainman.m_blockman.GetPruneTarget()) {
-        LogPrintf("Prune configured to target %u MiB on disk for block and "
-                  "undo files.\n",
-                  chainman.m_blockman.GetPruneTarget() / 1024 / 1024);
+        LogInfoEvent(
+            BCLog::ALL, "chainstate_prune_target",
+            "Prune configured to target {prune_target_mib} MiB on disk for block and undo files.")
+            .Field(BCLog::LogField::PruneTargetMiB,
+                   chainman.m_blockman.GetPruneTarget() / 1024 / 1024);
     }
 
     LOCK(cs_main);
