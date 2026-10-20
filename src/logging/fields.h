@@ -147,7 +147,11 @@
     X(PruneTargetMiB, prune_target_mib, UINT, "", "") \
     X(ASMapLengthBytes, asmap_length_bytes, INT, "", "") \
     X(ASMapHash, asmap_hash, HASH, "", "") \
-    X(FileOffset, file_offset, UINT, "", "")
+    X(FileOffset, file_offset, UINT, "", "") \
+    X(RequestedConnectionLimit, requested_connection_limit, INT, "", "") \
+    X(ConnectionLimit, connection_limit, INT, "", "") \
+    X(FileDescriptorLimit, file_descriptor_limit, INT, "", "") \
+    X(DataDirectoryArgument, data_directory_argument, STRING, "", "")
 
 namespace BCLog {
 
