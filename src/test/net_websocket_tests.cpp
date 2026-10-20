@@ -11,6 +11,7 @@
 
 #include <random.h>
 #include <util/sock.h>
+#include <util/strencodings.h>
 
 #include <test/util/setup_common.h>
 
@@ -600,6 +601,17 @@ BOOST_AUTO_TEST_CASE(tls_client_profile) {
     TlsPair p{C::NONE};
     BOOST_CHECK_EQUAL(tls::NegotiatedAlpn(p.client_ssl), "http/1.1");
     BOOST_CHECK_EQUAL(tls::NegotiatedAlpn(p.server_ssl), "http/1.1");
+
+    // TLS 1.3 with the post-quantum hybrid key exchange from OpenSSL 3.5
+    // on, and X25519 before.
+    BOOST_CHECK_EQUAL(SSL_version(p.client_ssl), TLS1_3_VERSION);
+    BOOST_CHECK_EQUAL(tls::HasHybridKeyExchange(),
+                      OpenSSL_version_num() >= 0x30500000L);
+#if OPENSSL_VERSION_NUMBER >= 0x30200000L // SSL_get0_group_name
+    BOOST_CHECK_EQUAL(ToLower(SSL_get0_group_name(p.client_ssl)),
+                      tls::HasHybridKeyExchange() ? "x25519mlkem768"
+                                                  : "x25519");
+#endif
 }
 
 BOOST_AUTO_TEST_CASE(tls_spki_fingerprint) {

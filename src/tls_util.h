@@ -118,6 +118,15 @@ std::string NegotiatedAlpn(const SSL *ssl);
 /** OpenSSL's queued error strings, for logging */
 std::string ErrorString();
 
+/**
+ * Whether the TLS client offers the X25519MLKEM768 post-quantum hybrid key
+ * exchange (OpenSSL >= 3.5; older versions fall back to X25519)
+ */
+bool HasHybridKeyExchange();
+
+/** The OpenSSL in use, the one built against, and the client's key exchange */
+std::string LibraryDescription();
+
 } // namespace tls
 
 #endif // BITCOIN_TLS_UTIL_H
