@@ -609,3 +609,208 @@ BOOST_AUTO_TEST_CASE(output_batches_are_bounded) {
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+namespace {
+
+std::vector<std::pair<std::string, std::string>>
+ExtendedConnect(const std::string &path) {
+    return {{":method", "CONNECT"},
+            {":protocol", "websocket"},
+            {":scheme", "https"},
+            {":authority", "node.example"},
+            {":path", path},
+            {"sec-websocket-version", "13"},
+            {"sec-websocket-protocol", "p2p-zstd-v1, p2p-zstd"}};
+}
+
+/** Stream a client sends DATA on without ending it (a tunnel) */
+struct OpenDataSource {
+    std::string data;
+    size_t offset{0};
+    bool end{false};
+};
+
+nghttp2_ssize ReadOpen(nghttp2_session *, int32_t, uint8_t *buf, size_t len,
+                       uint32_t *flags, nghttp2_data_source *s, void *) {
+    auto *src{static_cast<OpenDataSource *>(s->ptr)};
+    const size_t n{std::min(len, src->data.size() - src->offset)};
+    std::memcpy(buf, src->data.data() + src->offset, n);
+    src->offset += n;
+    if (src->offset == src->data.size()) {
+        if (src->end) {
+            *flags |= NGHTTP2_DATA_FLAG_EOF;
+        } else if (n == 0) {
+            return NGHTTP2_ERR_DEFERRED;
+        }
+    }
+    return nghttp2_ssize(n);
+}
+
+int32_t OpenTunnel(TestClient &client, OpenDataSource &src,
+                   const std::string &path) {
+    const auto h{ExtendedConnect(path)};
+    std::vector<nghttp2_nv> nva;
+    for (const auto &[n, v] : h) {
+        nva.push_back({(uint8_t *)n.data(), (uint8_t *)v.data(), n.size(),
+                       v.size(), NGHTTP2_NV_FLAG_NONE});
+    }
+    nghttp2_data_provider2 prov{};
+    prov.source.ptr = &src;
+    prov.read_callback = ReadOpen;
+    return nghttp2_submit_request2(client.Session(), nullptr, nva.data(),
+                                   nva.size(), &prov, nullptr);
+}
+
+} // namespace
+
+BOOST_FIXTURE_TEST_SUITE(http2_connect_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(extended_connect_tunnel) {
+    http2::Limits limits;
+    limits.enable_connect_protocol = true;
+    TestServer server{limits};
+    TestClient client;
+    BOOST_CHECK(Pump(client, server));
+    // RFC 8441: advertised, and only then may the client use :protocol.
+    BOOST_CHECK_EQUAL(*client.remote_connect_protocol, 1U);
+
+    OpenDataSource src;
+    const int32_t id{OpenTunnel(client, src, "/p2p/ws")};
+    BOOST_CHECK(Pump(client, server));
+    BOOST_REQUIRE_EQUAL(server.connects.size(), 1U);
+    BOOST_CHECK_EQUAL(server.connects[0].first, id);
+    BOOST_CHECK_EQUAL(server.connects[0].second, "websocket");
+    BOOST_CHECK(server.requests.empty());
+
+    BOOST_CHECK(server.session.AcceptTunnel(
+        id, 200, {{"sec-websocket-protocol", "p2p-zstd-v1"}}));
+    BOOST_CHECK(Pump(client, server));
+    BOOST_CHECK_EQUAL(client.replies[id].status(), 200);
+    BOOST_CHECK_EQUAL(client.replies[id].headers.at("sec-websocket-protocol"),
+                      "p2p-zstd-v1");
+    BOOST_CHECK(!client.replies[id].closed);
+
+    // Both ways, several times.
+    for (int i = 0; i < 3; ++i) {
+        src.data += "client" + std::to_string(i);
+        nghttp2_session_resume_data(client.Session(), id);
+        server.session.TunnelSend(id, "server" + std::to_string(i));
+        BOOST_CHECK(Pump(client, server));
+    }
+    BOOST_CHECK_EQUAL(server.tunnel_in[id], "client0client1client2");
+    BOOST_CHECK_EQUAL(client.replies[id].body, "server0server1server2");
+    BOOST_CHECK_EQUAL(server.session.TunnelQueued(id), 0U);
+    server.session.TunnelConsumed(id, server.tunnel_in[id].size());
+
+    // Each side ends its half: the stream closes cleanly.
+    server.session.TunnelEnd(id);
+    BOOST_CHECK(Pump(client, server));
+    BOOST_CHECK(!client.replies[id].closed);
+    src.end = true;
+    nghttp2_session_resume_data(client.Session(), id);
+    BOOST_CHECK(Pump(client, server));
+    BOOST_CHECK_EQUAL(server.tunnel_eofs.size(), 1U);
+    BOOST_CHECK(client.replies[id].closed);
+    BOOST_CHECK_EQUAL(client.replies[id].error_code, NGHTTP2_NO_ERROR);
+    BOOST_CHECK_EQUAL(server.session.OpenStreams(), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(tunnel_flow_control_follows_consumption) {
+    http2::Limits limits;
+    limits.enable_connect_protocol = true;
+    limits.stream_window = 65535;
+    TestServer server{limits};
+    TestClient client;
+    BOOST_CHECK(Pump(client, server));
+    OpenDataSource src;
+    src.data = std::string(200000, 'p');
+    const int32_t id{OpenTunnel(client, src, "/p2p/ws")};
+    BOOST_CHECK(Pump(client, server));
+    BOOST_REQUIRE(server.session.AcceptTunnel(id, 200, {}));
+    BOOST_CHECK(Pump(client, server));
+    // Without consumption, the client is held at the stream window.
+    BOOST_CHECK_EQUAL(server.tunnel_in[id].size(), 65535U);
+    // Delivering bytes reopens the window, bit by bit.
+    size_t consumed{0};
+    for (int i = 0; i < 100 && server.tunnel_in[id].size() < 200000; ++i) {
+        const size_t n{server.tunnel_in[id].size() - consumed};
+        server.session.TunnelConsumed(id, n);
+        consumed += n;
+        BOOST_CHECK(Pump(client, server));
+    }
+    BOOST_CHECK_EQUAL(server.tunnel_in[id], std::string(200000, 'p'));
+}
+
+BOOST_AUTO_TEST_CASE(tunnel_reset_and_closed_stream_credit) {
+    http2::Limits limits;
+    limits.enable_connect_protocol = true;
+    limits.stream_window = 65535;
+    limits.connection_window = 65535;
+    TestServer server{limits};
+    TestClient client;
+    BOOST_CHECK(Pump(client, server));
+    OpenDataSource src;
+    src.data = std::string(65535, 'a');
+    const int32_t id{OpenTunnel(client, src, "/p2p/ws")};
+    BOOST_CHECK(Pump(client, server));
+    BOOST_REQUIRE(server.session.AcceptTunnel(id, 200, {}));
+    BOOST_CHECK(Pump(client, server));
+    BOOST_CHECK_EQUAL(server.tunnel_in[id].size(), 65535U);
+    // The application gives up on the tunnel without consuming: the
+    // connection window must still be returned, or other streams starve.
+    server.session.Reset(id, NGHTTP2_CANCEL);
+    BOOST_CHECK(Pump(client, server));
+    BOOST_CHECK_EQUAL(client.replies[id].error_code, NGHTTP2_CANCEL);
+    const int32_t next{client.Request({{":method", "POST"},
+                                       {":scheme", "https"},
+                                       {":authority", "n"},
+                                       {":path", "/"}},
+                                      std::string(30000, 'b'))};
+    BOOST_CHECK(Pump(client, server));
+    BOOST_REQUIRE_EQUAL(server.requests.size(), 1U);
+    BOOST_CHECK_EQUAL(server.requests[0].id, next);
+    BOOST_CHECK_EQUAL(server.requests[0].req.body().size(), 30000U);
+}
+
+BOOST_AUTO_TEST_CASE(connect_refused_without_tunnel) {
+    http2::Limits limits;
+    limits.enable_connect_protocol = true;
+    TestServer server{limits};
+    TestClient client;
+    BOOST_CHECK(Pump(client, server));
+    OpenDataSource src;
+    const int32_t id{OpenTunnel(client, src, "/nope")};
+    BOOST_CHECK(Pump(client, server));
+    BOOST_REQUIRE_EQUAL(server.connects.size(), 1U);
+    // Answered like a request: no tunnel.
+    BOOST_CHECK(server.session.SubmitResponse(
+        id, http2::Response{boost::beast::http::status::not_found, 11}));
+    BOOST_CHECK(Pump(client, server));
+    BOOST_CHECK_EQUAL(client.replies[id].status(), 404);
+}
+
+BOOST_AUTO_TEST_CASE(protocol_rejected_unless_enabled) {
+    TestServer server; // enable_connect_protocol is off
+    TestClient client;
+    BOOST_CHECK(Pump(client, server));
+    BOOST_CHECK_EQUAL(*client.remote_connect_protocol, 0U);
+    // Send :protocol anyway with raw frames: a malformed request.
+    // :method CONNECT (literal), :protocol websocket, :scheme https,
+    // :path /, :authority n
+    std::string block{"\x02\x07CONNECT", 9};
+    block += std::string{"\x00\x09:protocol\x09websocket", 21};
+    block += std::string{"\x87\x84\x01\x01n", 5};
+    const std::string raw{
+        Frame(NGHTTP2_HEADERS, NGHTTP2_FLAG_END_HEADERS, 1, block)};
+    server.session.Receive(
+        {reinterpret_cast<const uint8_t *>(raw.data()), raw.size()});
+    BOOST_CHECK(server.connects.empty());
+    BOOST_CHECK(server.requests.empty());
+    bool reset{false};
+    for (const auto &f : ParseFrames(server.Out())) {
+        reset |= f.type == NGHTTP2_RST_STREAM || f.type == NGHTTP2_GOAWAY;
+    }
+    BOOST_CHECK(reset);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
