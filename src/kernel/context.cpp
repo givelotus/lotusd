@@ -19,7 +19,9 @@ Context::Context() {
     assert(!g_context);
     g_context = this;
     std::string sha256_algo = SHA256AutoDetect();
-    LogPrintf("Using the '%s' SHA256 implementation\n", sha256_algo);
+    LogInfoEvent(BCLog::ALL, "sha256_implementation_selected",
+                 "Using the '{sha256_implementation}' SHA256 implementation")
+        .Field(BCLog::LogField::SHA256Implementation, sha256_algo);
     RandomInit();
     ECC_Start();
 }
