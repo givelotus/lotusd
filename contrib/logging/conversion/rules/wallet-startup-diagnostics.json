@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "batch": "wallet-startup-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/wallet/init.cpp",
+      "rules": [
+        {
+          "id": "wallet_argument_ignored",
+          "old": "LogPrintf(\"%s: parameter interaction: -disablewallet -> ignoring \"\n                      \"-wallet=%s\\n\",\n                      __func__, wallet)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_argument_ignored\", \"{source_function}: parameter interaction: -disablewallet -> ignoring -wallet={wallet}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::Wallet, wallet)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: parameter interaction: -disablewallet -> ignoring -wallet=%s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "wallet"
+            ]
+          },
+          "review_note": "Keep Info and exact existing wallet name/function text. No key/password/address/other options added. Preserve disabled-wallet early returns and SoftSetBoolArg semantics; no compatibility alias or policy changes."
+        },
+        {
+          "id": "wallet_broadcast_disabled_by_blocksonly",
+          "old": "LogPrintf(\"%s: parameter interaction: -blocksonly=1 -> setting \"\n                  \"-walletbroadcast=0\\n\",\n                  __func__)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_broadcast_disabled_by_blocksonly\", \"{source_function}: parameter interaction: -blocksonly=1 -> setting -walletbroadcast=0\").Field(BCLog::LogField::SourceFunction, __func__)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: parameter interaction: -blocksonly=1 -> setting -walletbroadcast=0\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Keep Info and exact existing wallet name/function text. No key/password/address/other options added. Preserve disabled-wallet early returns and SoftSetBoolArg semantics; no compatibility alias or policy changes."
+        },
+        {
+          "id": "wallet_disabled",
+          "old": "LogPrintf(\"Wallet disabled!\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_disabled\", \"Wallet disabled!\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Wallet disabled!\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Keep Info and exact existing wallet name/function text. No key/password/address/other options added. Preserve disabled-wallet early returns and SoftSetBoolArg semantics; no compatibility alias or policy changes."
+        }
+      ]
+    },
+    {
+      "path": "src/dummywallet.cpp",
+      "rules": [
+        {
+          "id": "wallet_support_not_compiled",
+          "old": "LogPrintf(\"No wallet support compiled in!\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_support_not_compiled\", \"No wallet support compiled in!\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "No wallet support compiled in!\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Keep Info and exact existing wallet name/function text. No key/password/address/other options added. Preserve disabled-wallet early returns and SoftSetBoolArg semantics; no compatibility alias or policy changes."
+        }
+      ]
+    }
+  ]
+}
