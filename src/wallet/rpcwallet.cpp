@@ -16,6 +16,7 @@
 #include <outputtype.h>
 #include <policy/fees.h>
 #include <policy/policy.h>
+#include <rpc/native_psbt.h>
 #include <rpc/rawtransaction_util.h>
 #include <rpc/server.h>
 #include <rpc/util.h>
@@ -31,6 +32,7 @@
 #include <wallet/context.h>
 #include <wallet/load.h>
 #include <wallet/receive.h>
+#include <wallet/rpc/native_psbt.h>
 #include <wallet/rpc/util.h>
 #include <wallet/rpcwallet.h>
 #include <wallet/spend.h>
@@ -4550,7 +4552,10 @@ static RPCHelpMan walletprocesspsbt() {
     return RPCHelpMan{
         "walletprocesspsbt",
         "Update a PSBT with input information from our wallet and then sign "
-        "inputs that we can sign for." +
+        "inputs that we can sign for. Native Lotus PSBTs use authenticated "
+        "confirmed chainstate and supported native key policies with this "
+        "wallet's compressed keys; native coin selection, descriptor import "
+        "and legacy-bridge signing are not provided by this operation. " +
             HELP_REQUIRING_PASSPHRASE,
         {
             {"psbt", RPCArg::Type::STR, RPCArg::Optional::NO,
@@ -4565,7 +4570,10 @@ static RPCHelpMan walletprocesspsbt() {
              "       \"SINGLE|FORKID\"\n"
              "       \"ALL|FORKID|ANYONECANPAY\"\n"
              "       \"NONE|FORKID|ANYONECANPAY\"\n"
-             "       \"SINGLE|FORKID|ANYONECANPAY\""},
+             "       \"SINGLE|FORKID|ANYONECANPAY\"\n"
+             "Native PSBT: omit for mode 0, or explicitly select DEFAULT, "
+             "OWN_INPUT_ALL_OUTPUTS or OWN_INPUT_PAIRED_OUTPUT. Every declared "
+             "request must match that explicit authorization."},
             {"bip32derivs", RPCArg::Type::BOOL, RPCArg::Default{true},
              "Includes the BIP 32 derivation paths for public keys if we know "
              "them"},
@@ -4580,6 +4588,10 @@ static RPCHelpMan walletprocesspsbt() {
                        "The base64-encoded partially signed transaction"},
                       {RPCResult::Type::BOOL, "complete",
                        "If the transaction has a complete set of signatures"},
+                      {RPCResult::Type::NUM, "signed_slots", true,
+                       "Number of native signature slots added"},
+                      {RPCResult::Type::STR, "error", true,
+                       "Native PSBT incompleteness or validation reason"},
                   }},
         RPCExamples{HelpExampleCli("walletprocesspsbt", "\"psbt\"")},
         [&](const RPCHelpMan &self, const Config &config,
@@ -4591,6 +4603,9 @@ static RPCHelpMan walletprocesspsbt() {
             }
             const CWallet *const pwallet = wallet.get();
 
+            if (rpc::IsNativePsbt(request.params[0].get_str())) {
+                return WalletProcessNativePsbtRPC(request, *pwallet);
+            }
             // Unserialize the transaction
             PartiallySignedTransaction psbtx;
             std::string error;
