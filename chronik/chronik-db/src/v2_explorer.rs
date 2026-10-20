@@ -1,7 +1,9 @@
-//! Complete native explorer facts backed by `libmdbx` named subdatabases and
-//! append-only flat segment files (`(file_num, data_pos, wire_size)` pointers).
-//! Only the V2 DB owner commits these entries, together with its receipt,
-//! checkpoint and undo.
+//! Complete native explorer facts backed by `libmdbx` named subdatabases. A
+//! transaction's wire bytes are not copied: its metadata points at the
+//! transaction in the node's block files (`(file_num, data_pos)`), and the
+//! wire is re-derived from the node's bytes and checked against the recorded
+//! size and checksum. Only the V2 DB owner commits these entries, together
+//! with its receipt, checkpoint and undo.
 use crate::v2_branch::{Anchor, CommittedBlock, Error, ReadSnapshot};
 use bitcoinsuite_core::lotus_v2::{
     Hash32, OutPoint, Output, TxHash, TxId, TxLocation,
@@ -17,7 +19,7 @@ pub const HEADER_BYTES: usize = 134;
 pub const MAX_RECORD_BYTES: usize = 16 * 1024;
 /// Explorer staging reserved once per block.
 pub(crate) const RESERVE_BLOCK: usize = 4096;
-/// Explorer staging reserved per wire byte (entries and flat-file staging).
+/// Explorer staging reserved per wire byte (entries and their staging).
 pub(crate) const RESERVE_PER_WIRE_BYTE: usize = 6;
 /// Explorer staging reserved per transaction.
 pub(crate) const RESERVE_TX: usize = 4096;
@@ -214,7 +216,6 @@ pub struct InputFact {
     pub coinbase_data: WireRange,
     /// Witness descriptors in transaction order.
     pub witnesses: Vec<WitnessFact>,
-    pub resolved_creation: Option<ResolvedCreation>,
 }
 /// Required native transaction frame, never reconstructed from output records.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -233,8 +234,9 @@ pub struct ExplorerBlockFacts {
     /// Exact 134-byte native block header.
     pub header_wire: [u8; 134],
 }
-/// Fixed transaction metadata with a compact `(file_num, data_pos, wire_size)`
-/// pointer into the append-only flat segment file (`v2_tx_NNNNN.dat`).
+/// Fixed transaction metadata with the transaction's position in the node's
+/// block files (`blkNNNNN.dat` file number and byte offset) and the size and
+/// seahash of its native wire, which every wire range here refers to.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TxMeta {
     #[serde(with = "native_serde::location")]
@@ -248,7 +250,9 @@ pub struct TxMeta {
     pub output_count: u32,
     /// Block data file number containing the transaction.
     pub file_num: u32,
-    pub data_pos: u64,
+    /// Byte offset of the transaction in its block data file.
+    pub data_pos: u32,
+    /// Length of the exact serialized transaction in bytes.
     pub wire_size: u64,
     /// Seahash checksum of the exact serialized transaction.
     pub wire_checksum: u64,
@@ -263,6 +267,46 @@ pub struct BlockMeta {
     pub header_wire: [u8; 134],
     /// Number of transactions in this block.
     pub tx_count: u32,
+}
+/// Persisted input descriptor. A spend's prior output is not copied here; it
+/// is read from the coin index when the input is queried.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StoredInputMeta {
+    /// Raw transaction identity of the previous outpoint.
+    pub prev_txid: [u8; 32],
+    /// Output index in the previous transaction.
+    pub prev_index: u32,
+    /// Raw input sequence number.
+    pub sequence: u32,
+    /// Input grammar and selector flags retained from the transaction.
+    pub flags: u8,
+    /// Selected public witness path index.
+    pub path_index: u8,
+    /// Whether this input carries a coinbase data range.
+    pub has_coinbase_data: bool,
+    /// Byte range of coinbase data, when present.
+    pub coinbase_data: WireRange,
+    /// Number of separately stored witness descriptors.
+    pub witness_count: u32,
+}
+impl StoredInputMeta {
+    /// Public descriptor joined to the spent output's creation.
+    pub fn with_creation(
+        self,
+        resolved_creation: Option<ResolvedCreation>,
+    ) -> InputMeta {
+        InputMeta {
+            prev_txid: self.prev_txid,
+            prev_index: self.prev_index,
+            sequence: self.sequence,
+            flags: self.flags,
+            path_index: self.path_index,
+            has_coinbase_data: self.has_coinbase_data,
+            coinbase_data: self.coinbase_data,
+            witness_count: self.witness_count,
+            resolved_creation,
+        }
+    }
 }
 /// Input descriptor with a count instead of an unbounded witness vector.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -288,8 +332,8 @@ pub struct InputMeta {
 }
 impl InputFact {
     /// Bounded persisted descriptor.
-    pub fn metadata(&self) -> Result<InputMeta> {
-        Ok(InputMeta {
+    pub fn metadata(&self) -> Result<StoredInputMeta> {
+        Ok(StoredInputMeta {
             prev_txid: self.prev_txid,
             prev_index: self.prev_index,
             sequence: self.sequence,
@@ -299,7 +343,6 @@ impl InputFact {
             coinbase_data: self.coinbase_data,
             witness_count: u32::try_from(self.witnesses.len())
                 .map_err(|_| Error::Invalid("witness count"))?,
-            resolved_creation: self.resolved_creation.clone(),
         })
     }
 }
@@ -365,7 +408,7 @@ fn add_size(total: &mut usize, amount: usize) -> Result<()> {
     Ok(())
 }
 /// Conservative reservation before any planner allocation. Accounts for entries,
-/// flat-file write staging, vector objects and fixed per-record overhead. The
+/// staging, vector objects and fixed per-record overhead. The
 /// block's owner checks it against the index bounds (`v2_branch::Bounds`).
 pub fn preflight_explorer_block(block: &CommittedBlock) -> Result<usize> {
     let mut size = RESERVE_BLOCK;
@@ -477,15 +520,6 @@ fn validate_input(input: &InputFact, size: u64) -> Result<()> {
     if !input.has_coinbase_data && input.coinbase_data != WireRange::default() {
         return Err(Error::Invalid("absent coinbase range"));
     }
-    match (input.flags, &input.resolved_creation) {
-        (1, Some(coin))
-            if coin.outpoint.txid.0 .0 == input.prev_txid
-                && coin.outpoint.out_idx == input.prev_index
-                && coin.creation.txid == coin.outpoint.txid
-                && !coin.output.is_burn() => {}
-        (2 | 3, None) => {}
-        _ => return Err(Error::Invalid("frozen spend creation")),
-    }
     for witness in &input.witnesses {
         witness.script.validate(size)?;
         witness.siblings_table.validate(size)?;
@@ -498,17 +532,11 @@ fn validate_input(input: &InputFact, size: u64) -> Result<()> {
     }
     Ok(())
 }
-/// Deterministic exact entries and flat-file `(file_num, data_pos, wire)` writes
-/// starting from `(start_file_num, start_data_pos)`.
-pub fn plan_explorer_block_at(
+/// Deterministic exact entries of a block. Each transaction's metadata
+/// records its node block-file position (`ConfirmedTx::pos`).
+pub fn plan_explorer_block(
     block: &CommittedBlock,
-    start_file_num: u32,
-    start_data_pos: u64,
-) -> Result<(
-    Vec<(Vec<u8>, Vec<u8>)>,
-    Vec<(u32, u64, Vec<u8>)>,
-    (u32, u64),
-)> {
+) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
     preflight_explorer_block(block)?;
     let h = &block.explorer.header_wire;
     if u64::from_le_bytes(h[62..70].try_into().unwrap()) != block.anchor.height
@@ -535,9 +563,6 @@ pub fn plan_explorer_block_at(
             })?,
         ),
     ];
-    let mut flat_writes = Vec::with_capacity(block.transactions.len());
-    let mut cur_file_num = start_file_num;
-    let mut cur_data_pos = start_data_pos;
     for (index, tx) in block.transactions.iter().enumerate() {
         let loc = tx.location;
         if loc.block_id.0 != block.anchor.block_id
@@ -551,22 +576,7 @@ pub fn plan_explorer_block_at(
             return Err(Error::Invalid("empty transaction frame"));
         }
         let wire_size = facts.wire.len() as u64;
-        if cur_data_pos > 0
-            && cur_data_pos.saturating_add(wire_size)
-                > crate::mdbx::MAX_FLAT_SEGMENT_BYTES
-        {
-            cur_file_num = cur_file_num
-                .checked_add(1)
-                .ok_or(Error::Invalid("flat file segment overflow"))?;
-            cur_data_pos = 0;
-        }
-        let file_num = cur_file_num;
-        let data_pos = cur_data_pos;
         let wire_checksum = seahash::hash(&facts.wire);
-        cur_data_pos = cur_data_pos
-            .checked_add(wire_size)
-            .ok_or(Error::Invalid("flat file offset overflow"))?;
-        flat_writes.push((file_num, data_pos, facts.wire.clone()));
 
         let meta = TxMeta {
             location: loc,
@@ -575,8 +585,8 @@ pub fn plan_explorer_block_at(
                 .map_err(|_| Error::Invalid("input count"))?,
             output_count: u32::try_from(tx.outputs.len())
                 .map_err(|_| Error::Invalid("output count"))?,
-            file_num,
-            data_pos,
+            file_num: tx.pos.file_num,
+            data_pos: tx.pos.data_pos,
             wire_size,
             wire_checksum,
         };
@@ -627,13 +637,7 @@ pub fn plan_explorer_block_at(
     if entries.windows(2).any(|w| w[0].0 == w[1].0) {
         return Err(Error::Invalid("duplicate explorer identity"));
     }
-    Ok((entries, flat_writes, (cur_file_num, cur_data_pos)))
-}
-/// Deterministic exact entries starting at flat-file position `(0, 0)`.
-pub fn plan_explorer_block(
-    block: &CommittedBlock,
-) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-    plan_explorer_block_at(block, 0, 0).map(|(entries, _, _)| entries)
+    Ok(entries)
 }
 impl ReadSnapshot<'_> {
     /// Canonical block with validated height/header joins.
@@ -763,7 +767,22 @@ impl ReadSnapshot<'_> {
         if index >= tx.input_count {
             return Err(Error::Corrupt);
         }
-        let input: InputMeta = decode_record(&bytes)?;
+        let stored: StoredInputMeta = decode_record(&bytes)?;
+        let resolved_creation = if stored.flags == 1 {
+            let outpoint = OutPoint {
+                txid: TxId(Hash32(stored.prev_txid)),
+                out_idx: stored.prev_index,
+            };
+            let record = self.output(outpoint)?.ok_or(Error::Corrupt)?;
+            Some(ResolvedCreation {
+                outpoint,
+                output: record.output,
+                creation: record.creation,
+            })
+        } else {
+            None
+        };
+        let input = stored.with_creation(resolved_creation);
         validate_input_meta(&input, tx.wire_size)?;
         // A descriptor count must reach an existing final ordinal and stop at
         // the next key. Missing interior ordinals fail when that page is read.
@@ -852,8 +871,7 @@ impl ReadSnapshot<'_> {
         }
         Ok(Some(witness))
     }
-    // Read only the <=9 count bytes from the flat segment file at
-    // `(tx.file_num, tx.data_pos + range.offset)`.
+    // Read only the <=9 count bytes of the table at `range.offset`.
     fn explorer_table_count(
         &self,
         id: TxId,
@@ -896,9 +914,10 @@ impl ReadSnapshot<'_> {
         }
         Ok((value, width))
     }
-    /// Read a slice `[offset .. min(offset + length, wire_size)]` of raw
-    /// transaction wire bytes directly from the append-only flat segment file
-    /// referenced by `TxMeta`'s `(file_num, data_pos, wire_size)` pointer.
+    /// Read a slice `[offset .. min(offset + length, wire_size)]` of the
+    /// transaction's native wire, re-derived from the node's block files at
+    /// `TxMeta`'s `(file_num, data_pos)` and checked against its size and
+    /// checksum.
     pub fn explorer_wire_slice(
         &self,
         id: TxId,
@@ -911,18 +930,12 @@ impl ReadSnapshot<'_> {
         if offset > tx.wire_size {
             return Err(Error::Corrupt);
         }
-        let full = self
-            .inner
-            .read_flat(tx.file_num, tx.data_pos, tx.wire_size as usize)
-            .map_err(|_| Error::Corrupt)?;
-        if seahash::hash(&full) != tx.wire_checksum {
-            return Err(Error::Corrupt);
-        }
+        let node = self.node_tx(&tx)?;
         let end = offset.saturating_add(length).min(tx.wire_size) as usize;
-        Ok(Some(full[offset as usize..end].to_vec()))
+        Ok(Some(node.explorer.wire[offset as usize..end].to_vec()))
     }
-    /// Read a 32 KiB chunk of raw transaction wire bytes via the flat-file
-    /// `(file_num, data_pos, wire_size)` pointer stored in `TxMeta`.
+    /// Read a 32 KiB chunk of the transaction's native wire (see
+    /// `explorer_wire_slice`).
     pub fn explorer_wire_chunk(
         &self,
         id: TxId,

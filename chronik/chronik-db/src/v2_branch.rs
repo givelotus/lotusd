@@ -5,9 +5,8 @@
 
 use crate::{
     mdbx::{MdbxEnv, MdbxError, MdbxSnapshot, MdbxWriteBatch},
-    v2_explorer::{
-        ExplorerBlockFacts, ExplorerTxFacts, InputFact, ResolvedCreation,
-    },
+    v2_asset::SpentCoin,
+    v2_explorer::{ExplorerBlockFacts, ExplorerTxFacts},
 };
 use bitcoinsuite_core::lotus_v2::{
     Hash32, OutPoint, Output, OutputRecord, SpendLocation, TxHash, TxId,
@@ -17,10 +16,12 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
+    sync::{Arc, Mutex},
 };
 
-/// Schema cannot share a legacy Chronik database directory.
-pub const SCHEMA_VERSION: u32 = 3;
+/// Schema cannot share a legacy Chronik database directory. Version 4 stores
+/// node block-file positions instead of transaction and output copies.
+pub const SCHEMA_VERSION: u32 = 4;
 /// Shortest V2 transaction: the native codec rejects anything shorter (a
 /// 16-byte header and at least one input).
 pub const MIN_TX_WIRE_BYTES: usize = 58;
@@ -112,17 +113,124 @@ pub struct Anchor {
     /// Authoritative block height.
     pub height: u64,
 }
+/// Position of a confirmed transaction in the node's block files: the
+/// `blkNNNNN.dat` file number and the byte offset of its serialization.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+)]
+pub struct TxPos {
+    /// Block file number (`blkNNNNN.dat`).
+    pub file_num: u32,
+    /// Byte offset of the serialized transaction in that file.
+    pub data_pos: u32,
+}
 /// A transaction from the authoritative committed block, in block order.
 #[derive(Clone, Debug)]
 pub struct ConfirmedTx {
     /// Confirmed accepted transaction identity and location.
     pub location: TxLocation,
+    /// Position of the transaction in the node's block files. The index
+    /// stores it instead of the transaction and reads the transaction back
+    /// through its `TxSource`.
+    pub pos: TxPos,
     /// Complete outputs in native output order.
     pub outputs: Vec<Output>,
     /// Consumed coins with their native input ordinals.
     pub spends: Vec<SpentInput>,
     /// Complete authenticated native transaction facts.
     pub explorer: ExplorerTxFacts,
+}
+/// A confirmed transaction read back from the node's block files and
+/// converted to its native facts, exactly as when its block was connected.
+#[derive(Clone, Debug)]
+pub struct NodeTx {
+    /// Transaction identity.
+    pub txid: TxId,
+    /// Transaction hash.
+    pub txhash: TxHash,
+    /// Complete outputs in native output order.
+    pub outputs: Vec<Output>,
+    /// Consumed coins with their native input ordinals.
+    pub spends: Vec<SpentInput>,
+    /// Complete native transaction facts, including the wire.
+    pub explorer: ExplorerTxFacts,
+}
+impl From<&ConfirmedTx> for NodeTx {
+    fn from(tx: &ConfirmedTx) -> Self {
+        NodeTx {
+            txid: tx.location.txid,
+            txhash: tx.location.txhash,
+            outputs: tx.outputs.clone(),
+            spends: tx.spends.clone(),
+            explorer: tx.explorer.clone(),
+        }
+    }
+}
+/// Reads confirmed transactions from the node. The index stores only block
+/// file positions; every transaction byte, output and input it serves comes
+/// from here, checked against the identities, wire size and checksum it
+/// recorded when the block was connected.
+pub trait TxSource: Send + Sync {
+    /// Load the transaction at `pos`. `txid` is its expected identity and
+    /// `coinbase` is true for the first transaction of its block.
+    fn load_tx(
+        &self,
+        pos: TxPos,
+        txid: TxId,
+        coinbase: bool,
+    ) -> std::result::Result<NodeTx, String>;
+}
+/// In-memory `TxSource` for tests and tools. A `V2Db` opened with it records
+/// the transactions of every block it connects, keyed by txid with their
+/// position; a read at another position fails.
+#[derive(Debug, Default)]
+pub struct MemTxSource {
+    txs: Mutex<BTreeMap<TxId, (TxPos, NodeTx)>>,
+}
+impl MemTxSource {
+    /// Record the transactions of `block`.
+    pub fn record(&self, block: &CommittedBlock) {
+        let mut txs = self.txs.lock().unwrap_or_else(|e| e.into_inner());
+        for tx in &block.transactions {
+            txs.insert(tx.location.txid, (tx.pos, NodeTx::from(tx)));
+        }
+    }
+    /// Change a recorded transaction; returns whether it was recorded.
+    pub fn modify(&self, txid: TxId, f: impl FnOnce(&mut NodeTx)) -> bool {
+        let mut txs = self.txs.lock().unwrap_or_else(|e| e.into_inner());
+        match txs.get_mut(&txid) {
+            Some((_, tx)) => {
+                f(tx);
+                true
+            }
+            None => false,
+        }
+    }
+}
+impl TxSource for MemTxSource {
+    fn load_tx(
+        &self,
+        pos: TxPos,
+        txid: TxId,
+        _coinbase: bool,
+    ) -> std::result::Result<NodeTx, String> {
+        let txs = self.txs.lock().unwrap_or_else(|e| e.into_inner());
+        match txs.get(&txid) {
+            Some((recorded, tx)) if *recorded == pos => Ok(tx.clone()),
+            Some(_) => Err("transaction position mismatch".into()),
+            None => Err("unknown transaction".into()),
+        }
+    }
 }
 /// Confirmed native spend input, preserving its original input ordinal.
 #[derive(Clone, Copy, Debug)]
@@ -158,6 +266,20 @@ pub enum Error {
     /// Inconsistent persisted encoding.
     #[error("corrupt V2 index encoding")]
     Corrupt,
+    /// The index was written by another schema version.
+    #[error(
+        "V2 index schema version {found} is incompatible with version \
+         {expected}; restart with -chronikreindex to rebuild the V2 index"
+    )]
+    Schema {
+        /// Schema version of the stored index.
+        found: u32,
+        /// Schema version of this build.
+        expected: u32,
+    },
+    /// The node could not read an indexed transaction from its block files.
+    #[error("V2 index node read: {0}")]
+    Node(String),
 }
 /// Result returned by native branch and index operations.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -187,7 +309,7 @@ fn key(prefix: u8, bytes: &[u8]) -> Vec<u8> {
     k.extend(bytes);
     k
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Loc {
     block: [u8; 32],
     height: u64,
@@ -217,37 +339,60 @@ impl From<Loc> for TxLocation {
         }
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct Record {
-    output: Vec<u8>,
-    creation: Loc,
-    spend: Option<(Loc, u32)>,
+/// Coin facts of one output and its spend. The complete output (branches and
+/// paths) is read from its creating transaction through the node; creation
+/// and spend locations are joined from the transaction location index.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Coin {
+    flags: u8,
+    value: u64,
+    token_id: Option<[u8; 32]>,
+    spend: Option<([u8; 32], u32)>,
 }
-impl Record {
-    fn public(self, outpoint: OutPoint) -> Result<OutputRecord> {
-        if self.creation.txid != outpoint.txid.0 .0 {
-            return Err(Error::Corrupt);
+impl Coin {
+    fn new(output: &Output) -> Self {
+        Coin {
+            flags: output.flags,
+            value: output.value,
+            token_id: output.has_token().then_some(output.token_id.0),
+            spend: None,
         }
-        Ok(OutputRecord {
+    }
+    fn matches(&self, output: &Output) -> bool {
+        self.flags == output.flags
+            && self.value == output.value
+            && self.token_id == output.has_token().then_some(output.token_id.0)
+    }
+    fn is_burn(&self) -> bool {
+        self.flags & 2 != 0
+    }
+    fn spent_coin(&self, outpoint: OutPoint) -> SpentCoin {
+        SpentCoin {
             outpoint,
-            output: Output::decode(&self.output).map_err(|_| Error::Corrupt)?,
-            creation: self.creation.into(),
-            spend: self.spend.map(|(transaction, input_index)| SpendLocation {
-                transaction: transaction.into(),
-                input_index,
-            }),
-        })
+            flags: self.flags,
+            value: self.value,
+            token_id: Hash32(self.token_id.unwrap_or_default()),
+        }
     }
 }
-#[derive(Serialize, Deserialize)]
+/// Largest encoded `Coin`: flags, value, token and spend reference.
+const MAX_COIN_BYTES: usize = 96;
+fn decode_coin(bytes: &[u8]) -> Result<Coin> {
+    if bytes.len() > MAX_COIN_BYTES {
+        return Err(Error::Corrupt);
+    }
+    let coin: Coin = decode(bytes)?;
+    if coin.flags & !3 != 0 || coin.token_id.is_some() != (coin.flags & 1 != 0)
+    {
+        return Err(Error::Corrupt);
+    }
+    Ok(coin)
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct ReceiptTx {
     location: Loc,
-    outputs: Vec<Vec<u8>>,
-    spends: Vec<([u8; 32], u32, u32)>,
-    lock: u64,
-    inputs: Vec<InputFact>,
     file_num: u32,
-    data_pos: u64,
+    data_pos: u32,
     wire_size: u64,
     wire_checksum: u64,
 }
@@ -256,8 +401,28 @@ struct Undo {
     binding: Binding,
     anchor: Anchor,
     parent: Option<Anchor>,
-    prev_flat_pos: (u32, u64),
     entries: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+}
+/// Load a recorded transaction through the node, checking that it is the
+/// transaction the index recorded at that position.
+fn load_checked(
+    source: &dyn TxSource,
+    location: TxLocation,
+    pos: TxPos,
+    wire_size: u64,
+    wire_checksum: u64,
+) -> Result<NodeTx> {
+    let tx = source
+        .load_tx(pos, location.txid, location.tx_index == 0)
+        .map_err(Error::Node)?;
+    if tx.txid != location.txid
+        || tx.txhash != location.txhash
+        || tx.explorer.wire.len() as u64 != wire_size
+        || seahash::hash(&tx.explorer.wire) != wire_checksum
+    {
+        return Err(Error::Corrupt);
+    }
+    Ok(tx)
 }
 
 /// Owns a dedicated database. Mutations require exclusive Rust access.
@@ -265,35 +430,84 @@ pub struct V2Db {
     pub(crate) db: MdbxEnv,
     binding: Binding,
     bounds: Bounds,
+    source: Arc<dyn TxSource>,
+    recorder: Option<Arc<MemTxSource>>,
 }
 impl V2Db {
-    /// Open or create a dedicated V2 directory; reject foreign/legacy schema.
-    /// `bounds` come from the consensus block-size limit.
+    /// Open with a fresh in-memory transaction source that records every
+    /// connected block (tests and tools; see `open_with_source`).
     pub fn open(
         path: impl AsRef<Path>,
         binding: Binding,
         bounds: Bounds,
     ) -> Result<Self> {
+        Self::open_recording(
+            path,
+            binding,
+            bounds,
+            Arc::new(MemTxSource::default()),
+        )
+    }
+    /// Open with an in-memory source that records every connected block, so
+    /// a reopened database can share the transactions of an earlier one.
+    pub fn open_recording(
+        path: impl AsRef<Path>,
+        binding: Binding,
+        bounds: Bounds,
+        source: Arc<MemTxSource>,
+    ) -> Result<Self> {
+        let mut db = Self::open_with_source(
+            path,
+            binding,
+            bounds,
+            source.clone() as Arc<dyn TxSource>,
+        )?;
+        db.recorder = Some(source);
+        Ok(db)
+    }
+    /// Open or create a dedicated V2 directory; reject foreign/legacy schema.
+    /// `bounds` come from the consensus block-size limit. Transactions are
+    /// read through `source` (the node's block files).
+    pub fn open_with_source(
+        path: impl AsRef<Path>,
+        binding: Binding,
+        bounds: Bounds,
+        source: Arc<dyn TxSource>,
+    ) -> Result<Self> {
         let db = MdbxEnv::open(path)?;
-        let identity = encode(&(SCHEMA_VERSION, binding))?;
         match db.get(b"v2-binding")? {
-            Some(existing) if existing != identity => {
-                return Err(Error::Invalid("binding/schema mismatch"))
+            Some(existing) => {
+                let (version, stored): (u32, Binding) =
+                    postcard::take_from_bytes(&existing)
+                        .map(|(v, _)| v)
+                        .map_err(|_| Error::Corrupt)?;
+                if version != SCHEMA_VERSION {
+                    return Err(Error::Schema {
+                        found: version,
+                        expected: SCHEMA_VERSION,
+                    });
+                }
+                if stored != binding
+                    || existing != encode(&(SCHEMA_VERSION, binding))?
+                {
+                    return Err(Error::Invalid("binding/schema mismatch"));
+                }
             }
             None => {
                 if !db.is_empty()? {
                     return Err(Error::Invalid("nonempty foreign database"));
                 }
                 let mut batch = MdbxWriteBatch::default();
-                batch.put(b"v2-binding", identity);
+                batch.put(b"v2-binding", encode(&(SCHEMA_VERSION, binding))?);
                 write(&db, batch, bounds)?;
             }
-            _ => {}
         }
         Ok(Self {
             db,
             binding,
             bounds,
+            source,
+            recorder: None,
         })
     }
     /// Immutable deployment binding.
@@ -325,12 +539,13 @@ impl V2Db {
                 .get(b"tip")?
                 .ok_or(Error::Invalid("uninitialized index"))?,
         )?;
-        Ok(ReadSnapshot {
+        Ok(ReadSnapshot::new(
             inner,
             anchor,
-            binding: self.binding,
-            bounds: self.bounds,
-        })
+            self.binding,
+            self.bounds,
+            self.source.clone(),
+        ))
     }
     /// Atomically index one committed child block. Exact tip replay is a no-op;
     /// conflicting reuse, missing coins and double spends fail before writing.
@@ -412,139 +627,62 @@ impl V2Db {
             {
                 return Err(Error::Invalid("transaction identity/order"));
             }
-            let outputs = tx
-                .outputs
-                .iter()
-                .map(|o| o.encode().map_err(|_| Error::Invalid("output")))
-                .collect::<Result<Vec<_>>>()?;
+            for output in &tx.outputs {
+                output.encode().map_err(|_| Error::Invalid("output"))?;
+            }
             receipt.push(ReceiptTx {
                 location: tx.location.into(),
-                outputs,
-                spends: tx
-                    .spends
-                    .iter()
-                    .map(|o| {
-                        (
-                            o.outpoint.txid.0 .0,
-                            o.outpoint.out_idx,
-                            o.input_index,
-                        )
-                    })
-                    .collect(),
-                lock: tx.explorer.lock,
-                inputs: tx.explorer.inputs.clone(),
-                file_num: 0,
-                data_pos: 0,
+                file_num: tx.pos.file_num,
+                data_pos: tx.pos.data_pos,
                 wire_size: tx.explorer.wire.len() as u64,
                 wire_checksum: seahash::hash(&tx.explorer.wire),
             });
         }
+        let receipt =
+            encode(&(block.anchor, block.parent, &block.explorer, receipt))?;
+        if receipt.len() > bounds.batch_bytes() {
+            return Err(Error::Invalid("receipt bound"));
+        }
         let tip = self.checkpoint()?;
         let block_key = key(b'b', &block.anchor.block_id);
         if tip == Some(block.anchor) {
-            let stored = self.db.get(&block_key)?.ok_or(Error::Corrupt)?;
-            if stored.len() > bounds.batch_bytes() {
-                return Err(Error::Corrupt);
-            }
-            let (_, _, _, prior): (
-                Anchor,
-                Anchor,
-                ExplorerBlockFacts,
-                Vec<ReceiptTx>,
-            ) = decode(&stored)?;
-            if prior.len() != receipt.len() {
-                return Err(Error::Invalid("conflicting replay"));
-            }
-            for ((incoming, tx), old) in
-                receipt.iter_mut().zip(&block.transactions).zip(prior)
-            {
-                if incoming.inputs.len() != old.inputs.len()
-                    || incoming.wire_size != old.wire_size
-                    || incoming.wire_checksum != old.wire_checksum
-                {
-                    return Err(Error::Invalid("conflicting replay"));
-                }
-                let wire_len =
-                    usize::try_from(old.wire_size).map_err(|_| Error::Corrupt)?;
-                let disk_wire = self
-                    .db
-                    .flat()
-                    .read_at(old.file_num, old.data_pos, wire_len)
-                    .map_err(|_| Error::Corrupt)?;
-                if disk_wire != tx.explorer.wire {
-                    return Err(Error::Invalid("conflicting replay"));
-                }
-                incoming.file_num = old.file_num;
-                incoming.data_pos = old.data_pos;
-                for (input, old_input) in
-                    incoming.inputs.iter_mut().zip(old.inputs)
-                {
-                    if input.resolved_creation.is_some()
-                        && input.resolved_creation
-                            != old_input.resolved_creation
-                    {
-                        return Err(Error::Invalid("caller resolved coin"));
-                    }
-                    input.resolved_creation = old_input.resolved_creation;
-                }
-            }
-            return if encode(&(
-                block.anchor,
-                block.parent,
-                &block.explorer,
-                receipt,
-            ))? == stored
-            {
-                Ok(())
-            } else {
-                Err(Error::Invalid("conflicting replay"))
-            };
+            return self.check_replay(block, &block_key, &receipt);
         }
-        // Resolve and apply in-block parents before their children: the host
-        // may confirm blocks in canonical (txid) order, where a child can
-        // precede the parent whose output it spends.
+        // Resolve the asset facts of every spend: from in-block parents,
+        // which are applied before their children (the host may confirm
+        // blocks in canonical (txid) order, where a child can precede the
+        // parent whose output it spends), or from the coin index.
         let order = processing_order(&block.transactions);
-        let mut resolved = block.clone();
-        let mut creations: BTreeMap<OutPoint, ResolvedCreation> =
-            BTreeMap::new();
+        let mut created: BTreeMap<OutPoint, SpentCoin> = BTreeMap::new();
+        let mut spent_coins = vec![Vec::new(); block.transactions.len()];
         for &tx_index in &order {
-            let tx = &mut resolved.transactions[tx_index];
-            for (index, input) in tx.explorer.inputs.iter_mut().enumerate() {
-                if input.flags == 1 {
-                    let op = OutPoint {
-                        txid: TxId(Hash32(input.prev_txid)),
-                        out_idx: input.prev_index,
-                    };
-                    if !tx.spends.iter().any(|s| {
-                        s.input_index as usize == index && s.outpoint == op
-                    }) {
-                        return Err(Error::Invalid("full spend mismatch"));
-                    }
-                    let creation = if let Some(c) = creations.get(&op) {
-                        c.clone()
-                    } else {
-                        let r = decode_record(
-                            &self
-                                .db
-                                .get(key(b'o', &op_bytes(op)))?
-                                .ok_or(Error::Invalid("missing coin"))?,
-                        )?
-                        .public(op)?;
-                        ResolvedCreation {
-                            outpoint: op,
-                            output: r.output,
-                            creation: r.creation,
-                        }
-                    };
-                    if input.resolved_creation.is_some()
-                        && input.resolved_creation.as_ref() != Some(&creation)
-                    {
-                        return Err(Error::Invalid("caller resolved coin"));
-                    }
-                    input.resolved_creation = Some(creation);
-                } else if input.resolved_creation.is_some() {
-                    return Err(Error::Invalid("nonspend resolved coin"));
+            let tx = &block.transactions[tx_index];
+            for (index, input) in tx.explorer.inputs.iter().enumerate() {
+                if input.flags != 1 {
+                    continue;
                 }
+                let op = OutPoint {
+                    txid: TxId(Hash32(input.prev_txid)),
+                    out_idx: input.prev_index,
+                };
+                if !tx
+                    .spends
+                    .iter()
+                    .any(|s| s.input_index as usize == index && s.outpoint == op)
+                {
+                    return Err(Error::Invalid("full spend mismatch"));
+                }
+                let coin = match created.get(&op) {
+                    Some(coin) => *coin,
+                    None => decode_coin(
+                        &self
+                            .db
+                            .get(key(b'o', &op_bytes(op)))?
+                            .ok_or(Error::Invalid("missing coin"))?,
+                    )?
+                    .spent_coin(op),
+                };
+                spent_coins[tx_index].push(coin);
             }
             if tx.spends.iter().any(|s| {
                 tx.explorer
@@ -559,14 +697,7 @@ impl V2Db {
                     txid: tx.location.txid,
                     out_idx: i as u32,
                 };
-                creations.insert(
-                    op,
-                    ResolvedCreation {
-                        outpoint: op,
-                        output: output.clone(),
-                        creation: tx.location,
-                    },
-                );
+                created.insert(op, SpentCoin::from_output(op, output));
             }
         }
         if (if genesis {
@@ -577,32 +708,7 @@ impl V2Db {
         {
             return Err(Error::Invalid("checkpoint/duplicate block"));
         }
-        let prev_flat_pos: (u32, u64) = self
-            .db
-            .get(b"flat_pos")?
-            .map(|b| decode(&b))
-            .transpose()?
-            .unwrap_or((0, 0));
-        let (explorer_entries, flat_writes, next_flat_pos) =
-            crate::v2_explorer::plan_explorer_block_at(
-                &resolved,
-                prev_flat_pos.0,
-                prev_flat_pos.1,
-            )?;
-        for ((r, tx), (file_num, data_pos, _)) in receipt
-            .iter_mut()
-            .zip(&resolved.transactions)
-            .zip(&flat_writes)
-        {
-            r.inputs = tx.explorer.inputs.clone();
-            r.file_num = *file_num;
-            r.data_pos = *data_pos;
-        }
-        let receipt =
-            encode(&(block.anchor, block.parent, &block.explorer, receipt))?;
-        if receipt.len() > bounds.batch_bytes() {
-            return Err(Error::Invalid("receipt bound"));
-        }
+        let explorer_entries = crate::v2_explorer::plan_explorer_block(block)?;
         let mut state: BTreeMap<Vec<u8>, Option<Vec<u8>>> = BTreeMap::new();
         let mut undo = BTreeMap::new();
         let mut spent = BTreeSet::new();
@@ -635,17 +741,13 @@ impl V2Db {
                     None => self.db.get(&k)?,
                 }
                 .ok_or(Error::Invalid("missing coin"))?;
-                let mut record = decode_record(&previous)?;
-                if record.spend.is_some()
-                    || Output::decode(&record.output)
-                        .map_err(|_| Error::Corrupt)?
-                        .is_burn()
-                {
+                let mut coin = decode_coin(&previous)?;
+                if coin.spend.is_some() || coin.is_burn() {
                     return Err(Error::Invalid("spent/burn coin"));
                 }
                 undo.entry(k.clone()).or_insert(self.db.get(&k)?);
-                record.spend = Some((tx.location.into(), input.input_index));
-                state.insert(k, Some(encode(&record)?));
+                coin.spend = Some((tx.location.txid.0 .0, input.input_index));
+                state.insert(k, Some(encode(&coin)?));
             }
             for (i, output) in tx.outputs.iter().enumerate() {
                 let op = OutPoint {
@@ -658,16 +760,7 @@ impl V2Db {
                     return Err(Error::Invalid("duplicate outpoint"));
                 }
                 undo.insert(k.clone(), None);
-                state.insert(
-                    k,
-                    Some(encode(&Record {
-                        output: output
-                            .encode()
-                            .map_err(|_| Error::Invalid("output"))?,
-                        creation: tx.location.into(),
-                        spend: None,
-                    })?),
-                );
+                state.insert(k, Some(encode(&Coin::new(output))?));
                 for (position, root) in output.branches.iter().enumerate() {
                     for pos in [position as u8, 255] {
                         let mut k = posting_prefix(*root, Some(pos));
@@ -685,7 +778,7 @@ impl V2Db {
             undo.insert(k.clone(), None);
             state.insert(k, Some(v));
         }
-        for (k, v) in asset_entries(&resolved, &order, |k| {
+        for (k, v) in asset_entries(block, &order, &spent_coins, |k| {
             self.db.get(k).map_err(Into::into)
         })? {
             let old = self.db.get(&k)?;
@@ -699,28 +792,16 @@ impl V2Db {
             binding: self.binding,
             anchor: block.anchor,
             parent: if genesis { None } else { Some(block.parent) },
-            prev_flat_pos,
             entries: undo.into_iter().collect(),
         })?;
-        let flat_bytes: usize =
-            flat_writes.iter().map(|(_, _, w)| w.len()).sum();
         let size = receipt.len()
             + undo.len()
-            + flat_bytes
             + state
                 .iter()
                 .map(|(k, v)| k.len() + v.as_ref().map_or(0, Vec::len))
                 .sum::<usize>();
         if size > bounds.batch_bytes() {
             return Err(Error::Invalid("batch bound"));
-        }
-        let mut synced_files = BTreeSet::new();
-        for (file_num, data_pos, bytes) in &flat_writes {
-            self.db.flat().write_at(*file_num, *data_pos, bytes)?;
-            synced_files.insert(*file_num);
-        }
-        for file_num in synced_files {
-            self.db.flat().sync_file(file_num)?;
         }
         let mut batch = MdbxWriteBatch::default();
         for (k, v) in state {
@@ -730,10 +811,60 @@ impl V2Db {
         }
         batch.put(block_key, receipt);
         batch.put(key(b'u', &block.anchor.block_id), undo);
-        batch.put(b"flat_pos", encode(&next_flat_pos)?);
         batch.put(b"tip", encode(&block.anchor)?);
         batch.delete(b"disconnected");
-        write(&self.db, batch, bounds)
+        write(&self.db, batch, bounds)?;
+        if let Some(recorder) = &self.recorder {
+            recorder.record(block);
+        }
+        Ok(())
+    }
+    /// Exact replay of the indexed tip: its receipt (transaction identities,
+    /// positions and wire checksums), explorer entries, created coins and
+    /// spend references must all equal what was indexed.
+    fn check_replay(
+        &self,
+        block: &CommittedBlock,
+        block_key: &[u8],
+        receipt: &[u8],
+    ) -> Result<()> {
+        let stored = self.db.get(block_key)?.ok_or(Error::Corrupt)?;
+        if stored.len() > self.bounds.batch_bytes() {
+            return Err(Error::Corrupt);
+        }
+        let conflict = Error::Invalid("conflicting replay");
+        if stored != receipt {
+            return Err(conflict);
+        }
+        for (k, v) in crate::v2_explorer::plan_explorer_block(block)? {
+            if self.db.get(&k)?.as_ref() != Some(&v) {
+                return Err(conflict);
+            }
+        }
+        for tx in &block.transactions {
+            for (i, output) in tx.outputs.iter().enumerate() {
+                let op = OutPoint {
+                    txid: tx.location.txid,
+                    out_idx: i as u32,
+                };
+                match self.db.get(key(b'o', &op_bytes(op)))? {
+                    Some(bytes) if decode_coin(&bytes)?.matches(output) => {}
+                    _ => return Err(conflict),
+                }
+            }
+            for spend in &tx.spends {
+                match self.db.get(key(b'o', &op_bytes(spend.outpoint)))? {
+                    Some(bytes)
+                        if decode_coin(&bytes)?.spend
+                            == Some((
+                                tx.location.txid.0 .0,
+                                spend.input_index,
+                            )) => {}
+                    _ => return Err(conflict),
+                }
+            }
+        }
+        Ok(())
     }
     /// Atomically undo the current block, including outputs spent in that block.
     /// Repeating the immediately completed disconnect is idempotent.
@@ -758,7 +889,14 @@ impl V2Db {
             return Err(Error::Corrupt);
         }
         let undo: Undo = decode(&bytes)?;
-        validate_undo(&self.db, self.binding, self.bounds, anchor, &undo)?;
+        validate_undo(
+            &self.db,
+            &*self.source,
+            self.binding,
+            self.bounds,
+            anchor,
+            &undo,
+        )?;
         let parent = undo.parent.ok_or(Error::Corrupt)?;
         let mut batch = MdbxWriteBatch::default();
         for (k, v) in undo.entries {
@@ -769,28 +907,15 @@ impl V2Db {
         }
         batch.delete(key(b'b', &anchor.block_id));
         batch.delete(key(b'u', &anchor.block_id));
-        batch.put(b"flat_pos", encode(&undo.prev_flat_pos)?);
         batch.put(b"tip", encode(&parent)?);
         batch.put(b"disconnected", encode(&anchor)?);
-        write(&self.db, batch, self.bounds)?;
-        self.db
-            .flat()
-            .truncate_to(undo.prev_flat_pos.0, undo.prev_flat_pos.1)?;
-        Ok(())
+        write(&self.db, batch, self.bounds)
     }
 }
 // An output frame is <=812 bytes; each location is 96 hash bytes plus
-// at most 15 varint bytes. Two locations, optional/input framing and vector
-// length fit within 1200 bytes. Check this BEFORE serde vector allocation.
+// at most 15 varint bytes. Staging reservations per spend and output keep the
+// bound of the former full output record (two locations and the output).
 const MAX_RECORD_BYTES: usize = 1200;
-fn decode_record(bytes: &[u8]) -> Result<Record> {
-    if bytes.len() > MAX_RECORD_BYTES {
-        return Err(Error::Corrupt);
-    }
-    let record: Record = decode(bytes)?;
-    Output::decode(&record.output).map_err(|_| Error::Corrupt)?;
-    Ok(record)
-}
 fn reserve(total: &mut usize, bytes: usize, bounds: Bounds) -> Result<()> {
     *total = total
         .checked_add(bytes)
@@ -800,8 +925,13 @@ fn reserve(total: &mut usize, bytes: usize, bounds: Bounds) -> Result<()> {
     }
     Ok(())
 }
+/// Check that an undo log inverts exactly the indexed block. The block is
+/// rebuilt from the node through `source` (its receipt keeps only positions),
+/// and every key the block wrote must hold the value it wrote, with the
+/// undo's prior value being the one connect replaced.
 fn validate_undo(
     db: &MdbxEnv,
+    source: &dyn TxSource,
     binding: Binding,
     bounds: Bounds,
     anchor: Anchor,
@@ -832,298 +962,166 @@ fn validate_undo(
     {
         return Err(Error::Corrupt);
     }
-    let mut expected = BTreeSet::new();
     let mut reservation = 1024;
+    let mut restored = Vec::with_capacity(transactions.len());
     for (index, tx) in transactions.iter().enumerate() {
         if tx.location.block != anchor.block_id
             || tx.location.height != anchor.height
             || tx.location.index as usize != index
+            || tx.wire_size == 0
+            || tx.wire_size > bounds.block_bytes() as u64
         {
             return Err(Error::Corrupt);
         }
+        let location: TxLocation = tx.location.clone().into();
+        let pos = TxPos {
+            file_num: tx.file_num,
+            data_pos: tx.data_pos,
+        };
+        let node = load_checked(
+            source,
+            location,
+            pos,
+            tx.wire_size,
+            tx.wire_checksum,
+        )?;
         reserve(
             &mut reservation,
             RESERVE_TX
-                + tx.spends
+                + node
+                    .spends
                     .len()
                     .checked_mul(RESERVE_SPEND)
                     .ok_or(Error::Corrupt)?,
             bounds,
         )
         .map_err(|_| Error::Corrupt)?;
-        if !expected.insert(key(b't', &tx.location.txid)) {
-            return Err(Error::Corrupt);
-        }
-        for (txid, out_idx, _) in &tx.spends {
-            expected.insert(key(
-                b'o',
-                &op_bytes(OutPoint {
-                    txid: TxId(Hash32(*txid)),
-                    out_idx: *out_idx,
-                }),
-            ));
-        }
-        for (index, wire) in tx.outputs.iter().enumerate() {
-            let output = Output::decode(wire).map_err(|_| Error::Corrupt)?;
+        for output in &node.outputs {
             reserve(
                 &mut reservation,
                 RESERVE_OUTPUT + output.branches.len() * RESERVE_BRANCH,
                 bounds,
             )
             .map_err(|_| Error::Corrupt)?;
-            let op = OutPoint {
-                txid: TxId(Hash32(tx.location.txid)),
-                out_idx: u32::try_from(index).map_err(|_| Error::Corrupt)?,
-            };
-            expected.insert(key(b'o', &op_bytes(op)));
-            for (position, root) in output.branches.iter().enumerate() {
-                for position in [position as u8, 255] {
-                    let mut k = posting_prefix(*root, Some(position));
-                    k.extend(op_bytes(op));
-                    expected.insert(k);
-                }
-            }
         }
+        restored.push(ConfirmedTx {
+            location,
+            pos,
+            outputs: node.outputs,
+            spends: node.spends,
+            explorer: node.explorer,
+        });
     }
-    let restored_block = CommittedBlock {
+    let block = CommittedBlock {
         anchor,
         parent,
         explorer,
-        transactions: transactions
-            .iter()
-            .map(|tx| {
-                let wire_len =
-                    usize::try_from(tx.wire_size).map_err(|_| Error::Corrupt)?;
-                if wire_len == 0 || wire_len > bounds.block_bytes() {
-                    return Err(Error::Corrupt);
-                }
-                let wire = db
-                    .flat()
-                    .read_at(tx.file_num, tx.data_pos, wire_len)
-                    .map_err(|_| Error::Corrupt)?;
-                if seahash::hash(&wire) != tx.wire_checksum {
-                    return Err(Error::Corrupt);
-                }
-                Ok(ConfirmedTx {
-                    location: tx.location.clone().into(),
-                    outputs: tx
-                        .outputs
-                        .iter()
-                        .map(|o| Output::decode(o).map_err(|_| Error::Corrupt))
-                        .collect::<Result<_>>()?,
-                    spends: tx
-                        .spends
-                        .iter()
-                        .map(|(txid, out_idx, input_index)| SpentInput {
-                            outpoint: OutPoint {
-                                txid: TxId(Hash32(*txid)),
-                                out_idx: *out_idx,
-                            },
-                            input_index: *input_index,
-                        })
-                        .collect(),
-                    explorer: ExplorerTxFacts {
-                        wire,
-                        lock: tx.lock,
-                        inputs: tx.inputs.clone(),
-                    },
-                })
-            })
-            .collect::<Result<_>>()?,
+        transactions: restored,
     };
     reserve(
         &mut reservation,
-        crate::v2_explorer::preflight_explorer_block(&restored_block)?,
+        crate::v2_explorer::preflight_explorer_block(&block)?,
         bounds,
     )
     .map_err(|_| Error::Corrupt)?;
-    let order = processing_order(&restored_block.transactions);
-    let mut legacy_current = BTreeMap::new();
-    let mut legacy_previous = BTreeMap::new();
-    for tx in order.iter().map(|&i| &restored_block.transactions[i]) {
+    let undo_map: BTreeMap<Vec<u8>, Option<Vec<u8>>> =
+        undo.entries.iter().cloned().collect();
+    if undo_map.len() != undo.entries.len() {
+        return Err(Error::Corrupt);
+    }
+    let in_block: BTreeSet<TxId> =
+        block.transactions.iter().map(|tx| tx.location.txid).collect();
+    let order = processing_order(&block.transactions);
+    // Value of every key the block wrote, and the prior value its undo must
+    // restore.
+    let mut current: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+    let mut previous: BTreeMap<Vec<u8>, Option<Vec<u8>>> = BTreeMap::new();
+    let mut spent_coins = vec![Vec::new(); block.transactions.len()];
+    for &tx_index in &order {
+        let tx = &block.transactions[tx_index];
         let k = key(b't', &tx.location.txid.0 .0);
-        legacy_current.insert(k.clone(), encode(&Loc::from(tx.location))?);
-        legacy_previous.insert(k, None);
+        current.insert(k.clone(), encode(&Loc::from(tx.location))?);
+        previous.insert(k, None);
         for spend in &tx.spends {
-            let creation = tx
-                .explorer
-                .inputs
-                .get(spend.input_index as usize)
-                .and_then(|i| i.resolved_creation.as_ref())
-                .ok_or(Error::Corrupt)?;
-            if creation.outpoint != spend.outpoint {
+            let op = spend.outpoint;
+            let k = key(b'o', &op_bytes(op));
+            let before = match current.get(&k) {
+                Some(bytes) => decode_coin(bytes)?,
+                None => {
+                    // A coin created before this block: its undo value is
+                    // the unspent coin, created at or below the parent.
+                    let bytes = undo_map
+                        .get(&k)
+                        .cloned()
+                        .flatten()
+                        .ok_or(Error::Corrupt)?;
+                    let creation: Loc = decode(
+                        &db.get(key(b't', &op.txid.0 .0))?
+                            .ok_or(Error::Corrupt)?,
+                    )?;
+                    if in_block.contains(&op.txid)
+                        || creation.txid != op.txid.0 .0
+                        || creation.height > parent.height
+                    {
+                        return Err(Error::Corrupt);
+                    }
+                    let coin = decode_coin(&bytes)?;
+                    previous.insert(k.clone(), Some(bytes));
+                    coin
+                }
+            };
+            if before.spend.is_some() || before.is_burn() {
                 return Err(Error::Corrupt);
             }
-            let k = key(b'o', &op_bytes(spend.outpoint));
-            let mut record = Record {
-                output: creation.output.encode().map_err(|_| Error::Corrupt)?,
-                creation: creation.creation.into(),
-                spend: None,
-            };
-            if !legacy_previous.contains_key(&k) {
-                legacy_previous.insert(k.clone(), Some(encode(&record)?));
-            }
-            record.spend = Some((tx.location.into(), spend.input_index));
-            legacy_current.insert(k, encode(&record)?);
+            spent_coins[tx_index].push(before.spent_coin(op));
+            let mut after = before;
+            after.spend = Some((tx.location.txid.0 .0, spend.input_index));
+            current.insert(k, encode(&after)?);
         }
         for (i, output) in tx.outputs.iter().enumerate() {
             let op = OutPoint {
                 txid: tx.location.txid,
-                out_idx: i as u32,
+                out_idx: u32::try_from(i).map_err(|_| Error::Corrupt)?,
             };
             let k = key(b'o', &op_bytes(op));
-            legacy_previous.insert(k.clone(), None);
-            legacy_current.insert(
-                k,
-                encode(&Record {
-                    output: output.encode().map_err(|_| Error::Corrupt)?,
-                    creation: tx.location.into(),
-                    spend: None,
-                })?,
-            );
-            for (i, root) in output.branches.iter().enumerate() {
-                for position in [i as u8, 255] {
+            if current.insert(k.clone(), encode(&Coin::new(output))?).is_some()
+            {
+                return Err(Error::Corrupt);
+            }
+            previous.insert(k, None);
+            for (position, root) in output.branches.iter().enumerate() {
+                for position in [position as u8, 255] {
                     let mut k = posting_prefix(*root, Some(position));
                     k.extend(op_bytes(op));
-                    legacy_previous.insert(k.clone(), None);
-                    legacy_current.insert(k, vec![]);
+                    current.insert(k.clone(), vec![]);
+                    previous.insert(k, None);
                 }
             }
         }
     }
-    for (k, v) in &legacy_current {
+    for (k, v) in crate::v2_explorer::plan_explorer_block(&block)? {
+        if current.insert(k.clone(), v).is_some() {
+            return Err(Error::Corrupt);
+        }
+        previous.insert(k, None);
+    }
+    for (k, v) in asset_entries(&block, &order, &spent_coins, |k| {
+        Ok(undo_map.get(k).cloned().flatten())
+    })? {
+        let prior = undo_map.get(&k).ok_or(Error::Corrupt)?;
+        if current.insert(k.clone(), v).is_some()
+            || (!k.starts_with(b"eA") && prior.is_some())
+        {
+            return Err(Error::Corrupt);
+        }
+        previous.insert(k, prior.clone());
+    }
+    if previous != undo_map {
+        return Err(Error::Corrupt);
+    }
+    for (k, v) in &current {
         if db.get(k)?.as_ref() != Some(v) {
             return Err(Error::Corrupt);
-        }
-    }
-    let (planned_explorer, planned_flat, expected_flat_pos) =
-        crate::v2_explorer::plan_explorer_block_at(
-            &restored_block,
-            undo.prev_flat_pos.0,
-            undo.prev_flat_pos.1,
-        )?;
-    let current_flat_pos: (u32, u64) =
-        decode(&db.get(b"flat_pos")?.ok_or(Error::Corrupt)?)?;
-    if current_flat_pos != expected_flat_pos {
-        return Err(Error::Corrupt);
-    }
-    for (tx, (file_num, data_pos, _)) in
-        transactions.iter().zip(&planned_flat)
-    {
-        if tx.file_num != *file_num || tx.data_pos != *data_pos {
-            return Err(Error::Corrupt);
-        }
-    }
-    let explorer_entries: BTreeMap<_, _> =
-        planned_explorer.into_iter().collect();
-    let undo_map: BTreeMap<_, _> = undo.entries.iter().cloned().collect();
-    let asset_entries = asset_entries(&restored_block, &order, |k| {
-        Ok(undo_map.get(k).cloned().flatten())
-    })?;
-    for (k, v) in &asset_entries {
-        if !expected.insert(k.clone()) || db.get(k)?.as_ref() != Some(v) {
-            return Err(Error::Corrupt);
-        }
-    }
-    for (k, v) in &explorer_entries {
-        if !expected.insert(k.clone()) || db.get(k)?.as_ref() != Some(v) {
-            return Err(Error::Corrupt);
-        }
-    }
-    if expected.len() != undo.entries.len() {
-        return Err(Error::Corrupt);
-    }
-    let mut seen = BTreeSet::new();
-    for (k, previous) in &undo.entries {
-        if !expected.contains(k) || !seen.insert(k) {
-            return Err(Error::Corrupt);
-        }
-        if let Some(expected_previous) = legacy_previous.get(k) {
-            if previous != expected_previous {
-                return Err(Error::Corrupt);
-            }
-        }
-        if asset_entries.contains_key(k) {
-            if !k.starts_with(b"eA") && previous.is_some() {
-                return Err(Error::Corrupt);
-            }
-            continue;
-        }
-        if explorer_entries.contains_key(k) {
-            if previous.is_some() {
-                return Err(Error::Corrupt);
-            }
-            continue;
-        }
-        match (k.first(), k.len()) {
-            (Some(b'o'), 37) => {
-                let op = op_decode(&k[1..])?;
-                let current =
-                    decode_record(&db.get(k)?.ok_or(Error::Corrupt)?)?;
-                if current.creation.txid != op.txid.0 .0 {
-                    return Err(Error::Corrupt);
-                }
-                match previous {
-                    None if current.creation.block == anchor.block_id
-                        && current.creation.height == anchor.height => {}
-                    Some(bytes) => {
-                        let old = decode_record(bytes)?;
-                        if old.creation.txid != op.txid.0 .0
-                            || old.creation.height > parent.height
-                            || old.spend.is_some()
-                            || Output::decode(&old.output)
-                                .map_err(|_| Error::Corrupt)?
-                                .is_burn()
-                            || encode(&old.creation)?
-                                != encode(&current.creation)?
-                            || old.output != current.output
-                            || current.spend.as_ref().map_or(true, |(l, _)| {
-                                l.block != anchor.block_id
-                                    || l.height != anchor.height
-                            })
-                        {
-                            return Err(Error::Corrupt);
-                        }
-                    }
-                    _ => return Err(Error::Corrupt),
-                }
-            }
-            (Some(b't'), 33) if previous.is_none() => {
-                let value = db.get(k)?.ok_or(Error::Corrupt)?;
-                if value.len() > 128 {
-                    return Err(Error::Corrupt);
-                }
-                let loc: Loc = decode(&value)?;
-                if loc.txid != k[1..]
-                    || loc.block != anchor.block_id
-                    || loc.height != anchor.height
-                {
-                    return Err(Error::Corrupt);
-                }
-            }
-            (Some(b'p'), 70) if previous.is_none() => {
-                let op = op_decode(&k[34..])?;
-                let record = decode_record(
-                    &db.get(key(b'o', &op_bytes(op)))?.ok_or(Error::Corrupt)?,
-                )?;
-                let output = Output::decode(&record.output)
-                    .map_err(|_| Error::Corrupt)?;
-                let root =
-                    Hash32(k[1..33].try_into().map_err(|_| Error::Corrupt)?);
-                let position = k[33];
-                if record.creation.block != anchor.block_id
-                    || record.creation.height != anchor.height
-                    || (if position == 255 {
-                        !output.branches.contains(&root)
-                    } else {
-                        output.branches.get(position as usize) != Some(&root)
-                    })
-                    || db.get(k)?.as_deref() != Some(&[])
-                {
-                    return Err(Error::Corrupt);
-                }
-            }
-            _ => return Err(Error::Corrupt),
         }
     }
     Ok(())
@@ -1176,20 +1174,19 @@ fn processing_order(transactions: &[ConfirmedTx]) -> Vec<usize> {
     }
     order
 }
+/// Asset entries of a block; `spent_coins[i]` holds the resolved spends of
+/// transaction `i` in input order.
 fn asset_entries(
     block: &CommittedBlock,
     order: &[usize],
+    spent_coins: &[Vec<SpentCoin>],
     mut old_value: impl FnMut(&[u8]) -> Result<Option<Vec<u8>>>,
 ) -> Result<BTreeMap<Vec<u8>, Vec<u8>>> {
     use crate::v2_asset::{self as a, AssetTxView};
     let mut entries: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
-    for tx in order.iter().map(|&i| &block.transactions[i]) {
-        let resolved_spends: Vec<_> = tx
-            .explorer
-            .inputs
-            .iter()
-            .filter_map(|i| i.resolved_creation.clone())
-            .collect();
+    for &tx_index in order {
+        let tx = &block.transactions[tx_index];
+        let resolved_spends = &spent_coins[tx_index];
         let mint_token_ids: Vec<_> = tx
             .explorer
             .inputs
@@ -1200,7 +1197,7 @@ fn asset_entries(
         let view = || AssetTxView {
             location: tx.location,
             outputs: &tx.outputs,
-            resolved_spends: &resolved_spends,
+            resolved_spends,
             mint_token_ids: &mint_token_ids,
         };
         let events = a::derive_asset_events(view())?;
@@ -1245,8 +1242,87 @@ pub struct ReadSnapshot<'a> {
     pub binding: Binding,
     /// Size bounds from the consensus block-size limit.
     pub bounds: Bounds,
+    source: Arc<dyn TxSource>,
+    /// Last transaction read through the node, with the metadata it was
+    /// checked against (consecutive outputs usually share a transaction).
+    last_tx: Mutex<Option<(crate::v2_explorer::TxMeta, Arc<NodeTx>)>>,
 }
-impl ReadSnapshot<'_> {
+impl<'a> ReadSnapshot<'a> {
+    pub(crate) fn new(
+        inner: MdbxSnapshot<'a>,
+        anchor: Anchor,
+        binding: Binding,
+        bounds: Bounds,
+        source: Arc<dyn TxSource>,
+    ) -> Self {
+        ReadSnapshot {
+            inner,
+            anchor,
+            binding,
+            bounds,
+            source,
+            last_tx: Mutex::new(None),
+        }
+    }
+    /// The transaction described by `meta`, read through the node and checked
+    /// against its identities, counts, lock, wire size and checksum.
+    pub(crate) fn node_tx(
+        &self,
+        meta: &crate::v2_explorer::TxMeta,
+    ) -> Result<Arc<NodeTx>> {
+        if let Ok(guard) = self.last_tx.lock() {
+            if let Some((cached, tx)) = guard.as_ref() {
+                if cached == meta {
+                    return Ok(tx.clone());
+                }
+            }
+        }
+        let tx = load_checked(
+            &*self.source,
+            meta.location,
+            TxPos {
+                file_num: meta.file_num,
+                data_pos: meta.data_pos,
+            },
+            meta.wire_size,
+            meta.wire_checksum,
+        )?;
+        if tx.outputs.len() != meta.output_count as usize
+            || tx.explorer.inputs.len() != meta.input_count as usize
+            || tx.explorer.lock != meta.lock
+        {
+            return Err(Error::Corrupt);
+        }
+        let tx = Arc::new(tx);
+        if let Ok(mut guard) = self.last_tx.lock() {
+            *guard = Some((meta.clone(), tx.clone()));
+        }
+        Ok(tx)
+    }
+    /// Complete output `op`, read from its creating transaction at `creation`.
+    fn creation_output(
+        &self,
+        op: OutPoint,
+        creation: TxLocation,
+    ) -> Result<Output> {
+        let bytes = self
+            .inner
+            .get(crate::v2_explorer::tx_key(op.txid))?
+            .ok_or(Error::Corrupt)?;
+        let meta: crate::v2_explorer::TxMeta =
+            crate::v2_explorer::decode_record(&bytes)?;
+        if meta.location != creation || op.out_idx >= meta.output_count {
+            return Err(Error::Corrupt);
+        }
+        let tx = self.node_tx(&meta)?;
+        let output = tx
+            .outputs
+            .get(op.out_idx as usize)
+            .ok_or(Error::Corrupt)?
+            .clone();
+        output.validate().map_err(|_| Error::Corrupt)?;
+        Ok(output)
+    }
     /// Canonical transaction location owned by the original location index.
     pub fn transaction(&self, txid: TxId) -> Result<Option<TxLocation>> {
         self.transaction_counted(
@@ -1299,22 +1375,29 @@ impl ReadSnapshot<'_> {
         let Some(bytes) = self.inner.get(key(b'o', &op_bytes(op)))? else {
             return Ok(None);
         };
-        let record = decode_record(&bytes)?.public(op)?;
-        if self.transaction_counted(record.creation.txid, budget)?
-            != Some(record.creation)
-            || record.creation.height > self.anchor.height
-        {
+        let coin = decode_coin(&bytes)?;
+        let creation = self
+            .transaction_counted(op.txid, budget)?
+            .ok_or(Error::Corrupt)?;
+        let spend = match coin.spend {
+            Some((txid, input_index)) => Some(SpendLocation {
+                transaction: self
+                    .transaction_counted(TxId(Hash32(txid)), budget)?
+                    .ok_or(Error::Corrupt)?,
+                input_index,
+            }),
+            None => None,
+        };
+        let output = self.creation_output(op, creation)?;
+        if !coin.matches(&output) {
             return Err(Error::Corrupt);
         }
-        if let Some(spend) = record.spend {
-            if self.transaction_counted(spend.transaction.txid, budget)?
-                != Some(spend.transaction)
-                || spend.transaction.height > self.anchor.height
-            {
-                return Err(Error::Corrupt);
-            }
-        }
-        Ok(Some(record))
+        Ok(Some(OutputRecord {
+            outpoint: op,
+            output,
+            creation,
+            spend,
+        }))
     }
     /// Return an unspent spendable output. Burn commitments are always excluded.
     pub fn utxo(&self, op: OutPoint) -> Result<Option<OutputRecord>> {
@@ -1407,7 +1490,6 @@ fn fixture_facts(spends: &[SpentInput], outputs: &[Output]) -> ExplorerTxFacts {
                 has_coinbase_data: false,
                 coinbase_data: WireRange::default(),
                 witnesses: vec![],
-                resolved_creation: None,
             });
         }
         inputs.push(InputFact {
@@ -1419,7 +1501,6 @@ fn fixture_facts(spends: &[SpentInput], outputs: &[Output]) -> ExplorerTxFacts {
             has_coinbase_data: false,
             coinbase_data: WireRange::default(),
             witnesses: vec![fixture_witness()],
-            resolved_creation: None,
         });
     }
     if spends.is_empty() {
@@ -1436,7 +1517,6 @@ fn fixture_facts(spends: &[SpentInput], outputs: &[Output]) -> ExplorerTxFacts {
                 has_coinbase_data: false,
                 coinbase_data: WireRange::default(),
                 witnesses: vec![fixture_witness()],
-                resolved_creation: None,
             });
         }
     }
@@ -1508,6 +1588,7 @@ mod tests {
             parent,
             explorer: fixture_header(anchor, parent),
             transactions: vec![ConfirmedTx {
+                pos: crate::v2_branch::TxPos::default(),
                 location: TxLocation {
                     block_id: Hash32(anchor.block_id),
                     height: anchor.height,
@@ -1528,10 +1609,13 @@ mod tests {
         }
     }
     #[test]
-    fn schema3_complete_facts_atomic_replay_and_tamper() {
+    fn schema4_complete_facts_atomic_replay_and_tamper() {
         use crate::{v2_asset as a, v2_explorer as e};
-        let dir = tempdir::TempDir::new("v2-schema3").unwrap();
-        let mut db = V2Db::open(dir.path(), binding(), bounds()).unwrap();
+        let dir = tempdir::TempDir::new("v2-schema4").unwrap();
+        let mem = Arc::new(MemTxSource::default());
+        let mut db =
+            V2Db::open_recording(dir.path(), binding(), bounds(), mem.clone())
+                .unwrap();
         db.initialize_genesis(fixture_genesis(vec![])).unwrap();
         let genesis = db.checkpoint().unwrap().unwrap();
         let mut token = output(5, false);
@@ -1572,7 +1656,7 @@ mod tests {
         drop(view);
         let input_key = e::input_key(TxId(Hash32([22; 32])), 0);
         let saved = db.db.get(&input_key).unwrap().unwrap();
-        let mut corrupted: e::InputMeta = e::decode_record(&saved).unwrap();
+        let mut corrupted: e::StoredInputMeta = e::decode_record(&saved).unwrap();
         corrupted.flags = 255;
         db.db
             .put(&input_key, e::encode_record(&corrupted).unwrap())
@@ -1628,8 +1712,12 @@ mod tests {
         db.db.put(&block_key, saved).unwrap();
         let record_key = key(b'o', &op_bytes(op(20, 0)));
         let saved = db.db.get(&record_key).unwrap().unwrap();
-        let mut corrupted: Record = decode(&saved).unwrap();
-        corrupted.creation.txhash[0] ^= 1;
+        let mut corrupted: Coin = decode(&saved).unwrap();
+        corrupted.spend.as_mut().unwrap().0[0] ^= 1;
+        db.db.put(&record_key, encode(&corrupted).unwrap()).unwrap();
+        assert!(db.snapshot().unwrap().output(op(20, 0)).is_err());
+        corrupted = decode(&saved).unwrap();
+        corrupted.value += 1;
         db.db.put(&record_key, encode(&corrupted).unwrap()).unwrap();
         assert!(db.snapshot().unwrap().output(op(20, 0)).is_err());
         db.db.put(&record_key, saved).unwrap();
@@ -1669,23 +1757,9 @@ mod tests {
         let mut conflicting = second.clone();
         conflicting.transactions[0].explorer.wire.push(1);
         assert!(db.connect(&conflicting).is_err());
-        let tx_meta: e::TxMeta = e::decode_record(
-            &db.db.get(e::tx_key(TxId(Hash32([22; 32])))).unwrap().unwrap(),
-        )
-        .unwrap();
-        let original = db
-            .db
-            .flat()
-            .read_at(
-                tx_meta.file_num,
-                tx_meta.data_pos,
-                tx_meta.wire_size as usize,
-            )
-            .unwrap();
-        db.db
-            .flat()
-            .write_at(tx_meta.file_num, tx_meta.data_pos, &[1])
-            .unwrap();
+        // The node's bytes no longer match the recorded wire checksum: reads
+        // and the undo check fail closed.
+        assert!(mem.modify(TxId(Hash32([22; 32])), |tx| tx.explorer.wire[0] ^= 1));
         assert!(db
             .snapshot()
             .unwrap()
@@ -1693,10 +1767,7 @@ mod tests {
             .is_err());
         assert!(db.disconnect(second.anchor).is_err());
         assert_eq!(db.checkpoint().unwrap(), Some(second.anchor));
-        db.db
-            .flat()
-            .write_at(tx_meta.file_num, tx_meta.data_pos, &original)
-            .unwrap();
+        assert!(mem.modify(TxId(Hash32([22; 32])), |tx| tx.explorer.wire[0] ^= 1));
         db.disconnect(second.anchor).unwrap();
         assert!(db
             .snapshot()
@@ -1740,19 +1811,31 @@ mod tests {
         assert_eq!(after, baseline); // every e-family, receipt and undo restored exactly
 
         drop(db);
-        let raw = MdbxEnv::open(dir.path()).unwrap();
-        raw.put(b"v2-binding", encode(&(2u32, binding())).unwrap())
-            .unwrap();
-        drop(raw);
-        assert!(matches!(
-            V2Db::open(dir.path(), binding(), bounds()),
-            Err(Error::Invalid("binding/schema mismatch"))
-        ));
+        // An index of an older schema is refused with a reindex instruction,
+        // never read with this build's layouts.
+        for old in [2u32, 3] {
+            let raw = MdbxEnv::open(dir.path()).unwrap();
+            raw.put(b"v2-binding", encode(&(old, binding())).unwrap())
+                .unwrap();
+            drop(raw);
+            let err = V2Db::open(dir.path(), binding(), bounds())
+                .err()
+                .unwrap();
+            assert!(matches!(
+                err,
+                Error::Schema { found, expected: SCHEMA_VERSION } if found == old
+            ));
+            assert!(err.to_string().contains("-chronikreindex"));
+        }
     }
     #[test]
     fn restart_inverse_burns_and_replay() {
         let dir = tempdir::TempDir::new("v2-index").unwrap();
-        let mut db = V2Db::open(dir.path(), binding(), bounds()).unwrap();
+        // The node's block files outlive a restart: share one source.
+        let mem = Arc::new(MemTxSource::default());
+        let mut db =
+            V2Db::open_recording(dir.path(), binding(), bounds(), mem.clone())
+                .unwrap();
         db.initialize_genesis(fixture_genesis(vec![])).unwrap();
         let genesis = db.snapshot().unwrap().anchor;
         let first = block(
@@ -1797,7 +1880,9 @@ mod tests {
         // Existing read snapshots remain coherent across disconnect.
         drop(anchored);
         drop(db);
-        let mut db = V2Db::open(dir.path(), binding(), bounds()).unwrap();
+        let mut db =
+            V2Db::open_recording(dir.path(), binding(), bounds(), mem.clone())
+                .unwrap();
         assert_eq!(db.snapshot().unwrap().anchor, second.anchor);
         db.connect(&second).unwrap();
         db.disconnect(second.anchor).unwrap();
@@ -2143,6 +2228,7 @@ mod tests {
                 let mut explorer = fixture_facts(&spends, &outputs);
                 explorer.wire = vec![0; wire_len];
                 ConfirmedTx {
+                    pos: crate::v2_branch::TxPos::default(),
                     location: TxLocation {
                         block_id: Hash32(anchor.block_id),
                         height: anchor.height,
@@ -2217,6 +2303,7 @@ mod tests {
                 })
                 .collect();
             ConfirmedTx {
+                pos: crate::v2_branch::TxPos::default(),
                 location: TxLocation {
                     block_id: Hash32(anchor.block_id),
                     height: anchor.height,
