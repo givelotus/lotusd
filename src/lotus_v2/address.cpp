@@ -3,6 +3,8 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "address.h"
+#include "commitment.h"
+#include "vendor/blake3/blake3.h"
 
 #include <array>
 #include <cstdint>
@@ -11,7 +13,6 @@ namespace lotus::v2 {
 namespace {
 
 constexpr char CHARSET[] = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
-constexpr uint8_t VERSION_ROOT = 0;
 constexpr size_t PAYLOAD_SYMBOLS = 52;
 constexpr size_t CHECKSUM_SYMBOLS = 8;
 constexpr size_t BODY_SYMBOLS = 1 + PAYLOAD_SYMBOLS + CHECKSUM_SYMBOLS;
@@ -79,10 +80,10 @@ std::string_view AddressPrefix(AddressNetwork network) {
     return Info(network).prefix;
 }
 
-std::string EncodeAddress(AddressNetwork network, const Hash32 &root) {
+static std::string EncodeTypedAddress(AddressNetwork network, const Hash32 &root, uint8_t type) {
     const NetworkInfo &info = Info(network);
     std::array<uint8_t, BODY_SYMBOLS> body{};
-    body[0] = VERSION_ROOT;
+    body[0] = type;
     // 256 root bits, high bit first, then 4 zero padding bits.
     for (size_t i = 0; i < PAYLOAD_SYMBOLS; ++i) {
         uint8_t symbol = 0;
@@ -106,6 +107,40 @@ std::string EncodeAddress(AddressNetwork network, const Hash32 &root) {
         out += CHARSET[symbol];
     }
     return out;
+}
+
+std::string EncodeAddress(AddressNetwork network, const Hash32 &root) {
+    return EncodeTypedAddress(network, root, 0);
+}
+
+std::string EncodeKeyHashAddress(AddressNetwork network, const Hash32 &key_hash) {
+    return EncodeTypedAddress(network, key_hash, 1);
+}
+
+Hash32 NativeKeyHash(std::span<const uint8_t, 32> xonly_key) {
+    Hash32 out;
+    blake3_hasher hasher;
+    blake3_hasher_init(&hasher);
+    blake3_hasher_update(&hasher, xonly_key.data(), xonly_key.size());
+    blake3_hasher_finalize(&hasher, out.data(), out.size());
+    return out;
+}
+
+std::vector<uint8_t> KeyHashProgram(const Hash32 &key_hash) {
+    // Witness stack: [BIP340 signature, 32-byte x-only public key].
+    // DUP BLAKE3 PUSH32(hash) EQUALVERIFY CHECKSIG.
+    std::vector<uint8_t> script{0x7a, 0xba, 0x20};
+    script.insert(script.end(), key_hash.begin(), key_hash.end());
+    script.insert(script.end(), {0x92, 0xbb});
+    return script;
+}
+
+Hash32 KeyHashRoot(const Hash32 &key_hash) {
+    return BranchLeaf(KeyHashProgram(key_hash));
+}
+
+Hash32 DecodedAddress::BranchRoot() const {
+    return type == 1 ? KeyHashRoot(root) : root;
 }
 
 std::optional<DecodedAddress> DecodeAddress(std::string_view address,
@@ -160,7 +195,7 @@ std::optional<DecodedAddress> DecodeAddress(std::string_view address,
         error = "bad checksum";
         return std::nullopt;
     }
-    if (body[0] != VERSION_ROOT) {
+    if (body[0] > 1) {
         error = "unknown version";
         return std::nullopt;
     }
@@ -171,7 +206,7 @@ std::optional<DecodedAddress> DecodeAddress(std::string_view address,
         return std::nullopt;
     }
 
-    DecodedAddress decoded{info->network, {}};
+    DecodedAddress decoded{info->network, {}, body[0]};
     for (size_t bit = 0; bit < 256; ++bit) {
         const uint8_t symbol = body[1 + bit / 5];
         const uint8_t value = (symbol >> (4 - bit % 5)) & 1;
