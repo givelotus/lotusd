@@ -53,6 +53,7 @@ fn source() -> Source {
                     out_idx: 0,
                 };
                 let output = Output {
+                    legacy_script: None,
                     flags: if i % 7 == 0 { 2 } else { 0 },
                     value: i as u64,
                     token_id: Hash32::default(),

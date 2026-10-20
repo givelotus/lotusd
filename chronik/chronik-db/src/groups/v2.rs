@@ -100,6 +100,7 @@ impl V2ThreeBranchOutput {
             (0..branches.len() as u8).map(|idx| vec![idx]).collect()
         };
         V2Output {
+            legacy_script: None,
             flags,
             value: self.value,
             token_id,
@@ -158,6 +159,9 @@ impl Group for V2BranchGroup {
             let Some(coin) = &input.coin else {
                 continue;
             };
+            if coin.is_legacy {
+                continue;
+            }
             if let Some(v2_out) = decode_v2_output_script(&coin.output.script) {
                 for branch in v2_out.branches {
                     items.push(MemberItem {
@@ -175,6 +179,9 @@ impl Group for V2BranchGroup {
         query: GroupQuery<'a>,
         _aux: &(),
     ) -> Self::Iter<'a> {
+        if query.tx.version != 7 {
+            return Vec::new();
+        }
         let mut items = Vec::new();
         for (idx, output) in query.tx.outputs.iter().enumerate() {
             if let Some(v2_out) = decode_v2_output_script(&output.script) {
@@ -244,6 +251,9 @@ impl Group for V2AssetGroup {
             let Some(coin) = &input.coin else {
                 continue;
             };
+            if coin.is_legacy {
+                continue;
+            }
             if let Some(v2_out) = decode_v2_output_script(&coin.output.script) {
                 if v2_out.has_token() {
                     items.push(MemberItem {
@@ -261,6 +271,9 @@ impl Group for V2AssetGroup {
         query: GroupQuery<'a>,
         _aux: &(),
     ) -> Self::Iter<'a> {
+        if query.tx.version != 7 {
+            return Vec::new();
+        }
         let mut items = Vec::new();
         for (idx, output) in query.tx.outputs.iter().enumerate() {
             if let Some(v2_out) = decode_v2_output_script(&output.script) {
@@ -356,7 +369,8 @@ mod tests {
         let tx = Tx::with_txid(
             TxId::from([1; 32]),
             TxMut {
-                version: 2,
+                native_txid: None,
+                version: 7,
                 inputs: vec![TxInput {
                     coin: Some(Coin {
                         output: TxOutput {
@@ -443,5 +457,30 @@ mod tests {
                 member: asset_id,
             }],
         );
+
+        // Identical bytes in a legacy script do not create native roots.
+        let mut legacy: TxMut = tx.clone().into();
+        legacy.version = 2;
+        legacy.native_txid = None;
+        legacy.inputs[0].coin.as_mut().unwrap().is_legacy = true;
+        let legacy = Tx::with_txid(TxId::from([2; 32]), legacy);
+        let query = GroupQuery {
+            is_coinbase: false,
+            tx: &legacy,
+        };
+        assert!(branch_group.input_members(query, &()).is_empty());
+        assert!(branch_group.output_members(query, &()).is_empty());
+        assert!(asset_group.input_members(query, &()).is_empty());
+        assert!(asset_group.output_members(query, &()).is_empty());
+        let mut bridge: TxMut = legacy.into();
+        bridge.version = 7;
+        let bridge = Tx::with_txid(TxId::from([3; 32]), bridge);
+        let query = GroupQuery {
+            is_coinbase: false,
+            tx: &bridge,
+        };
+        assert!(branch_group.input_members(query, &()).is_empty());
+        assert!(asset_group.input_members(query, &()).is_empty());
+        assert!(!branch_group.output_members(query, &()).is_empty());
     }
 }

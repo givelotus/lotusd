@@ -74,6 +74,7 @@ impl Fixture {
             }],
         };
         let token = Output {
+            legacy_script: None,
             flags: if burn { 3 } else { 1 },
             value: u64::MAX,
             token_id: Hash32([9; 32]),

@@ -76,6 +76,7 @@ Bytes SerializeSerTx(const SerTx &tx) {
     w.U32(tx.data_pos);
     w.U32(tx.undo_pos);
     w.I64(tx.time_first_seen);
+    w.Bool(tx.is_legacy);
     return out;
 }
 
@@ -87,13 +88,14 @@ SerTx DeserializeSerTx(ByteView bytes) {
                                        tx.data_pos = r.U32();
                                        tx.undo_pos = r.U32();
                                        tx.time_first_seen = r.I64();
+                                       tx.is_legacy = r.Bool();
                                        return tx;
                                    });
 }
 
 SerTx ToSerTx(const TxEntry &entry) {
     return SerTx{entry.txid.b, entry.data_pos, entry.undo_pos,
-                 entry.time_first_seen};
+                 entry.time_first_seen, entry.is_legacy};
 }
 
 TxEntry FromSerTx(const SerTx &ser) {
@@ -102,7 +104,8 @@ TxEntry FromSerTx(const SerTx &ser) {
     entry.data_pos = ser.data_pos;
     entry.undo_pos = ser.undo_pos;
     entry.time_first_seen = ser.time_first_seen;
-    entry.is_coinbase = ser.undo_pos == 0;
+    entry.is_coinbase = entry.undo_pos == 0;
+    entry.is_legacy = ser.is_legacy;
     return entry;
 }
 

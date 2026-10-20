@@ -25,6 +25,7 @@ impl From<ffi::Tx> for Tx {
         Tx::with_txid(
             TxId::from(tx.txid),
             TxMut {
+                native_txid: (tx.version == 7).then_some(TxId::from(tx.txid)),
                 version: tx.version,
                 inputs: tx.inputs.into_iter().map(TxInput::from).collect(),
                 outputs: tx.outputs.into_iter().map(TxOutput::from).collect(),
@@ -107,6 +108,7 @@ impl From<TxOutput> for ffi::TxOutput {
 impl From<ffi::Coin> for Coin {
     fn from(coin: ffi::Coin) -> Self {
         Coin {
+            is_legacy: coin.is_legacy,
             output: TxOutput::from(coin.output),
             height: coin.height,
             is_coinbase: coin.is_coinbase,
@@ -117,9 +119,32 @@ impl From<ffi::Coin> for Coin {
 impl From<Coin> for ffi::Coin {
     fn from(coin: Coin) -> Self {
         ffi::Coin {
+            is_legacy: coin.is_legacy,
             output: ffi::TxOutput::from(coin.output),
             height: coin.height,
             is_coinbase: coin.is_coinbase,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn native_identity_and_legacy_spent_coin_survive_projection() {
+        let tx = Tx::from(ffi::Tx {
+            txid: [9; 32],
+            version: 7,
+            inputs: vec![ffi::TxInput {
+                coin: ffi::Coin {
+                    is_legacy: true,
+                    ..ffi::Coin::default()
+                },
+                ..ffi::TxInput::default()
+            }],
+            ..ffi::Tx::default()
+        });
+        assert_eq!(TxId::from_tx(&tx), tx.txid());
+        assert!(tx.inputs[0].coin.as_ref().unwrap().is_legacy);
     }
 }
