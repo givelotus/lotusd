@@ -51,7 +51,7 @@ class ChronikBlockRangeTest(BitcoinTestFramework):
             height=0,
             n_bits=0x207FFFFF,
             timestamp=TIME_GENESIS_BLOCK,
-            block_size=339,
+            block_size=316,
             num_txs=1,
             num_inputs=1,
             num_outputs=1,
