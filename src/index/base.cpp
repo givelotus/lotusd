@@ -159,8 +159,9 @@ void BaseIndex::ThreadSync() {
         auto last_locator_write_time{last_log_time};
         while (true) {
             if (m_interrupt) {
-                LogPrintf("%s: m_interrupt set; exiting ThreadSync\n",
-                          GetName());
+                LogInfoEvent(BCLog::ALL, "index_sync_interrupted",
+                             "{name}: m_interrupt set; exiting ThreadSync")
+                    .Field(BCLog::LogField::Name, GetName());
 
                 SetBestBlockIndex(pindex);
                 // No need to handle errors in Commit. If it fails, the error
@@ -206,8 +207,11 @@ void BaseIndex::ThreadSync() {
 
             auto current_time{NodeClock::now()};
             if (current_time - last_log_time >= SYNC_LOG_INTERVAL) {
-                LogInfo("Syncing %s with block chain from height %d\n",
-                        GetName(), pindex->nHeight);
+                LogInfoEvent(
+                    BCLog::ALL, "index_sync_progress",
+                    "Syncing {name} with block chain from height {height}")
+                    .Field(BCLog::LogField::Name, GetName())
+                    .Field(BCLog::LogField::Height, pindex->nHeight);
                 last_log_time = current_time;
             }
 
@@ -222,9 +226,13 @@ void BaseIndex::ThreadSync() {
     }
 
     if (pindex) {
-        LogPrintf("%s is enabled at height %d\n", GetName(), pindex->nHeight);
+        LogInfoEvent(BCLog::ALL, "index_enabled_at_height",
+                     "{name} is enabled at height {height}")
+            .Field(BCLog::LogField::Name, GetName())
+            .Field(BCLog::LogField::Height, pindex->nHeight);
     } else {
-        LogPrintf("%s is enabled\n", GetName());
+        LogInfoEvent(BCLog::ALL, "index_enabled", "{name} is enabled")
+            .Field(BCLog::LogField::Name, GetName());
     }
 }
 
@@ -243,7 +251,10 @@ bool BaseIndex::Commit() {
         }
     }
     if (!ok) {
-        LogError("%s: Failed to commit latest %s state\n", __func__, GetName());
+        LogErrorEvent(BCLog::ALL, "index_commit_failed",
+                      "{source_function}: Failed to commit latest {name} state")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::Name, GetName());
         return false;
     }
     return true;
@@ -300,10 +311,13 @@ void BaseIndex::BlockConnected(ChainstateRole role,
         // and let the queue clear.
         if (best_block_index->GetAncestor(pindex->nHeight - 1) !=
             pindex->pprev) {
-            LogPrintf("%s: WARNING: Block %s does not connect to an ancestor "
-                      "of known best chain (tip=%s); not updating index\n",
-                      __func__, pindex->GetBlockHash().ToString(),
-                      best_block_index->GetBlockHash().ToString());
+            LogInfoEvent(
+                BCLog::ALL, "index_notification_parent_unknown",
+                "{source_function}: WARNING: Block {block_hash} does not connect to an ancestor of known best chain (tip={best_block_hash}); not updating index")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash())
+                .Field(BCLog::LogField::BestBlockHash,
+                       best_block_index->GetBlockHash());
             return;
         }
         if (best_block_index != pindex->pprev &&
@@ -362,10 +376,13 @@ void BaseIndex::ChainStateFlushed(ChainstateRole role,
     const CBlockIndex *best_block_index = m_best_block_index.load();
     if (best_block_index->GetAncestor(locator_tip_index->nHeight) !=
         locator_tip_index) {
-        LogPrintf("%s: WARNING: Locator contains block (hash=%s) not on known "
-                  "best chain (tip=%s); not writing index locator\n",
-                  __func__, locator_tip_hash.ToString(),
-                  best_block_index->GetBlockHash().ToString());
+        LogInfoEvent(
+            BCLog::ALL, "index_locator_tip_unknown",
+            "{source_function}: WARNING: Locator contains block (hash={block_hash}) not on known best chain (tip={best_block_hash}); not writing index locator")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::BlockHash, locator_tip_hash)
+            .Field(BCLog::LogField::BestBlockHash,
+                   best_block_index->GetBlockHash());
         return;
     }
 
@@ -394,8 +411,11 @@ bool BaseIndex::BlockUntilSyncedToCurrentChain() const {
         }
     }
 
-    LogPrintf("%s: %s is catching up on block notifications\n", __func__,
-              GetName());
+    LogInfoEvent(
+        BCLog::ALL, "index_notifications_catching_up",
+        "{source_function}: {name} is catching up on block notifications")
+        .Field(BCLog::LogField::SourceFunction, __func__)
+        .Field(BCLog::LogField::Name, GetName());
     m_chain->context()->validation_signals->SyncWithValidationInterfaceQueue();
     return true;
 }
