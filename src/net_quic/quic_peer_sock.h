@@ -116,9 +116,11 @@ public:
     //! Received complete frames above which flow control credit is held
     //! back (the peer is back-pressured instead of buffered)
     static constexpr uint64_t RX_QUEUE_LIMIT{8 * 1024 * 1024};
+    static constexpr size_t MAX_PENDING_RX_FRAMES{4096};
 
     QuicPeerChannel(int notify_fd, std::shared_ptr<QuicTransportInfo> info,
-                    std::function<void()> wake_engine);
+                    std::function<void()> wake_engine,
+                    uint64_t receive_limit = RX_QUEUE_LIMIT);
     ~QuicPeerChannel();
     QuicPeerChannel(const QuicPeerChannel &) = delete;
     QuicPeerChannel &operator=(const QuicPeerChannel &) = delete;
@@ -151,9 +153,10 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
     void SetEngineUnsent(StreamClass cls, uint64_t bytes);
     /** Queue a received frame and notify the Sock */
-    void PushRx(RxFrame &&frame) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    bool PushRx(RxFrame &&frame) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
     /** Whether credit for newly received bytes may be given now */
     bool RxHasRoom() const;
+    uint64_t RxBuffered() const { return m_rx_bytes; }
     /** The session ended: Recv() reports EOF once the queue is empty */
     void MarkClosed();
     bool Closed() const { return m_closed; }
@@ -172,6 +175,7 @@ private:
     const int m_notify_fd;
     const std::shared_ptr<QuicTransportInfo> m_info;
     const std::function<void()> m_wake_engine;
+    const uint64_t m_receive_limit;
 
     mutable Mutex m_mutex;
     std::array<std::deque<std::vector<uint8_t>>, NUM_STREAM_CLASSES>
