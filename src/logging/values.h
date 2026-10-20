@@ -12,6 +12,8 @@
 #include <primitives/transaction.h>
 
 #include <algorithm>
+#include <cassert>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <type_traits>
@@ -22,6 +24,38 @@
  * where such values are logged.
  */
 namespace BCLog {
+
+/** A byte view copied into the record and hex-encoded on the consumer.
+ * The view need only remain valid until Field() returns. Oversized values are
+ * omitted as a whole by EventBuilder, never rendered as a misleading prefix.
+ */
+struct LogHex {
+    std::span<const uint8_t> bytes;
+};
+
+template <> struct LogValue<LogHex> {
+    static constexpr size_t MAX_SIZE{std::numeric_limits<uint16_t>::max()};
+    static size_t Size(const LogHex &value) {
+        // Saturation forces record omission without overflowing the
+        // reservation.
+        return std::min(MAX_SIZE, value.bytes.size());
+    }
+    static size_t Pack(const LogHex &value, std::span<std::byte> out) {
+        assert(out.size() == value.bytes.size() && out.size() < MAX_SIZE);
+        if (!out.empty()) {
+            std::memcpy(out.data(), value.bytes.data(), out.size());
+        }
+        return out.size();
+    }
+    static void Render(std::span<const std::byte> in, std::string &out) {
+        static constexpr char HEX[]{"0123456789abcdef"};
+        for (const std::byte byte : in) {
+            const auto value{std::to_integer<uint8_t>(byte)};
+            out += HEX[value >> 4];
+            out += HEX[value & 15];
+        }
+    }
+};
 
 /** Network addresses: copied as raw bytes, rendered in canonical form */
 template <> struct LogValue<CNetAddr> {
