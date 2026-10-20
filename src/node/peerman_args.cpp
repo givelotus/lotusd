@@ -6,9 +6,11 @@
 #include <util/chaintype.h>
 #include <util/strencodings.h>
 #include <util/time.h>
+#include <node/txadmission.h>
 
 #include <algorithm>
 #include <limits>
+#include <thread>
 
 namespace node {
 
@@ -85,6 +87,18 @@ void ApplyArgsManOptions(const ArgsManager &argsman,
     if (auto value{argsman.GetIntArg("-txreconwindow")}) {
         options.txrecon_window =
             std::chrono::seconds{std::clamp<int64_t>(*value, 1, 86'400)};
+    }
+
+    options.parallel_admission =
+        argsman.GetBoolArg("-parallelmempool", node::DEFAULT_PARALLEL_MEMPOOL);
+    options.parallel_admission_threads = int(std::clamp<int64_t>(
+        argsman.GetIntArg("-parallelmempoolthreads",
+                          node::DEFAULT_PARALLEL_MEMPOOL_THREADS),
+        0, node::MAX_PARALLEL_MEMPOOL_THREADS));
+    if (options.parallel_admission_threads == 0) {
+        options.parallel_admission_threads =
+            std::min(int(std::max(1U, std::thread::hardware_concurrency())),
+                     node::MAX_PARALLEL_MEMPOOL_THREADS);
     }
 
     if (auto value{argsman.GetIntArg("-avacooldown")}) {

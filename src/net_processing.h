@@ -220,6 +220,14 @@ public:
         std::chrono::milliseconds txrecon_interval{DEFAULT_TXRECON_INTERVAL};
         //! Reconciliation set: transactions admitted within this window
         std::chrono::seconds txrecon_window{DEFAULT_TXRECON_WINDOW};
+
+        //! Admit transactions received from peers on a separate admission
+        //! thread, verifying their scripts outside cs_main
+        //! (-parallelmempool).
+        bool parallel_admission{false};
+        //! Threads verifying scripts for parallel admission, counting the
+        //! admission thread itself (0: one per core).
+        int parallel_admission_threads{0};
     };
 
     static std::unique_ptr<PeerManager>
@@ -244,6 +252,13 @@ public:
 
     /** Begin running background tasks, should only be called once */
     virtual void StartScheduledTasks(CScheduler &scheduler) = 0;
+
+    /**
+     * Stop the transaction admission thread, if there is one, and drop what
+     * it still holds (which pins CNode objects). Must be called before the
+     * network is stopped.
+     */
+    virtual void StopTxAdmission() = 0;
 
     /** Get statistics from node state */
     virtual bool GetNodeStateStats(NodeId nodeid,
