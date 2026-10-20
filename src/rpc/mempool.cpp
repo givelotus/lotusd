@@ -50,6 +50,10 @@ static RPCHelpMan sendrawtransaction() {
         "sendrawtransaction",
         "Submits raw transaction (serialized, hex-encoded) to local node and "
         "network.\n"
+        "\nThe node announces transactions it originated to all of its "
+        "peers at the next relay tick, without delay, so peers can tell "
+        "which node they came from. For privacy, submit each transaction to "
+        "several independent nodes rather than to one.\n"
         "\nAlso see createrawtransaction and "
         "signrawtransactionwithkey calls.\n",
         {
@@ -1530,7 +1534,11 @@ static RPCHelpMan submitrawtxbatch() {
         "no transactions in the batch are accepted.\n"
         "Phase 2 commits all validated transactions to the mempool under the "
         "same cs_main lock acquisition, refreshes the RCU snapshot, and "
-        "broadcasts them.\n",
+        "broadcasts them.\n"
+        "\nThe node announces transactions it originated to all of its "
+        "peers at the next relay tick, without delay, so peers can tell "
+        "which node they came from. For privacy, submit each transaction to "
+        "several independent nodes rather than to one.\n",
         {
             {
                 "rawtxs",
