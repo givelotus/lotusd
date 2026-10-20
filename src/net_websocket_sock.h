@@ -10,6 +10,7 @@
 #include <sync.h>
 #include <util/sock.h>
 
+#include <array>
 #include <atomic>
 #include <memory>
 #include <vector>
@@ -55,6 +56,13 @@ public:
  * frames and (if negotiated) compresses on the calling thread; Recv()
  * deframes and decompresses. No extra thread or socketpair is involved.
  *
+ * With zstd compression, Send() follows the P2P
+ * message framing of the outgoing stream. A block message of at least
+ * g_p2p_compress_once_threshold bytes is sent as one independent frame from
+ * the shared cache (GetP2PIndependentFrameCache()) instead of through the
+ * connection's zstd stream; bytes before it are framed first, so the P2P
+ * byte stream is unchanged.
+ *
  * Send() coalesces chunks passed with MSG_MORE into one message. It accepts
  * everything it is given (returning `len`) unless more than
  * MAX_PENDING_SEND bytes are already waiting to be written, in which case
@@ -90,6 +98,14 @@ public:
     }
 
 private:
+    /** Queue P2P bytes, routing large block messages to independent frames */
+    void QueueLocked(Span<const uint8_t> bytes) const
+        EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
+    /** Frame m_coalesce (if any) as a stream message into m_tx */
+    void EncodeCoalescedLocked() const EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
+    /** Queue the current block message as an independent frame */
+    void EncodeIndependentLocked(Span<const uint8_t> payload) const
+        EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
     //! Frame coalesced data; write as much as possible. False on error.
     bool FlushLocked() const EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
     //! Read and decode what is available. False on fatal error.
@@ -118,6 +134,21 @@ private:
     mutable uint64_t m_payload_recv_reported GUARDED_BY(m_mutex){0};
     mutable uint64_t m_wire_recv_reported GUARDED_BY(m_mutex){0};
     mutable uint64_t m_wire_sent_reported GUARDED_BY(m_mutex){0};
+    mutable uint64_t m_independent_recv_reported GUARDED_BY(m_mutex){0};
+
+    //! Outgoing P2P message framing, tracked with independent frames only.
+    //! Header of the current message, bytes of it seen so far.
+    mutable std::array<uint8_t, 24> m_out_header GUARDED_BY(m_mutex){};
+    mutable size_t m_out_header_have GUARDED_BY(m_mutex){0};
+    //! Part of the current header was already framed, so the message
+    //! cannot be moved to an independent frame
+    mutable bool m_out_header_split GUARDED_BY(m_mutex){false};
+    //! Payload bytes of the current message not yet passed to Send()
+    mutable uint64_t m_out_body_left GUARDED_BY(m_mutex){0};
+    //! The current message is sent as an independent frame
+    mutable bool m_out_independent GUARDED_BY(m_mutex){false};
+    //! Its payload so far, when it arrives over several Send() calls
+    mutable std::vector<uint8_t> m_out_block GUARDED_BY(m_mutex);
 
     //! Lock-free views for the Sock hooks (see util/sock.h). A failed or
     //! closed socket reports buffered data so CConnman calls Recv() and

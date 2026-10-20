@@ -184,6 +184,10 @@ static RPCHelpMan getpeerinfo() {
                          {RPCResult::Type::STR, "compression",
                           "none, permessage-deflate, p2p-zstd or p2p-zstd-v1 "
                           "(zstd with the prebaked P2P dictionary)"},
+                         {RPCResult::Type::NUM, "independent_frames_sent",
+                          "Independent (compress-once) frames sent"},
+                         {RPCResult::Type::NUM, "independent_frames_recv",
+                          "Independent frames received"},
                          {RPCResult::Type::NUM, "payload_bytes_sent",
                           "P2P bytes sent (before compression)"},
                          {RPCResult::Type::NUM, "payload_bytes_recv",
@@ -377,6 +381,10 @@ static RPCHelpMan getpeerinfo() {
                     wsobj.pushKV("tls", ws->tls);
                     wsobj.pushKV("compression",
                                  P2PWebSocketCompressionName(ws->compression));
+                    wsobj.pushKV("independent_frames_sent",
+                                 ws->independent_frames_sent.load());
+                    wsobj.pushKV("independent_frames_recv",
+                                 ws->independent_frames_recv.load());
                     wsobj.pushKV("payload_bytes_sent",
                                  ws->payload_bytes_sent.load());
                     wsobj.pushKV("payload_bytes_recv",

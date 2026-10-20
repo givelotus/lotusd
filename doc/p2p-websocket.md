@@ -183,7 +183,63 @@ and whether the key was pinned or listed.
 Peers negotiate a subprotocol. `p2p-zstd-v1` (the default) compresses the
 message stream with zstd and a built-in dictionary of common P2P messages,
 so even small messages shrink; `p2p-zstd` does the same without the
-dictionary; `none` sends plain messages.
+dictionary; `none` sends plain messages. Both zstd subprotocols also carry
+independent block frames, below.
+
+### Independent block frames (compress once, serve many)
+
+A zstd stream's compressed bytes depend on everything sent before on that
+connection, so a block sent to many WebSocket peers would be compressed
+again for each of them. An independent frame is compressed with the
+built-in dictionary only, so the node compresses a block once and sends the
+same bytes to every zstd peer.
+
+**Format.** An independent frame is one unfragmented binary WebSocket
+message (FIN=1, opcode 2) with RSV2 (`0x20`) set and no other RSV bit. Its
+payload is `[format byte = 1][dictionary version, LE32 = 1][one zstd
+frame]`. Dictionary version 1 is the `p2p-zstd-v1` dictionary
+(`P2P_ZSTD_DICT_V1`), also on `p2p-zstd` connections. The zstd frame
+records its content size and is compressed with that dictionary and no
+other history. It decompresses to whole P2P messages (24-byte header
+included), which continue the connection's P2P byte stream at that point.
+Independent frames neither use nor change either direction's zstd stream:
+the next stream message continues from the previous one.
+
+Either end of a `p2p-zstd-v1` or `p2p-zstd` connection may send independent
+frames, and must accept them. Plain (`none`) and permessage-deflate
+connections use no RSV bits; a frame with any RSV bit ends them. The HTTP
+server's debug bridge (`-p2pwebsocketbridge`) does not support independent
+frames: a peer sending one through it is disconnected.
+
+A receiver rejects, and disconnects for: RSV2 on a fragmented, continuation,
+text or control frame; RSV1 or RSV3; an unknown format byte or dictionary
+version; a payload that is not exactly one zstd frame (skippable frames,
+concatenated frames, trailing or truncated data); a missing content size or
+one above the message size limit (the configured or adaptive block size
+limit plus the P2P header, as for stream and plain messages); and a declared
+zstd window above 1 MiB, checked before any output is allocated.
+
+**Sending.** Nodes send `block` messages of at least
+`-p2pcompressoncethreshold` bytes (default 65536, P2P header included) as
+independent frames; `0` keeps every message in the stream (incoming frames
+are still accepted), which is the control for comparisons. Smaller blocks
+and other messages stay in the stream, where the connection's history
+compresses them better and nothing is shared between peers. Encoded blocks
+are kept in an LRU cache shared by all peers, bounded by the allocated
+bytes of the frames (`-p2pcompressoncecache`, MiB, default 128) and by 64
+blocks. Its key includes the block hash, a full double-SHA256 digest of the
+payload, the exact 24-byte P2P header and the dictionary version. The
+short P2P checksum alone is insufficient to identify supplied payloads. Peers asking for a
+block while it is being compressed wait for that compression rather than
+repeating it.
+
+`getpeerinfo` counts independent frames sent and received per peer
+(`websocket.independent_frames_sent`, `_recv`). With `-metrics`:
+`fullnode_p2p_websocket_independent_frames_total{direction}` and
+`fullnode_p2p_compress_once_{cache_hits,cache_misses,cache_evictions,encodes}_total`,
+`fullnode_p2p_compress_once_cache_{bytes,entries}`.
+
+The frame format comes from the V2 tier (its patch 095).
 
 ## Over HTTP/2
 

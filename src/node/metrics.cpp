@@ -497,6 +497,30 @@ NodeMetrics::NodeMetrics(std::vector<std::string> rpc_methods)
           "Connected P2P WebSocket peers, by compression and TLS.",
           std::vector<LabelDim>{{"compression", L::WebSocketCompressions()},
                                 {"tls", {"false", "true"}}})},
+      websocket_independent_frames{Add<Counter>(
+          registry, MetricName("p2p_websocket_independent_frames_total"),
+          "Independent (compress-once) WebSocket frames, by direction.",
+          std::vector<LabelDim>{{"direction", {"sent", "received"}}})},
+      p2p_compress_once_cache_hits{Add<Counter>(
+          registry, MetricName("p2p_compress_once_cache_hits_total"),
+          "Block messages served from the compress-once frame cache "
+          "(including waits for a compression in progress).")},
+      p2p_compress_once_cache_misses{Add<Counter>(
+          registry, MetricName("p2p_compress_once_cache_misses_total"),
+          "Block messages that had to be compressed for the compress-once "
+          "frame cache.")},
+      p2p_compress_once_cache_evictions{Add<Counter>(
+          registry, MetricName("p2p_compress_once_cache_evictions_total"),
+          "Frames evicted from the compress-once frame cache.")},
+      p2p_compress_once_cache_bytes{Add<Gauge>(
+          registry, MetricName("p2p_compress_once_cache_bytes"),
+          "Allocated bytes of the frames in the compress-once frame cache.")},
+      p2p_compress_once_cache_entries{
+          Add<Gauge>(registry, MetricName("p2p_compress_once_cache_entries"),
+                     "Frames in the compress-once frame cache.")},
+      p2p_compress_once_encodes{Add<Counter>(
+          registry, MetricName("p2p_compress_once_encodes_total"),
+          "Independent frames compressed (each cached block once).")},
       tip_height{Add<Gauge>(registry, MetricName("chain_tip_height"),
                             "Height of the active chain tip.")},
       tip_timestamp{

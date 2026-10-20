@@ -91,6 +91,7 @@ TEST_FRAMEWORK_MODULES = [
     "reporting",
     "messages",
     "muhash",
+    "p2p_websocket",
     "results",
     "script",
     "test_framework",
