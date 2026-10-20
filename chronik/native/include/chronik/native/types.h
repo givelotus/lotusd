@@ -104,6 +104,7 @@ struct Coin {
     TxOutput output;
     int32_t height{};
     bool is_coinbase{};
+    bool is_legacy{};
     bool operator==(const Coin &) const = default;
 };
 

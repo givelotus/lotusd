@@ -429,22 +429,36 @@ BOOST_AUTO_TEST_CASE(staging_covers_shortest_encodings) {
     const size_t budget = STAGING_PER_WIRE_BYTE - per_byte;
     const size_t tx = RESERVE_TX + RESERVE_EXPLORER_TX + RESERVE_EXPLORER_CHUNK;
     BOOST_CHECK(tx <= budget * MIN_TX_HEADER_WIRE_BYTES);
+    // Legacy version/counts/locktime need ten bytes; an empty-script input
+    // is outpoint36 + CompactSize1 + sequence4 = 41 bytes.
+    BOOST_CHECK(tx <= budget * 10);
     // A spend is an input, a spend and an asset element twice.
     const size_t spend =
         2 * RESERVE_ASSET_ELEMENT + RESERVE_SPEND + RESERVE_EXPLORER_INPUT;
     BOOST_CHECK(spend <= budget * MIN_SPEND_WIRE_BYTES);
+    BOOST_CHECK(spend <= budget * 41);
     const size_t input = RESERVE_ASSET_ELEMENT + RESERVE_EXPLORER_INPUT;
     BOOST_CHECK(input <= budget * MIN_INPUT_WIRE_BYTES);
+    BOOST_CHECK(input <= budget * 41);
     BOOST_CHECK(RESERVE_EXPLORER_WITNESS <= budget * MIN_WITNESS_WIRE_BYTES);
     // The shortest output has one branch; each further one is 32 bytes.
     const size_t output =
         RESERVE_ASSET_ELEMENT + RESERVE_OUTPUT + RESERVE_BRANCH;
     BOOST_CHECK(output <= budget * MIN_OUTPUT_WIRE_BYTES);
+    const size_t legacy_output = RESERVE_ASSET_ELEMENT + RESERVE_OUTPUT;
+    BOOST_CHECK(legacy_output <= budget * MIN_LEGACY_OUTPUT_WIRE_BYTES);
+    BOOST_CHECK_EQUAL(STAGING_PER_WIRE_BYTE, 1718U);
+    BOOST_CHECK_EQUAL(STAGING_PER_WIRE_BYTE, per_byte + (legacy_output + 8) / 9);
+    if constexpr (sizeof(size_t) >= 8) {
+        const Bounds max(UINT32_MAX);
+        BOOST_CHECK_EQUAL(max.BatchBytes(), uint64_t(UINT32_MAX) * 1718 + 65536);
+        BOOST_CHECK_EQUAL(max.Changes(), uint64_t(UINT32_MAX) / 9);
+    }
     BOOST_CHECK(RESERVE_BRANCH <= budget * 32);
     BOOST_CHECK(1024 + RESERVE_EXPLORER_BLOCK <= STAGING_PER_BLOCK);
     const Bounds bounds(32'000'000);
     BOOST_CHECK_EQUAL(bounds.Transactions(), 32'000'000 / MIN_TX_WIRE_BYTES);
-    BOOST_CHECK_EQUAL(bounds.Changes(), 32'000'000 / MIN_INPUT_WIRE_BYTES);
+    BOOST_CHECK_EQUAL(bounds.Changes(), 32'000'000 / MIN_LEGACY_OUTPUT_WIRE_BYTES);
     BOOST_CHECK(ThrowsInvalid([] { Bounds(0); }, "block size limit"));
     BOOST_CHECK(ThrowsInvalid([] { Bounds(Bounds::MAX_BLOCK_BYTES + 1); },
                               "block size limit"));
