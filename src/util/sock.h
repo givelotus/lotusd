@@ -51,6 +51,12 @@ public:
     virtual ~Sock();
 
     /**
+     * Give up the socket without closing it: return it and leave this object
+     * empty. The caller then owns the returned socket.
+     */
+    [[nodiscard]] SOCKET Release();
+
+    /**
      * Copy assignment operator, disabled because closing the same socket twice
      * is undesirable.
      */

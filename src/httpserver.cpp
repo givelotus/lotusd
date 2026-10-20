@@ -5,6 +5,7 @@
 
 #include <httpserver.h>
 
+#include <chainparams.h>
 #include <chainparamsbase.h>
 #include <common/args.h>
 #include <compat/compat.h>
@@ -371,6 +372,14 @@ static std::chrono::seconds g_server_timeout{DEFAULT_HTTP_SERVER_TIMEOUT};
 static constexpr std::chrono::seconds CLOSE_NOTIFY_TIMEOUT{5};
 //! Set by InterruptHTTPServer: reject new requests with 503
 static std::atomic<bool> g_reject_requests{false};
+//! How long a P2P port connection has to finish its WebSocket upgrade
+static std::chrono::seconds g_p2p_port_handshake_timeout{
+    DEFAULT_P2P_PORT_HANDSHAKE_TIMEOUT};
+//! P2P port connections handed to us and not yet upgraded (or closed)
+static GlobalMutex g_p2p_port_mutex;
+static std::map<CNetAddr, size_t>
+    g_p2p_port_pending_by_addr GUARDED_BY(g_p2p_port_mutex);
+static size_t g_p2p_port_pending GUARDED_BY(g_p2p_port_mutex){0};
 //! List of subnets to allow RPC connections from
 static std::vector<CSubNet> rpc_allow_subnets;
 //! Coroutine pool for handling requests off the event loop thread
@@ -647,6 +656,13 @@ struct ReplySlot {
 struct HTTPConnectionInfo {
     uint64_t connection_id{0};
     bool public_only{false};
+    //! Reached through the P2P port (implies public_only): only the P2P
+    //! WebSocket endpoint is served, and the connection must get there
+    //! before the handshake deadline.
+    bool p2p_port{false};
+    //! Stop the connection's handshake deadline (once it is a WebSocket, or
+    //! handed to the fallback site). Safe to call more than once.
+    std::function<void()> disarm_deadline;
     CService peer;
     CService local;
     bool is_tls{false};
@@ -1238,6 +1254,10 @@ static asio::awaitable<void> AcceptP2PWebSocket(Stream &stream,
                  conn.peer.ToStringAddrPort(), aec.message());
         co_return;
     }
+    if (conn.disarm_deadline) {
+        // A WebSocket peer now, possibly handed to CConnman with its socket.
+        conn.disarm_deadline();
+    }
     auto info{std::make_shared<WebSocketTransportInfo>()};
     info->tls = conn.is_tls;
     info->compression = compression;
@@ -1467,6 +1487,11 @@ static bool ServedPublicly(const BeastRequest &req) {
            !URIHasPathPrefix(target, g_p2p_websocket_path);
 }
 
+/** Whether the P2P port serves this request itself (from the header alone) */
+static bool ServedOnP2PPort(const BeastRequest &req) {
+    return websocket::is_upgrade(req) && IsP2PWebSocketRequest(req);
+}
+
 /**
  * Hand the rest of a public connection to -publicfallback: the request
  * header as received (field names and order kept), whatever followed it in
@@ -1634,7 +1659,7 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
         }
         const HTTPConnectionInfo &client{forwarded ? *forwarded : conn};
 
-        if (IsHealthRequest(header, parser.is_done())) {
+        if (!conn.p2p_port && IsHealthRequest(header, parser.is_done())) {
             BeastResponse res{HealthResponse(header)};
             res.keep_alive(header.keep_alive());
             const auto ec{co_await WriteResponse(stream, res)};
@@ -1646,8 +1671,13 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
             continue;
         }
         if (conn.public_only && g_public_fallback.enabled &&
-            !g_reject_requests.load() && !ServedPublicly(header)) {
+            !g_reject_requests.load() &&
+            !(conn.p2p_port ? ServedOnP2PPort(header)
+                            : ServedPublicly(header))) {
             // Not ours: the fallback site answers (body and all).
+            if (conn.disarm_deadline) {
+                conn.disarm_deadline();
+            }
             idle->busy = true;
             co_await RelayToPublicFallback(stream, buffer, header, client);
             co_return;
@@ -1693,7 +1723,9 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
         // WebSocket and Chronik endpoints: on public listeners for anyone,
         // on RPC listeners only for -rpcallowip clients. Other requests go
         // to DispatchRequest, which applies the same rules.
-        const bool endpoint_allowed{conn.public_only
+        // On the P2P port, only the P2P WebSocket endpoint.
+        const bool endpoint_allowed{conn.p2p_port ? IsP2PWebSocketRequest(req)
+                                    : conn.public_only
                                         ? IsPublicPath(req.target()) ||
                                               IsP2PWebSocketRequest(req)
                                         : ClientAllowed(client.peer)};
@@ -1708,7 +1740,7 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
         }
 
         BeastResponse res;
-        if (endpoint_allowed && g_chronik_enabled &&
+        if (endpoint_allowed && !conn.p2p_port && g_chronik_enabled &&
             !g_reject_requests.load() &&
             URIHasPathPrefix(req.target(), CHRONIK_PREFIX)) {
             g_connections.AddRequest();
@@ -1823,10 +1855,11 @@ ReadProxyHeader(tcp::socket &sock, beast::flat_buffer &buffer, bool &plain) {
 }
 
 /** Connection coroutine: detect TLS, then serve HTTP on the resulting stream */
-static asio::awaitable<void> HandleConnection(tcp::socket socket,
-                                              bool public_only) {
+static asio::awaitable<void>
+HandleConnection(tcp::socket socket, bool public_only, bool p2p_port = false) {
     HTTPConnectionInfo conn;
-    conn.public_only = public_only;
+    conn.public_only = public_only || p2p_port;
+    conn.p2p_port = p2p_port;
     {
         boost::system::error_code ec;
         const auto remote{socket.remote_endpoint(ec)};
@@ -1852,14 +1885,27 @@ static asio::awaitable<void> HandleConnection(tcp::socket socket,
         sock.non_blocking(true, ec);
 
         // Until the TLS handshake (if any) is done, a deadline shuts the
-        // socket down, which completes any pending wait with an error.
-        asio::steady_timer deadline{sock.get_executor(), g_server_timeout};
-        deadline.async_wait([fd = sock.native_handle()](
-                                const boost::system::error_code &wec) {
-            if (!wec) {
+        // socket down, which completes any pending wait with an error. On
+        // the P2P port it runs until the WebSocket upgrade: the connection
+        // holds a pending slot until then.
+        asio::steady_timer deadline{sock.get_executor(),
+                                    p2p_port ? g_p2p_port_handshake_timeout
+                                             : g_server_timeout};
+        // Cleared when the socket may no longer be ours (handed to
+        // CConnman): a deadline that already fired must not shut it down.
+        auto armed{std::make_shared<bool>(true)};
+        deadline.async_wait([fd = sock.native_handle(),
+                             armed](const boost::system::error_code &wec) {
+            if (!wec && *armed) {
                 ::shutdown(fd, SHUT_RDWR);
             }
         });
+        if (p2p_port) {
+            conn.disarm_deadline = [&deadline, armed] {
+                *armed = false;
+                deadline.cancel();
+            };
+        }
 
         // A trusted proxy may start with a PROXY protocol header carrying the
         // real client address. It is read exactly, so that what follows (TLS
@@ -1879,6 +1925,47 @@ static asio::awaitable<void> HandleConnection(tcp::socket socket,
             }
         }
 
+        if (p2p_port && !plain_prefetched) {
+            // Raw P2P (the network magic) is not ours: it is classified
+            // like CConnman does, from at most 4 bytes, read by none.
+            P2PPortProtocol protocol{P2PPortProtocol::UNDECIDED};
+            while (protocol == P2PPortProtocol::UNDECIDED) {
+                auto [wait_ec] = co_await sock.async_wait(
+                    tcp::socket::wait_read,
+                    asio::as_tuple(asio::use_awaitable));
+                uint8_t bytes[4];
+                const ssize_t n{wait_ec
+                                    ? -1
+                                    : ::recv(sock.native_handle(),
+                                             reinterpret_cast<char *>(bytes),
+                                             sizeof(bytes), MSG_PEEK)};
+                if (n <= 0) {
+                    // Closed, or the deadline shut it down.
+                    break;
+                }
+                protocol = ClassifyP2PPortBytes(
+                    Span<const uint8_t>{bytes, size_t(n)}, Params().NetMagic());
+                if (protocol == P2PPortProtocol::UNDECIDED) {
+                    // Part of the first bytes: the socket stays readable,
+                    // so wait a little rather than for readability.
+                    asio::steady_timer pause{sock.get_executor(),
+                                             std::chrono::milliseconds{50}};
+                    co_await pause.async_wait(
+                        asio::as_tuple(asio::use_awaitable));
+                }
+            }
+            if (protocol != P2PPortProtocol::WEBSOCKET) {
+                if (protocol == P2PPortProtocol::PLAIN) {
+                    LogDebug(BCLog::NET,
+                             "connection from %s dropped: raw P2P is not "
+                             "accepted (-p2prawlisten=0)\n",
+                             conn.peer.ToStringAddrPort());
+                }
+                g_connections.RemoveConnection(conn_id);
+                co_return;
+            }
+        }
+
         // Classify the connection by its first byte, without consuming it:
         // 0x16 starts a TLS handshake record.
         uint8_t first{0};
@@ -1894,7 +1981,9 @@ static asio::awaitable<void> HandleConnection(tcp::socket socket,
         if (peeked <= 0) {
             // Client went away (or timed out) before sending anything.
         } else if (plain_prefetched || first != 0x16) {
-            deadline.cancel();
+            if (!p2p_port) {
+                deadline.cancel();
+            }
             co_await ServeHTTP(stream, buffer, conn);
             sock.shutdown(tcp::socket::shutdown_send, ec);
         } else if (tls::SslPtr ssl{NewServerSsl()}; !ssl) {
@@ -1906,7 +1995,9 @@ static asio::awaitable<void> HandleConnection(tcp::socket socket,
                 OsslStream tls_stream{stream, std::move(ssl)};
                 auto [hs_ec, hs] = co_await tls_stream.async_handshake(
                     asio::as_tuple(asio::use_awaitable));
-                deadline.cancel();
+                if (!p2p_port) {
+                    deadline.cancel();
+                }
                 if (auto *metrics{node::GetNodeMetrics()}) {
                     metrics->http_tls_handshakes.Add(hs_ec ? 1 : 0);
                 }
@@ -1933,11 +2024,12 @@ static asio::awaitable<void> HandleConnection(tcp::socket socket,
                         // response, even if the send buffer is full now
                         // (a single attempt could drop it, which reads as a
                         // truncated close). Bounded like the handshake.
+                        *armed = true;
                         deadline.expires_after(CLOSE_NOTIFY_TIMEOUT);
                         deadline.async_wait(
-                            [fd = sock.native_handle()](
-                                const boost::system::error_code &wec) {
-                                if (!wec) {
+                            [fd = sock.native_handle(),
+                             armed](const boost::system::error_code &wec) {
+                                if (!wec && *armed) {
                                     ::shutdown(fd, SHUT_RDWR);
                                 }
                             });
@@ -2316,6 +2408,10 @@ bool InitHTTPServer(Config &config) {
                                             !gArgs.IsArgSet("-publicfallback"));
     g_p2p_websocket_force_bridge =
         gArgs.GetBoolArg("-p2pwebsocketbridge", false);
+    g_p2p_port_handshake_timeout = std::chrono::seconds{std::max<int64_t>(
+        gArgs.GetIntArg("-p2pporthandshaketimeout",
+                        DEFAULT_P2P_PORT_HANDSHAKE_TIMEOUT.count()),
+        1)};
     g_p2p_websocket_path =
         gArgs.GetArg("-p2pwebsocketpath", P2P_WEBSOCKET_PATH);
     if (g_p2p_websocket_path.size() < 2 || g_p2p_websocket_path[0] != '/' ||
@@ -2826,6 +2922,59 @@ void RegisterHTTPAsyncHandler(const std::string &prefix, bool exactMatch,
 void SetHTTPReadinessCheck(HTTPReadinessCheck check) {
     LOCK(g_readiness_mutex);
     g_readiness_check = std::move(check);
+}
+
+void HandOffP2PPortConnection(std::unique_ptr<Sock> &&sock,
+                              const CService &peer, const CService &local) {
+    if (!g_io || !g_io_work || g_reject_requests.load()) {
+        // Not serving: closing it is all we can do.
+        return;
+    }
+    {
+        LOCK(g_p2p_port_mutex);
+        size_t &from_addr{g_p2p_port_pending_by_addr[peer]};
+        if (g_p2p_port_pending >= MAX_P2P_PORT_PENDING ||
+            from_addr >= MAX_P2P_PORT_PENDING_PER_ADDR) {
+            LogDebug(BCLog::NET,
+                     "P2P port WebSocket connection from %s dropped: %u "
+                     "pending (%u from this address)\n",
+                     peer.ToStringAddrPort(), g_p2p_port_pending, from_addr);
+            if (from_addr == 0) {
+                g_p2p_port_pending_by_addr.erase(peer);
+            }
+            return;
+        }
+        ++g_p2p_port_pending;
+        ++from_addr;
+    }
+    // Returns the slot when the connection is upgraded or closed.
+    auto slot{std::shared_ptr<void>(nullptr, [peer](void *) {
+        LOCK(g_p2p_port_mutex);
+        --g_p2p_port_pending;
+        if (--g_p2p_port_pending_by_addr[peer] == 0) {
+            g_p2p_port_pending_by_addr.erase(peer);
+        }
+    })};
+    tcp::socket socket{asio::make_strand(*g_io)};
+    boost::system::error_code ec;
+    const SOCKET fd{sock->Release()};
+    socket.assign(local.IsIPv6() ? tcp::v6() : tcp::v4(), fd, ec);
+    if (ec) {
+        LogDebug(BCLog::NET, "P2P port connection from %s dropped: %s\n",
+                 peer.ToStringAddrPort(), ec.message());
+        // Close it.
+        const Sock closing{fd};
+        return;
+    }
+    auto executor{socket.get_executor()};
+    asio::co_spawn(
+        executor,
+        [](tcp::socket socket,
+           std::shared_ptr<void> slot) -> asio::awaitable<void> {
+            co_await HandleConnection(std::move(socket), /*public_only=*/true,
+                                      /*p2p_port=*/true);
+        }(std::move(socket), std::move(slot)),
+        asio::detached);
 }
 
 void SetP2PWebSocketAcceptor(P2PWebSocketAcceptor acceptor) {
