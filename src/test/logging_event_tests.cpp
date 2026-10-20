@@ -172,6 +172,36 @@ BOOST_AUTO_TEST_CASE(float_message_precision_preserves_raw_fields) {
     BOOST_CHECK_EQUAL(Json()["message"].get_str(), "{count:.2f}");
 }
 
+BOOST_AUTO_TEST_CASE(mempool_persistence_fields_keep_counts_and_seconds) {
+    Format(BCLog::LogFormat::JSON);
+    LogInfoEvent(
+        BCLog::ALL, "mempool_persistence_fixture",
+        "{mempool_import_succeeded_count}/{mempool_import_failed_count}/{mempool_import_expired_count}/{mempool_import_present_count}/{mempool_import_waiting_broadcast_count} {mempool_copy_seconds:g}/{mempool_dump_seconds:g}")
+        .Field(LogField::MempoolImportSucceededCount, int64_t{2})
+        .Field(LogField::MempoolImportFailedCount, int64_t{3})
+        .Field(LogField::MempoolImportExpiredCount, int64_t{5})
+        .Field(LogField::MempoolImportPresentCount, int64_t{7})
+        .Field(LogField::MempoolImportWaitingBroadcastCount, int64_t{11})
+        .Field(LogField::MempoolCopySeconds, 1.25e-9)
+        .Field(LogField::MempoolDumpSeconds, 0.0123456789);
+    const auto record{Json()};
+    BOOST_CHECK_EQUAL(record["message"].get_str(),
+                      strprintf("2/3/5/7/11 %g/%g", 1.25e-9, 0.0123456789));
+    for (const auto &[key, expected] :
+         std::array<std::pair<const char *, int64_t>, 5>{
+             {{"mempool_import_succeeded_count", 2},
+              {"mempool_import_failed_count", 3},
+              {"mempool_import_expired_count", 5},
+              {"mempool_import_present_count", 7},
+              {"mempool_import_waiting_broadcast_count", 11}}}) {
+        BOOST_CHECK(record[key].isNum());
+        BOOST_CHECK_EQUAL(record[key].getInt<int64_t>(), expected);
+    }
+    BOOST_CHECK_EQUAL(record["mempool_copy_seconds"].get_real(), 1.25e-9);
+    BOOST_CHECK_EQUAL(record["mempool_dump_seconds"].get_real(), 0.0123456789);
+    BOOST_CHECK(record["fields_truncated"].isNull());
+}
+
 BOOST_AUTO_TEST_CASE(validation_state_snapshot_preserves_canonical_text) {
     const auto verify = [](auto state) {
         using State = decltype(state);
