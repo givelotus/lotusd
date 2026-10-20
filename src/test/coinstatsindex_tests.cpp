@@ -7,12 +7,14 @@
 #include <dbwrapper.h>
 #include <index/coinstatsindex.h>
 #include <interfaces/chain.h>
+#include <logging.h>
 #include <lotus_v2/commitment.h>
 #include <node/blockstorage.h>
-#include <test/util/setup_common.h>
 #include <test/util/logging.h>
+#include <test/util/setup_common.h>
 #include <test/util/validation.h>
 #include <undo.h>
+#include <univalue.h>
 #include <util/time.h>
 #include <validation.h>
 
@@ -207,6 +209,35 @@ struct CoinStatsIndexTestAccess {
             BOOST_CHECK(!index.CustomInit(std::nullopt));
         }
     }
+    template <typename Check>
+    static void CheckLoggingFailures(TestingSetup &fixture, Check check) {
+        CoinStatsIndex index{interfaces::MakeChain(fixture.m_node, Params()),
+                             1 << 20, true};
+        BOOST_REQUIRE(index.Init());
+        // Real deserialization failure through CustomInit; the unrelated key
+        // subsequently ensures an absent V2 format marker is not a new DB.
+        index.m_db->Write(uint8_t{'M'}, uint8_t{1});
+        check(
+            "coinstats_state_read_failed",
+            "CustomInit: Cannot read current coinstatsindex state; index may be corrupted",
+            [&] { return index.CustomInit(std::nullopt); }, false);
+        index.m_db->Erase(uint8_t{'M'});
+        index.m_db->Erase(uint8_t{'V'});
+        index.m_db->Write(uint8_t{'X'}, uint8_t{1});
+        check(
+            "coinstats_native_accounting_format_missing",
+            "CustomInit: Native coinstats index predates paid-lifetime/expiry accounting; restart with -reindex to rebuild it",
+            [&] { return index.CustomInit(std::nullopt); }, false);
+        index.m_db->Write(uint8_t{'V'}, uint32_t{0xffffffffU});
+        check(
+            "coinstats_native_format_unsupported",
+            "CustomInit: Unsupported native coinstats index version 4294967295; restart with -reindex to rebuild it",
+            [&] { return index.CustomInit(std::nullopt); }, true);
+        // Restoring the known format keeps the pre-existing success path.
+        index.m_db->Write(uint8_t{'V'}, uint32_t{2});
+        BOOST_CHECK(index.CustomInit(std::nullopt));
+        index.Stop();
+    }
 };
 
 BOOST_AUTO_TEST_SUITE(coinstatsindex_tests)
@@ -354,6 +385,49 @@ BOOST_FIXTURE_TEST_CASE(native_expiry_base_bounty_boundary, TestChain100Setup) {
 
 BOOST_FIXTURE_TEST_CASE(native_expiry_base_bounty_cap, TestChain100Setup) {
     CoinStatsIndexTestAccess::CheckExpiry(*this, 8000);
+}
+
+BOOST_FIXTURE_TEST_CASE(logging_native_format_and_state_failures,
+                        TestingSetup) {
+    struct ScopedFormat {
+        BCLog::LogFormat previous{LogInstance().m_log_format};
+        ScopedFormat() {
+            LogInstance().Flush();
+            LogInstance().m_log_format = BCLog::LogFormat::JSON;
+        }
+        ~ScopedFormat() {
+            LogInstance().Flush();
+            LogInstance().m_log_format = previous;
+        }
+    } format;
+    const auto check = [](const char *event, const char *expected_message,
+                          auto operation, bool has_version) {
+        std::string captured;
+        {
+            DebugLogHelper helper(event, [&](const std::string *line) {
+                if (line) captured = *line;
+                return false; // Inspect JSON only after the logger Flush.
+            });
+            BOOST_CHECK(!operation());
+        }
+        UniValue row;
+        BOOST_REQUIRE(!captured.empty());
+        BOOST_REQUIRE(row.read(captured));
+        BOOST_CHECK_EQUAL(row["event"].get_str(), event);
+        BOOST_CHECK_EQUAL(row["level"].get_str(), "error");
+        BOOST_CHECK_EQUAL(row["source_function"].get_str(), "CustomInit");
+        BOOST_CHECK_EQUAL(row["message"].get_str(), expected_message);
+        BOOST_CHECK(row["fields_truncated"].isNull());
+        if (has_version) {
+            BOOST_REQUIRE(row["version"].isNum());
+            BOOST_CHECK_EQUAL(row["version"].getInt<int64_t>(),
+                              int64_t{4294967295});
+        }
+        if (std::string{event} == "coinstats_state_read_failed") {
+            BOOST_CHECK_EQUAL(row["name"].get_str(), "coinstatsindex");
+        }
+    };
+    CoinStatsIndexTestAccess::CheckLoggingFailures(*this, check);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
