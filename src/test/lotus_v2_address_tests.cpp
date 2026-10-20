@@ -115,4 +115,30 @@ BOOST_AUTO_TEST_CASE(round_trip) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(keyhash_template) {
+    const auto key = ParseHex("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798");
+    const auto hash = lotus::v2::NativeKeyHash(std::span<const uint8_t, 32>(key.data(), 32));
+    // Independent Python blake3 1.0.8 oracle, x-only generator point.
+    BOOST_CHECK_EQUAL(HexStr(hash), "f9f2a0b353f482f415281da3a00929d08a7d9a6498054f5ef6623b5580e607f7");
+    BOOST_CHECK_EQUAL(lotus::v2::EncodeKeyHashAddress(AddressNetwork::REGTEST, hash),
+        "rxpi1pl8e2pv6n7jp0g9fgrk36qzff6z98mxnynqz57hhkvga4tq8xqlmsq2859j5u");
+    const auto program = lotus::v2::KeyHashProgram(hash);
+    BOOST_REQUIRE_EQUAL(program.size(), 37U);
+    BOOST_CHECK_EQUAL(HexStr(lotus::v2::KeyHashRoot(hash)),
+        "84f3ac422780d391bc9210fa6e19dc8d0fd2bb1acd390e065c6a0acda9f667bb");
+    BOOST_CHECK_EQUAL(program.front(), 0x7a);
+    BOOST_CHECK_EQUAL(program.back(), 0xbb);
+    for (const auto network : {AddressNetwork::MAINNET, AddressNetwork::TESTNET, AddressNetwork::REGTEST}) {
+        const auto address = lotus::v2::EncodeKeyHashAddress(network, hash);
+        std::string error;
+        const auto decoded = lotus::v2::DecodeAddress(address, error);
+        BOOST_REQUIRE(decoded);
+        BOOST_CHECK_EQUAL(decoded->type, 1);
+        BOOST_CHECK(decoded->root == hash);
+        BOOST_CHECK(decoded->BranchRoot() == lotus::v2::KeyHashRoot(hash));
+        BOOST_CHECK(decoded->BranchRoot() != hash);
+        BOOST_CHECK(address != lotus::v2::EncodeAddress(network, hash));
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
