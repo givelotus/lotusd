@@ -361,6 +361,10 @@ public:
 /**
  * CCoinsView that adds a memory cache for transactions to another CCoinsView
  */
+namespace metrics {
+class Counter;
+}
+
 class CCoinsViewCache : public CCoinsViewBacked {
 private:
     const bool m_deterministic;
@@ -382,6 +386,11 @@ protected:
     mutable size_t cachedCoinsUsage{0};
     /* Running count of dirty Coin cache entries. */
     mutable size_t m_dirty_count{0};
+    /**
+     * Counts lookups (series 0 = hit, 1 = miss read from the base, 2 =
+     * absent) when set: the chainstate's cache, with -metrics.
+     */
+    metrics::Counter *m_lookup_metric{nullptr};
 
     /**
      * Discard all modifications made to this cache without flushing to the
@@ -392,6 +401,11 @@ protected:
 
 public:
     CCoinsViewCache(CCoinsView *baseIn, bool deterministic = false);
+
+    /** Count this cache's lookups in counter (see m_lookup_metric) */
+    void SetLookupMetric(metrics::Counter *counter) {
+        m_lookup_metric = counter;
+    }
 
     /**
      * By deleting the copy constructor, we prevent accidentally using it when

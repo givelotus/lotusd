@@ -6,6 +6,7 @@
 
 #include <consensus/consensus.h>
 #include <logging.h>
+#include <metrics/metrics.h>
 #include <random.h>
 #include <uint256.h>
 #include <util/trace.h>
@@ -101,10 +102,18 @@ CCoinsViewCache::FetchCoin(const COutPoint &outpoint) const {
             ret->second.coin = std::move(*coin);
             cachedCoinsUsage += ret->second.coin.DynamicMemoryUsage();
             Assert(!ret->second.coin.IsSpent());
+            if (m_lookup_metric) {
+                m_lookup_metric->Add(1);
+            }
         } else {
             cacheCoins.erase(ret);
+            if (m_lookup_metric) {
+                m_lookup_metric->Add(2);
+            }
             return cacheCoins.end();
         }
+    } else if (m_lookup_metric) {
+        m_lookup_metric->Add(0);
     }
     return ret;
 }
