@@ -12,8 +12,10 @@
 #include <logging/values.h>
 #include <netbase.h>
 #include <node/ui_interface.h>
+#include <node/utxo_snapshot.h>
 #include <noui.h>
 #include <primitives/transaction.h>
+#include <streams.h>
 #include <test/util/setup_common.h>
 #include <univalue.h>
 #include <util/fs.h>
@@ -1223,6 +1225,63 @@ BOOST_AUTO_TEST_CASE(ui_init_message_preserves_opaque_untranslated_prose) {
     BOOST_CHECK_EQUAL(row["event"].get_str(), "node_ui_init_message");
     BOOST_CHECK_EQUAL(row["message_text"].get_str(), body);
     BOOST_CHECK_EQUAL(row["message"].get_str(), "init message: " + body);
+    BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
+    BOOST_CHECK(row["fields_truncated"].isNull());
+}
+
+BOOST_AUTO_TEST_CASE(
+    snapshot_base_hash_paths_preserve_optional_result_and_trailing_data) {
+    LOCK(cs_main); // ReadSnapshotBaseBlockhash requires the chainstate lock.
+    Format(BCLog::LogFormat::JSON);
+    const fs::path directory{m_args.GetDataDirBase() / "snapshot-log-control"};
+    const fs::path file_path{directory / node::SNAPSHOT_BLOCKHASH_FILENAME};
+    BOOST_REQUIRE(!fs::exists(directory));
+    BOOST_CHECK(!node::ReadSnapshotBaseBlockhash(directory));
+    auto row{Json()};
+    BOOST_CHECK_EQUAL(row["event"].get_str(),
+                      "snapshot_base_hash_directory_missing");
+    BOOST_CHECK_EQUAL(row["path"].get_str(), fs::PathToString(directory));
+    BOOST_CHECK_EQUAL(
+        row["message"].get_str(),
+        "[snapshot] cannot read base blockhash: no chainstate dir exists at path " +
+            fs::PathToString(directory));
+    BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
+
+    BOOST_REQUIRE(fs::create_directory(directory));
+    BOOST_CHECK(!node::ReadSnapshotBaseBlockhash(directory));
+    row = Json();
+    BOOST_CHECK_EQUAL(row["event"].get_str(),
+                      "snapshot_base_hash_file_missing");
+    BOOST_CHECK_EQUAL(row["directory"].get_str(), fs::PathToString(directory));
+    BOOST_CHECK_EQUAL(row["path"].get_str(), fs::PathToString(file_path));
+    BOOST_CHECK_EQUAL(
+        row["message"].get_str(),
+        "[snapshot] snapshot chainstate dir is malformed! no base blockhash file exists at path " +
+            fs::PathToString(directory) + ". Try deleting " +
+            fs::PathToString(file_path) + " and calling loadtxoutset again?");
+    BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
+
+    const BlockHash expected{SomeHash()};
+    {
+        AutoFile file{fsbridge::fopen(file_path, "wb")};
+        BOOST_REQUIRE(!file.IsNull());
+        file << expected;
+        file << uint8_t{
+            0x58}; // Valid hash followed by one original warning trigger.
+        BOOST_REQUIRE_EQUAL(file.fclose(), 0);
+    }
+    const auto result{node::ReadSnapshotBaseBlockhash(directory)};
+    BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK(
+        *result ==
+        expected); // Warning must not turn successful read into failure.
+    row = Json();
+    BOOST_CHECK_EQUAL(row["event"].get_str(),
+                      "snapshot_base_hash_trailing_data");
+    BOOST_CHECK_EQUAL(row["path"].get_str(), fs::PathToString(file_path));
+    BOOST_CHECK_EQUAL(row["message"].get_str(),
+                      "[snapshot] warning: unexpected trailing data in " +
+                          fs::PathToString(file_path));
     BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
     BOOST_CHECK(row["fields_truncated"].isNull());
 }
