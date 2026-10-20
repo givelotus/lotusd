@@ -179,6 +179,9 @@ public:
     void Start(int num_threads) {
         const size_t threads = static_cast<size_t>(std::max(1, num_threads));
         m_max_in_flight = m_max_depth + threads;
+        if (auto *metrics{node::GetNodeMetrics()}) {
+            metrics->rpc_work_queue_capacity.Set(double(m_max_depth));
+        }
         m_pool = std::make_unique<boost::asio::thread_pool>(threads);
         for (size_t i = 0; i < threads; ++i) {
             boost::asio::post(*m_pool, [i]() {
@@ -207,6 +210,7 @@ public:
             }
             ++m_queued_requests;
             ++m_total_in_flight;
+            SetWorkMetrics();
 
             if (conn != 0) {
                 auto &weak_strand = m_conn_strands[conn];
@@ -246,6 +250,7 @@ public:
                     if (m_queued_requests > 0) {
                         --m_queued_requests;
                     }
+                    SetWorkMetrics();
                 }
                 struct InFlightGuard {
                     HTTPCoroutinePool *pool;
@@ -254,6 +259,7 @@ public:
                         if (--pool->m_total_in_flight == 0) {
                             pool->m_cv.notify_all();
                         }
+                        pool->SetWorkMetrics();
                     }
                 } guard{this};
 
@@ -266,10 +272,24 @@ public:
 
     void OnSuspend() noexcept {
         m_suspended_coroutines.fetch_add(1, std::memory_order_relaxed);
+        if (auto *metrics{node::GetNodeMetrics()}) {
+            metrics->rpc_work_suspended.Add(1);
+        }
     }
 
     void OnResume() noexcept {
         m_suspended_coroutines.fetch_sub(1, std::memory_order_relaxed);
+        if (auto *metrics{node::GetNodeMetrics()}) {
+            metrics->rpc_work_suspended.Add(-1);
+        }
+    }
+
+    /** Mirror the queue's counts in the metrics (with m_mutex held) */
+    void SetWorkMetrics() EXCLUSIVE_LOCKS_REQUIRED(m_mutex) {
+        if (auto *metrics{node::GetNodeMetrics()}) {
+            metrics->rpc_work_queue_depth.Set(double(m_queued_requests));
+            metrics->rpc_work_in_flight.Set(double(m_total_in_flight));
+        }
     }
 
     void Interrupt() EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
@@ -720,6 +740,9 @@ DispatchRequest(BeastRequest &&beast_req, const HTTPConnectionInfo &conn) {
                 new HTTPWorkItem(*g_config, std::move(hreq), path, i->handler));
             assert(g_work_queue);
             if (!g_work_queue->Enqueue(conn.connection_id, item)) {
+                if (auto *metrics{node::GetNodeMetrics()}) {
+                    metrics->rpc_work_queue_rejected.Inc();
+                }
                 LogPrintf("WARNING: request rejected because http work queue "
                           "depth exceeded, it can be increased with the "
                           "-rpcworkqueue= setting\n");

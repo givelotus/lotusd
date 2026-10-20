@@ -283,6 +283,20 @@ struct NodeMetrics {
     //! Whether Chronik reported its height (it runs)
     std::atomic<bool> chronik_indexed_height_known{false};
 
+    // Runtime
+    //! HTTP/RPC requests waiting for a worker (-rpcworkqueue)
+    metrics::Gauge &rpc_work_queue_depth;
+    metrics::Gauge &rpc_work_queue_capacity;
+    //! Requests being handled or waiting
+    metrics::Gauge &rpc_work_in_flight;
+    //! Requests suspended (long polls), not holding a worker
+    metrics::Gauge &rpc_work_suspended;
+    metrics::Counter &rpc_work_queue_rejected;
+    metrics::Gauge &process_resident_memory;
+    metrics::Gauge &process_virtual_memory;
+    metrics::Gauge &process_open_fds;
+    metrics::Gauge &process_max_fds;
+
     /** Label index of an RPC method ("other" if not in the set) */
     size_t RPCMethodIndex(std::string_view method) const noexcept;
 
