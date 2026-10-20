@@ -32,6 +32,9 @@ option(ENABLE_CLANG_TIDY "Enable clang-tidy checks for Bitcoin ABC" OFF)
 option(ENABLE_PROFILING "Select the profiling tool to use" OFF)
 option(ENABLE_TRACING "Enable eBPF user static defined tracepoints" OFF)
 option(ENABLE_HTTP2 "Serve HTTP/2 on TLS listeners and offer it to WebSocket peers (needs nghttp2)" OFF)
+# Default OFF until the measurement gate in doc/p2p-webtransport.md passes.
+option(ENABLE_WEBTRANSPORT
+	"Build the P2P over WebTransport (HTTP/3/QUIC) transport" OFF)
 
 # Linker option
 if(CMAKE_CROSSCOMPILING)
@@ -789,6 +792,34 @@ if(ENABLE_HTTP2)
 		# depends builds a static library
 		target_compile_definitions(server PUBLIC NGHTTP2_STATICLIB)
 	endif()
+endif()
+
+# P2P over WebTransport (HTTP/3 over QUIC, ngtcp2 + nghttp3); see
+# doc/p2p-webtransport.md. ngtcp2's OpenSSL backend needs OpenSSL's QUIC TLS
+# API (OpenSSL >= 3.5); nghttp3 must carry the depends patch adding
+# nghttp3_conn_set_extra_settings() (FindNghttp3 rejects a stock build).
+if(ENABLE_WEBTRANSPORT)
+	find_package(OpenSSL 3.5 REQUIRED)
+	find_package(Nghttp3 1.18.0 REQUIRED COMPONENTS nghttp3)
+	find_package(Ngtcp2 1.25.0 REQUIRED COMPONENTS ngtcp2 crypto_ossl)
+	target_sources(server PRIVATE
+		net_quic/version_check.cpp
+	)
+	# Search these headers first, for this directory and the tests below
+	# (as for OpenSSL above): Homebrew links its own, unpatched nghttp3 and
+	# ngtcp2 headers into the shared include directory other dependencies
+	# add.
+	include_directories(BEFORE SYSTEM
+		${Ngtcp2_INCLUDE_DIRS}
+		${Nghttp3_INCLUDE_DIRS}
+	)
+	target_link_libraries(server
+		Ngtcp2::crypto_ossl
+		Ngtcp2::ngtcp2
+		Nghttp3::nghttp3
+		OpenSSL::SSL
+		OpenSSL::Crypto
+	)
 endif()
 
 # Test suites.
