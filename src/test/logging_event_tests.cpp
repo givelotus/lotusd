@@ -23,6 +23,7 @@
 #include <streams.h>
 #include <test/util/setup_common.h>
 #include <timedata.h>
+#include <tls_util.h>
 #include <univalue.h>
 #include <util/asmap.h>
 #include <util/fs.h>
@@ -54,6 +55,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 using BCLog::LogStatic;
@@ -1681,6 +1683,48 @@ BOOST_AUTO_TEST_CASE(actual_socket_failures_keep_errno_and_connection_levels) {
                           ": unsupported network");
     BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
     BOOST_CHECK(row["fields_truncated"].isNull());
+}
+
+BOOST_AUTO_TEST_CASE(actual_tls_client_reload_keeps_the_last_valid_context) {
+    Format(BCLog::LogFormat::JSON);
+    const auto cert{m_args.GetDataDirBase() / "logging-client-cert.pem"};
+    const auto key{m_args.GetDataDirBase() / "logging-client-key.pem"};
+    const auto pem{tls::GenerateSelfSigned(
+        "logging-client.example.org", {"logging-client.example.org"}, {}, 24h)};
+    BOOST_REQUIRE(pem.has_value());
+    BOOST_REQUIRE(tls::WritePemFiles(*pem, cert, key));
+    tls::ReloadingClientContext context{cert, key};
+    const auto valid{context.Get()};
+    BOOST_REQUIRE(valid);
+    auto row{Json()};
+    BOOST_CHECK_EQUAL(row["event"].get_str(), "tls_client_certificate_loaded");
+    BOOST_CHECK_EQUAL(row["certificate_path"].get_str(),
+                      fs::PathToString(cert));
+    BOOST_CHECK_EQUAL(row["message"].get_str(),
+                      "Loaded TLS client certificate " +
+                          fs::PathToString(cert));
+    BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
+    BOOST_CHECK(row["fields_truncated"].isNull());
+    const auto modified{fs::last_write_time(cert)};
+    std::ofstream{cert} << "owned-invalid-certificate";
+    fs::last_write_time(cert, modified + 2s);
+    // Exercise the real one-second reload throttle instead of changing it.
+    std::this_thread::sleep_for(1100ms);
+    BOOST_CHECK(context.Get() == valid);
+    row = Json();
+    BOOST_CHECK_EQUAL(row["event"].get_str(),
+                      "tls_client_certificate_reload_failed");
+    BOOST_CHECK_EQUAL(row["certificate_path"].get_str(),
+                      fs::PathToString(cert));
+    BOOST_CHECK(!row["error"].get_str().empty());
+    BOOST_CHECK_EQUAL(row["message"].get_str(),
+                      "Not reloading TLS client certificate " +
+                          fs::PathToString(cert) + ": " +
+                          row["error"].get_str());
+    BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
+    BOOST_CHECK(row["fields_truncated"].isNull());
+    BOOST_CHECK(row.write().find("BEGIN PRIVATE KEY") == std::string::npos);
+    BOOST_CHECK(row.write().find("BEGIN CERTIFICATE") == std::string::npos);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
