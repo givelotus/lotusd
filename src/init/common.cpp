@@ -257,17 +257,24 @@ bool StartLogging(const ArgsManager &args) {
     }
 
     if (!logger.m_log_timestamps) {
-        LogPrintf("Startup time: %s\n", FormatISO8601DateTime(GetTime()));
+        LogInfoEvent(BCLog::ALL, "node_startup_time",
+                     "Startup time: {startup_time}")
+            .Field(BCLog::LogField::StartupTime,
+                   FormatISO8601DateTime(GetTime()));
     }
-    LogPrintf("Default data directory %s\n",
-              fs::PathToString(GetDefaultDataDir()));
-    LogPrintf("Using data directory %s\n",
-              fs::PathToString(gArgs.GetDataDirNet()));
+    LogInfoEvent(BCLog::ALL, "node_default_data_directory",
+                 "Default data directory {path}")
+        .Field(BCLog::LogField::Path, fs::PathToString(GetDefaultDataDir()));
+    LogInfoEvent(BCLog::ALL, "node_active_data_directory",
+                 "Using data directory {path}")
+        .Field(BCLog::LogField::Path, fs::PathToString(gArgs.GetDataDirNet()));
 
     // Only log conf file usage message if conf file actually exists.
     fs::path config_file_path = args.GetConfigFilePath();
     if (fs::exists(config_file_path)) {
-        LogPrintf("Config file: %s\n", fs::PathToString(config_file_path));
+        LogInfoEvent(BCLog::ALL, "node_config_file_loaded",
+                     "Config file: {path}")
+            .Field(BCLog::LogField::Path, fs::PathToString(config_file_path));
     } else if (args.IsArgSet("-conf")) {
         // Warn if no conf file exists at path provided by user
         InitWarning(
@@ -275,8 +282,9 @@ bool StartLogging(const ArgsManager &args) {
                       fs::PathToString(config_file_path)));
     } else {
         // Not categorizing as "Warning" because it's the default behavior
-        LogPrintf("Config file: %s (not found, skipping)\n",
-                  fs::PathToString(config_file_path));
+        LogInfoEvent(BCLog::ALL, "node_config_file_missing_skipped",
+                     "Config file: {path} (not found, skipping)")
+            .Field(BCLog::LogField::Path, fs::PathToString(config_file_path));
     }
 
     // Log the config arguments to debug.log
