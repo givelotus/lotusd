@@ -1694,6 +1694,7 @@ BOOST_AUTO_TEST_CASE(single_tx_relays_wait_for_the_relay_tick) {
             std::make_unique<ConnmanTestMsg>(config, 123, 456, *m_node.addrman);
         PeerManager::Options peer_opts;
         peer_opts.deterministic_rng = true;
+        peer_opts.txrelay_push_hb = true;
         auto peerman = PeerManager::make(*connman, *m_node.addrman, nullptr,
                                          *m_node.chainman, *m_node.mempool,
                                          nullptr, peer_opts);
@@ -1874,6 +1875,7 @@ BOOST_AUTO_TEST_CASE(bursts_wait_for_the_relay_tick) {
             std::make_unique<ConnmanTestMsg>(config, 123, 456, *m_node.addrman);
         PeerManager::Options peer_opts;
         peer_opts.deterministic_rng = true;
+        peer_opts.txrelay_push_hb = true;
         auto peerman = PeerManager::make(*connman, *m_node.addrman, nullptr,
                                          *m_node.chainman, *m_node.mempool,
                                          nullptr, peer_opts);
@@ -2732,6 +2734,7 @@ BOOST_AUTO_TEST_CASE(shorttx_batch_admission_fallback_and_proactive_push) {
                                                     *m_node.addrman);
     PeerManager::Options peer_opts;
     peer_opts.deterministic_rng = true;
+    peer_opts.txrelay_push_hb = true;
     auto peerman = PeerManager::make(*connman, *m_node.addrman, nullptr,
                                      *m_node.chainman, *m_node.mempool,
                                      /*avalanche=*/nullptr, peer_opts);
