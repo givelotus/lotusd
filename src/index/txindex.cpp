@@ -85,23 +85,33 @@ bool TxIndex::FindTx(const TxId &txid, BlockHash &block_hash,
 
     AutoFile file{m_chainstate->m_blockman.OpenBlockFile(postx, true)};
     if (file.IsNull()) {
-        LogError("%s: OpenBlockFile failed\n", __func__);
+        LogErrorEvent(BCLog::ALL, "transaction_index_block_file_open_failed",
+                      "{source_function}: OpenBlockFile failed")
+            .Field(BCLog::LogField::SourceFunction, __func__);
         return false;
     }
     CBlockHeader header;
     try {
         file >> header;
         if (fseek(file.Get(), postx.nTxOffset, SEEK_CUR)) {
-            LogError("%s: fseek(...) failed\n", __func__);
+            LogErrorEvent(BCLog::ALL,
+                          "transaction_index_block_file_seek_failed",
+                          "{source_function}: fseek(...) failed")
+                .Field(BCLog::LogField::SourceFunction, __func__);
             return false;
         }
         file >> tx;
     } catch (const std::exception &e) {
-        LogError("%s: Deserialize or I/O error - %s\n", __func__, e.what());
+        LogErrorEvent(BCLog::ALL, "transaction_index_block_read_failed",
+                      "{source_function}: Deserialize or I/O error - {error}")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::Error, e.what());
         return false;
     }
     if (tx->GetId() != txid) {
-        LogError("%s: txid mismatch\n", __func__);
+        LogErrorEvent(BCLog::ALL, "transaction_index_txid_mismatch",
+                      "{source_function}: txid mismatch")
+            .Field(BCLog::LogField::SourceFunction, __func__);
         return false;
     }
     block_hash = header.GetHash();
