@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "batch": "block-index-database-version",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/txdb.cpp",
+      "rules": [
+        {
+          "id": "block_index_database_upgrading",
+          "old": "LogPrintf(\"Updating the block index database version to %d\\n\",\n              CLIENT_VERSION)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_index_database_upgrading\", \"Updating the block index database version to {version}\").Field(BCLog::LogField::Version, CLIENT_VERSION)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Updating the block index database version to %d\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "CLIENT_VERSION"
+            ]
+          },
+          "review_note": "Preserve Info, exact signed CLIENT_VERSION diagnostic and its position before batch.Write. Existing database version comparisons, upgrade/reindex policy and WriteBatch semantics unchanged."
+        }
+      ]
+    }
+  ]
+}
