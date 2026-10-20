@@ -487,8 +487,9 @@ bool CBlockTreeDB::Upgrade() {
     // The DB is empty or recent enough.
     // Just write the new version number and consider the upgrade done.
     CDBBatch batch(*this);
-    LogPrintf("Updating the block index database version to %d\n",
-              CLIENT_VERSION);
+    LogInfoEvent(BCLog::ALL, "block_index_database_upgrading",
+                 "Updating the block index database version to {version}")
+        .Field(BCLog::LogField::Version, CLIENT_VERSION);
     batch.Write("version", uint64_t(CLIENT_VERSION));
     WriteBatch(batch);
     return true;
