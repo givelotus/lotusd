@@ -111,11 +111,12 @@ template <typename TxOutT>
 constexpr bool kV2Outputs = requires(const TxOutT &o) { o.vBranches; };
 
 /**
- * Script of an output as Chronik indexes it. A Lotus V2 native output (empty
- * or one-byte scriptPubKey with branches) becomes the synthetic native output
- * frame `flags || value LE8 || [token_id] || [state_root] || branches ||
- * paths`, byte for byte as the Rust bridge's BridgeTxOutputScript builds it,
- * so the script group keys and responses match Rust.
+ * Script of an output as Chronik indexes it. A Lotus V2 native output
+ * (empty or one-byte scriptPubKey with branches) becomes the synthetic
+ * native output frame `flags || value LE8 || [token_id] || [state_root] ||
+ * branches || paths`, byte for byte as the Rust bridge's
+ * BridgeTxOutputScript builds it, so the script group keys and responses
+ * match Rust.
  */
 template <typename TxOutT> Bytes OutputScript(const TxOutT &output) {
     if constexpr (requires {
@@ -230,6 +231,7 @@ Bytes V2StateRoot(ByteView script) {
 
 /** Fill the V2 state roots of a transaction's own outputs. */
 void FillV2StateRoots(Tx &tx) {
+    if (tx.version != 7) return;
     if constexpr (kV2Outputs<CTxOut>) {
         for (TxOutput &output : tx.outputs) {
             output.state_root = V2StateRoot(output.script);
@@ -251,6 +253,7 @@ Coin ConvertCoin(const ::Coin &coin) {
         .output = ConvertOutput(coin.GetTxOut()),
         .height = height,
         .is_coinbase = coin.IsCoinBase(),
+        .is_legacy = coin.IsLegacy(),
     };
 }
 

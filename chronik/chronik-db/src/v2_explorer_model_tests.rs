@@ -127,6 +127,7 @@ fn spend_input_metadata_does_not_copy_the_spent_output() {
     let input = &mut block.transactions[0].explorer.inputs[0];
     input.flags = 1;
     let output = Output {
+        legacy_script: None,
         flags: 0,
         value: u64::MAX,
         token_id: Hash32([0; 32]),
@@ -154,7 +155,11 @@ fn spend_input_metadata_does_not_copy_the_spent_output() {
     });
     let id = block.transactions[0].location.txid;
     let entries = plan_explorer_block(&block).unwrap();
-    let stored = &entries.iter().find(|(k, _)| *k == input_key(id, 0)).unwrap().1;
+    let stored = &entries
+        .iter()
+        .find(|(k, _)| *k == input_key(id, 0))
+        .unwrap()
+        .1;
     let input: StoredInputMeta = decode_record(stored).unwrap();
     assert_eq!(input.flags, 1);
     assert!(stored.len() < 64);
@@ -248,7 +253,8 @@ fn valid_postcard_corrupt_witness_tables_are_rejected_at_read_validation() {
         offset: u64::MAX,
         length: 1,
     };
-    let bad: WitnessFact = decode_record(&encode_record(&bad).unwrap()).unwrap();
+    let bad: WitnessFact =
+        decode_record(&encode_record(&bad).unwrap()).unwrap();
     assert!(matches!(
         validate_witness_fact(&bad, 20),
         Err(Error::Corrupt)
