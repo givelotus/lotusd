@@ -518,7 +518,10 @@ BOOST_AUTO_TEST_CASE(misbehavior_reasons) {
     }
     BOOST_CHECK_EQUAL(node::metric_labels::MisbehaviorReasons().size(),
                       size_t(R::OTHER) + 1);
-    BOOST_CHECK_EQUAL(node::metric_labels::Transports().size(), 3U);
+    const auto &transports{node::metric_labels::Transports()};
+    const std::vector<std::string> expected{"tcp", "ws", "wss", "webtransport"};
+    BOOST_CHECK_EQUAL_COLLECTIONS(transports.begin(), transports.end(),
+                                  expected.begin(), expected.end());
 }
 
 BOOST_AUTO_TEST_CASE(chronik_endpoints) {
