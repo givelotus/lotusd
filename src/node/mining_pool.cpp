@@ -5,6 +5,7 @@
 #include <node/mining_pool.h>
 
 #include <arith_uint256.h>
+#include <base58.h>
 #include <avalanche/avalanche.h>
 #include <avalanche/processor.h>
 #include <avalanche/treasury.h>
@@ -25,6 +26,7 @@
 #include <key_io.h>
 #include <lotus_v2/commitment.h>
 #include <lotus_v2/header.h>
+#include <lotus_v2/address.h>
 #include <minerfund.h>
 #include <node/context.h>
 #include <node/miner.h>
@@ -46,6 +48,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <cstring>
 
 namespace lotus::v2::node {
@@ -82,6 +85,11 @@ void MiningPoolManager::Configure(const ArgsManager &args,
     if (m_stopping) {
         throw std::runtime_error("Built-in mining pool is stopping");
     }
+    if (m_next_job_id != 1 || !m_workers.empty()) {
+        throw std::logic_error("Mining pool configuration is frozen after first use");
+    }
+    m_treasury_rewards = args.GetBoolArg(
+        "-avalanchetreasury", args.GetBoolArg("-avalanchestakingrewards", true));
     m_staking_rewards = args.GetBoolArg(
         "-avalanchestakingrewards",
         config.GetChainParams().GetConsensus().enableStakingRewards);
@@ -96,7 +104,21 @@ void MiningPoolManager::Configure(const ArgsManager &args,
     const int64_t spacing = args.GetIntArg(
         "-pooltargetspacing", DEFAULT_POOL_TARGET_SPACING_SEC);
     m_target_spacing_sec = std::max<int64_t>(1, spacing);
-    m_fallback_payout_script.clear();
+    m_fallback_payout.reset();
+    m_payout_error = "Native pool requires an explicit -pooladdress for this network";
+    std::string error;
+    const auto address = DecodeAddress(m_pool_address_arg, error);
+    const auto network = config.GetChainParams().GetChainTypeString() == "main"
+                             ? AddressNetwork::MAINNET
+                         : config.GetChainParams().GetChainTypeString() == "regtest"
+                             ? AddressNetwork::REGTEST : AddressNetwork::TESTNET;
+    if (address && address->network == network) {
+        Output output;
+        output.branches = {address->BranchRoot()};
+        output.paths = {{0}};
+        m_fallback_payout = CTxOut::FromV2Output(output);
+        m_payout_error.clear();
+    }
     m_configured = true;
 }
 
@@ -170,63 +192,54 @@ void MiningPoolManager::SetWorkerShareTarget(const std::string &worker_id,
     worker.share_target = target;
 }
 
-CScript MiningPoolManager::GetFallbackPayoutScriptLocked(
-    const Config &config) const {
-    if (!m_fallback_payout_script.empty()) {
-        return m_fallback_payout_script;
-    }
-    std::string addr = m_pool_address_arg;
-    if (!addr.empty()) {
-        CTxDestination dest =
-            DecodeDestination(addr, config.GetChainParams());
-        if (IsValidDestination(dest)) {
-            return GetScriptForDestination(dest);
-        }
-        if (addr.size() >= 2 && (addr.size() % 2 == 0) && IsHex(addr)) {
-            const auto raw = ParseHex(addr);
-            return CScript(raw.begin(), raw.end());
-        }
-    }
-    throw std::runtime_error("Native pool payout provider is unavailable at this prefix");
+CTxOut MiningPoolManager::GetFallbackPayoutLocked() const {
+    if (!m_fallback_payout) throw std::runtime_error(m_payout_error);
+    return *m_fallback_payout;
 }
 
-CScript MiningPoolManager::ResolveWorkerPayoutScriptLocked(
+CTxOut MiningPoolManager::ResolveWorkerPayoutLocked(
     const std::string &worker_id, const Config &config,
     bool &is_newsletter_out) const {
-    if (worker_id.rfind("sub:", 0) == 0) {
-        is_newsletter_out = true;
-        return GetFallbackPayoutScriptLocked(config);
+    is_newsletter_out = worker_id.rfind("sub:", 0) == 0;
+    if (is_newsletter_out || worker_id.empty() || worker_id == "default")
+        return GetFallbackPayoutLocked();
+    const auto dot = worker_id.find('.');
+    const auto address_text = worker_id.substr(0, dot);
+    std::string error;
+    const auto address = DecodeAddress(address_text, error);
+    if (address) {
+        const auto network = config.GetChainParams().GetChainTypeString() == "main"
+                                 ? AddressNetwork::MAINNET
+                             : config.GetChainParams().GetChainTypeString() == "regtest"
+                                 ? AddressNetwork::REGTEST : AddressNetwork::TESTNET;
+        if (address->network != network)
+            throw std::runtime_error("Native worker address is for another network");
+        Output output;
+        output.branches = {address->BranchRoot()};
+        output.paths = {{0}};
+        return CTxOut::FromV2Output(output);
     }
-    is_newsletter_out = false;
-    if (worker_id.empty() || worker_id == "default") {
-        return GetFallbackPayoutScriptLocked(config);
-    }
-
-    // 1. Direct Lotus address
-    CTxDestination dest =
-        DecodeDestination(worker_id, config.GetChainParams());
-    if (IsValidDestination(dest)) {
-        return GetScriptForDestination(dest);
-    }
-
-    // 2. Address.worker_name format
-    const size_t dot_pos = worker_id.find('.');
-    if (dot_pos != std::string::npos && dot_pos > 0) {
-        const std::string addr_part = worker_id.substr(0, dot_pos);
-        dest = DecodeDestination(addr_part, config.GetChainParams());
-        if (IsValidDestination(dest)) {
-            return GetScriptForDestination(dest);
-        }
-    }
-
-    // 3. Raw scriptPubKey hex
-    if (worker_id.size() >= 4 && (worker_id.size() % 2 == 0) &&
-        IsHex(worker_id)) {
-        const auto raw = ParseHex(worker_id);
-        return CScript(raw.begin(), raw.end());
-    }
-
-    throw std::runtime_error("Native pool payout provider is unavailable at this prefix");
+    // A legacy Base58 address is short and alphanumeric too. Never silently
+    // treat a real legacy recipient, or malformed native address, as a label.
+    std::string normalized = address_text;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::vector<uint8_t> legacy_payload;
+    const bool legacy_base58 = DecodeBase58Check(address_text, legacy_payload, 21) &&
+                               legacy_payload.size() == 21;
+    if (legacy_base58 ||
+        IsValidDestination(DecodeDestination(address_text, config.GetChainParams())) ||
+        normalized.rfind("rxpi1", 0) == 0 || normalized.rfind("txpi1", 0) == 0 ||
+        normalized.rfind("xpi1", 0) == 0)
+        throw std::runtime_error("Worker payout requires a valid native address for this network");
+    // Symbolic worker labels explicitly pay the configured pool recipient.
+    // Never invent a key or reinterpret a legacy script/address as native VM.
+    if (dot == std::string::npos && worker_id.find(':') == std::string::npos &&
+        !IsHex(worker_id) && worker_id.size() < 40 &&
+        std::all_of(worker_id.begin(), worker_id.end(), [](unsigned char c) {
+            return std::isalnum(c) || c == '_' || c == '-';
+        })) return GetFallbackPayoutLocked();
+    throw std::runtime_error("Worker payout requires a valid native address for this network");
 }
 
 uint256 MiningPoolManager::GetInitialShareTarget(
@@ -271,7 +284,7 @@ PoolWorker &MiningPoolManager::GetOrCreateWorkerLocked(
         worker.nonce_prefix = 1;
     }
     ++m_next_nonce_prefix;
-    worker.payout_script = ResolveWorkerPayoutScriptLocked(
+    worker.payout = ResolveWorkerPayoutLocked(
         key, config, worker.is_newsletter_subscriber);
     worker.share_target =
         GetInitialShareTarget(config.GetChainParams().GetConsensus());
@@ -380,8 +393,6 @@ UniValue MiningPoolManager::GetMiningJobJSON(const Config &config,
                                              PoolJob *out_job,
                                              PoolWorker *out_worker) {
     Operation operation(*this);
-    // Removed only by the later explicit native payout provider.
-    throw std::runtime_error("Native pool payout provider is unavailable at this prefix");
     ChainstateManager *chainman_ptr = node.chainman.get();
     if (!chainman_ptr) {
         throw std::runtime_error("ChainstateManager not initialized");
@@ -416,6 +427,10 @@ UniValue MiningPoolManager::GetMiningJobJSON(const Config &config,
     snap->EnsureMiningTemplate();
     const ::node::MiningTemplateSnapshot &tmpl = snap->mining_template;
     tmpl.EnsureRoots();
+    // The const query avoids quorum initialization side effects. It may take
+    // Avalanche locks, so run it outside both cs_main and the pool mutex.
+    const bool quorum_established = node.avalanche &&
+        static_cast<const avalanche::Processor &>(*node.avalanche).isQuorumEstablished();
 
     const int64_t adjustedTime =
         TicksSinceEpoch<std::chrono::seconds>(GetAdjustedTime());
@@ -429,8 +444,8 @@ UniValue MiningPoolManager::GetMiningJobJSON(const Config &config,
     }
 
     std::lock_guard<std::mutex> lock(m_mutex);
+    const CTxOut fallback = GetFallbackPayoutLocked();
     PoolWorker &worker = GetOrCreateWorkerLocked(worker_id, config);
-    const CScript fallback_script = GetFallbackPayoutScriptLocked(config);
 
     const Amount blockReward = tmpl.block_reward;
     const auto minerFundWhitelist = GetMinerFundWhitelist(consensusParams);
@@ -456,22 +471,21 @@ UniValue MiningPoolManager::GetMiningJobJSON(const Config &config,
                  blockReward - minerFundAmount - stakingRewardsAmount);
 
     // Aggregate PPLNS payout weights by scriptPubKey in order of appearance
-    std::vector<std::pair<CScript, double>> pplns_payouts;
+    std::vector<std::pair<CTxOut, double>> pplns_payouts;
     double total_weight = 0.0;
     for (const PPLNSShare &share : m_pplns_window) {
         if (share.weight <= 0.0) {
             continue;
         }
-        const CScript &script = share.is_newsletter_subscriber
-                                    ? fallback_script
-                                    : share.payout_script;
+        const CTxOut &recipient = share.is_newsletter_subscriber
+                                    ? fallback : share.payout;
         auto it = std::find_if(
             pplns_payouts.begin(), pplns_payouts.end(),
-            [&script](const auto &entry) { return entry.first == script; });
+            [&recipient](const auto &entry) { return entry.first == recipient; });
         if (it != pplns_payouts.end()) {
             it->second += share.weight;
         } else {
-            pplns_payouts.emplace_back(script, share.weight);
+            pplns_payouts.emplace_back(recipient, share.weight);
         }
         total_weight += share.weight;
     }
@@ -480,11 +494,25 @@ UniValue MiningPoolManager::GetMiningJobJSON(const Config &config,
     CMutableTransaction coinbaseTx = ::node::CreateCoinbaseShell(
         7, tmpl.prev_block_hash, int(tmpl.next_height));
 
+    // Required legacy payee policies have no specified native destination.
+    // Fail closed instead of translating their scripts into native bytecode.
+    bool treasury_required = false;
+    if (quorum_established && m_treasury_rewards) {
+        std::vector<CTxOut> winner_outputs;
+        treasury_required = node.avalanche->getTreasuryRewardWinner(
+            tmpl.prev_block_hash, winner_outputs) && !winner_outputs.empty();
+    }
+    if (minerFundAmount > Amount::zero() || stakingRewardsAmount > Amount::zero() ||
+        treasury_required)
+        throw std::runtime_error("Native pool required-payee destination policy is unavailable");
+    auto add_payout = [&](Amount value, CTxOut recipient) {
+        recipient.nValue = value;
+        coinbaseTx.vout.push_back(std::move(recipient));
+    };
     if (pplns_payouts.empty() || total_weight <= 0.0) {
-        const CScript &recipient =
-            worker.is_newsletter_subscriber ? fallback_script
-                                            : worker.payout_script;
-        coinbaseTx.vout.emplace_back(minerSlice, recipient);
+        const CTxOut &recipient =
+            worker.is_newsletter_subscriber ? fallback : worker.payout;
+        add_payout(minerSlice, recipient);
     } else {
         const int64_t total_miner_sats = minerSlice / SATOSHI;
         int64_t allocated_sats = 0;
@@ -502,30 +530,16 @@ UniValue MiningPoolManager::GetMiningJobJSON(const Config &config,
             }
             allocated_sats += sats;
             if (sats > 0) {
-                coinbaseTx.vout.emplace_back(sats * SATOSHI,
-                                             pplns_payouts[i].first);
+                add_payout(sats * SATOSHI, pplns_payouts[i].first);
             }
         }
         if (coinbaseTx.vout.empty()) {
-            coinbaseTx.vout.emplace_back(minerSlice, fallback_script);
+            add_payout(minerSlice, fallback);
         }
     }
 
-    if (!minerFundWhitelist.empty() && minerFundAmount > Amount::zero()) {
-        coinbaseTx.vout.emplace_back(
-            minerFundAmount,
-            GetScriptForDestination(*minerFundWhitelist.begin()));
-    }
-    if (!stakingRewardsPayoutScripts.empty() &&
-        stakingRewardsAmount > Amount::zero()) {
-        coinbaseTx.vout.emplace_back(stakingRewardsAmount,
-                                     stakingRewardsPayoutScripts[0]);
-    }
-
-    // The payees by script; the coinbase pays each the V0-leaf V2 output
-    // over its script.
+    ::node::SetCoinbaseOutputs(coinbaseTx, coinbaseTx.vout);
     const std::vector<CTxOut> payouts = coinbaseTx.vout;
-    ::node::SetCoinbaseOutputs(coinbaseTx, payouts);
     ::node::PadCoinbaseToMinSize(coinbaseTx);
     uint64_t coinbaseSize = ::GetSerializeSize(coinbaseTx);
 
@@ -608,6 +622,7 @@ UniValue MiningPoolManager::GetMiningJobJSON(const Config &config,
         UniValue out_obj(UniValue::VOBJ);
         out_obj.pushKV("value_sats", int64_t(out.nValue / SATOSHI));
         out_obj.pushKV("script_hex", HexStr(out.scriptPubKey));
+        out_obj.pushKV("branch_root", HexStr(out.vBranches.at(0)));
         coinbase_outputs.push_back(std::move(out_obj));
     }
 
@@ -645,8 +660,6 @@ ShareSubmissionResult MiningPoolManager::SubmitShare(
     uint64_t nNonce) {
     Operation operation(*this);
     ShareSubmissionResult result;
-    result.reason = "native-payout-provider-unavailable";
-    return result;
     const Consensus::Params &consensusParams =
         config.GetChainParams().GetConsensus();
 
@@ -737,7 +750,7 @@ ShareSubmissionResult MiningPoolManager::SubmitShare(
 
         PPLNSShare pplns_entry;
         pplns_entry.worker_id = worker.worker_id;
-        pplns_entry.payout_script = worker.payout_script;
+        pplns_entry.payout = worker.payout;
         pplns_entry.weight = share_diff;
         pplns_entry.is_newsletter_subscriber = worker.is_newsletter_subscriber;
         m_pplns_window.push_back(std::move(pplns_entry));
@@ -841,9 +854,10 @@ UniValue MiningPoolManager::GetPoolInfoJSON() const {
 
     UniValue obj(UniValue::VOBJ);
     obj.pushKV("enabled", m_configured && m_enabled && !m_stopping);
+    obj.pushKV("payout_ready", m_fallback_payout.has_value());
+    obj.pushKV("payout_error", m_payout_error);
+    obj.pushKV("pool_address", m_pool_address_arg);
     obj.pushKV("active_operations", static_cast<uint64_t>(m_active_operations));
-    obj.pushKV("payout_ready", false);
-    obj.pushKV("payout_error", "native-payout-provider-unavailable");
     obj.pushKV("active_workers", static_cast<uint64_t>(m_workers.size()));
     obj.pushKV("pool_hashrate", pool_hashrate);
     obj.pushKV("blocks_found", m_blocks_found);
