@@ -64,6 +64,9 @@
     X(Bytes, bytes, UINT, "", "")                                              \
     X(DroppedLines, dropped_lines, UINT, "", "")                               \
     X(Count, count, UINT, "", "")                                              \
+    X(ShortId, short_id, UINT, "", "")                                         \
+    X(Peers, peers, UINT, "", "")                                              \
+    X(Missing, missing, UINT, "", "")                                          \
     X(AmountSats, amount_sats, INT, "", "")                                    \
     X(Method, method, STRING, "", "rpc.method")                                \
     X(OriginalMethod, original_method, STRING, "", "rpc.method_original")      \
