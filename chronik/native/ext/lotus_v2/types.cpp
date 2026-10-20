@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <chronik/native/tx/legacy_tx.h>
 #include <ext/lotus_v2/types.h>
 
 #include <algorithm>
@@ -71,6 +72,17 @@ std::optional<OutputError> Output::Validate() const {
     auto fail = [](std::string_view category) {
         return std::optional<OutputError>(OutputError{category});
     };
+    if (legacy_script) {
+        const uint8_t expected =
+            0x80 |
+            (((!legacy_script->empty() && legacy_script->front() == 0x6a) || legacy_script->size() > 10000) ? 2 : 0);
+        if (flags != expected || legacy_script->size() > UINT32_MAX - 12 ||
+            !branches.empty() || !paths.empty() || token_id != Hash32{} ||
+            state_root != Hash32{}) {
+            return fail("legacy coin");
+        }
+        return std::nullopt;
+    }
     if (flags & 0xf8) {
         return fail("flags");
     }
@@ -132,6 +144,14 @@ std::optional<Bytes> Output::Encode(OutputError *error) const {
         }
         return std::nullopt;
     }
+    if (legacy_script) {
+        Bytes bytes{0x80};
+        for (int i = 0; i < 8; ++i)
+            bytes.push_back(uint8_t(value >> (8 * i)));
+        WriteCompactSize(bytes, legacy_script->size());
+        bytes.insert(bytes.end(), legacy_script->begin(), legacy_script->end());
+        return bytes;
+    }
     Bytes bytes;
     bytes.reserve(MAX_OUTPUT_BYTES);
     bytes.push_back(flags);
@@ -164,6 +184,31 @@ std::optional<Bytes> Output::Encode(OutputError *error) const {
 }
 
 std::optional<Output> Output::Decode(ByteView bytes, OutputError *error) {
+    if (!bytes.empty() && bytes[0] == 0x80) {
+        if (bytes.size() < 10 || bytes.size() > UINT32_MAX)
+            return Fail(error, "legacy coin");
+        Output output;
+        for (int i = 0; i < 8; ++i)
+            output.value |= uint64_t(bytes[1 + i]) << (8 * i);
+        size_t pos = 10;
+        uint64_t length = bytes[9];
+        if (length >= 253) {
+            const size_t count = length == 253 ? 2 : length == 254 ? 4 : 8;
+            if (bytes.size() < pos + count) return Fail(error, "legacy coin");
+            length = 0;
+            for (size_t i = 0; i < count; ++i)
+                length |= uint64_t(bytes[pos + i]) << (8 * i);
+            pos += count;
+            if (length < 253 || (count > 2 && length <= 0xffff) ||
+                (count > 4 && length <= 0xffffffff))
+                return Fail(error, "legacy coin");
+        }
+        if (length > UINT32_MAX - 12 || bytes.size() - pos != length)
+            return Fail(error, "legacy coin");
+        output.legacy_script = Bytes(bytes.begin() + pos, bytes.end());
+        output.flags = 0x80 | ((!output.legacy_script->empty() && output.legacy_script->front() == 0x6a) || output.legacy_script->size() > 10000 ? 2 : 0);
+        return output;
+    }
     if (bytes.size() > MAX_OUTPUT_BYTES) {
         return Fail(error, "output bytes");
     }

@@ -666,6 +666,7 @@ std::vector<TxEntry> IndexerImpl::MakeTxEntries(const Block &block) const {
         const mem::MempoolTx *mempool_tx = m_mempool->GetTx(entry.txid);
         entry.time_first_seen = mempool_tx ? mempool_tx->time_first_seen : 0;
         entry.is_coinbase = block_tx.undo_pos == 0;
+        entry.is_legacy = block_tx.tx->version != 7;
         entries.push_back(entry);
     }
     return entries;
