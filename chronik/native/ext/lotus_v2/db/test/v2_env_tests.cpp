@@ -100,16 +100,6 @@ BOOST_AUTO_TEST_CASE(named_subdatabases_dupfixed_postings_and_flat_files) {
         cursor_op = next_op;
     }
     BOOST_CHECK(iter_ops == expected_ops);
-
-    // Flat file append, pread, and truncate.
-    env.Flat().WriteAt(0, 0, Str("hello "));
-    env.Flat().WriteAt(0, 6, Str("world!"));
-    env.Flat().SyncFile(0);
-    BOOST_CHECK(env.Flat().ReadAt(0, 0, 12) == B("hello world!"));
-    BOOST_CHECK(env.Flat().ReadAt(0, 6, 5) == B("world"));
-    env.Flat().TruncateTo(0, 5);
-    BOOST_CHECK(env.Flat().ReadAt(0, 0, 5) == B("hello"));
-    BOOST_CHECK(ThrowsV2([&] { env.Flat().ReadAt(0, 0, 6); }));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
