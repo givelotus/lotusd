@@ -446,6 +446,28 @@ bool V2PeerProtocolHandler::IsRelayEpoch(ReconScope scope,
     return key && key->first == k0 && key->second == k1;
 }
 
+void V2PeerProtocolHandler::FilterRelayHave(
+    CNode &pfrom, ReconScope scope, const uint256 &context_id, uint64_t k0,
+    uint64_t k1, std::vector<uint64_t> &short_ids) const {
+    if (short_ids.empty() || !IsRelayEpoch(scope, context_id, k0, k1)) {
+        return;
+    }
+    // "Missing" from our window may still be in our mempool (admitted
+    // before the window, or the peer's window edge differs from ours).
+    std::erase_if(short_ids, [&](uint64_t short_id) {
+        return m_relay_epochs->HaveRelayShortId(context_id, short_id);
+    });
+    if (!short_ids.empty()) {
+        {
+            LOCK(m_mutex);
+            m_stats.recon_relay_missing += short_ids.size();
+        }
+        // Fetch them like announced short ids: one request per transaction
+        // across peers, whether reconciliation or an announcement found it.
+        m_peerman.AddRelayShortIdAnnouncements(pfrom, context_id, short_ids);
+        short_ids.clear();    }
+}
+
 uint64_t V2PeerProtocolHandler::ScopedShortId(ReconScope scope,
                                               const uint256 &context_id,
                                               uint64_t k0, uint64_t k1,
@@ -849,6 +871,19 @@ void V2PeerProtocolHandler::GetScopedTransactionsAndRoot(
             return;
         }
     }
+    if (scope == ReconScope::LIVE_MEMPOOL && m_relay_epochs &&
+        !context_id.IsNull()) {
+        // A relay epoch: the transactions admitted within the
+        // reconciliation window, not the whole mempool.
+        if (auto window{m_relay_epochs->RelayReconSet(context_id)}) {
+            out_txs = NormalizeCtorTxList(*window);
+            if (out_root) {
+                const lotus::v2::Hash root = ComputeSubtreeAHash(out_txs);
+                std::memcpy(out_root->begin(), root.data(), 32);
+            }
+            return;
+        }
+    }
     if (scope == ReconScope::LIVE_MEMPOOL) {
         std::vector<CTransactionRef> mempool_txs;
         {
@@ -919,7 +954,8 @@ MerklixSyncSummary V2PeerProtocolHandler::BuildSyncSummary(
     for (const auto &tx : txs) {
         const TxId &txid = tx->GetId();
         const uint8_t b = GetMerklixBucketIndex(txid);
-        const uint64_t sid = ComputeMerklixShortId(salt_k0, salt_k1, txid);
+        const uint64_t sid =
+            ScopedShortId(scope, context_id, salt_k0, salt_k1, txid);
         summary.buckets[b].count += 1;
         summary.buckets[b].xor_short_id ^= sid;
     }
@@ -954,12 +990,18 @@ MerklixSyncDiffResult V2PeerProtocolHandler::DiffSyncSummary(
     for (const auto &tx : local_txs) {
         const TxId &txid = tx->GetId();
         const uint8_t b = GetMerklixBucketIndex(txid);
-        const uint64_t sid = ComputeMerklixShortId(k0, k1, txid);
+        const uint64_t sid =
+            ScopedShortId(scope, remote_summary.context_id, k0, k1, txid);
         local_buckets[b].count += 1;
         local_buckets[b].xor_short_id ^= sid;
         local_bucket_sids[b].insert(sid);
     }
 
+    // A peer can have missing transactions even when its bucket contains no
+    // more entries than ours: local extras can balance or exceed those misses.
+    // Count direction therefore cannot establish relay-window coverage.
+    std::array<uint64_t, 16> local_extra_sids{};
+    uint16_t local_extra_mask{0};
     for (uint8_t b = 0; b < 16; ++b) {
         const auto &rem = remote_summary.buckets[b];
         const auto &loc = local_buckets[b];
@@ -981,7 +1023,10 @@ MerklixSyncDiffResult V2PeerProtocolHandler::DiffSyncSummary(
             // the same hint. Recover through the existing three-syndrome
             // sub-bucket exchange instead of terminating on an unowned ID.
             if (diff_count == -1 && in_local) {
-                // Local has 1 extra tx in this bucket and 0 missing.
+                // This is a candidate local extra, not proof that other
+                // differences are absent. Authenticate the subset root below.
+                local_extra_sids[b] = diff_xor;
+                local_extra_mask |= static_cast<uint16_t>(1U << b);
                 continue;
             }
         }
@@ -991,8 +1036,37 @@ MerklixSyncDiffResult V2PeerProtocolHandler::DiffSyncSummary(
 
     // Defect D1 (Hole 1): Never treat a scope as converged when the 256-bit
     // candidate_root differs, even if all 16 64-bit bucket XORs/counts match.
-    if (!result.root_matched && result.mismatched_bucket_mask == 0 &&
+    if (!result.root_matched &&
+        result.mismatched_bucket_mask == 0 &&
         result.single_missing_short_ids.empty()) {
+        // Relay windows can differ only by local extras. Avoid sixteen
+        // response frames for that common case only if the captured local set
+        // minus those candidates authenticates the peer's complete root.
+        // Count/XOR hints alone cannot exclude hidden balanced differences.
+        if (local_extra_mask != 0 &&
+            IsRelayEpoch(scope, remote_summary.context_id, k0, k1)) {
+            std::vector<CTransactionRef> remote_subset;
+            remote_subset.reserve(local_txs.size());
+            uint16_t removed_mask{0};
+            bool ambiguous_short_id{false};
+            for (const auto &tx : local_txs) {
+                const uint8_t bucket{GetMerklixBucketIndex(tx->GetId())};
+                if ((local_extra_mask & (1U << bucket)) != 0 &&
+                    ScopedShortId(scope, remote_summary.context_id, k0, k1,
+                                  tx->GetId()) == local_extra_sids[bucket]) {
+                    const uint16_t bit{static_cast<uint16_t>(1U << bucket)};
+                    ambiguous_short_id |= (removed_mask & bit) != 0;
+                    removed_mask |= bit;
+                    continue;
+                }
+                remote_subset.push_back(tx);
+            }
+            if (!ambiguous_short_id &&
+                ComputeScopedMerklixRoot(remote_subset) ==
+                    remote_summary.candidate_root) {
+                return result;
+            }
+        }
         result.mismatched_bucket_mask = 0xFFFFU;
     }
 
@@ -1040,7 +1114,8 @@ MerklixSubBucketSummary V2PeerProtocolHandler::BuildSubBucketSummary(
             continue;
         }
         const uint8_t sb = GetMerklixNibble(txid, child_nibble_idx);
-        const uint64_t sid = ComputeMerklixShortId(salt_k0, salt_k1, txid);
+        const uint64_t sid =
+            ScopedShortId(scope, context_id, salt_k0, salt_k1, txid);
         sub.sub_buckets[sb].count += 1;
         sub.sub_buckets[sb].s1 ^= sid;
         sub.sub_buckets[sb].s3 ^= GF64Cube(sid);
@@ -1103,7 +1178,8 @@ MerklixSubBucketDiffResult V2PeerProtocolHandler::DiffSubBucketSummary(
             continue;
         }
         const uint8_t sb = GetMerklixNibble(txid, child_nibble_idx);
-        const uint64_t sid = ComputeMerklixShortId(k0, k1, txid);
+        const uint64_t sid =
+            ScopedShortId(scope, remote_sub.context_id, k0, k1, txid);
         local_subs[sb].count += 1;
         local_subs[sb].s1 ^= sid;
         local_subs[sb].s3 ^= GF64Cube(sid);
@@ -1343,7 +1419,9 @@ void V2PeerProtocolHandler::HandleMerklixSync(
     const ReconScope scope = static_cast<ReconScope>(summary.scope);
     if ((summary.salt_k0 != 0 || summary.salt_k1 != 0) &&
         !IsValidReconSipHashKey(scope, summary.context_id, summary.salt_k0,
-                                summary.salt_k1)) {
+                                summary.salt_k1) &&
+        !IsRelayEpoch(scope, summary.context_id, summary.salt_k0,
+                      summary.salt_k1)) {
         LOCK(m_mutex);
         ++m_stats.malformed_messages;
         return;
@@ -1358,7 +1436,7 @@ void V2PeerProtocolHandler::HandleMerklixSync(
         ++m_stats.merklixsync_received;
     }
 
-    const MerklixSyncDiffResult diff = DiffSyncSummary(summary);
+    MerklixSyncDiffResult diff = DiffSyncSummary(summary);
     if (auto *metrics{node::GetNodeMetrics()}) {
         metrics->merklix_rounds.Add(diff.root_matched ? 0 : 1);
         if (!diff.single_missing_short_ids.empty()) {
@@ -1369,6 +1447,8 @@ void V2PeerProtocolHandler::HandleMerklixSync(
     if (diff.root_matched) {
         return;
     }
+    FilterRelayHave(pfrom, scope, summary.context_id, summary.salt_k0,
+                    summary.salt_k1, diff.single_missing_short_ids);
 
     if (!diff.single_missing_short_ids.empty()) {
         RecordPendingShortTxRequest(pfrom.GetId(), scope, summary.context_id,
@@ -1426,7 +1506,8 @@ void V2PeerProtocolHandler::HandleGetMerklixBuck(
     const ReconScope scope = static_cast<ReconScope>(req.scope);
     if ((req.salt_k0 != 0 || req.salt_k1 != 0) &&
         !IsValidReconSipHashKey(scope, req.context_id, req.salt_k0,
-                                req.salt_k1)) {
+                                req.salt_k1) &&
+        !IsRelayEpoch(scope, req.context_id, req.salt_k0, req.salt_k1)) {
         LOCK(m_mutex);
         ++m_stats.malformed_messages;
         return;
@@ -1486,7 +1567,8 @@ void V2PeerProtocolHandler::HandleMerklixBuck(
     const ReconScope scope = static_cast<ReconScope>(sub.scope);
     if ((sub.salt_k0 != 0 || sub.salt_k1 != 0) &&
         !IsValidReconSipHashKey(scope, sub.context_id, sub.salt_k0,
-                                sub.salt_k1)) {
+                                sub.salt_k1) &&
+        !IsRelayEpoch(scope, sub.context_id, sub.salt_k0, sub.salt_k1)) {
         LOCK(m_mutex);
         ++m_stats.malformed_messages;
         return;
@@ -1501,7 +1583,7 @@ void V2PeerProtocolHandler::HandleMerklixBuck(
         ++m_stats.merklixbuck_received;
     }
 
-    const MerklixSubBucketDiffResult diff = DiffSubBucketSummary(sub);
+    MerklixSubBucketDiffResult diff = DiffSubBucketSummary(sub);
     if (auto *metrics{node::GetNodeMetrics()}) {
         const bool matched{diff.missing_short_ids.empty() &&
                            diff.unresolved_sub_buckets.empty()};
@@ -1515,6 +1597,8 @@ void V2PeerProtocolHandler::HandleMerklixBuck(
                                            diff.unresolved_sub_buckets.size());
         }
     }
+    FilterRelayHave(pfrom, scope, sub.context_id, sub.salt_k0, sub.salt_k1,
+                    diff.missing_short_ids);
     if (!diff.missing_short_ids.empty()) {
         RecordPendingShortTxRequest(pfrom.GetId(), scope, sub.context_id,
                                     sub.salt_k0, sub.salt_k1,
