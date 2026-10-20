@@ -29,6 +29,67 @@ cmake -GNinja .. -DENABLE_HTTP2=ON
   bindings, and none of their optional dependencies). It is built by default;
   pass `NO_HTTP2=1` to skip it, like `NO_ZMQ=1`.
 
+Serving
+-------
+
+With HTTP/2 built and `-http2` on (default 1 in such builds):
+
+- **TLS listeners** (the TLS side of the RPC port and every `-publicbind`
+  listener) select ALPN `h2` when the client offers it, else `http/1.1` as
+  before. Exception: `-publicbind` listeners with `-publicfallback` stay
+  HTTP/1.1, because the fallback relays the client's HTTP/1.1 bytes.
+- **Plain-text listeners** stay HTTP/1.1 only. There is no `h2c` upgrade
+  and no prior-knowledge cleartext HTTP/2: browsers only use HTTP/2 over TLS,
+  and it would add a second protocol to unauthenticated connections for no
+  client the node needs. A connection starting with the HTTP/2 preface gets
+  a 400; an `Upgrade: h2c` header is ignored.
+- `-http2=0` turns it off (neither selected nor offered by the dialer).
+
+Each HTTP/2 stream is one request, handled by exactly the code that handles
+an HTTP/1.1 request: `-trustedproxy` (`X-Forwarded-For`), health endpoints,
+`-rpcallowip`, the public-listener rules (only `/p2p/ws` and `/chronik`
+there), Chronik, the RPC/REST handlers and their authentication, `zstd`
+replies, `HEAD`, the request body limit and metrics. Requests are presented
+to the handlers as HTTP/1.1 messages (`:authority` becomes `Host`, split
+`cookie` fields are joined), and replies lose the fields HTTP/2 forbids
+(`Connection`, `Keep-Alive`, `Transfer-Encoding`, ...). Streams of one
+connection run concurrently; together they are bounded by `-rpcworkqueue`
+like separate HTTP/1.1 connections (503 when the queue is full). A reply
+asking to close the connection (during shutdown) sends GOAWAY.
+
+Differences from HTTP/1.1 worth knowing:
+
+- `Expect: 100-continue` is not answered with 100 over HTTP/2; clients send
+  the body after a short wait.
+- A body over the limit gets 413 and the stream is reset; the connection
+  stays up (HTTP/1.1 closes it).
+- A request over the header limit gets 431 (HTTP/1.1: 400 and close).
+- `CONNECT` without `:protocol` gets 405, like any unknown method.
+
+WebSockets over HTTP/2
+----------------------
+
+HTTP/2 connections advertise `SETTINGS_ENABLE_CONNECT_PROTOCOL = 1` and
+accept RFC 8441 extended CONNECT (`:method CONNECT`, `:protocol websocket`,
+`sec-websocket-version: 13`) for the P2P WebSocket and Chronik's
+`/chronik/ws`, under the rules of an HTTP/1.1 upgrade. The response is
+`200` with the selected `sec-websocket-protocol`; there is no
+`Sec-WebSocket-Key`/`Accept` in HTTP/2. Other `:protocol` values get 501, a
+missing `sec-websocket-version` 400, and paths not served as WebSockets
+403/404 as over HTTP/1.1. Flow control follows delivery: a client's window
+reopens as the node consumes what it sent. See
+[P2P over WebSocket](p2p-websocket.md#over-http2) for P2P specifics,
+including the dialer, which offers `h2` like a browser and uses extended
+CONNECT when the server selects it.
+
+OpenSSL
+-------
+
+ALPN selection uses `SSL_CTX_set_alpn_select_cb`/`SSL_select_next_proto`
+(server preference: `h2`, then `http/1.1`) and the client offer
+`SSL_CTX_set_alpn_protos`; both behave the same on OpenSSL 1.1.1 and 3.x.
+Development and tests used OpenSSL 3.x/4.x only.
+
 Security
 --------
 
@@ -108,3 +169,12 @@ Fixed, not configurable:
   from the response bodies without copying them.
 
 An invalid value refuses to start the node.
+
+Fuzzing and benchmarks
+----------------------
+
+The `http2_server` fuzz target feeds arbitrary client bytes into the HTTP/2
+adapter with a real nghttp2 session (see [fuzzing](fuzzing.md)); building
+nghttp2 itself with `-fsanitize=fuzzer-no-link,address,undefined` lets
+libFuzzer explore the library's parser too. `contrib/bench/http2/` compares
+HTTP/1.1 and HTTP/2 on the TLS port.
