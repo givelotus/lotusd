@@ -58,6 +58,7 @@
 #include <node/kernel_notifications.h>
 #include <node/mempool_persist_args.h>
 #include <node/metrics.h>
+#include <node/metrics_collectors.h>
 #include <node/miner.h>
 #include <node/peerman_args.h>
 #include <node/ui_interface.h>
@@ -279,6 +280,7 @@ void Shutdown(NodeContext &node) {
     // After the HTTP server: no scrape is in progress. Recording continues
     // harmlessly into the (still allocated) metrics until exit.
     StopHTTPMetrics();
+    node::StopNodeMetricsCollectors();
 
 #if ENABLE_CHRONIK
     // Chronik serves its own HTTP and Electrum interfaces, whose handlers reach
@@ -3775,6 +3777,9 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
     if (node.peerman) {
         node.peerman->StartScheduledTasks(scheduler);
     }
+
+    // Scrape-time metrics of the subsystems created above
+    node::StartNodeMetricsCollectors(node);
 
 #if HAVE_SYSTEM
     StartupNotify(args);
