@@ -272,10 +272,13 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
         pblock->vtx[0]->GetTotalSize() +
         (blockFitter.nBlockSize - BlockFitter::COINBASE_RESERVED_SIZE);
 
-    LogPrintf(
-        "CreateNewBlock(): total size: %u txs: %u fees: %ld sigChecks %d\n",
-        nSerializeSize, blockFitter.nBlockTx, blockFitter.nFees,
-        blockFitter.nBlockSigChecks);
+    LogInfoEvent(
+        BCLog::ALL, "block_template_created",
+        "CreateNewBlock(): total size: {bytes} txs: {count} fees: {amount_sats} sigChecks {sig_checks}")
+        .Field(BCLog::LogField::Bytes, nSerializeSize)
+        .Field(BCLog::LogField::Count, blockFitter.nBlockTx)
+        .Field(BCLog::LogField::AmountSats, blockFitter.nFees / SATOSHI)
+        .Field(BCLog::LogField::SigChecks, blockFitter.nBlockSigChecks);
 
     // Fill in header.
     pblock->hashPrevBlock = pindexPrev->GetBlockHash();
