@@ -47,8 +47,12 @@ static bool OutputFeeShare(const CTransaction &tx, const CTxUndo *undo,
     if (!undo || undo->vprevout.size() != tx.vin.size() ||
         !Consensus::CheckTxInputsFromSpentCoins(tx, undo->vprevout, state, height,
                                                fee)) {
-        LogError("%s: inconsistent accepted transaction undo at height %d, tx=%s\n",
-                 __func__, height, tx.GetId().ToString());
+        LogErrorEvent(
+            BCLog::ALL, "coinstats_accepted_undo_inconsistent",
+            "{source_function}: inconsistent accepted transaction undo at height {height}, tx={txid}")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::Height, height)
+            .Field(BCLog::LogField::TxId, tx.GetId());
         return false;
     }
     size_t spendable_outputs = 0;
@@ -504,17 +508,19 @@ bool CoinStatsIndex::CustomInit(
     uint32_t version;
     if (!m_db->Read(DB_NATIVE_VERSION, version)) {
         if (!m_db->IsEmpty()) {
-            LogError("%s: Native coinstats index predates paid-lifetime/expiry "
-                     "accounting; "
-                     "restart with -reindex to rebuild it\n",
-                     __func__);
+            LogErrorEvent(
+                BCLog::ALL, "coinstats_native_accounting_format_missing",
+                "{source_function}: Native coinstats index predates paid-lifetime/expiry accounting; restart with -reindex to rebuild it")
+                .Field(BCLog::LogField::SourceFunction, __func__);
             return false;
         }
         m_db->Write(DB_NATIVE_VERSION, NATIVE_INDEX_VERSION);
     } else if (version != NATIVE_INDEX_VERSION) {
-        LogError("%s: Unsupported native coinstats index version %u; "
-                 "restart with -reindex to rebuild it\n",
-                 __func__, version);
+        LogErrorEvent(
+            BCLog::ALL, "coinstats_native_format_unsupported",
+            "{source_function}: Unsupported native coinstats index version {version}; restart with -reindex to rebuild it")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::Version, version);
         return false;
     }
     if (!m_db->Read(DB_MUHASH, m_muhash)) {

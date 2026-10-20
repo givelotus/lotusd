@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+  "batch": "coinstats-v2-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "tier": "v2",
+  "v2_owner": "3c491043cec867e5f00beac01027c9a83023ca5f",
+  "files": [
+    {
+      "path": "src/index/coinstatsindex.cpp",
+      "rules": [
+        {
+          "id": "coinstats_accepted_undo_inconsistent",
+          "old": "LogError(\"%s: inconsistent accepted transaction undo at height %d, tx=%s\\n\",\n                 __func__, height, tx.GetId().ToString())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"coinstats_accepted_undo_inconsistent\", \"{source_function}: inconsistent accepted transaction undo at height {height}, tx={txid}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::Height, height).Field(BCLog::LogField::TxId, tx.GetId())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: inconsistent accepted transaction undo at height %d, tx=%s\n",
+            "specifiers": [
+              "%s",
+              "%d",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "height",
+              "tx.GetId().ToString()"
+            ]
+          },
+          "review_note": "Keep original levels, warning prose, failure returns and index state. Snapshot raw hash/TxId and unchanged byte prefix. Version is uint32_t and fits existing signed INT Version without loss (UINT32_MAX < INT64_MAX); no database/string library-version field misuse. V2 accounting-specific sites are separated from inherited shared index diagnostics."
+        },
+        {
+          "id": "coinstats_native_accounting_format_missing",
+          "old": "LogError(\"%s: Native coinstats index predates paid-lifetime/expiry \"\n                     \"accounting; \"\n                     \"restart with -reindex to rebuild it\\n\",\n                     __func__)",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"coinstats_native_accounting_format_missing\", \"{source_function}: Native coinstats index predates paid-lifetime/expiry accounting; restart with -reindex to rebuild it\").Field(BCLog::LogField::SourceFunction, __func__)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: Native coinstats index predates paid-lifetime/expiry accounting; restart with -reindex to rebuild it\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Keep original levels, warning prose, failure returns and index state. Snapshot raw hash/TxId and unchanged byte prefix. Version is uint32_t and fits existing signed INT Version without loss (UINT32_MAX < INT64_MAX); no database/string library-version field misuse. V2 accounting-specific sites are separated from inherited shared index diagnostics."
+        },
+        {
+          "id": "coinstats_native_format_unsupported",
+          "old": "LogError(\"%s: Unsupported native coinstats index version %u; \"\n                 \"restart with -reindex to rebuild it\\n\",\n                 __func__, version)",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"coinstats_native_format_unsupported\", \"{source_function}: Unsupported native coinstats index version {version}; restart with -reindex to rebuild it\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::Version, version)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: Unsupported native coinstats index version %u; restart with -reindex to rebuild it\n",
+            "specifiers": [
+              "%s",
+              "%u"
+            ],
+            "arguments": [
+              "__func__",
+              "version"
+            ]
+          },
+          "review_note": "Keep original levels, warning prose, failure returns and index state. Snapshot raw hash/TxId and unchanged byte prefix. Version is uint32_t and fits existing signed INT Version without loss (UINT32_MAX < INT64_MAX); no database/string library-version field misuse. V2 accounting-specific sites are separated from inherited shared index diagnostics."
+        }
+      ]
+    }
+  ]
+}
