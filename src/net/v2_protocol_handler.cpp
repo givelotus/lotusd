@@ -4,6 +4,8 @@
 
 #include <net/v2_protocol_handler.h>
 
+#include <node/metrics.h>
+
 #include <avalanche/processor.h>
 #include <common/args.h>
 #include <consensus/merkle.h>
@@ -452,12 +454,19 @@ void V2PeerProtocolHandler::FilterRelayHave(
     if (short_ids.empty() || !IsRelayEpoch(scope, context_id, k0, k1)) {
         return;
     }
+    auto *metrics{node::GetNodeMetrics()};
+    if (metrics) {
+        metrics->txrelay_recon_diff.Record(short_ids.size());
+    }
     // "Missing" from our window may still be in our mempool (admitted
     // before the window, or the peer's window edge differs from ours).
     std::erase_if(short_ids, [&](uint64_t short_id) {
         return m_relay_epochs->HaveRelayShortId(context_id, short_id);
     });
     if (!short_ids.empty()) {
+        if (metrics) {
+            metrics->txrelay_recon_fetched.Add(0, short_ids.size());
+        }
         {
             LOCK(m_mutex);
             m_stats.recon_relay_missing += short_ids.size();
@@ -465,7 +474,8 @@ void V2PeerProtocolHandler::FilterRelayHave(
         // Fetch them like announced short ids: one request per transaction
         // across peers, whether reconciliation or an announcement found it.
         m_peerman.AddRelayShortIdAnnouncements(pfrom, context_id, short_ids);
-        short_ids.clear();    }
+        short_ids.clear();
+    }
 }
 
 uint64_t V2PeerProtocolHandler::ScopedShortId(ReconScope scope,
@@ -1611,6 +1621,14 @@ void V2PeerProtocolHandler::HandleMerklixBuck(
         req.short_ids = diff.missing_short_ids;
         m_connman.PushMessage(&pfrom,
                               NetMsg::Make(NetMsgType::GETSHORTTX, req));
+    }
+
+    if (!diff.unresolved_sub_buckets.empty() &&
+        IsRelayEpoch(scope, sub.context_id, sub.salt_k0, sub.salt_k1)) {
+        if (auto *metrics{node::GetNodeMetrics()}) {
+            metrics->txrelay_recon_overflow.Add(
+                0, diff.unresolved_sub_buckets.size());
+        }
     }
 
     // Multi-depth prefix bisection for d >= 3 sub-bucket overflows:
