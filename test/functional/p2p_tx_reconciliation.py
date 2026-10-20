@@ -12,10 +12,13 @@ what it lacks. Every node must get every transaction, and reconciliation
 messages must have been used.
 """
 
+import http.client
+import re
 import time
 
 from test_framework.p2p import P2PInterface
 from test_framework.test_framework import BitcoinTestFramework
+from test_framework.util import rpc_port
 from test_framework.wallet import MiniWallet
 
 NODES = 6
@@ -40,8 +43,26 @@ class TxReconciliationTest(BitcoinTestFramework):
             "-txrelayfanoutmax=1",
             "-txreconinterval=250",
             "-txreconwindow=30",
+            "-metrics",
+            "-debug=txrelay",
         ]
     ] * NODES
+
+    def relay_metrics(self, i):
+        """{(name, labels): value} of node i's fullnode_txrelay_ metrics"""
+        conn = http.client.HTTPConnection("127.0.0.1", rpc_port(i), timeout=30)
+        conn.request("GET", "/metrics")
+        body = conn.getresponse().read().decode()
+        conn.close()
+        out = {}
+        for line in body.splitlines():
+            m = re.match(r"^(fullnode_txrelay_\w+)(\{[^}]*\})? (\S+)$", line)
+            if m:
+                out[(m.group(1), m.group(2) or "")] = float(m.group(3))
+        return out
+
+    def metric(self, name, labels=""):
+        return sum(self.relay_metrics(i).get((name, labels), 0) for i in range(NODES))
 
     def run_test(self):
         for node in self.nodes:
@@ -86,6 +107,25 @@ class TxReconciliationTest(BitcoinTestFramework):
         )
         assert syncs > 0
         assert fetched > 0
+        # The relay metrics agree.
+        time.sleep(1.1)  # the metrics endpoint caches a scrape for 1 s
+        rounds = self.metric("fullnode_txrelay_recon_rounds_total")
+        recon_fetched = self.metric("fullnode_txrelay_recon_fetched_total")
+        short_sent = self.metric(
+            "fullnode_txrelay_announce_sent_total", '{kind="short"}'
+        )
+        bodies = self.metric("fullnode_txrelay_body_recv_total")
+        dup = self.metric("fullnode_txrelay_body_dup_total")
+        self.log.info(
+            f"recon rounds {rounds}, recon-fetched ids {recon_fetched}, short "
+            f"announcements {short_sent}, bodies {bodies} ({dup} duplicate)"
+        )
+        assert rounds > 0
+        assert recon_fetched > 0
+        assert short_sent > 0
+        assert bodies >= (NODES - 1) * TXS
+        with self.nodes[1].assert_debug_log(["[txrelay] reconciliation summary of"]):
+            time.sleep(0.6)
         # Summaries go only to peers that negotiated reconciliation.
         for n in self.nodes:
             for p in n.getpeerinfo():
