@@ -1,0 +1,131 @@
+{
+  "schema": 1,
+  "batch": "mempool-persistence",
+  "review_note": "Reviewed exact shared mempool lifecycle producers. Source conversion is separate from actual native/functional readiness; preserve Info/category/text/branches and append-only distinct registry keys.",
+  "files": [
+    {
+      "path": "src/kernel/mempool_persist.cpp",
+      "rules": [
+        {
+          "id": "mempool_file_open_failed",
+          "old": "LogPrintf(\n            \"Failed to open mempool file from disk. Continuing anyway.\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"mempool_file_open_failed\", \"Failed to open mempool file from disk. Continuing anyway.\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Failed to open mempool file from disk. Continuing anyway.\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve current Info level, ALL category, exact human message and every load/dump/exception/control-flow branch. Five import counters are distinct nonnegative counts (zero initialized and incremented/assigned from set size); do not repeat generic Count keys. Error copies the existing e.what text. Copy/dump times remain the exact existing SecondsDouble ticks with :g precision; copy interval includes existing mutex wait and dump includes serialize/commit/rename, not a new IO-only measurement. No file path or transaction data added. Native field-definition/actual producer gate is required before readiness."
+        },
+        {
+          "id": "mempool_file_deserialize_failed",
+          "old": "LogPrintf(\"Failed to deserialize mempool data on disk: %s. Continuing \"\n                  \"anyway.\\n\",\n                  e.what())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"mempool_file_deserialize_failed\", \"Failed to deserialize mempool data on disk: {error}. Continuing anyway.\")\n        .Field(BCLog::LogField::Error, e.what())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Failed to deserialize mempool data on disk: %s. Continuing anyway.\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "e.what()"
+            ]
+          },
+          "review_note": "Preserve current Info level, ALL category, exact human message and every load/dump/exception/control-flow branch. Five import counters are distinct nonnegative counts (zero initialized and incremented/assigned from set size); do not repeat generic Count keys. Error copies the existing e.what text. Copy/dump times remain the exact existing SecondsDouble ticks with :g precision; copy interval includes existing mutex wait and dump includes serialize/commit/rename, not a new IO-only measurement. No file path or transaction data added. Native field-definition/actual producer gate is required before readiness."
+        },
+        {
+          "id": "mempool_file_import_completed",
+          "old": "LogPrintf(\"Imported mempool transactions from disk: %i succeeded, %i \"\n              \"failed, %i expired, %i already there, %i waiting for initial \"\n              \"broadcast\\n\",\n              count, failed, expired, already_there, unbroadcast)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"mempool_file_import_completed\", \"Imported mempool transactions from disk: {mempool_import_succeeded_count} succeeded, {mempool_import_failed_count} failed, {mempool_import_expired_count} expired, {mempool_import_present_count} already there, {mempool_import_waiting_broadcast_count} waiting for initial broadcast\")\n        .Field(BCLog::LogField::MempoolImportSucceededCount, count)\n        .Field(BCLog::LogField::MempoolImportFailedCount, failed)\n        .Field(BCLog::LogField::MempoolImportExpiredCount, expired)\n        .Field(BCLog::LogField::MempoolImportPresentCount, already_there)\n        .Field(BCLog::LogField::MempoolImportWaitingBroadcastCount, unbroadcast)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Imported mempool transactions from disk: %i succeeded, %i failed, %i expired, %i already there, %i waiting for initial broadcast\n",
+            "specifiers": [
+              "%i",
+              "%i",
+              "%i",
+              "%i",
+              "%i"
+            ],
+            "arguments": [
+              "count",
+              "failed",
+              "expired",
+              "already_there",
+              "unbroadcast"
+            ]
+          },
+          "review_note": "Preserve current Info level, ALL category, exact human message and every load/dump/exception/control-flow branch. Five import counters are distinct nonnegative counts (zero initialized and incremented/assigned from set size); do not repeat generic Count keys. Error copies the existing e.what text. Copy/dump times remain the exact existing SecondsDouble ticks with :g precision; copy interval includes existing mutex wait and dump includes serialize/commit/rename, not a new IO-only measurement. No file path or transaction data added. Native field-definition/actual producer gate is required before readiness."
+        },
+        {
+          "id": "mempool_file_unbroadcast_write_started",
+          "old": "LogPrintf(\"Writing %d unbroadcast transactions to disk.\\n\",\n                  unbroadcast_txids.size())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"mempool_file_unbroadcast_write_started\", \"Writing {count} unbroadcast transactions to disk.\")\n        .Field(BCLog::LogField::Count, unbroadcast_txids.size())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Writing %d unbroadcast transactions to disk.\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "unbroadcast_txids.size()"
+            ]
+          },
+          "review_note": "Preserve current Info level, ALL category, exact human message and every load/dump/exception/control-flow branch. Five import counters are distinct nonnegative counts (zero initialized and incremented/assigned from set size); do not repeat generic Count keys. Error copies the existing e.what text. Copy/dump times remain the exact existing SecondsDouble ticks with :g precision; copy interval includes existing mutex wait and dump includes serialize/commit/rename, not a new IO-only measurement. No file path or transaction data added. Native field-definition/actual producer gate is required before readiness."
+        },
+        {
+          "id": "mempool_file_dump_completed",
+          "old": "LogPrintf(\"Dumped mempool: %gs to copy, %gs to dump\\n\",\n                  Ticks<SecondsDouble>(mid - start),\n                  Ticks<SecondsDouble>(last - mid))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"mempool_file_dump_completed\", \"Dumped mempool: {mempool_copy_seconds:g}s to copy, {mempool_dump_seconds:g}s to dump\")\n        .Field(BCLog::LogField::MempoolCopySeconds, Ticks<SecondsDouble>(mid - start))\n        .Field(BCLog::LogField::MempoolDumpSeconds, Ticks<SecondsDouble>(last - mid))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Dumped mempool: %gs to copy, %gs to dump\n",
+            "specifiers": [
+              "%g",
+              "%g"
+            ],
+            "arguments": [
+              "Ticks<SecondsDouble>(mid - start)",
+              "Ticks<SecondsDouble>(last - mid)"
+            ]
+          },
+          "review_note": "Preserve current Info level, ALL category, exact human message and every load/dump/exception/control-flow branch. Five import counters are distinct nonnegative counts (zero initialized and incremented/assigned from set size); do not repeat generic Count keys. Error copies the existing e.what text. Copy/dump times remain the exact existing SecondsDouble ticks with :g precision; copy interval includes existing mutex wait and dump includes serialize/commit/rename, not a new IO-only measurement. No file path or transaction data added. Native field-definition/actual producer gate is required before readiness."
+        },
+        {
+          "id": "mempool_file_dump_failed",
+          "old": "LogPrintf(\"Failed to dump mempool: %s. Continuing anyway.\\n\", e.what())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"mempool_file_dump_failed\", \"Failed to dump mempool: {error}. Continuing anyway.\")\n        .Field(BCLog::LogField::Error, e.what())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Failed to dump mempool: %s. Continuing anyway.\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "e.what()"
+            ]
+          },
+          "review_note": "Preserve current Info level, ALL category, exact human message and every load/dump/exception/control-flow branch. Five import counters are distinct nonnegative counts (zero initialized and incremented/assigned from set size); do not repeat generic Count keys. Error copies the existing e.what text. Copy/dump times remain the exact existing SecondsDouble ticks with :g precision; copy interval includes existing mutex wait and dump includes serialize/commit/rename, not a new IO-only measurement. No file path or transaction data added. Native field-definition/actual producer gate is required before readiness."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Distinct imported transaction outcomes and exact copy/dump durations in seconds; append only, existing IDs unchanged. Match the actual registry tail; parallel key additions require explicit anchor review, not insertion before existing keys.",
+          "old": "    X(ReceivedTimeDifferenceSeconds, received_time_difference_seconds, UINT, \"\", \"\")\n\nnamespace BCLog {",
+          "new": "    X(ReceivedTimeDifferenceSeconds, received_time_difference_seconds, UINT, \"\", \"\") \\\n    X(MempoolImportSucceededCount, mempool_import_succeeded_count, UINT, \"\", \"\") \\\n    X(MempoolImportFailedCount, mempool_import_failed_count, UINT, \"\", \"\") \\\n    X(MempoolImportExpiredCount, mempool_import_expired_count, UINT, \"\", \"\") \\\n    X(MempoolImportPresentCount, mempool_import_present_count, UINT, \"\", \"\") \\\n    X(MempoolImportWaitingBroadcastCount, mempool_import_waiting_broadcast_count, UINT, \"\", \"\") \\\n    X(MempoolCopySeconds, mempool_copy_seconds, FLOAT, \"\", \"\") \\\n    X(MempoolDumpSeconds, mempool_dump_seconds, FLOAT, \"\", \"\")\n\nnamespace BCLog {"
+        }
+      ]
+    }
+  ]
+}
