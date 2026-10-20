@@ -100,7 +100,11 @@ class MiningProofOfWorkTest(BitcoinTestFramework):
         address = config["address"]
         assert_equal(address["format"], "cashaddr")
         assert_equal(address["types"], [0, 1])
-        assert_equal(address["acceptedformats"], ["cashaddr", "base58check"])
+        expected_formats = ["cashaddr", "base58check"]
+        if self.expected_kind() == "lotus-v2":
+            expected_formats.append("xpiaddr")
+            assert_equal(address["nativehrp"], "rxpi")
+        assert_equal(address["acceptedformats"], expected_formats)
         destination = node.validateaddress(node.get_deterministic_priv_key().address)
         assert_equal(destination["isvalid"], True)
         assert destination["address"].startswith(address["hrp"] + ":")
