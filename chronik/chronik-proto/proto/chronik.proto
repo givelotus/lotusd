@@ -127,6 +127,9 @@ message ScriptUtxo {
     Token token = 11;
     // Data attached to this output by plugins
     map<string, PluginEntry> plugins = 12;
+    // Whether this output was created by a legacy v1/v2 transaction.
+    bool is_legacy = 13;
+
 }
 
 // UTXO, but with a script attached.
@@ -147,6 +150,9 @@ message Utxo {
     Token token = 7;
     // Data attached to this output by plugins
     map<string, PluginEntry> plugins = 8;
+    // Whether this output was created by a legacy v1/v2 transaction.
+    bool is_legacy = 9;
+
 }
 
 // COutPoint, points to a coin being spent by an input.
@@ -181,6 +187,9 @@ message TxInput {
     Token token = 8;
     // Data attached to this output by plugins
     map<string, PluginEntry> plugins = 9;
+    // Whether this output was created by a legacy v1/v2 transaction.
+    bool is_legacy = 10;
+
 }
 
 // CTxOut, creates a new coin.
@@ -198,6 +207,9 @@ message TxOutput {
     // Lotus V2: the 32-byte state root of a HAS_STATE output (native wire
     // order), empty for every other output.
     bytes state_root = 7;
+    // Whether this output was created by a legacy v1/v2 transaction.
+    bool is_legacy = 8;
+
 }
 
 // Data about a block which a Tx is in.

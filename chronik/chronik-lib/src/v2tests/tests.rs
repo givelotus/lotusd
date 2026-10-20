@@ -1,4 +1,5 @@
 use super::*;
+use bitcoinsuite_core::lotus_v2::MAX_COIN_OUTPUT_BYTES;
 use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT: AtomicU64 = AtomicU64::new(0);
 fn limits() -> f::ServiceLimits {
@@ -35,6 +36,7 @@ fn block(
     inputs: Vec<f::Input>,
 ) -> f::NativeBlock {
     let output = Output {
+        legacy_script: None,
         flags: 0,
         value: u64::MAX,
         token_id: Hash32([0; 32]),
@@ -166,11 +168,12 @@ fn input_and_response_caps_preserve_checkpoint() {
         .unwrap();
     let mut large = block(4, 1, 2, 12, vec![]);
     large.transactions[0].outputs.push(f::NativeOutput {
-        wire: vec![0; MAX_OUTPUT_BYTES + 1],
+        wire: vec![0; MAX_COIN_OUTPUT_BYTES + 1],
     });
     assert!(service.connect_block(large).is_err());
     let mut oversized = block(4, 1, 2, 12, vec![]);
-    oversized.transactions[0].outputs[0].wire = vec![0; MAX_OUTPUT_BYTES + 1];
+    oversized.transactions[0].outputs[0].wire =
+        vec![0; MAX_COIN_OUTPUT_BYTES + 1];
     assert!(service.connect_block(oversized).is_err());
     let mut malformed = block(4, 1, 2, 12, vec![]);
     malformed.transactions[0].index = 7;
@@ -275,7 +278,8 @@ fn exact_transport_response_and_block_boundaries() {
     over.transactions = 3;
     assert!(open_service(Temp::new().path(), binding(), true, over).is_err());
     let mut over = caps.clone();
-    over.changes = 4;
+    over.changes = (db::Bounds::new(caps.block_bytes.into()).unwrap().changes()
+        + 1) as u32;
     assert!(open_service(Temp::new().path(), binding(), true, over).is_err());
     let other = Temp::new();
     let service =

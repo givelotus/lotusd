@@ -48,6 +48,7 @@ struct OutPoint {
 
 /** Hard native framing bound, independent of stricter deployment profiles. */
 inline constexpr size_t MAX_OUTPUT_BYTES = 844;
+inline constexpr size_t MAX_COIN_OUTPUT_BYTES = 10020;
 /** Maximum branches and paths in the native output grammar. */
 inline constexpr size_t MAX_OUTPUT_BRANCHES = 16;
 
@@ -65,7 +66,10 @@ struct OutputError {
  * spendability; burns also carry public roots.
  */
 struct Output {
-    /** Bit 0: token; bit 1: burn; bit 2: state. All other bits zero. */
+    /** Exact legacy script; legacy coins carry no V2 branch roots. */
+    std::optional<Bytes> legacy_script;
+    /** Native flags: token1, burn2, state4. Legacy records use0x80,
+     * with the burn flag (2) marking an unspendable legacy script. */
     uint8_t flags = 0;
     /** Unsigned native/token quantity, including the full u64 range. */
     uint64_t value = 0;
