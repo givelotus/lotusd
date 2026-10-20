@@ -98,9 +98,10 @@
 #include <atomic>
 #include <deque>
 #include <map>
-#include <unordered_map>
 #include <memory>
+#include <set>
 #include <thread>
+#include <unordered_map>
 
 #ifndef WIN32
 #include <sys/socket.h>
@@ -1866,6 +1867,382 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
 }
 
 #ifdef ENABLE_HTTP2
+/** What an H2Tunnel needs from its connection */
+class H2TunnelOwner {
+public:
+    virtual ~H2TunnelOwner() = default;
+    virtual http2::ServerSession &Session() = 0;
+    //! Frames were queued: let the connection's writer send them
+    virtual void WakeWriter() = 0;
+};
+
+/**
+ * One accepted extended CONNECT (RFC 8441) stream as an Asio AsyncStream:
+ * reads return the client's DATA, writes become DATA frames. Beast's
+ * WebSocket stream runs on it for Chronik, and P2P bytes are pumped through
+ * it. Only used on the connection's strand.
+ *
+ * Flow control follows delivery: the client's window is reopened only by
+ * what a read hands out, and writes wait while more than MAX_QUEUED bytes
+ * are waiting for the client's window.
+ *
+ * Beast's server handshake (async_accept) needs an HTTP/1.1 upgrade request
+ * and writes a 101 response. Until the tunnel is accepted, writes are
+ * captured: the 101 becomes the HTTP/2 response (200, with the handshake's
+ * other fields, e.g. Sec-WebSocket-Protocol), anything else is sent as that
+ * status without a tunnel.
+ */
+class H2Tunnel : public std::enable_shared_from_this<H2Tunnel> {
+public:
+    using executor_type = asio::any_io_executor;
+    static constexpr size_t MAX_QUEUED{256 * 1024};
+
+    H2Tunnel(std::shared_ptr<H2TunnelOwner> owner, int32_t id,
+             asio::any_io_executor ex)
+        : m_owner{std::move(owner)}, m_id{id}, m_ex{ex},
+          m_rx_wait{ex, asio::steady_timer::time_point::max()},
+          m_tx_wait{ex, asio::steady_timer::time_point::max()} {}
+
+    executor_type get_executor() const { return m_ex; }
+    int32_t Id() const { return m_id; }
+
+    // From the connection
+    void OnData(std::string_view data) {
+        if (m_read_stopped) {
+            // Nobody reads any more: discard, but keep the window open.
+            m_owner->Session().TunnelConsumed(m_id, data.size());
+            m_owner->WakeWriter();
+            return;
+        }
+        m_rx.emplace_back(data);
+        m_rx_wait.cancel();
+    }
+    void OnEof() {
+        m_rx_eof = true;
+        m_rx_wait.cancel();
+    }
+    void OnClosed() {
+        m_closed = true;
+        m_rx_wait.cancel();
+        m_tx_wait.cancel();
+    }
+    void OnWritable() {
+        if (m_owner->Session().TunnelQueued(m_id) < MAX_QUEUED) {
+            m_tx_wait.cancel();
+        }
+    }
+
+    // From the application
+    /** Accept with a 2xx response; the stream stays open both ways */
+    void Accept(unsigned status, const http2::Headers &headers) {
+        m_capturing = false;
+        if (!m_closed) {
+            m_owner->Session().AcceptTunnel(m_id, status, headers);
+            m_owner->WakeWriter();
+        }
+    }
+    /** Answer without a tunnel */
+    void Refuse(http::status status) {
+        m_capturing = false;
+        if (!m_closed) {
+            BeastResponse res{status, 11};
+            res.prepare_payload();
+            m_owner->Session().SubmitResponse(m_id, std::move(res));
+            m_owner->WakeWriter();
+        }
+        m_closed = true;
+    }
+    /** End our side after what was written (END_STREAM) */
+    void End() {
+        if (!m_ended && !m_closed) {
+            m_ended = true;
+            m_owner->Session().TunnelEnd(m_id);
+            m_owner->WakeWriter();
+        }
+    }
+    /** Stop reading: the client's further bytes are discarded */
+    void StopReading() {
+        m_read_stopped = true;
+        size_t pending{0};
+        for (const auto &chunk : m_rx) {
+            pending += chunk.size();
+        }
+        pending -= m_rx_offset;
+        m_rx.clear();
+        m_rx_offset = 0;
+        if (pending > 0) {
+            m_owner->Session().TunnelConsumed(m_id, pending);
+            m_owner->WakeWriter();
+        }
+        m_rx_wait.cancel();
+    }
+
+    template <typename MutableBuffers, typename Token>
+    auto async_read_some(const MutableBuffers &buffers, Token &&token) {
+        return Launch([self = shared_from_this(),
+                       buffers]() { return self->ReadSome(buffers); },
+                      std::forward<Token>(token));
+    }
+
+    template <typename ConstBuffers, typename Token>
+    auto async_write_some(const ConstBuffers &buffers, Token &&token) {
+        return Launch(
+            [self = shared_from_this(),
+             data = beast::buffers_to_string(buffers)]() mutable {
+                return self->WriteSome(std::move(data));
+            },
+            std::forward<Token>(token));
+    }
+
+    // What InProcessWsSession expects of the lowest layer
+    void expires_never() {}
+    H2Tunnel &socket() { return *this; }
+    void close(boost::system::error_code &ec) {
+        ec = {};
+        End();
+        StopReading();
+    }
+
+private:
+    using Result = std::tuple<boost::system::error_code, size_t>;
+
+    template <typename F, typename Token> auto Launch(F f, Token &&token) {
+        return asio::async_initiate<Token,
+                                    void(boost::system::error_code, size_t)>(
+            [ex = m_ex](auto handler, F f) {
+                asio::co_spawn(ex, std::move(f)(),
+                               [h = std::move(handler)](std::exception_ptr e,
+                                                        Result r) mutable {
+                                   if (e) {
+                                       std::move(h)(
+                                           asio::error::operation_aborted, 0);
+                                       return;
+                                   }
+                                   std::move(h)(std::get<0>(r), std::get<1>(r));
+                               });
+            },
+            token, std::move(f));
+    }
+
+    static asio::awaitable<bool> Cancelled() {
+        auto cs{co_await asio::this_coro::cancellation_state};
+        co_return cs.cancelled() != asio::cancellation_type::none;
+    }
+
+    template <typename MutableBuffers>
+    asio::awaitable<Result> ReadSome(MutableBuffers buffers) {
+        if (asio::buffer_size(buffers) == 0) {
+            co_return Result{{}, 0};
+        }
+        while (m_rx.empty() && !m_rx_eof && !m_closed && !m_read_stopped) {
+            m_rx_wait.expires_at(asio::steady_timer::time_point::max());
+            co_await m_rx_wait.async_wait(asio::as_tuple(asio::use_awaitable));
+            if (co_await Cancelled()) {
+                co_return Result{asio::error::operation_aborted, 0};
+            }
+        }
+        if (!m_rx.empty()) {
+            size_t n{0};
+            auto out{beast::buffers_range_ref(buffers)};
+            for (auto it = out.begin(); it != out.end() && !m_rx.empty();) {
+                asio::mutable_buffer b{*it};
+                const std::string &front{m_rx.front()};
+                // One chunk (or what fits of it) per buffer.
+                const size_t take{
+                    std::min(b.size(), front.size() - m_rx_offset)};
+                std::memcpy(b.data(), front.data() + m_rx_offset, take);
+                n += take;
+                m_rx_offset += take;
+                if (m_rx_offset == front.size()) {
+                    m_rx.pop_front();
+                    m_rx_offset = 0;
+                }
+                ++it;
+            }
+            m_owner->Session().TunnelConsumed(m_id, n);
+            m_owner->WakeWriter();
+            co_return Result{{}, n};
+        }
+        if (m_rx_eof || m_read_stopped) {
+            co_return Result{asio::error::eof, 0};
+        }
+        co_return Result{asio::error::connection_reset, 0};
+    }
+
+    asio::awaitable<Result> WriteSome(std::string data) {
+        const size_t n{data.size()};
+        if (m_capturing) {
+            Capture(data);
+            co_return Result{{}, n};
+        }
+        while (!m_closed && !m_ended &&
+               m_owner->Session().TunnelQueued(m_id) >= MAX_QUEUED) {
+            m_tx_wait.expires_at(asio::steady_timer::time_point::max());
+            co_await m_tx_wait.async_wait(asio::as_tuple(asio::use_awaitable));
+            if (co_await Cancelled()) {
+                co_return Result{asio::error::operation_aborted, 0};
+            }
+        }
+        if (m_closed || m_ended) {
+            co_return Result{asio::error::broken_pipe, 0};
+        }
+        m_owner->Session().TunnelSend(m_id, data);
+        m_owner->WakeWriter();
+        co_return Result{{}, n};
+    }
+
+    /** Turn Beast's HTTP/1.1 handshake response into the HTTP/2 one */
+    void Capture(std::string_view data) {
+        m_handshake.append(data);
+        const size_t end{m_handshake.find("\r\n\r\n")};
+        if (end == std::string::npos) {
+            return;
+        }
+        const std::string rest{m_handshake.substr(end + 4)};
+        const auto lines{util::SplitString(m_handshake.substr(0, end), '\n')};
+        unsigned status{500};
+        if (!lines.empty() && lines[0].size() >= 12) {
+            status = unsigned(std::atoi(lines[0].substr(9, 3).c_str()));
+        }
+        http2::Headers headers;
+        for (size_t i = 1; i < lines.size(); ++i) {
+            const auto colon{lines[i].find(':')};
+            if (colon == std::string::npos) {
+                continue;
+            }
+            const std::string name{util::TrimString(lines[i].substr(0, colon))};
+            if (beast::iequals(name, "sec-websocket-accept") ||
+                beast::iequals(name, "upgrade") ||
+                beast::iequals(name, "connection") ||
+                beast::iequals(name, "content-length") ||
+                beast::iequals(name, "server")) {
+                continue;
+            }
+            headers.emplace_back(name,
+                                 util::TrimString(lines[i].substr(colon + 1)));
+        }
+        m_handshake.clear();
+        if (status == 101) {
+            Accept(200, headers);
+            if (!rest.empty()) {
+                m_owner->Session().TunnelSend(m_id, rest);
+            }
+        } else {
+            Refuse(http::status(status));
+        }
+    }
+
+    std::shared_ptr<H2TunnelOwner> m_owner;
+    const int32_t m_id;
+    asio::any_io_executor m_ex;
+    asio::steady_timer m_rx_wait, m_tx_wait;
+    std::deque<std::string> m_rx;
+    size_t m_rx_offset{0};
+    bool m_rx_eof{false};
+    bool m_read_stopped{false};
+    bool m_closed{false};
+    bool m_ended{false};
+    bool m_capturing{true};
+    std::string m_handshake;
+};
+
+/** Beast's close_socket() for H2Tunnel (e.g. on a WebSocket timeout) */
+inline void beast_close_socket(H2Tunnel &tunnel) {
+    boost::system::error_code ignored;
+    tunnel.close(ignored);
+}
+
+/** Beast WebSocket teardown for H2Tunnel: END_STREAM */
+inline void teardown(beast::role_type, H2Tunnel &tunnel,
+                     boost::system::error_code &ec) {
+    tunnel.close(ec);
+}
+
+template <typename TeardownHandler>
+void async_teardown(beast::role_type role, H2Tunnel &tunnel,
+                    TeardownHandler &&handler) {
+    boost::system::error_code ec;
+    teardown(role, tunnel, ec);
+    asio::post(
+        tunnel.get_executor(),
+        [h = std::forward<TeardownHandler>(handler), ec]() mutable { h(ec); });
+}
+
+/** Accept a P2P WebSocket over an HTTP/2 stream and hand it to CConnman */
+static asio::awaitable<void>
+AcceptP2PWebSocketH2(std::shared_ptr<H2Tunnel> tunnel, const BeastRequest &req,
+                     const HTTPConnectionInfo &conn) {
+#ifdef HAVE_P2P_WEBSOCKET_BRIDGE
+    P2PWebSocketAcceptor acceptor{
+        WITH_LOCK(g_p2p_websocket_mutex, return g_p2p_websocket_acceptor)};
+    if (!acceptor) {
+        tunnel->Refuse(http::status::service_unavailable);
+        co_return;
+    }
+    // permessage-deflate needs the WebSocket bridge, which this path does
+    // not use: only the zstd protocols or plain messages.
+    auto [selected, compression] = p2pws::NegotiateP2PCompression(
+        req[http::field::sec_websocket_protocol], /*deflate_offered=*/false);
+    // CConnman polls a socket: it gets one end of a socketpair, and
+    // WebSocketSock does the framing there exactly as for HTTP/1.1 peers.
+    // This connection pumps the WebSocket bytes between the other end and
+    // the HTTP/2 stream.
+    const auto pair{p2pws::CreateBridgeSocketPair()};
+    if (!pair) {
+        tunnel->Refuse(http::status::internal_server_error);
+        co_return;
+    }
+    p2pws::LocalSocket local{co_await asio::this_coro::executor};
+    boost::system::error_code ec;
+    local.assign(asio::local::stream_protocol{}, pair->second, ec);
+    if (ec) {
+        Sock unused{static_cast<SOCKET>(pair->first)};
+        ::close(pair->second);
+        tunnel->Refuse(http::status::internal_server_error);
+        co_return;
+    }
+    auto info{std::make_shared<WebSocketTransportInfo>()};
+    info->tls = conn.is_tls;
+    info->compression = compression;
+    info->peer_cert_fingerprint_hex = conn.client_cert_fingerprint_hex;
+    info->peer_spki = conn.client_cert_spki;
+    info->alpn = conn.alpn;
+    http2::Headers headers;
+    if (!selected.empty()) {
+        headers.emplace_back("sec-websocket-protocol", selected);
+    }
+    if (conn.disarm_deadline) conn.disarm_deadline();
+    tunnel->Accept(200, headers);
+    const CService peer{P2PWebSocketPeerAddress(req, conn)};
+    LogDebug(BCLog::NET, "P2P WebSocket peer %s connected (wss, %s, HTTP/2)\n",
+             peer.ToStringAddrPort(), P2PWebSocketCompressionName(compression));
+    acceptor(std::make_unique<WebSocketSock>(
+                 SOCKET(pair->first), WebSocketCodec::Role::SERVER, info,
+                 std::make_unique<PlainByteLayer>()),
+             CAddress{peer, NODE_NONE}, CAddress{conn.local, NODE_NONE}, info);
+    const auto from_client = [&]() -> asio::awaitable<void> {
+        co_await PumpBytes(*tunnel, local);
+        // The client ended the stream (or reset it): CConnman sees EOF.
+        boost::system::error_code ignored;
+        local.shutdown(asio::socket_base::shutdown_send, ignored);
+    };
+    const auto to_client = [&]() -> asio::awaitable<void> {
+        co_await PumpBytes(local, *tunnel);
+        // CConnman closed the peer: end the stream and stop reading it.
+        tunnel->End();
+        tunnel->StopReading();
+    };
+    co_await (from_client() && to_client());
+    boost::system::error_code ignored;
+    local.close(ignored);
+#else
+    (void)req;
+    (void)conn;
+    tunnel->Refuse(http::status::not_implemented);
+    co_return;
+#endif
+}
+
 /**
  * One HTTP/2 connection (ALPN h2 on a TLS listener). nghttp2 does the
  * framing (see http2_server.h); this drives it over our TLS stream on the
@@ -1878,7 +2255,8 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
  * shell: request coroutines still waiting for a worker's reply when the
  * connection ends find it closed and drop their reply.
  */
-class H2Connection : public std::enable_shared_from_this<H2Connection> {
+class H2Connection : public std::enable_shared_from_this<H2Connection>,
+                     public H2TunnelOwner {
 public:
     H2Connection(OsslStream &stream, const HTTPConnectionInfo &conn,
                  asio::any_io_executor ex)
@@ -1914,13 +2292,42 @@ private:
     static http2::Limits SessionLimits() {
         http2::Limits limits{g_http2_limits};
         limits.max_body_size = g_max_body_size;
+        // WebSockets over HTTP/2 (RFC 8441): /p2p/ws and /chronik/ws
+        limits.enable_connect_protocol = true;
         return limits;
+    }
+
+    http2::ServerSession &Session() override { return m_session; }
+    void WakeWriter() override { Wake(); }
+
+    std::shared_ptr<H2Tunnel> FindTunnel(int32_t id) {
+        const auto it{m_tunnels.find(id)};
+        return it == m_tunnels.end() ? nullptr : it->second;
     }
 
     http2::ServerSession::Handlers Handlers() {
         http2::ServerSession::Handlers h;
         h.on_request = [this](int32_t id, BeastRequest &&req) {
             m_new_requests.emplace_back(id, std::move(req));
+        };
+        h.on_connect = [this](int32_t id, BeastRequest &&req,
+                              std::string protocol) {
+            m_new_connects.push_back({id, std::move(req), std::move(protocol)});
+        };
+        h.on_tunnel_data = [this](int32_t id, std::string_view data) {
+            if (auto tunnel{FindTunnel(id)}) {
+                tunnel->OnData(data);
+            } else {
+                // Not yet started (same Receive() as the CONNECT): keep it.
+                m_early_tunnel_data[id].append(data);
+            }
+        };
+        h.on_tunnel_eof = [this](int32_t id) {
+            if (auto tunnel{FindTunnel(id)}) {
+                tunnel->OnEof();
+            } else {
+                m_early_tunnel_eof.insert(id);
+            }
         };
         h.on_stream_close = [this](int32_t id, uint32_t) {
             // A complete request and its RST_STREAM may arrive in one read,
@@ -1929,6 +2336,15 @@ private:
             std::erase_if(m_new_requests, [id](const auto &request) {
                 return request.first == id;
             });
+            std::erase_if(m_new_connects, [id](const auto &connect) {
+                return connect.id == id;
+            });
+            if (auto tunnel{FindTunnel(id)}) {
+                tunnel->OnClosed();
+                m_tunnels.erase(id);
+            }
+            m_early_tunnel_data.erase(id);
+            m_early_tunnel_eof.erase(id);
             const auto it{m_streams.find(id)};
             if (it == m_streams.end()) {
                 return;
@@ -1947,6 +2363,27 @@ private:
 
     /** Start the requests the last Receive() completed */
     void SpawnNewRequests() {
+        auto connects{std::move(m_new_connects)};
+        m_new_connects.clear();
+        for (auto &c : connects) {
+            auto tunnel{
+                std::make_shared<H2Tunnel>(shared_from_this(), c.id, m_ex)};
+            m_tunnels[c.id] = tunnel;
+            if (auto it{m_early_tunnel_data.find(c.id)};
+                it != m_early_tunnel_data.end()) {
+                tunnel->OnData(it->second);
+                m_early_tunnel_data.erase(it);
+            }
+            if (m_early_tunnel_eof.erase(c.id)) {
+                tunnel->OnEof();
+            }
+            ++m_tunnels_running;
+            asio::co_spawn(m_ex,
+                           HandleConnect(shared_from_this(), tunnel,
+                                         std::move(c.req),
+                                         std::move(c.protocol)),
+                           asio::detached);
+        }
         auto requests{std::move(m_new_requests)};
         m_new_requests.clear();
         for (auto &[id, req] : requests) {
@@ -1991,6 +2428,76 @@ private:
             res = co_await RouteRequest(std::move(req), client, allowed);
         }
         self->Respond(id, std::move(res), is_head, endpoint, request_start);
+    }
+
+    /**
+     * An extended CONNECT (RFC 8441): a WebSocket for /p2p/ws or /chronik/ws,
+     * under the same rules as an HTTP/1.1 upgrade (-rpcallowip on RPC
+     * listeners, public prefixes on public ones, upgrade tokens,
+     * -trustedproxy). Anything else is answered without a tunnel.
+     */
+    static asio::awaitable<void>
+    HandleConnect(std::shared_ptr<H2Connection> self,
+                  std::shared_ptr<H2Tunnel> tunnel, BeastRequest req,
+                  std::string protocol) {
+        co_await ServeTunnel(self, tunnel, std::move(req), protocol);
+        tunnel->End();
+        --self->m_tunnels_running;
+        self->m_last_activity = std::chrono::steady_clock::now();
+    }
+
+    static asio::awaitable<void> ServeTunnel(std::shared_ptr<H2Connection> self,
+                                             std::shared_ptr<H2Tunnel> tunnel,
+                                             BeastRequest req,
+                                             const std::string &protocol) {
+        if (!beast::iequals(protocol, "websocket")) {
+            tunnel->Refuse(http::status::not_implemented);
+            co_return;
+        }
+        if (g_reject_requests.load()) {
+            tunnel->Refuse(http::status::service_unavailable);
+            co_return;
+        }
+        if (req[http::field::sec_websocket_version] != "13") {
+            tunnel->Refuse(http::status::bad_request);
+            co_return;
+        }
+        // The HTTP/1.1 upgrade request this stands for, which the endpoint
+        // checks and Beast's handshake expect. The key is ours: RFC 8441
+        // has none, and the Accept derived from it is not sent.
+        req.method(http::verb::get);
+        req.set(http::field::upgrade, "websocket");
+        req.set(http::field::connection, "Upgrade");
+        std::vector<unsigned char> nonce(16);
+        GetRandBytes(nonce);
+        req.set(http::field::sec_websocket_key, EncodeBase64(nonce));
+        // No extensions (permessage-deflate) over HTTP/2.
+        req.erase(http::field::sec_websocket_extensions);
+
+        const std::optional<HTTPConnectionInfo> forwarded{
+            ForwardedClient(req, self->m_conn)};
+        const HTTPConnectionInfo client{forwarded ? *forwarded : self->m_conn};
+        const bool allowed{EndpointAllowed(req, self->m_conn, client)};
+        if (allowed && IsP2PWebSocketRequest(req, client)) {
+            co_await AcceptP2PWebSocketH2(tunnel, req, client);
+            co_return;
+        }
+        if (allowed && g_chronik_enabled &&
+            URIHasPathPrefix(req.target(), CHRONIK_PREFIX + "/ws")) {
+            auto handlers{GetChronikInProcess()};
+            if (!handlers) {
+                tunnel->Refuse(http::status::service_unavailable);
+            } else if (!co_await InProcessChronikWebSocket(
+                           std::move(handlers), *tunnel, req, client)) {
+                tunnel->Refuse(http::status::bad_request);
+            }
+            co_return;
+        }
+        // As for an HTTP/1.1 upgrade that is not served: 403 for a client
+        // outside -rpcallowip on an RPC listener, else 404.
+        tunnel->Refuse(!self->m_conn.public_only && !ClientAllowed(client.peer)
+                           ? http::status::forbidden
+                           : http::status::not_found);
     }
 
     void Respond(int32_t id, BeastResponse &&res, bool is_head,
@@ -2061,6 +2568,9 @@ private:
                 }
                 co_await WaitWake();
                 continue;
+            }
+            for (const auto &[id, tunnel] : m_tunnels) {
+                tunnel->OnWritable();
             }
             const auto ec{co_await WriteAll(out)};
             out.Clear();
@@ -2138,7 +2648,8 @@ private:
                 self->m_last_activity = now;
                 self->Wake();
             }
-            const bool busy{self->m_handlers_running > 0};
+            const bool busy{self->m_handlers_running > 0 ||
+                            self->m_tunnels_running > 0};
             if (busy || now < self->m_last_activity + g_server_timeout) {
                 continue;
             }
@@ -2172,6 +2683,10 @@ private:
         }
         m_streams.clear();
         m_handlers_running = 0;
+        for (const auto &[id, tunnel] : m_tunnels) {
+            tunnel->OnClosed();
+        }
+        m_tunnels.clear();
     }
 
     //! Bytes framed per write: one write per batch, bounded memory
@@ -2186,7 +2701,18 @@ private:
     http2::ServerSession m_session;
     std::map<int32_t, StreamState> m_streams;
     std::vector<std::pair<int32_t, BeastRequest>> m_new_requests;
+    struct NewConnect {
+        int32_t id;
+        BeastRequest req;
+        std::string protocol;
+    };
+    std::vector<NewConnect> m_new_connects;
+    std::map<int32_t, std::shared_ptr<H2Tunnel>> m_tunnels;
+    //! Tunnel bytes and ends received with the CONNECT, before its tunnel
+    std::map<int32_t, std::string> m_early_tunnel_data;
+    std::set<int32_t> m_early_tunnel_eof;
     size_t m_handlers_running{0};
+    size_t m_tunnels_running{0};
     size_t m_removals_after_write{0};
     std::chrono::steady_clock::time_point m_last_activity{
         std::chrono::steady_clock::now()};
