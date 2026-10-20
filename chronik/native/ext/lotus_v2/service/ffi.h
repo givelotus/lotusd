@@ -90,6 +90,10 @@ struct NativeTx {
     std::vector<uint8_t> wire;
     uint64_t lock = 0;
     std::vector<NativeFullInput> full_inputs;
+    /** Block file number (blkNNNNN.dat) holding the transaction. */
+    uint32_t file_num = 0;
+    /** Byte offset of the serialized transaction in that file. */
+    uint32_t data_pos = 0;
 };
 
 struct NativeBlock {

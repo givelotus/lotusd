@@ -50,17 +50,6 @@ void ValidateInput(const InputFact &input, uint64_t size) {
     if (!input.has_coinbase_data && input.coinbase_data != WireRange{}) {
         ThrowInvalid("absent coinbase range");
     }
-    const auto &coin = input.resolved_creation;
-    const bool frozen_ok =
-        input.flags == 1
-            ? coin && coin->outpoint.txid.hash.b == input.prev_txid &&
-                  coin->outpoint.out_idx == input.prev_index &&
-                  coin->creation.txid == coin->outpoint.txid &&
-                  !coin->output.IsBurn()
-            : !coin;
-    if (!frozen_ok) {
-        ThrowInvalid("frozen spend creation");
-    }
     for (const WitnessFact &witness : input.witnesses) {
         witness.script.Validate(size);
         witness.siblings_table.Validate(size);
@@ -189,9 +178,8 @@ void ValidateWitnessFact(const WitnessFact &witness, uint64_t wire_size) {
     }
 }
 
-ExplorerPlan PlanExplorerBlockAt(const CommittedBlock &block,
-                                 uint32_t start_file_num,
-                                 uint64_t start_data_pos) {
+std::vector<std::pair<Bytes, Bytes>>
+PlanExplorerBlock(const CommittedBlock &block) {
     PreflightExplorerBlock(block);
     const HeaderWire &h = block.explorer.header_wire;
     if (LeU64(h.data() + 62) != block.anchor.height) {
@@ -208,8 +196,7 @@ ExplorerPlan PlanExplorerBlockAt(const CommittedBlock &block,
     if (block.transactions.size() > UINT32_MAX) {
         ThrowInvalid("transaction count");
     }
-    ExplorerPlan plan;
-    auto &entries = plan.entries;
+    std::vector<std::pair<Bytes, Bytes>> entries;
     entries.emplace_back(HeightKey(block.anchor.height),
                          Bytes(block.anchor.block_id.begin(),
                                block.anchor.block_id.end()));
@@ -217,9 +204,6 @@ ExplorerPlan PlanExplorerBlockAt(const CommittedBlock &block,
         BlockKey(H(block.anchor.block_id)),
         EncodeRecord(BlockMeta{block.anchor, h,
                                uint32_t(block.transactions.size())}));
-    plan.flat_writes.reserve(block.transactions.size());
-    uint32_t cur_file_num = start_file_num;
-    uint64_t cur_data_pos = start_data_pos;
     for (size_t index = 0; index < block.transactions.size(); ++index) {
         const ConfirmedTx &tx = block.transactions[index];
         const TxLocation &loc = tx.location;
@@ -232,24 +216,7 @@ ExplorerPlan PlanExplorerBlockAt(const CommittedBlock &block,
             ThrowInvalid("empty transaction frame");
         }
         const uint64_t wire_size = facts.wire.size();
-        const uint64_t end = cur_data_pos > UINT64_MAX - wire_size
-                                 ? UINT64_MAX
-                                 : cur_data_pos + wire_size;
-        if (cur_data_pos > 0 && end > MAX_FLAT_SEGMENT_BYTES) {
-            if (cur_file_num == UINT32_MAX) {
-                ThrowInvalid("flat file segment overflow");
-            }
-            ++cur_file_num;
-            cur_data_pos = 0;
-        }
-        const uint32_t file_num = cur_file_num;
-        const uint64_t data_pos = cur_data_pos;
         const uint64_t wire_checksum = SeaHash(facts.wire);
-        if (cur_data_pos > UINT64_MAX - wire_size) {
-            ThrowInvalid("flat file offset overflow");
-        }
-        cur_data_pos += wire_size;
-        plan.flat_writes.push_back({file_num, data_pos, facts.wire});
 
         if (facts.inputs.size() > UINT32_MAX) {
             ThrowInvalid("input count");
@@ -261,8 +228,8 @@ ExplorerPlan PlanExplorerBlockAt(const CommittedBlock &block,
                           facts.lock,
                           uint32_t(facts.inputs.size()),
                           uint32_t(tx.outputs.size()),
-                          file_num,
-                          data_pos,
+                          tx.pos.file_num,
+                          tx.pos.data_pos,
                           wire_size,
                           wire_checksum};
         entries.emplace_back(TxKey(loc.txid), EncodeRecord(meta));
@@ -314,13 +281,7 @@ ExplorerPlan PlanExplorerBlockAt(const CommittedBlock &block,
             ThrowInvalid("duplicate explorer identity");
         }
     }
-    plan.next_flat_pos = {cur_file_num, cur_data_pos};
-    return plan;
-}
-
-std::vector<std::pair<Bytes, Bytes>>
-PlanExplorerBlock(const CommittedBlock &block) {
-    return PlanExplorerBlockAt(block, 0, 0).entries;
+    return entries;
 }
 
 // ---- ReadSnapshot explorer readers ----
@@ -445,7 +406,18 @@ std::optional<InputMeta> ReadSnapshot::ExplorerInput(const TxId &id,
     if (index >= tx->input_count) {
         ThrowCorrupt();
     }
-    const auto input = DecodeRecord<InputMeta>(*bytes);
+    const auto stored = DecodeRecord<StoredInputMeta>(*bytes);
+    std::optional<ResolvedCreation> creation;
+    if (stored.flags == 1) {
+        const OutPoint outpoint{TxId{H(stored.prev_txid)}, stored.prev_index};
+        auto record = GetOutput(outpoint);
+        if (!record) {
+            ThrowCorrupt();
+        }
+        creation = ResolvedCreation{outpoint, std::move(record->output),
+                                    record->creation};
+    }
+    const InputMeta input = InputMeta::WithCreation(stored, std::move(creation));
     ValidateInputMeta(input, tx->wire_size);
     // A descriptor count must reach an existing final ordinal and stop at
     // the next key. Missing interior ordinals fail when that page is read.
@@ -573,16 +545,8 @@ std::optional<Bytes> ReadSnapshot::ExplorerWireSlice(const TxId &id,
     if (offset > tx->wire_size) {
         ThrowCorrupt();
     }
-    Bytes full;
-    try {
-        full = m_inner.ReadFlat(tx->file_num, tx->data_pos,
-                                size_t(tx->wire_size));
-    } catch (const V2Error &) {
-        ThrowCorrupt();
-    }
-    if (SeaHash(full) != tx->wire_checksum) {
-        ThrowCorrupt();
-    }
+    const auto node = NodeTxOf(*tx);
+    const Bytes &full = node->explorer.wire;
     const uint64_t end =
         std::min(offset > UINT64_MAX - length ? UINT64_MAX : offset + length,
                  tx->wire_size);

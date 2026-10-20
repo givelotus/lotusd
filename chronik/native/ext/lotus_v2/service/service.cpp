@@ -4,6 +4,8 @@
 
 #include <ext/lotus_v2/service/service.h>
 
+#include <map>
+
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
@@ -75,7 +77,7 @@ ffi::Continuation EmptyContinuation() { return FfiContinuation(std::nullopt); }
 std::unique_ptr<V2Service>
 V2Service::Open(const std::string &path, const ffi::Binding &binding,
                 bool fresh, const ffi::ServiceLimits &limits,
-                qb::Sha256Fn sha256) {
+                qb::Sha256Fn sha256, std::shared_ptr<const TxSource> source) {
     if (path.empty() || path.size() > 4096) {
         Fail("path bound");
     }
@@ -120,11 +122,35 @@ V2Service::Open(const std::string &path, const ffi::Binding &binding,
             Fail("existing V2 DB required");
         }
     }
-    service->m_db = Db([&] {
-        return std::make_shared<SharedV2Db>(
-            dir, Binding{binding.chain_id, binding.genesis, binding.profile},
-            *bounds);
-    });
+    const Binding db_binding{binding.chain_id, binding.genesis,
+                             binding.profile};
+    try {
+        if (source) {
+            service->m_db = std::make_shared<SharedV2Db>(dir, db_binding,
+                                                         *bounds, source);
+        } else {
+            static std::mutex memory_mutex;
+            static std::map<std::string, std::shared_ptr<MemTxSource>> memory;
+            std::shared_ptr<MemTxSource> recorder;
+            {
+                std::lock_guard lock(memory_mutex);
+                auto &entry = memory[path];
+                if (!entry) {
+                    entry = std::make_shared<MemTxSource>();
+                }
+                recorder = entry;
+            }
+            service->m_db = std::make_shared<SharedV2Db>(dir, db_binding,
+                                                         *bounds, recorder);
+        }
+    } catch (const V2Error &e) {
+        if (e.kind() == V2Error::Kind::Schema) {
+            throw V2SchemaError(e.what());
+        }
+        Fail(e.what());
+    } catch (const ChronikError &e) {
+        Fail(e.what());
+    }
     service->m_limits = limits;
     service->m_bounds = *bounds;
     service->m_genesis = binding.genesis;
@@ -162,6 +188,44 @@ std::optional<ffi::Anchor> V2Service::Checkpoint() const {
         return std::nullopt;
     }
     return FfiAnchor(*checkpoint);
+}
+
+ConfirmedTx ConvertNativeTx(const ffi::NativeTx &tx, const Anchor &block) {
+    ConfirmedTx ctx;
+    for (const ffi::NativeOutput &o : tx.outputs) {
+        OutputError err;
+        auto output = Output::Decode(o.wire, &err);
+        if (!output) {
+            Fail(err.Message());
+        }
+        ctx.outputs.push_back(std::move(*output));
+    }
+    ctx.location = TxLocation{H(block.block_id), block.height, tx.index,
+                              TxId{H(tx.txid)}, TxHash{H(tx.txhash)}};
+    ctx.pos = TxPos{tx.file_num, tx.data_pos};
+    ctx.explorer.wire = tx.wire;
+    ctx.explorer.lock = tx.lock;
+    for (const ffi::NativeFullInput &i : tx.full_inputs) {
+        InputFact fact;
+        fact.prev_txid = i.prev_txid;
+        fact.prev_index = i.prev_index;
+        fact.sequence = i.sequence;
+        fact.flags = i.flags;
+        fact.path_index = i.path_index;
+        fact.has_coinbase_data = i.has_coinbase_data;
+        fact.coinbase_data = Range(i.coinbase_data);
+        for (const ffi::NativeWitness &w : i.witnesses) {
+            fact.witnesses.push_back(WitnessFact{
+                Range(w.script), Range(w.siblings_table), w.siblings_count,
+                Range(w.arguments_table), w.arguments_count});
+        }
+        ctx.explorer.inputs.push_back(std::move(fact));
+    }
+    for (const ffi::Input &i : tx.inputs) {
+        ctx.spends.push_back(
+            SpentInput{OutPoint{TxId{H(i.txid)}, i.out_idx}, i.input_index});
+    }
+    return ctx;
 }
 
 CommittedBlock V2Service::Block(const ffi::NativeBlock &block) const {
@@ -210,41 +274,7 @@ CommittedBlock V2Service::Block(const ffi::NativeBlock &block) const {
     out.parent = ToAnchor(block.parent);
     out.explorer.header_wire = block.header_wire;
     for (const ffi::NativeTx &tx : block.transactions) {
-        ConfirmedTx ctx;
-        for (const ffi::NativeOutput &o : tx.outputs) {
-            OutputError err;
-            auto output = Output::Decode(o.wire, &err);
-            if (!output) {
-                Fail(err.Message());
-            }
-            ctx.outputs.push_back(std::move(*output));
-        }
-        ctx.location = TxLocation{H(block.anchor.block_id), block.anchor.height,
-                                  tx.index, TxId{H(tx.txid)},
-                                  TxHash{H(tx.txhash)}};
-        ctx.explorer.wire = tx.wire;
-        ctx.explorer.lock = tx.lock;
-        for (const ffi::NativeFullInput &i : tx.full_inputs) {
-            InputFact fact;
-            fact.prev_txid = i.prev_txid;
-            fact.prev_index = i.prev_index;
-            fact.sequence = i.sequence;
-            fact.flags = i.flags;
-            fact.path_index = i.path_index;
-            fact.has_coinbase_data = i.has_coinbase_data;
-            fact.coinbase_data = Range(i.coinbase_data);
-            for (const ffi::NativeWitness &w : i.witnesses) {
-                fact.witnesses.push_back(WitnessFact{
-                    Range(w.script), Range(w.siblings_table), w.siblings_count,
-                    Range(w.arguments_table), w.arguments_count});
-            }
-            ctx.explorer.inputs.push_back(std::move(fact));
-        }
-        for (const ffi::Input &i : tx.inputs) {
-            ctx.spends.push_back(
-                SpentInput{OutPoint{TxId{H(i.txid)}, i.out_idx}, i.input_index});
-        }
-        out.transactions.push_back(std::move(ctx));
+        out.transactions.push_back(ConvertNativeTx(tx, out.anchor));
     }
     return out;
 }
