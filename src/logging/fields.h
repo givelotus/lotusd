@@ -92,7 +92,10 @@
     X(UTXOCacheMiB, utxo_cache_mib, FLOAT, "", "") \
     X(UTXOCacheCoins, utxo_cache_coins, UINT, "", "") \
     X(UTXOCacheBytes, utxo_cache_bytes, UINT, "", "") \
-    X(ChainstateRole, chainstate_role, STRING, "", "")
+    X(ChainstateRole, chainstate_role, STRING, "", "") \
+    X(VerificationDepth, verification_depth, INT, "", "") \
+    X(VerificationLevel, verification_level, INT, "", "") \
+    X(ProgressPercent, progress_percent, INT, "", "")
 
 namespace BCLog {
 
