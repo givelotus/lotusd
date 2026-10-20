@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "batch": "transaction-index-read-failures",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/index/txindex.cpp",
+      "rules": [
+        {
+          "id": "transaction_index_block_file_open_failed",
+          "old": "LogError(\"%s: OpenBlockFile failed\\n\", __func__)",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"transaction_index_block_file_open_failed\", \"{source_function}: OpenBlockFile failed\").Field(BCLog::LogField::SourceFunction, __func__)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: OpenBlockFile failed\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve each distinct read-failure stage, Error level, original terse diagnostics and false return. No new transaction/key material and no added hot-path arguments. No public registry/API changes."
+        },
+        {
+          "id": "transaction_index_block_file_seek_failed",
+          "old": "LogError(\"%s: fseek(...) failed\\n\", __func__)",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"transaction_index_block_file_seek_failed\", \"{source_function}: fseek(...) failed\").Field(BCLog::LogField::SourceFunction, __func__)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: fseek(...) failed\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve each distinct read-failure stage, Error level, original terse diagnostics and false return. No new transaction/key material and no added hot-path arguments. No public registry/API changes."
+        },
+        {
+          "id": "transaction_index_block_read_failed",
+          "old": "LogError(\"%s: Deserialize or I/O error - %s\\n\", __func__, e.what())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"transaction_index_block_read_failed\", \"{source_function}: Deserialize or I/O error - {error}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::Error, e.what())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: Deserialize or I/O error - %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "e.what()"
+            ]
+          },
+          "review_note": "Preserve each distinct read-failure stage, Error level, original terse diagnostics and false return. No new transaction/key material and no added hot-path arguments. No public registry/API changes."
+        },
+        {
+          "id": "transaction_index_txid_mismatch",
+          "old": "LogError(\"%s: txid mismatch\\n\", __func__)",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"transaction_index_txid_mismatch\", \"{source_function}: txid mismatch\").Field(BCLog::LogField::SourceFunction, __func__)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: txid mismatch\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve each distinct read-failure stage, Error level, original terse diagnostics and false return. No new transaction/key material and no added hot-path arguments. No public registry/API changes."
+        }
+      ]
+    }
+  ]
+}
