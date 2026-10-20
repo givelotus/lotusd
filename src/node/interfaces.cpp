@@ -530,9 +530,9 @@ namespace {
 
         void OnWorkerFailure() {
             m_failed = true;
-            LogPrintf("FATAL: wallet notification worker failed; shutting "
-                      "down. The wallet rescans from its last flushed best "
-                      "block on restart.\n");
+            LogInfoEvent(
+                BCLog::ALL, "wallet_notification_worker_failed",
+                "FATAL: wallet notification worker failed; shutting down. The wallet rescans from its last flushed best block on restart.");
             StartShutdown();
         }
 
@@ -549,10 +549,18 @@ namespace {
                                      try {
                                          f();
                                      } catch (const std::exception &e) {
-                                         LogPrintf("Wallet notification callback exception: %s\n", e.what());
+                                         LogInfoEvent(
+                                             BCLog::ALL,
+                                             "wallet_notification_callback_exception",
+                                             "Wallet notification callback exception: {error}")
+                                             .Field(BCLog::LogField::Error,
+                                                    e.what());
                                          throw;
                                      } catch (...) {
-                                         LogPrintf("Wallet notification callback exception: unknown exception\n");
+                                         LogInfoEvent(
+                                             BCLog::ALL,
+                                             "wallet_notification_callback_unknown_exception",
+                                             "Wallet notification callback exception: unknown exception");
                                          throw;
                                      }
                                  }
