@@ -369,8 +369,7 @@ public:
      * is using the pool (e.g. ConnectBlock's script checks), instead of
      * waiting for it. Must not be called from a pool task.
      */
-    template <typename Fn>
-    bool TryRun(size_t num_workers, Fn &&fn) {
+    template <typename Fn> bool TryRun(size_t num_workers, Fn &&fn) {
         if (num_workers <= 1) {
             fn(0);
             return true;
@@ -5741,8 +5740,8 @@ void RunOnValidationWorkers(size_t max_threads, size_t n_tasks,
                             const std::function<void(size_t)> &fn) {
     std::atomic<size_t> next{0};
     auto work = [&](size_t) {
-        for (size_t i; (i = next.fetch_add(1, std::memory_order_relaxed)) <
-                       n_tasks;) {
+        for (size_t i;
+             (i = next.fetch_add(1, std::memory_order_relaxed)) < n_tasks;) {
             fn(i);
         }
     };
@@ -5756,6 +5755,11 @@ void RunOnValidationWorkers(size_t max_threads, size_t n_tasks,
 
 uint256 ValidationBlockMerkleRoot(const CBlock &block, bool *mutated,
                                   size_t min_parallel_txs, size_t threads) {
+    if (threads == 0) {
+        threads = block.vtx.size() >= PARALLEL_MERKLE_LARGE_TXS
+                      ? PARALLEL_MERKLE_THREADS_LARGE
+                      : PARALLEL_MERKLE_THREADS;
+    }
     threads = std::min<size_t>(
         threads, std::max(1u, std::thread::hardware_concurrency()));
     if (block.vtx.size() < min_parallel_txs || threads <= 1) {
