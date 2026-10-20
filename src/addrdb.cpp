@@ -74,17 +74,19 @@ void BanMapFromJson(const UniValue &bans_json, banmap_t &bans) {
         const int version{
             ban_entry_json[BANMAN_JSON_VERSION_KEY].getInt<int>()};
         if (version != CBanEntry::CURRENT_VERSION) {
-            LogPrintf(
-                "Dropping entry with unknown version (%s) from ban list\n",
-                version);
+            LogInfoEvent(
+                BCLog::ALL, "ban_database_entry_version_unsupported",
+                "Dropping entry with unknown version ({version}) from ban list")
+                .Field(BCLog::LogField::Version, version);
             continue;
         }
         CSubNet subnet;
         const auto &subnet_str = ban_entry_json[BANMAN_JSON_ADDR_KEY].get_str();
         if (!LookupSubNet(subnet_str, subnet)) {
-            LogPrintf("Dropping entry with unparseable address or subnet (%s) "
-                      "from ban list\n",
-                      subnet_str);
+            LogInfoEvent(
+                BCLog::ALL, "ban_database_entry_subnet_invalid",
+                "Dropping entry with unparseable address or subnet ({subnet}) from ban list")
+                .Field(BCLog::LogField::Subnet, subnet_str);
             continue;
         }
         bans.insert_or_assign(subnet, CBanEntry{ban_entry_json});
@@ -104,7 +106,10 @@ bool SerializeDB(const CChainParams &chainParams, Stream &stream,
         hashwriter << chainParams.DiskMagic() << data;
         stream << hashwriter.GetHash();
     } catch (const std::exception &e) {
-        LogError("%s: Serialize or I/O error - %s\n", __func__, e.what());
+        LogErrorEvent(BCLog::ALL, "address_database_serialize_failed",
+                      "{source_function}: Serialize or I/O error - {error}")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::Error, e.what());
         return false;
     }
 
@@ -125,8 +130,10 @@ bool SerializeFileDB(const CChainParams &chainParams, const std::string &prefix,
     if (fileout.IsNull()) {
         fileout.fclose();
         remove(pathTmp);
-        LogError("%s: Failed to open file %s\n", __func__,
-                 fs::PathToString(pathTmp));
+        LogErrorEvent(BCLog::ALL, "address_database_open_failed",
+                      "{source_function}: Failed to open file {path}")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::Path, fs::PathToString(pathTmp));
         return false;
     }
 
@@ -139,8 +146,10 @@ bool SerializeFileDB(const CChainParams &chainParams, const std::string &prefix,
     if (!FileCommit(fileout.Get())) {
         fileout.fclose();
         remove(pathTmp);
-        LogError("%s: Failed to flush file %s\n", __func__,
-                 fs::PathToString(pathTmp));
+        LogErrorEvent(BCLog::ALL, "address_database_flush_failed",
+                      "{source_function}: Failed to flush file {path}")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::Path, fs::PathToString(pathTmp));
         return false;
     }
     fileout.fclose();
@@ -148,7 +157,9 @@ bool SerializeFileDB(const CChainParams &chainParams, const std::string &prefix,
     // replace existing file, if any, with new file
     if (!RenameOver(pathTmp, path)) {
         remove(pathTmp);
-        LogError("%s: Rename-into-place failed\n", __func__);
+        LogErrorEvent(BCLog::ALL, "address_database_rename_failed",
+                      "{source_function}: Rename-into-place failed")
+            .Field(BCLog::LogField::SourceFunction, __func__);
         return false;
     }
 
@@ -207,7 +218,8 @@ bool CBanDB::Write(const banmap_t &banSet) {
     }
 
     for (const auto &err : errors) {
-        LogError("%s\n", err);
+        LogErrorEvent(BCLog::ALL, "ban_database_write_failed", "{error}")
+            .Field(BCLog::LogField::Error, err);
     }
     return false;
 }
@@ -225,8 +237,9 @@ bool CBanDB::Read(banmap_t &banSet, bool &dirty) {
             DeserializeFileDB(chainParams, m_banlist_dat,
                               WithParams(CAddress::V1_DISK, banSet));
         } catch (const std::exception &) {
-            LogPrintf("Missing or invalid file %s\n",
-                      fs::quoted(fs::PathToString(m_banlist_dat)));
+            LogInfoEvent(BCLog::ALL, "ban_database_legacy_file_unavailable",
+                         "Missing or invalid file {path:fsq}")
+                .Field(BCLog::LogField::Path, fs::PathToString(m_banlist_dat));
             return false;
         }
         return true;
@@ -239,8 +252,10 @@ bool CBanDB::Read(banmap_t &banSet, bool &dirty) {
 
     if (!util::ReadSettings(m_banlist_json, settings, errors)) {
         for (const auto &err : errors) {
-            LogPrintf("Cannot load banlist %s: %s\n",
-                      fs::PathToString(m_banlist_json), err);
+            LogInfoEvent(BCLog::ALL, "ban_database_load_failed",
+                         "Cannot load banlist {path}: {error}")
+                .Field(BCLog::LogField::Path, fs::PathToString(m_banlist_json))
+                .Field(BCLog::LogField::Error, err);
         }
         return false;
     }
@@ -248,8 +263,10 @@ bool CBanDB::Read(banmap_t &banSet, bool &dirty) {
     try {
         BanMapFromJson(settings[JSON_KEY], banSet);
     } catch (const std::runtime_error &e) {
-        LogPrintf("Cannot parse banlist %s: %s\n",
-                  fs::PathToString(m_banlist_json), e.what());
+        LogInfoEvent(BCLog::ALL, "ban_database_parse_failed",
+                     "Cannot parse banlist {path}: {error}")
+            .Field(BCLog::LogField::Path, fs::PathToString(m_banlist_json))
+            .Field(BCLog::LogField::Error, e.what());
         return false;
     }
 
@@ -281,15 +298,21 @@ LoadAddrman(const CChainParams &chainparams, const std::vector<bool> &asmap,
     const auto path_addr{args.GetDataDirNet() / "peers.dat"};
     try {
         DeserializeFileDB(chainparams, path_addr, *addrman);
-        LogPrintf("Loaded %i addresses from peers.dat  %dms\n", addrman->size(),
-                  GetTimeMillis() - nStart);
+        LogInfoEvent(
+            BCLog::ALL, "address_database_loaded",
+            "Loaded {count} addresses from peers.dat  {database_operation_ms}ms")
+            .Field(BCLog::LogField::Count, addrman->size())
+            .Field(BCLog::LogField::DatabaseOperationMs,
+                   GetTimeMillis() - nStart);
     } catch (const DbNotFoundError &) {
         // Addrman can be in an inconsistent state after failure, reset it
         addrman = std::make_unique<AddrMan>(
             asmap, /*deterministic=*/false,
             /*consistency_check_ratio=*/check_addrman);
-        LogPrintf("Creating peers.dat because the file was not found (%s)\n",
-                  fs::quoted(fs::PathToString(path_addr)));
+        LogInfoEvent(
+            BCLog::ALL, "address_database_file_missing",
+            "Creating peers.dat because the file was not found ({path:fsq})")
+            .Field(BCLog::LogField::Path, fs::PathToString(path_addr));
         DumpPeerAddresses(chainparams, args, *addrman);
     } catch (const InvalidAddrManVersionError &) {
         if (!RenameOver(path_addr, fs::path(path_addr) + ".bak")) {
@@ -301,9 +324,10 @@ LoadAddrman(const CChainParams &chainparams, const std::vector<bool> &asmap,
         addrman = std::make_unique<AddrMan>(
             asmap, /*deterministic=*/false,
             /*consistency_check_ratio=*/check_addrman);
-        LogPrintf("Creating new peers.dat because the file version was not "
-                  "compatible (%s). Original backed up to peers.dat.bak\n",
-                  fs::quoted(fs::PathToString(path_addr)));
+        LogInfoEvent(
+            BCLog::ALL, "address_database_version_unsupported",
+            "Creating new peers.dat because the file version was not compatible ({path:fsq}). Original backed up to peers.dat.bak")
+            .Field(BCLog::LogField::Path, fs::PathToString(path_addr));
         DumpPeerAddresses(chainparams, args, *addrman);
     } catch (const std::exception &e) {
         return util::Error{strprintf(
@@ -337,8 +361,11 @@ std::vector<CAddress> ReadAnchors(const CChainParams &chainParams,
     try {
         DeserializeFileDB(chainParams, anchors_db_path,
                           WithParams(CAddress::V2_DISK, anchors));
-        LogPrintf("Loaded %i addresses from %s\n", anchors.size(),
-                  fs::quoted(fs::PathToString(anchors_db_path.filename())));
+        LogInfoEvent(BCLog::ALL, "anchor_database_loaded",
+                     "Loaded {count} addresses from {name:fsq}")
+            .Field(BCLog::LogField::Count, anchors.size())
+            .Field(BCLog::LogField::Name,
+                   fs::PathToString(anchors_db_path.filename()));
     } catch (const std::exception &) {
         anchors.clear();
     }
