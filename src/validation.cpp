@@ -7202,8 +7202,10 @@ VerifyDBResult CVerifyDB::VerifyDB(Chainstate &chainstate,
     }
 
     nCheckLevel = std::max(0, std::min(4, nCheckLevel));
-    LogPrintf("Verifying last %i blocks at level %i\n", nCheckDepth,
-              nCheckLevel);
+    LogInfoEvent(BCLog::ALL, "chain_verification_parameters",
+                     "Verifying last {verification_depth} blocks at level {verification_level}")
+            .Field(BCLog::LogField::VerificationDepth, nCheckDepth)
+            .Field(BCLog::LogField::VerificationLevel, nCheckLevel);
 
     CCoinsViewCache coins(&coinsview);
     CBlockIndex *pindex;
@@ -7227,7 +7229,9 @@ VerifyDBResult CVerifyDB::VerifyDB(Chainstate &chainstate,
                                   (nCheckLevel >= 4 ? 50 : 100))));
         if (reportDone < percentageDone / 10) {
             // report every 10% step
-            LogPrintf("Verification progress: %d%%\n", percentageDone);
+            LogInfoEvent(BCLog::ALL, "chain_verification_progress",
+                     "Verification progress: {progress_percent}%")
+            .Field(BCLog::LogField::ProgressPercent, percentageDone);
             reportDone = percentageDone / 10;
         }
 
@@ -7247,10 +7251,9 @@ VerifyDBResult CVerifyDB::VerifyDB(Chainstate &chainstate,
             !pindex->nStatus.hasData()) {
             // If pruning or running under an assumeutxo snapshot, only go
             // back as far as we have data.
-            LogPrintf("VerifyDB(): block verification stopping at height %d "
-                      "(no data). This could be due to pruning or use of an "
-                      "assumeutxo snapshot.\n",
-                      pindex->nHeight);
+            LogInfoEvent(BCLog::ALL, "chain_verification_no_data",
+                     "VerifyDB(): block verification stopping at height {height} (no data). This could be due to pruning or use of an assumeutxo snapshot.")
+            .Field(BCLog::LogField::Height, pindex->nHeight);
             skipped_no_block_data = true;
             break;
         }
@@ -7259,8 +7262,10 @@ VerifyDBResult CVerifyDB::VerifyDB(Chainstate &chainstate,
 
         // check level 0: read from disk
         if (!chainstate.m_blockman.ReadBlock(block, *pindex)) {
-            LogPrintf("Verification error: ReadBlock failed at %d, hash=%s\n",
-                      pindex->nHeight, pindex->GetBlockHash().ToString());
+            LogInfoEvent(BCLog::ALL, "chain_verification_read_failed",
+                     "Verification error: ReadBlock failed at {height}, hash={block_hash}")
+            .Field(BCLog::LogField::Height, pindex->nHeight)
+            .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash());
             return VerifyDBResult::CORRUPTED_BLOCK_DB;
         }
 
@@ -7280,10 +7285,10 @@ VerifyDBResult CVerifyDB::VerifyDB(Chainstate &chainstate,
             CBlockUndo undo;
             if (!pindex->GetUndoPos().IsNull()) {
                 if (!chainstate.m_blockman.ReadBlockUndo(undo, *pindex)) {
-                    LogPrintf("Verification error: found bad undo data at %d, "
-                              "hash=%s\n",
-                              pindex->nHeight,
-                              pindex->GetBlockHash().ToString());
+                    LogInfoEvent(BCLog::ALL, "chain_verification_undo_failed",
+                     "Verification error: found bad undo data at {height}, hash={block_hash}")
+            .Field(BCLog::LogField::Height, pindex->nHeight)
+            .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash());
                     return VerifyDBResult::CORRUPTED_BLOCK_DB;
                 }
             }
@@ -7299,10 +7304,10 @@ VerifyDBResult CVerifyDB::VerifyDB(Chainstate &chainstate,
                 DisconnectResult res =
                     chainstate.DisconnectBlock(block, pindex, coins);
                 if (res == DisconnectResult::FAILED) {
-                    LogPrintf("Verification error: irrecoverable inconsistency "
-                              "in block data at %d, hash=%s\n",
-                              pindex->nHeight,
-                              pindex->GetBlockHash().ToString());
+                    LogInfoEvent(BCLog::ALL, "chain_verification_disconnect_failed",
+                     "Verification error: irrecoverable inconsistency in block data at {height}, hash={block_hash}")
+            .Field(BCLog::LogField::Height, pindex->nHeight)
+            .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash());
                     return VerifyDBResult::CORRUPTED_BLOCK_DB;
                 }
                 if (res == DisconnectResult::UNCLEAN) {
@@ -7322,10 +7327,10 @@ VerifyDBResult CVerifyDB::VerifyDB(Chainstate &chainstate,
     }
 
     if (pindexFailure) {
-        LogPrintf("Verification error: coin database inconsistencies found "
-                  "(last %i blocks, %i good transactions before that)\n",
-                  chainstate.m_chain.Height() - pindexFailure->nHeight + 1,
-                  nGoodTransactions);
+        LogInfoEvent(BCLog::ALL, "chain_verification_inconsistent_coins",
+                     "Verification error: coin database inconsistencies found (last {verification_depth} blocks, {count} good transactions before that)")
+            .Field(BCLog::LogField::VerificationDepth, chainstate.m_chain.Height() - pindexFailure->nHeight + 1)
+            .Field(BCLog::LogField::Count, nGoodTransactions);
         return VerifyDBResult::CORRUPTED_BLOCK_DB;
     }
     if (skipped_l3_checks) {
@@ -7346,7 +7351,9 @@ VerifyDBResult CVerifyDB::VerifyDB(Chainstate &chainstate,
                                           double(nCheckDepth) * 50)));
             if (reportDone < percentageDone / 10) {
                 // report every 10% step
-                LogPrintf("Verification progress: %d%%\n", percentageDone);
+                LogInfoEvent(BCLog::ALL, "chain_verification_progress",
+                     "Verification progress: {progress_percent}%")
+            .Field(BCLog::LogField::ProgressPercent, percentageDone);
                 reportDone = percentageDone / 10;
             }
             m_notifications.progress(_("Verifying blocks…"), percentageDone,
@@ -7354,9 +7361,10 @@ VerifyDBResult CVerifyDB::VerifyDB(Chainstate &chainstate,
             pindex = chainstate.m_chain.Next(pindex);
             CBlock block;
             if (!chainstate.m_blockman.ReadBlock(block, *pindex)) {
-                LogPrintf("Verification error: ReadBlock failed at %d, "
-                          "hash=%s\n",
-                          pindex->nHeight, pindex->GetBlockHash().ToString());
+                LogInfoEvent(BCLog::ALL, "chain_verification_reconnect_read_failed",
+                     "Verification error: ReadBlock failed at {height}, hash={block_hash}")
+            .Field(BCLog::LogField::Height, pindex->nHeight)
+            .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash());
                 return VerifyDBResult::CORRUPTED_BLOCK_DB;
             }
             if (!chainstate.ConnectBlock(block, state, pindex, coins,
@@ -7374,9 +7382,10 @@ VerifyDBResult CVerifyDB::VerifyDB(Chainstate &chainstate,
         }
     }
 
-    LogPrintf("Verification: No coin database inconsistencies in last %i "
-              "blocks (%i transactions)\n",
-              block_count, nGoodTransactions);
+    LogInfoEvent(BCLog::ALL, "chain_verification_completed",
+                     "Verification: No coin database inconsistencies in last {verification_depth} blocks ({count} transactions)")
+            .Field(BCLog::LogField::VerificationDepth, block_count)
+            .Field(BCLog::LogField::Count, nGoodTransactions);
 
     if (skipped_l3_checks) {
         return VerifyDBResult::SKIPPED_L3_CHECKS;
