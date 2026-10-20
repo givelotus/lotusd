@@ -38,6 +38,8 @@ struct TxEntry {
     int64_t time_first_seen{};
     /** Whether this is a coinbase tx. */
     bool is_coinbase{};
+    /** Creating transaction grammar. */
+    bool is_legacy{};
 
     bool operator==(const TxEntry &) const = default;
 };
@@ -82,6 +84,7 @@ struct SerTx {
     /** == 0 <==> is_coinbase == true */
     uint32_t undo_pos{};
     int64_t time_first_seen{};
+    bool is_legacy{};
 
     bool operator==(const SerTx &) const = default;
 };

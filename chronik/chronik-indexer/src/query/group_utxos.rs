@@ -70,6 +70,8 @@ where
 /// Data of a UTXO to be mapped to protobuf.
 #[derive(Debug)]
 pub struct UtxoExtra {
+    /// Whether the creating transaction used the legacy grammar.
+    pub is_legacy: bool,
     /// OutPoint of the UTXO
     pub outpoint: OutPoint,
     /// Blockheight of the UTXO, -1 if in the mempool
@@ -108,6 +110,7 @@ impl UtxoProtobuf for UtxoProtobufValue {
             outpoint: Some(make_outpoint_proto(&extra.outpoint)),
             block_height: extra.block_height,
             is_coinbase: extra.is_coinbase,
+            is_legacy: extra.is_legacy,
             sats: data,
             is_final: extra.is_final,
             token: extra
@@ -132,6 +135,7 @@ impl UtxoProtobuf for UtxoProtobufOutput {
             outpoint: Some(make_outpoint_proto(&extra.outpoint)),
             block_height: extra.block_height,
             is_coinbase: extra.is_coinbase,
+            is_legacy: extra.is_legacy,
             sats: data.0,
             script: data.1.to_vec(),
             is_final: extra.is_final,
@@ -278,6 +282,7 @@ where
                     outpoint,
                     block_height: db_tx.block_height,
                     is_coinbase: db_tx.entry.is_coinbase,
+                    is_legacy: db_tx.entry.is_legacy,
                     is_final,
                     token: read_db_token_output(
                         self.db,
@@ -320,6 +325,7 @@ where
                     outpoint: mempool_outpoint,
                     block_height: -1,
                     is_coinbase: false,
+                    is_legacy: mempool_tx.tx.version != 7,
                     is_final: self
                         .node
                         .bridge

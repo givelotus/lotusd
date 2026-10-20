@@ -455,6 +455,7 @@ proto::Tx MakeTxProto(const MakeTxProtoParams &params) {
         if (input.coin) {
             p->set_output_script(BytesStr(input.coin->output.script));
             p->set_sats(input.coin->output.sats);
+            p->set_is_legacy(input.coin->is_legacy);
         }
         p->set_sequence_no(input.sequence);
         if (params.token) {
@@ -466,6 +467,7 @@ proto::Tx MakeTxProto(const MakeTxProtoParams &params) {
     for (size_t output_idx = 0; output_idx < tx.outputs.size(); ++output_idx) {
         const TxOutput &output = tx.outputs[output_idx];
         proto::TxOutput *p = result.add_outputs();
+        p->set_is_legacy(tx.version != 7);
         p->set_sats(output.sats);
         p->set_output_script(BytesStr(output.script));
         if (!output.state_root.empty()) {
