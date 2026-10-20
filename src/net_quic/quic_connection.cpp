@@ -445,10 +445,36 @@ void QuicConnection::OnHandshakeCompletedInternal() {
     }
 }
 
+UdpDatagram QuicConnection::Packet(const uint8_t *data, size_t len,
+                                   const ngtcp2_path *path,
+                                   size_t segment_size) const {
+    UdpDatagram packet;
+    packet.remote = m_remote;
+    packet.remote_len = m_remote_len;
+    packet.local = m_local;
+    packet.local_len = m_local_len;
+    // ngtcp2 may be writing path validation traffic or a validated new path.
+    // Preserve its per-packet path instead of always using the original peer.
+    if (path && path->remote.addrlen &&
+        path->remote.addrlen <= sizeof(packet.remote)) {
+        std::memcpy(&packet.remote, path->remote.addr, path->remote.addrlen);
+        packet.remote_len = path->remote.addrlen;
+    }
+    if (path && path->local.addrlen &&
+        path->local.addrlen <= sizeof(packet.local)) {
+        std::memcpy(&packet.local, path->local.addr, path->local.addrlen);
+        packet.local_len = path->local.addrlen;
+    }
+    packet.segment_size = segment_size;
+    packet.data.assign(data, data + len);
+    return packet;
+}
+
 void QuicConnection::SendPacket(const uint8_t *data, size_t len) {
-    // A full socket buffer drops the packet; QUIC loss recovery resends.
-    m_sock.SendOne(data, len, reinterpret_cast<const sockaddr *>(&m_remote),
-                   m_remote_len, &m_local, m_local_len);
+    const auto packet{Packet(data, len, ngtcp2_conn_get_path2(m_conn))};
+    m_sock.SendOne(packet.data.data(), packet.data.size(),
+                   reinterpret_cast<const sockaddr *>(&packet.remote),
+                   packet.remote_len, &packet.local, packet.local_len);
     m_engine.OnPacketSent(len);
 }
 
@@ -563,16 +589,72 @@ void QuicConnection::Write(uint64_t now) {
     if (m_txbuf.size() < max_pkt) {
         m_txbuf.resize(std::max<size_t>(max_pkt, 1500));
     }
-    ngtcp2_path_storage ps;
-    ngtcp2_path_storage_zero(&ps);
-    ngtcp2_pkt_info pi{};
-    for (int pkts = 0; pkts < MAX_PACKETS_PER_WRITE;) {
+    const size_t burst{m_sock.GsoSupported() ? 10U : 1U};
+    const size_t capacity{
+        std::max(max_pkt, std::min(max_pkt * burst,
+                                   ngtcp2_conn_get_send_quantum2(m_conn)))};
+    if (m_txbuf.size() < capacity) m_txbuf.resize(capacity);
+    std::vector<UdpDatagram> packets;
+    packets.reserve(MAX_PACKETS_PER_WRITE);
+    const auto flush = [&] {
+        // An unsent suffix is dropped, as with the previous nonblocking
+        // sendmsg path; ngtcp2 retains it for ordinary loss recovery.
+        m_sock.SendBatch(packets);
+        for (const auto &packet : packets) {
+            const size_t segment{packet.segment_size ? packet.segment_size
+                                                     : packet.data.size()};
+            for (size_t offset{0}; offset < packet.data.size();
+                 offset += segment)
+                m_engine.OnPacketSent(
+                    std::min(segment, packet.data.size() - offset));
+        }
+        packets.clear();
+    };
+    for (size_t count{0}; count < MAX_PACKETS_PER_WRITE;) {
+        ngtcp2_path_storage path;
+        ngtcp2_path_storage_zero(&path);
+        ngtcp2_pkt_info pi{};
+        size_t segment{0};
+        ngtcp2_ssize written;
+        if (m_sock.GsoSupported()) {
+            written = ngtcp2_conn_write_aggregate_pkt2(
+                m_conn, &path.path, &pi, m_txbuf.data(), capacity, &segment,
+                [](ngtcp2_conn *, ngtcp2_path *p, ngtcp2_pkt_info *info,
+                   uint8_t *buffer, size_t len, uint64_t ts, void *user) {
+                    return static_cast<QuicConnection *>(user)->WritePacket(
+                        p, info, buffer, len, ts);
+                },
+                std::min<size_t>(10, MAX_PACKETS_PER_WRITE - count), now);
+        } else {
+            written =
+                WritePacket(&path.path, &pi, m_txbuf.data(), max_pkt, now);
+        }
+        if (written < 0) {
+            flush();
+            CloseLib(static_cast<int>(written));
+            return;
+        }
+        if (written == 0) break;
+        const size_t bytes{static_cast<size_t>(written)};
+        packets.push_back(Packet(m_txbuf.data(), bytes, &path.path, segment));
+        count += segment ? (bytes + segment - 1) / segment : 1;
+        if (!IsOpen()) break;
+    }
+    flush();
+    ngtcp2_conn_update_pkt_tx_time(m_conn, now);
+}
+
+ngtcp2_ssize QuicConnection::WritePacket(ngtcp2_path *path, ngtcp2_pkt_info *pi,
+                                         uint8_t *buffer, size_t capacity,
+                                         uint64_t now) {
+    if (!IsOpen()) return 0;
+    while (true) {
         if (!m_datagrams.empty()) {
             const std::vector<uint8_t> &d{m_datagrams.front()};
             ngtcp2_vec v{const_cast<uint8_t *>(d.data()), d.size()};
             int accepted{0};
             const ngtcp2_ssize n{ngtcp2_conn_writev_datagram(
-                m_conn, &ps.path, &pi, m_txbuf.data(), max_pkt, &accepted,
+                m_conn, path, pi, buffer, capacity, &accepted,
                 NGTCP2_WRITE_DATAGRAM_FLAG_MORE, m_next_datagram_id++, &v, 1,
                 now)};
             if (n == NGTCP2_ERR_WRITE_MORE) {
@@ -588,8 +670,7 @@ void QuicConnection::Write(uint64_t now) {
                     m_datagrams.pop_front();
                     continue;
                 }
-                CloseLib(static_cast<int>(n));
-                return;
+                return static_cast<int>(n);
             }
             if (accepted) {
                 m_datagrams.pop_front();
@@ -597,9 +678,7 @@ void QuicConnection::Write(uint64_t now) {
             if (n == 0) {
                 break;
             }
-            SendPacket(m_txbuf.data(), static_cast<size_t>(n));
-            ++pkts;
-            continue;
+            return n;
         }
         int64_t stream_id{-1};
         int fin{0};
@@ -614,8 +693,7 @@ void QuicConnection::Write(uint64_t now) {
                 const ngtcp2_ssize cnt{m_app->WritevLibrary(
                     *this, stream_id, fin, vec, MAX_WRITE_VECS)};
                 if (cnt < 0) {
-                    CloseLib(NGTCP2_ERR_CALLBACK_FAILURE);
-                    return;
+                    return NGTCP2_ERR_CALLBACK_FAILURE;
                 }
                 vcnt = static_cast<size_t>(cnt);
                 library = stream_id >= 0;
@@ -648,8 +726,8 @@ void QuicConnection::Write(uint64_t now) {
         }
         ngtcp2_ssize ndatalen{-1};
         const ngtcp2_ssize n{ngtcp2_conn_writev_stream(
-            m_conn, &ps.path, &pi, m_txbuf.data(), max_pkt, &ndatalen, flags,
-            stream_id, vec, vcnt, now)};
+            m_conn, path, pi, buffer, capacity, &ndatalen, flags, stream_id,
+            vec, vcnt, now)};
         if (n < 0) {
             switch (n) {
                 case NGTCP2_ERR_STREAM_DATA_BLOCKED:
@@ -673,8 +751,7 @@ void QuicConnection::Write(uint64_t now) {
                             if (m_app->OnLibraryWritten(
                                     *this, stream_id,
                                     static_cast<size_t>(ndatalen)) != 0) {
-                                CloseLib(NGTCP2_ERR_CALLBACK_FAILURE);
-                                return;
+                                return NGTCP2_ERR_CALLBACK_FAILURE;
                             }
                         } else if (own) {
                             AccountWritten(*own, static_cast<size_t>(ndatalen),
@@ -685,8 +762,7 @@ void QuicConnection::Write(uint64_t now) {
                     }
                     continue;
                 default:
-                    CloseLib(static_cast<int>(n));
-                    return;
+                    return static_cast<int>(n);
             }
         }
         if (ndatalen >= 0) {
@@ -694,8 +770,7 @@ void QuicConnection::Write(uint64_t now) {
                 if (m_app->OnLibraryWritten(*this, stream_id,
                                             static_cast<size_t>(ndatalen)) !=
                     0) {
-                    CloseLib(NGTCP2_ERR_CALLBACK_FAILURE);
-                    return;
+                    return NGTCP2_ERR_CALLBACK_FAILURE;
                 }
             } else if (own) {
                 AccountWritten(*own, static_cast<size_t>(ndatalen),
@@ -715,10 +790,9 @@ void QuicConnection::Write(uint64_t now) {
             // Congestion, pacing or nothing left.
             break;
         }
-        SendPacket(m_txbuf.data(), static_cast<size_t>(n));
-        ++pkts;
+        return n;
     }
-    ngtcp2_conn_update_pkt_tx_time(m_conn, now);
+    return 0;
 }
 
 uint64_t QuicConnection::NextExpiry() const {
