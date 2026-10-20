@@ -687,6 +687,7 @@ add_library(server
 	node/interfaces.cpp
 	node/kernel_notifications.cpp
 	node/mempool_persist_args.cpp
+	node/metrics_collectors.cpp
 	node/metrics.cpp
 	node/miner.cpp
 	node/peerman_args.cpp

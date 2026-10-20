@@ -433,7 +433,7 @@ std::string Registry::Render(std::chrono::milliseconds min_interval) {
         now - m_rendered_at < min_interval) {
         return m_rendered;
     }
-    for (const auto &collect : m_collectors) {
+    for (const auto &[id, collect] : m_collectors) {
         collect();
     }
     Drain();

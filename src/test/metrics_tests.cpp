@@ -343,4 +343,48 @@ BOOST_AUTO_TEST_CASE(parse_metrics_labels) {
     BOOST_CHECK(node::ParseMetricsLabels(many));
 }
 
+BOOST_AUTO_TEST_CASE(collectors_added_and_removed) {
+    Registry reg;
+    auto &g{reg.Add(std::make_unique<Gauge>("g", "G."))};
+    int a{0}, b{0};
+    const uint64_t ida{reg.AddCollector([&] { g.Set(++a); })};
+    const uint64_t idb{reg.AddCollector([&] { ++b; })};
+    BOOST_CHECK(ida != idb);
+    reg.Render();
+    BOOST_CHECK_EQUAL(a, 1);
+    BOOST_CHECK_EQUAL(b, 1);
+    reg.RemoveCollector(ida);
+    reg.Render();
+    BOOST_CHECK_EQUAL(a, 1);
+    BOOST_CHECK_EQUAL(b, 2);
+    // Added while another thread renders
+    std::thread renderer{[&] {
+        for (int i = 0; i < 200; ++i) {
+            reg.Render();
+        }
+    }};
+    for (int i = 0; i < 200; ++i) {
+        reg.RemoveCollector(reg.AddCollector([] {}));
+    }
+    renderer.join();
+    reg.RemoveCollector(idb);
+    const int seen{b};
+    reg.Render();
+    BOOST_CHECK_EQUAL(b, seen);
+}
+
+BOOST_AUTO_TEST_CASE(avalanche_vote_series) {
+    const auto &labels{node::metric_labels::AvalancheVotes()};
+    BOOST_CHECK_EQUAL(labels[node::AvalancheVoteSeries(0)], "yes");
+    BOOST_CHECK_EQUAL(labels[node::AvalancheVoteSeries(1)], "no"); // invalid
+    BOOST_CHECK_EQUAL(labels[node::AvalancheVoteSeries(2)], "no"); // parked
+    BOOST_CHECK_EQUAL(labels[node::AvalancheVoteSeries(3)], "no"); // fork
+    BOOST_CHECK_EQUAL(labels[node::AvalancheVoteSeries(uint32_t(-1))],
+                      "neutral"); // unknown
+    BOOST_CHECK_EQUAL(labels[node::AvalancheVoteSeries(uint32_t(-2))],
+                      "neutral"); // missing
+    BOOST_CHECK_EQUAL(labels.size(), 3U);
+    BOOST_CHECK_EQUAL(node::metric_labels::AvalancheItemTypes().size(), 6U);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
