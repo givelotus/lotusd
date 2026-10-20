@@ -79,6 +79,14 @@ MiningPoolManager::MiningPoolManager() = default;
 void MiningPoolManager::Configure(const ArgsManager &args,
                                   const Config &config) {
     std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_stopping) {
+        throw std::runtime_error("Built-in mining pool is stopping");
+    }
+    m_staking_rewards = args.GetBoolArg(
+        "-avalanchestakingrewards",
+        config.GetChainParams().GetConsensus().enableStakingRewards);
+    m_initial_share_target =
+        GetInitialShareTarget(config.GetChainParams().GetConsensus());
     m_enabled = args.GetBoolArg("-miningpool", DEFAULT_MINING_POOL_ENABLED);
     m_pool_address_arg = args.GetArg("-pooladdress", "");
     const int64_t window = args.GetIntArg(
@@ -94,6 +102,10 @@ void MiningPoolManager::Configure(const ArgsManager &args,
 
 void MiningPoolManager::Reset() {
     std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_active_operations != 0) {
+        throw std::logic_error(
+            "Cannot reset mining pool with active operations");
+    }
     m_next_job_id = 1;
     m_next_nonce_prefix = 1;
     for (auto &job : m_jobs) {
@@ -107,15 +119,34 @@ void MiningPoolManager::Reset() {
     m_total_work = 0.0;
 }
 
-bool MiningPoolManager::IsEnabled(const ArgsManager *args) const {
-    if (args && args->IsArgSet("-miningpool")) {
-        return args->GetBoolArg("-miningpool", DEFAULT_MINING_POOL_ENABLED);
+MiningPoolManager::Operation::Operation(MiningPoolManager &pool)
+    : m_pool(pool) {
+    std::lock_guard<std::mutex> lock(m_pool.m_mutex);
+    if (!m_pool.m_configured || !m_pool.m_enabled || m_pool.m_stopping) {
+        throw std::runtime_error("Built-in mining pool is unavailable");
     }
-    if (gArgs.IsArgSet("-miningpool")) {
-        return gArgs.GetBoolArg("-miningpool", DEFAULT_MINING_POOL_ENABLED);
-    }
+    ++m_pool.m_active_operations;
+}
+
+MiningPoolManager::Operation::~Operation() {
+    std::lock_guard<std::mutex> lock(m_pool.m_mutex);
+    if (--m_pool.m_active_operations == 0) m_pool.m_drained.notify_all();
+}
+
+bool MiningPoolManager::IsEnabled() const {
     std::lock_guard<std::mutex> lock(m_mutex);
-    return m_enabled;
+    return m_configured && m_enabled && !m_stopping;
+}
+
+void MiningPoolManager::Interrupt() {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_stopping = true;
+}
+
+void MiningPoolManager::Stop() {
+    std::unique_lock<std::mutex> lock(m_mutex);
+    m_stopping = true;
+    m_drained.wait(lock, [this] { return m_active_operations == 0; });
 }
 
 void MiningPoolManager::SetTargetSpacingSec(int64_t spacing_sec) {
@@ -145,9 +176,6 @@ CScript MiningPoolManager::GetFallbackPayoutScriptLocked(
         return m_fallback_payout_script;
     }
     std::string addr = m_pool_address_arg;
-    if (addr.empty() && gArgs.IsArgSet("-pooladdress")) {
-        addr = gArgs.GetArg("-pooladdress", "");
-    }
     if (!addr.empty()) {
         CTxDestination dest =
             DecodeDestination(addr, config.GetChainParams());
@@ -254,13 +282,8 @@ PoolWorker &MiningPoolManager::GetOrCreateWorkerLocked(
 
 void MiningPoolManager::UpdateVarDiffLocked(PoolWorker &worker, int64_t now_ms,
                                             const Consensus::Params &params) {
-    const int64_t target_spacing_sec =
-        gArgs.IsArgSet("-pooltargetspacing")
-            ? std::max<int64_t>(
-                  1, gArgs.GetIntArg("-pooltargetspacing",
-                                     DEFAULT_POOL_TARGET_SPACING_SEC))
-            : m_target_spacing_sec;
-    const int64_t target_ms = std::max<int64_t>(100, target_spacing_sec * 1000);
+    const int64_t target_ms =
+        std::max<int64_t>(100, m_target_spacing_sec * 1000);
 
     if (worker.last_share_time_ms <= 0) {
         worker.last_share_time_ms = now_ms;
@@ -319,7 +342,7 @@ void MiningPoolManager::UpdateVarDiffLocked(PoolWorker &worker, int64_t now_ms,
 }
 
 double MiningPoolManager::EstimateWorkerHashrateLocked(
-    const PoolWorker &worker, const Consensus::Params &params) const {
+    const PoolWorker &worker) const {
     if (worker.accepted_shares == 0) {
         return 0.0;
     }
@@ -356,6 +379,7 @@ UniValue MiningPoolManager::GetMiningJobJSON(const Config &config,
                                              const std::string &worker_id,
                                              PoolJob *out_job,
                                              PoolWorker *out_worker) {
+    Operation operation(*this);
     // Removed only by the later explicit native payout provider.
     throw std::runtime_error("Native pool payout provider is unavailable at this prefix");
     ChainstateManager *chainman_ptr = node.chainman.get();
@@ -405,11 +429,6 @@ UniValue MiningPoolManager::GetMiningJobJSON(const Config &config,
     }
 
     std::lock_guard<std::mutex> lock(m_mutex);
-    if (gArgs.IsArgSet("-poolpplnswindow")) {
-        m_pplns_window_size = static_cast<size_t>(std::max<int64_t>(
-            1, gArgs.GetIntArg("-poolpplnswindow",
-                               static_cast<int64_t>(DEFAULT_POOL_PPLNS_WINDOW))));
-    }
     PoolWorker &worker = GetOrCreateWorkerLocked(worker_id, config);
     const CScript fallback_script = GetFallbackPayoutScriptLocked(config);
 
@@ -422,9 +441,7 @@ UniValue MiningPoolManager::GetMiningJobJSON(const Config &config,
 
     std::vector<CScript> stakingRewardsPayoutScripts;
     Amount stakingRewardsAmount = Amount::zero();
-    if (node.avalanche &&
-        gArgs.GetBoolArg("-avalanchestakingrewards",
-                         consensusParams.enableStakingRewards)) {
+    if (node.avalanche && m_staking_rewards) {
         if (node.avalanche->getStakingRewardWinners(
                 tmpl.prev_block_hash, stakingRewardsPayoutScripts) &&
             !stakingRewardsPayoutScripts.empty()) {
@@ -626,6 +643,7 @@ ShareSubmissionResult MiningPoolManager::SubmitShare(
     const Config &config, ::node::NodeContext &node, uint64_t job_id,
     const std::string &worker_id, std::optional<uint64_t> nTime,
     uint64_t nNonce) {
+    Operation operation(*this);
     ShareSubmissionResult result;
     result.reason = "native-payout-provider-unavailable";
     return result;
@@ -815,20 +833,15 @@ ShareSubmissionResult MiningPoolManager::SubmitShare(
 
 UniValue MiningPoolManager::GetPoolInfoJSON() const {
     std::lock_guard<std::mutex> lock(m_mutex);
-    const Consensus::Params &consensusParams =
-        GetConfig().GetChainParams().GetConsensus();
 
     double pool_hashrate = 0.0;
     for (const auto &[_, worker] : m_workers) {
-        pool_hashrate += EstimateWorkerHashrateLocked(worker, consensusParams);
+        pool_hashrate += EstimateWorkerHashrateLocked(worker);
     }
 
-    const bool enabled =
-        gArgs.IsArgSet("-miningpool")
-            ? gArgs.GetBoolArg("-miningpool", DEFAULT_MINING_POOL_ENABLED)
-            : m_enabled;
     UniValue obj(UniValue::VOBJ);
-    obj.pushKV("enabled", enabled);
+    obj.pushKV("enabled", m_configured && m_enabled && !m_stopping);
+    obj.pushKV("active_operations", static_cast<uint64_t>(m_active_operations));
     obj.pushKV("payout_ready", false);
     obj.pushKV("payout_error", "native-payout-provider-unavailable");
     obj.pushKV("active_workers", static_cast<uint64_t>(m_workers.size()));
@@ -848,12 +861,10 @@ UniValue MiningPoolManager::GetPoolInfoJSON() const {
 UniValue MiningPoolManager::GetWorkerStatsJSON(
     const std::string &worker_id) const {
     std::lock_guard<std::mutex> lock(m_mutex);
-    const Consensus::Params &consensusParams =
-        GetConfig().GetChainParams().GetConsensus();
 
     double pool_hashrate = 0.0;
     for (const auto &[_, w] : m_workers) {
-        pool_hashrate += EstimateWorkerHashrateLocked(w, consensusParams);
+        pool_hashrate += EstimateWorkerHashrateLocked(w);
     }
 
     UniValue obj(UniValue::VOBJ);
@@ -869,8 +880,7 @@ UniValue MiningPoolManager::GetWorkerStatsJSON(
         const bool is_sub = (key.rfind("sub:", 0) == 0);
         obj.pushKV("worker_id", key);
         obj.pushKV("nonce_prefix", uint64_t(0));
-        obj.pushKV("share_target",
-                   GetInitialShareTarget(consensusParams).GetHex());
+        obj.pushKV("share_target", m_initial_share_target.GetHex());
         obj.pushKV("accepted_shares", uint64_t(0));
         obj.pushKV("rejected_shares", uint64_t(0));
         obj.pushKV("worker_blocks_found", uint64_t(0));
@@ -884,8 +894,7 @@ UniValue MiningPoolManager::GetWorkerStatsJSON(
     }
 
     const PoolWorker &w = it->second;
-    const double est_hashrate =
-        EstimateWorkerHashrateLocked(w, consensusParams);
+    const double est_hashrate = EstimateWorkerHashrateLocked(w);
     const double pplns_weight = ComputeWorkerPPLNSWeightLocked(w.worker_id);
     const bool unlocked =
         w.is_newsletter_subscriber &&
@@ -907,13 +916,34 @@ UniValue MiningPoolManager::GetWorkerStatsJSON(
     return obj;
 }
 
-std::shared_ptr<MiningPoolManager> GetGlobalMiningPoolPtr() {
-    static auto g_pool = std::make_shared<MiningPoolManager>();
-    return g_pool;
-}
-
-MiningPoolManager &GetGlobalMiningPool() {
-    return *GetGlobalMiningPoolPtr();
-}
-
 } // namespace lotus::v2::node
+
+namespace node {
+std::shared_ptr<MiningPoolManager> GetMiningPool(const NodeContext &node) {
+    return std::atomic_load(&node.mining_pool);
+}
+
+void StartMiningPool(NodeContext &node, const Config &config) {
+    // GUI/P2P-only nodes do not run the pool. RPC warmup prevents requests
+    // reaching the service until startup has completed.
+    if (!node.args || !node.args->GetBoolArg("-server", false) ||
+        !node.args->GetBoolArg("-miningpool",
+                               lotus::v2::node::DEFAULT_MINING_POOL_ENABLED))
+        return;
+    if (node::GetMiningPool(node))
+        throw std::logic_error("Mining pool already started");
+    auto pool = std::make_shared<MiningPoolManager>();
+    pool->Configure(*node.args, config);
+    std::atomic_store(&node.mining_pool, std::move(pool));
+}
+
+void InterruptMiningPool(NodeContext &node) {
+    if (auto pool = node::GetMiningPool(node)) pool->Interrupt();
+}
+
+void StopMiningPool(NodeContext &node) {
+    if (auto pool = std::atomic_exchange(&node.mining_pool,
+                                         std::shared_ptr<MiningPoolManager>{}))
+        pool->Stop();
+}
+} // namespace node
