@@ -90,6 +90,13 @@ struct TxOutput {
      * interprets these bytes beyond script classification/compression.
      */
     Bytes script;
+    /**
+     * Lotus V2: the 32-byte state root of a HAS_STATE output
+     * (TxOutput.state_root in the protobuf API), empty for every other
+     * output. Host-provided for a transaction's own outputs; the core only
+     * forwards it.
+     */
+    Bytes state_root;
     bool operator==(const TxOutput &) const = default;
 };
 
