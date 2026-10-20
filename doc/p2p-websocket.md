@@ -4,7 +4,8 @@ A node can carry P2P connections over WebSocket (`ws://`) or WebSocket over
 TLS (`wss://`): on its P2P port, beside raw P2P, on `-publicbind` listeners
 and on its RPC port. On the network, a `wss://` peer connection looks like a browser
 talking to a web site: TCP to port 443 (or whichever you choose), a TLS
-handshake with ALPN `http/1.1`, an HTTP upgrade, then encrypted traffic.
+handshake with ALPN `h2` or `http/1.1`, a WebSocket opened by an HTTP/1.1
+upgrade or an HTTP/2 extended CONNECT, then encrypted traffic.
 
 This is useful to:
 
@@ -184,6 +185,37 @@ message stream with zstd and a built-in dictionary of common P2P messages,
 so even small messages shrink; `p2p-zstd` does the same without the
 dictionary; `none` sends plain messages.
 
+## Over HTTP/2
+
+In builds with HTTP/2 (`-DENABLE_HTTP2=ON`, see [HTTP/2](http2.md)) and with
+`-http2` on (the default there):
+
+- The TLS listeners (`-publicbind` and the RPC port) prefer ALPN `h2`, and
+  accept WebSockets over HTTP/2 (RFC 8441: `CONNECT` with
+  `:protocol websocket`, advertised with `SETTINGS_ENABLE_CONNECT_PROTOCOL`)
+  for `/p2p/ws` (or `-p2pwebsocketpath`) and Chronik's `/chronik/ws`, under
+  the same rules as the HTTP/1.1 upgrade: `-rpcallowip` on the RPC port,
+  tokens, `-trustedproxy`, the compression subprotocols. `permessage-deflate`
+  is not offered over HTTP/2. A browser or HTTP client that negotiated `h2`
+  can therefore still open the P2P WebSocket, next to other requests on the
+  same connection.
+- The dialer offers `h2, http/1.1`, like a browser. If the server selects
+  `h2` and allows extended CONNECT, the WebSocket is opened over HTTP/2;
+  if it selects `http/1.1`, the HTTP/1.1 upgrade is used as before. A
+  server that selects `h2` without extended CONNECT is not dialed over
+  that connection (logged).
+- `getpeerinfo` shows `websocket.alpn` `h2` for such peers. Message framing,
+  compression, pins and permissions are the same.
+
+Without HTTP/2 built, or with `-http2=0`, nothing changes: `h2` is neither
+offered nor selected. Plain `ws://` is always HTTP/1.1.
+
+An inbound P2P peer over HTTP/2 shares its HTTP/2 connection with other
+streams, so its traffic passes through the HTTP server's I/O threads (an
+HTTP/1.1 WebSocket peer's connection is handed to the P2P layer instead),
+and it is disconnected when the HTTP server stops. Platforms without Unix
+socket pairs (Windows) answer such upgrades with 501.
+
 ## Discovery
 
 - Only `-externaldomain` is ever advertised, as a NET_WSS address (BIP155
@@ -214,7 +246,7 @@ only from you.
 
 | Adversary | What helps | What does not |
 |---|---|---|
-| Passive observer (ISP, DPI) | `wss://`: P2P messages are inside TLS 1.2/1.3 with SNI, ALPN `http/1.1` and a browser-ordered cipher offer; neutral 90-day certificates name no software. | Traffic patterns (sizes, timing) are not shaped. The TLS ClientHello is not identical to a browser's (see below). `ws://` and plain TCP are readable. |
+| Passive observer (ISP, DPI) | `wss://`: P2P messages are inside TLS 1.2/1.3 with SNI, ALPN `h2, http/1.1` (`http/1.1` without HTTP/2) and a browser-ordered cipher offer; neutral 90-day certificates name no software. | Traffic patterns (sizes, timing) are not shaped. The TLS ClientHello is not identical to a browser's (see below). `ws://` and plain TCP are readable. |
 | Active prober (connects to suspected servers) | Secret path and token, plus `-publicfallback`: probes get an ordinary web site; the node's endpoint answers like a missing page. | A prober who learns the URL and token can connect. Malformed TLS or HTTP is answered by the node, not the fallback. |
 | Blocking by address or name | Bridges run by people you trust, reached through Xray or Tor (below). | A bridge that is blocked must be replaced. |
 | Malicious peers (Sybil/eclipse, logging IPs) | `-connect` only to bridges you trust, with key pins; `-p2pwebsocketrequirecert` on bridges. | Any peer you connect to sees the transactions you relay. |
@@ -222,12 +254,14 @@ only from you.
 
 ### TLS fingerprint
 
-lotusd uses OpenSSL. Its client offers ALPN `http/1.1`, sends SNI for host
-names, and orders its TLS 1.3 suites, TLS 1.2 ciphers, groups
+lotusd uses OpenSSL. Its client offers ALPN `h2, http/1.1` as Chrome does
+(only `http/1.1` in builds without HTTP/2 or with `-http2=0`), sends SNI for
+host names, and orders its TLS 1.3 suites, TLS 1.2 ciphers, groups
 (`X25519MLKEM768` where OpenSSL is 3.5 or newer) and signature algorithms
 like Chrome. OpenSSL cannot send GREASE values, randomize extension order,
-advertise `h2` (WebSocket needs HTTP/1.1), or do ECH, so JA3/JA4
-fingerprints still differ from a browser's. Dialing `wss://<IP address>`
+or do ECH, so JA3/JA4 fingerprints still differ from a browser's. After the
+handshake, the HTTP/2 connection's first frames (SETTINGS values, window
+sizes, header order) differ from a browser's too. Dialing `wss://<IP address>`
 sends no SNI, which is unusual for web traffic, so the node logs a warning.
 Where fingerprinting matters, put a tool built for it (Xray REALITY, Tor
 pluggable transports) between the node and the network.
