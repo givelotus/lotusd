@@ -2729,6 +2729,37 @@ MemPoolAccept::PrepareStaged(const std::vector<CTransactionRef> &txs,
     return verify;
 }
 
+PrecomputedAdmissionChecks
+PrecomputeMempoolAdmission(ChainstateManager &chainman,
+                           const CTransactionRef &tx,
+                           const MempoolAdmissionLimits &limits) {
+    AssertLockNotHeld(cs_main);
+    std::vector<PrecomputedAdmissionChecks> checks(1);
+    std::vector<std::vector<COutPoint>> fetched(1);
+    bool verify = false;
+    uint32_t flags = 0;
+    {
+        LOCK(cs_main);
+        auto &chainstate = chainman.ActiveChainstate();
+        if (auto *pool = chainstate.GetMempool()) {
+            flags = GetMempoolScriptFlags(chainstate);
+            verify =
+                MemPoolAccept(*pool, chainstate)
+                    .PrepareStaged({tx}, checks, fetched, flags, limits)[0];
+            // No admission owns these cache entries yet. Retain only copied
+            // outputs across the unlocked phase, including for invalid work.
+            for (const auto &outpoint : fetched[0]) {
+                chainstate.CoinsTip().Uncache(outpoint);
+            }
+        }
+    }
+    if (verify) {
+        ComputeAdmissionChecks(*tx, flags, chainman.m_validation_cache,
+                               checks[0]);
+    }
+    return std::move(checks[0]);
+}
+
 std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
     ChainstateManager &chainman, const std::vector<CTransactionRef> &txs,
     const StagedAdmissionOptions &options, StagedAdmissionStats *stats) {
