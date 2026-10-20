@@ -1,0 +1,190 @@
+{
+  "schema": 1,
+  "batch": "chain-verification-progress",
+  "review_note": "Typed verification lifecycle and disk consistency diagnostics, preserving existing messages and severity.",
+  "files": [
+    {
+      "path": "src/validation.cpp",
+      "rules": [
+        {
+          "id": "chain_verification_parameters",
+          "old": "LogPrintf(\"Verifying last %i blocks at level %i\\n\", nCheckDepth,\n              nCheckLevel)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_verification_parameters\",\n                     \"Verifying last {verification_depth} blocks at level {verification_level}\")\n            .Field(BCLog::LogField::VerificationDepth, nCheckDepth)\n            .Field(BCLog::LogField::VerificationLevel, nCheckLevel)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Verifying last %i blocks at level %i\n",
+            "specifiers": [
+              "%i",
+              "%i"
+            ],
+            "arguments": [
+              "nCheckDepth",
+              "nCheckLevel"
+            ]
+          },
+          "review_note": "Preserve Info level, ALL category, exact diagnostic wording and verification control flow. Heights, check depth/level and progress percentage are actual original integer quantities; Count denotes the original good transaction count, not total chain count. Hashes copy uint256 without producer text formatting."
+        },
+        {
+          "id": "chain_verification_progress",
+          "old": "LogPrintf(\"Verification progress: %d%%\\n\", percentageDone)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_verification_progress\",\n                     \"Verification progress: {progress_percent}%\")\n            .Field(BCLog::LogField::ProgressPercent, percentageDone)",
+          "count": 2,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Verification progress: %d%%\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "percentageDone"
+            ]
+          },
+          "review_note": "Preserve Info level, ALL category, exact diagnostic wording and verification control flow. Heights, check depth/level and progress percentage are actual original integer quantities; Count denotes the original good transaction count, not total chain count. Hashes copy uint256 without producer text formatting."
+        },
+        {
+          "id": "chain_verification_no_data",
+          "old": "LogPrintf(\"VerifyDB(): block verification stopping at height %d \"\n                      \"(no data). This could be due to pruning or use of an \"\n                      \"assumeutxo snapshot.\\n\",\n                      pindex->nHeight)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_verification_no_data\",\n                     \"VerifyDB(): block verification stopping at height {height} (no data). This could be due to pruning or use of an assumeutxo snapshot.\")\n            .Field(BCLog::LogField::Height, pindex->nHeight)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "VerifyDB(): block verification stopping at height %d (no data). This could be due to pruning or use of an assumeutxo snapshot.\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "pindex->nHeight"
+            ]
+          },
+          "review_note": "Preserve Info level, ALL category, exact diagnostic wording and verification control flow. Heights, check depth/level and progress percentage are actual original integer quantities; Count denotes the original good transaction count, not total chain count. Hashes copy uint256 without producer text formatting."
+        },
+        {
+          "id": "chain_verification_read_failed",
+          "old": "LogPrintf(\"Verification error: ReadBlock failed at %d, hash=%s\\n\",\n                      pindex->nHeight, pindex->GetBlockHash().ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_verification_read_failed\",\n                     \"Verification error: ReadBlock failed at {height}, hash={block_hash}\")\n            .Field(BCLog::LogField::Height, pindex->nHeight)\n            .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Verification error: ReadBlock failed at %d, hash=%s\n",
+            "specifiers": [
+              "%d",
+              "%s"
+            ],
+            "arguments": [
+              "pindex->nHeight",
+              "pindex->GetBlockHash().ToString()"
+            ]
+          },
+          "review_note": "Preserve Info level, ALL category, exact diagnostic wording and verification control flow. Heights, check depth/level and progress percentage are actual original integer quantities; Count denotes the original good transaction count, not total chain count. Hashes copy uint256 without producer text formatting."
+        },
+        {
+          "id": "chain_verification_undo_failed",
+          "old": "LogPrintf(\"Verification error: found bad undo data at %d, \"\n                              \"hash=%s\\n\",\n                              pindex->nHeight,\n                              pindex->GetBlockHash().ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_verification_undo_failed\",\n                     \"Verification error: found bad undo data at {height}, hash={block_hash}\")\n            .Field(BCLog::LogField::Height, pindex->nHeight)\n            .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Verification error: found bad undo data at %d, hash=%s\n",
+            "specifiers": [
+              "%d",
+              "%s"
+            ],
+            "arguments": [
+              "pindex->nHeight",
+              "pindex->GetBlockHash().ToString()"
+            ]
+          },
+          "review_note": "Preserve Info level, ALL category, exact diagnostic wording and verification control flow. Heights, check depth/level and progress percentage are actual original integer quantities; Count denotes the original good transaction count, not total chain count. Hashes copy uint256 without producer text formatting."
+        },
+        {
+          "id": "chain_verification_disconnect_failed",
+          "old": "LogPrintf(\"Verification error: irrecoverable inconsistency \"\n                              \"in block data at %d, hash=%s\\n\",\n                              pindex->nHeight,\n                              pindex->GetBlockHash().ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_verification_disconnect_failed\",\n                     \"Verification error: irrecoverable inconsistency in block data at {height}, hash={block_hash}\")\n            .Field(BCLog::LogField::Height, pindex->nHeight)\n            .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Verification error: irrecoverable inconsistency in block data at %d, hash=%s\n",
+            "specifiers": [
+              "%d",
+              "%s"
+            ],
+            "arguments": [
+              "pindex->nHeight",
+              "pindex->GetBlockHash().ToString()"
+            ]
+          },
+          "review_note": "Preserve Info level, ALL category, exact diagnostic wording and verification control flow. Heights, check depth/level and progress percentage are actual original integer quantities; Count denotes the original good transaction count, not total chain count. Hashes copy uint256 without producer text formatting."
+        },
+        {
+          "id": "chain_verification_inconsistent_coins",
+          "old": "LogPrintf(\"Verification error: coin database inconsistencies found \"\n                  \"(last %i blocks, %i good transactions before that)\\n\",\n                  chainstate.m_chain.Height() - pindexFailure->nHeight + 1,\n                  nGoodTransactions)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_verification_inconsistent_coins\",\n                     \"Verification error: coin database inconsistencies found (last {verification_depth} blocks, {count} good transactions before that)\")\n            .Field(BCLog::LogField::VerificationDepth, chainstate.m_chain.Height() - pindexFailure->nHeight + 1)\n            .Field(BCLog::LogField::Count, nGoodTransactions)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Verification error: coin database inconsistencies found (last %i blocks, %i good transactions before that)\n",
+            "specifiers": [
+              "%i",
+              "%i"
+            ],
+            "arguments": [
+              "chainstate.m_chain.Height() - pindexFailure->nHeight + 1",
+              "nGoodTransactions"
+            ]
+          },
+          "review_note": "Preserve Info level, ALL category, exact diagnostic wording and verification control flow. Heights, check depth/level and progress percentage are actual original integer quantities; Count denotes the original good transaction count, not total chain count. Hashes copy uint256 without producer text formatting."
+        },
+        {
+          "id": "chain_verification_reconnect_read_failed",
+          "old": "LogPrintf(\"Verification error: ReadBlock failed at %d, \"\n                          \"hash=%s\\n\",\n                          pindex->nHeight, pindex->GetBlockHash().ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_verification_reconnect_read_failed\",\n                     \"Verification error: ReadBlock failed at {height}, hash={block_hash}\")\n            .Field(BCLog::LogField::Height, pindex->nHeight)\n            .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Verification error: ReadBlock failed at %d, hash=%s\n",
+            "specifiers": [
+              "%d",
+              "%s"
+            ],
+            "arguments": [
+              "pindex->nHeight",
+              "pindex->GetBlockHash().ToString()"
+            ]
+          },
+          "review_note": "Preserve Info level, ALL category, exact diagnostic wording and verification control flow. Heights, check depth/level and progress percentage are actual original integer quantities; Count denotes the original good transaction count, not total chain count. Hashes copy uint256 without producer text formatting."
+        },
+        {
+          "id": "chain_verification_completed",
+          "old": "LogPrintf(\"Verification: No coin database inconsistencies in last %i \"\n              \"blocks (%i transactions)\\n\",\n              block_count, nGoodTransactions)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_verification_completed\",\n                     \"Verification: No coin database inconsistencies in last {verification_depth} blocks ({count} transactions)\")\n            .Field(BCLog::LogField::VerificationDepth, block_count)\n            .Field(BCLog::LogField::Count, nGoodTransactions)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Verification: No coin database inconsistencies in last %i blocks (%i transactions)\n",
+            "specifiers": [
+              "%i",
+              "%i"
+            ],
+            "arguments": [
+              "block_count",
+              "nGoodTransactions"
+            ]
+          },
+          "review_note": "Preserve Info level, ALL category, exact diagnostic wording and verification control flow. Heights, check depth/level and progress percentage are actual original integer quantities; Count denotes the original good transaction count, not total chain count. Hashes copy uint256 without producer text formatting."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Declare exact signed integer verification depth/level/progress units; existing field ordinals unchanged.",
+          "old": "    X(ChainstateRole, chainstate_role, STRING, \"\", \"\")",
+          "new": "    X(ChainstateRole, chainstate_role, STRING, \"\", \"\") \\\n    X(VerificationDepth, verification_depth, INT, \"\", \"\") \\\n    X(VerificationLevel, verification_level, INT, \"\", \"\") \\\n    X(ProgressPercent, progress_percent, INT, \"\", \"\")"
+        }
+      ]
+    }
+  ]
+}
