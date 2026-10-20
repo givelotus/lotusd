@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "batch": "snapshot-cache-progress",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "requires": "logging: retain integral values in bounded numeric message formats",
+  "resolves_prior_deferral": "Four memory sites in snapshot-chainstate-lifecycle. Known long fatal paragraph remains plain and deferred.",
+  "files": [
+    {
+      "path": "src/validation.cpp",
+      "rules": [
+        {
+          "id": "snapshot_activated_cache",
+          "old": "LogPrintf(\"[snapshot] (%.2f MB)\\n\",\n              m_snapshot_chainstate->CoinsTip().DynamicMemoryUsage() /\n                  (1000 * 1000))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_activated_cache\", \"[snapshot] ({snapshot_cache_mb:.2f} MB)\").Field(BCLog::LogField::SnapshotCacheMB, m_snapshot_chainstate->CoinsTip().DynamicMemoryUsage() /\n                  (1000 * 1000))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] (%.2f MB)\n",
+            "specifiers": [
+              "%.2f"
+            ],
+            "arguments": [
+              "m_snapshot_chainstate->CoinsTip().DynamicMemoryUsage() /\n                  (1000 * 1000)"
+            ]
+          },
+          "review_note": "Preserve Info, exact old tinyformat text, evaluation order and integer decimal-MB division. Memory stays UINT; no float coercion or invented fractional part. The percentage keeps the original float calculation and consumer .2f precision. Component controls compare actual old/new renderer and UINT64MAX/INT64MIN exactly; native/valid-snapshot producer-path coverage remains separately recorded. No snapshot consensus/cache/coin state changes."
+        },
+        {
+          "id": "snapshot_coins_load_progress",
+          "old": "LogPrintf(\"[snapshot] %d coins loaded (%.2f%%, %.2f MB)\\n\",\n                              coins_processed,\n                              static_cast<float>(coins_processed) * 100 /\n                                  static_cast<float>(coins_count),\n                              coins_cache.DynamicMemoryUsage() / (1000 * 1000))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_coins_load_progress\", \"[snapshot] {snapshot_coins_processed} coins loaded ({snapshot_progress_percent:.2f}%, {snapshot_cache_mb:.2f} MB)\").Field(BCLog::LogField::SnapshotCoinsProcessed, coins_processed).Field(BCLog::LogField::SnapshotProgressPercent, static_cast<float>(coins_processed) * 100 /\n                                  static_cast<float>(coins_count)).Field(BCLog::LogField::SnapshotCacheMB, coins_cache.DynamicMemoryUsage() / (1000 * 1000))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] %d coins loaded (%.2f%%, %.2f MB)\n",
+            "specifiers": [
+              "%d",
+              "%.2f",
+              "%.2f"
+            ],
+            "arguments": [
+              "coins_processed",
+              "static_cast<float>(coins_processed) * 100 /\n                                  static_cast<float>(coins_count)",
+              "coins_cache.DynamicMemoryUsage() / (1000 * 1000)"
+            ]
+          },
+          "review_note": "Preserve Info, exact old tinyformat text, evaluation order and integer decimal-MB division. Memory stays UINT; no float coercion or invented fractional part. The percentage keeps the original float calculation and consumer .2f precision. Component controls compare actual old/new renderer and UINT64MAX/INT64MIN exactly; native/valid-snapshot producer-path coverage remains separately recorded. No snapshot consensus/cache/coin state changes."
+        },
+        {
+          "id": "snapshot_coins_loaded",
+          "old": "LogPrintf(\"[snapshot] loaded %d (%.2f MB) coins from snapshot %s\\n\",\n              coins_count, coins_cache.DynamicMemoryUsage() / (1000 * 1000),\n              base_blockhash.ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_coins_loaded\", \"[snapshot] loaded {count} ({snapshot_cache_mb:.2f} MB) coins from snapshot {block_hash}\").Field(BCLog::LogField::Count, coins_count).Field(BCLog::LogField::SnapshotCacheMB, coins_cache.DynamicMemoryUsage() / (1000 * 1000)).Field(BCLog::LogField::BlockHash, base_blockhash)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] loaded %d (%.2f MB) coins from snapshot %s\n",
+            "specifiers": [
+              "%d",
+              "%.2f",
+              "%s"
+            ],
+            "arguments": [
+              "coins_count",
+              "coins_cache.DynamicMemoryUsage() / (1000 * 1000)",
+              "base_blockhash.ToString()"
+            ]
+          },
+          "review_note": "Preserve Info, exact old tinyformat text, evaluation order and integer decimal-MB division. Memory stays UINT; no float coercion or invented fractional part. The percentage keeps the original float calculation and consumer .2f precision. Component controls compare actual old/new renderer and UINT64MAX/INT64MIN exactly; native/valid-snapshot producer-path coverage remains separately recorded. No snapshot consensus/cache/coin state changes."
+        },
+        {
+          "id": "snapshot_cache_validated",
+          "old": "LogPrintf(\"[snapshot] validated snapshot (%.2f MB)\\n\",\n              coins_cache.DynamicMemoryUsage() / (1000 * 1000))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_cache_validated\", \"[snapshot] validated snapshot ({snapshot_cache_mb:.2f} MB)\").Field(BCLog::LogField::SnapshotCacheMB, coins_cache.DynamicMemoryUsage() / (1000 * 1000))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] validated snapshot (%.2f MB)\n",
+            "specifiers": [
+              "%.2f"
+            ],
+            "arguments": [
+              "coins_cache.DynamicMemoryUsage() / (1000 * 1000)"
+            ]
+          },
+          "review_note": "Preserve Info, exact old tinyformat text, evaluation order and integer decimal-MB division. Memory stays UINT; no float coercion or invented fractional part. The percentage keeps the original float calculation and consumer .2f precision. Component controls compare actual old/new renderer and UINT64MAX/INT64MIN exactly; native/valid-snapshot producer-path coverage remains separately recorded. No snapshot consensus/cache/coin state changes."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Distinguish integer decimal megabytes (1000000 bytes) from binary MiB and preserve original floating percentage calculation. Append IDs only.",
+          "old": "    X(BlockIndexDescription, block_index_description, STRING, \"\", \"\")\n",
+          "new": "    X(BlockIndexDescription, block_index_description, STRING, \"\", \"\") \\\n    X(SnapshotCacheMB, snapshot_cache_mb, UINT, \"\", \"\") \\\n    X(SnapshotProgressPercent, snapshot_progress_percent, FLOAT, \"\", \"\")\n"
+        }
+      ]
+    }
+  ]
+}
