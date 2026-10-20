@@ -75,6 +75,9 @@ void ApplyArgsManOptions(const ArgsManager &argsman,
             unsigned(std::clamp<int64_t>(*value, 1, 64));
     }
 
+    if (auto value{argsman.GetBoolArg("-txrelaypushhb")}) {
+        options.txrelay_push_hb = *value;
+    }
     if (auto value{argsman.GetIntArg("-txreconinterval")}) {
         options.txrecon_interval = std::chrono::milliseconds{
             std::clamp<int64_t>(*value, 0, 3'600'000)};
