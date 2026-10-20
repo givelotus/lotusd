@@ -109,7 +109,14 @@ class MiningProofOfWorkTest(BitcoinTestFramework):
             {
                 "legacytransactions": True,
                 "nativetransactions": self.expected_kind() == "lotus-v2",
-                "message_signing": "legacy-p2pkh",
+                "message_signing": "lotus-chain-bound-compact-ecdsa-v1",
+                "native_keyhash_message_signing": True,
+                "message_address": {
+                    "format": "xpiaddr",
+                    "hrp": "rxpi",
+                    "types": [1],
+                    "keyhash": "blake3-xonly32",
+                },
             },
         )
         assert config["node"]["client"]
