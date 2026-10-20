@@ -1,0 +1,348 @@
+{
+  "schema": 1,
+  "batch": "address-ban-database-lifecycle",
+  "review_note": "All18 legacy addrdb/banman producers reviewed as one shared address/ban persistence-lifecycle owner. Requires consumer :fsq API. Existing returns/recovery/locks unchanged; explicit signed operation milliseconds and raw subnet fields append.",
+  "files": [
+    {
+      "path": "src/addrdb.cpp",
+      "rules": [
+        {
+          "id": "ban_database_entry_version_unsupported",
+          "old": "LogPrintf(\n                \"Dropping entry with unknown version (%s) from ban list\\n\",\n                version)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"ban_database_entry_version_unsupported\", \"Dropping entry with unknown version ({version}) from ban list\").Field(BCLog::LogField::Version, version)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Dropping entry with unknown version (%s) from ban list\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "version"
+            ]
+          },
+          "review_note": "Preserve old level/ALL category, readable bytes, exact evaluation order and surrounding return/exception/recovery branches. Quoted paths use copied original PathToString with consumer-only :fsq; JSON paths remain raw, anchor basename stays Name and is not falsely mapped to full file.path. Subnet is the original potentially-invalid ban-list value. DatabaseOperationMs stays signed integer milliseconds (not float-rounded elapsed_ms), because wall-clock elapsed diagnostics can be negative. No new path, subnet or secret disclosure beyond the existing diagnostic values."
+        },
+        {
+          "id": "ban_database_entry_subnet_invalid",
+          "old": "LogPrintf(\"Dropping entry with unparseable address or subnet (%s) \"\n                      \"from ban list\\n\",\n                      subnet_str)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"ban_database_entry_subnet_invalid\", \"Dropping entry with unparseable address or subnet ({subnet}) from ban list\").Field(BCLog::LogField::Subnet, subnet_str)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Dropping entry with unparseable address or subnet (%s) from ban list\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "subnet_str"
+            ]
+          },
+          "review_note": "Preserve old level/ALL category, readable bytes, exact evaluation order and surrounding return/exception/recovery branches. Quoted paths use copied original PathToString with consumer-only :fsq; JSON paths remain raw, anchor basename stays Name and is not falsely mapped to full file.path. Subnet is the original potentially-invalid ban-list value. DatabaseOperationMs stays signed integer milliseconds (not float-rounded elapsed_ms), because wall-clock elapsed diagnostics can be negative. No new path, subnet or secret disclosure beyond the existing diagnostic values."
+        },
+        {
+          "id": "address_database_serialize_failed",
+          "old": "LogError(\"%s: Serialize or I/O error - %s\\n\", __func__, e.what())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"address_database_serialize_failed\", \"{source_function}: Serialize or I/O error - {error}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::Error, e.what())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: Serialize or I/O error - %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "e.what()"
+            ]
+          },
+          "review_note": "Preserve old level/ALL category, readable bytes, exact evaluation order and surrounding return/exception/recovery branches. Quoted paths use copied original PathToString with consumer-only :fsq; JSON paths remain raw, anchor basename stays Name and is not falsely mapped to full file.path. Subnet is the original potentially-invalid ban-list value. DatabaseOperationMs stays signed integer milliseconds (not float-rounded elapsed_ms), because wall-clock elapsed diagnostics can be negative. No new path, subnet or secret disclosure beyond the existing diagnostic values."
+        },
+        {
+          "id": "address_database_open_failed",
+          "old": "LogError(\"%s: Failed to open file %s\\n\", __func__,\n                 fs::PathToString(pathTmp))",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"address_database_open_failed\", \"{source_function}: Failed to open file {path}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::Path, fs::PathToString(pathTmp))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: Failed to open file %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "fs::PathToString(pathTmp)"
+            ]
+          },
+          "review_note": "Preserve old level/ALL category, readable bytes, exact evaluation order and surrounding return/exception/recovery branches. Quoted paths use copied original PathToString with consumer-only :fsq; JSON paths remain raw, anchor basename stays Name and is not falsely mapped to full file.path. Subnet is the original potentially-invalid ban-list value. DatabaseOperationMs stays signed integer milliseconds (not float-rounded elapsed_ms), because wall-clock elapsed diagnostics can be negative. No new path, subnet or secret disclosure beyond the existing diagnostic values."
+        },
+        {
+          "id": "address_database_flush_failed",
+          "old": "LogError(\"%s: Failed to flush file %s\\n\", __func__,\n                 fs::PathToString(pathTmp))",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"address_database_flush_failed\", \"{source_function}: Failed to flush file {path}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::Path, fs::PathToString(pathTmp))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: Failed to flush file %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "fs::PathToString(pathTmp)"
+            ]
+          },
+          "review_note": "Preserve old level/ALL category, readable bytes, exact evaluation order and surrounding return/exception/recovery branches. Quoted paths use copied original PathToString with consumer-only :fsq; JSON paths remain raw, anchor basename stays Name and is not falsely mapped to full file.path. Subnet is the original potentially-invalid ban-list value. DatabaseOperationMs stays signed integer milliseconds (not float-rounded elapsed_ms), because wall-clock elapsed diagnostics can be negative. No new path, subnet or secret disclosure beyond the existing diagnostic values."
+        },
+        {
+          "id": "address_database_rename_failed",
+          "old": "LogError(\"%s: Rename-into-place failed\\n\", __func__)",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"address_database_rename_failed\", \"{source_function}: Rename-into-place failed\").Field(BCLog::LogField::SourceFunction, __func__)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: Rename-into-place failed\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve old level/ALL category, readable bytes, exact evaluation order and surrounding return/exception/recovery branches. Quoted paths use copied original PathToString with consumer-only :fsq; JSON paths remain raw, anchor basename stays Name and is not falsely mapped to full file.path. Subnet is the original potentially-invalid ban-list value. DatabaseOperationMs stays signed integer milliseconds (not float-rounded elapsed_ms), because wall-clock elapsed diagnostics can be negative. No new path, subnet or secret disclosure beyond the existing diagnostic values."
+        },
+        {
+          "id": "ban_database_write_failed",
+          "old": "LogError(\"%s\\n\", err)",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"ban_database_write_failed\", \"{error}\").Field(BCLog::LogField::Error, err)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "err"
+            ]
+          },
+          "review_note": "Preserve old level/ALL category, readable bytes, exact evaluation order and surrounding return/exception/recovery branches. Quoted paths use copied original PathToString with consumer-only :fsq; JSON paths remain raw, anchor basename stays Name and is not falsely mapped to full file.path. Subnet is the original potentially-invalid ban-list value. DatabaseOperationMs stays signed integer milliseconds (not float-rounded elapsed_ms), because wall-clock elapsed diagnostics can be negative. No new path, subnet or secret disclosure beyond the existing diagnostic values."
+        },
+        {
+          "id": "ban_database_legacy_file_unavailable",
+          "old": "LogPrintf(\"Missing or invalid file %s\\n\",\n                      fs::quoted(fs::PathToString(m_banlist_dat)))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"ban_database_legacy_file_unavailable\", \"Missing or invalid file {path:fsq}\").Field(BCLog::LogField::Path, fs::PathToString(m_banlist_dat))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Missing or invalid file %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::quoted(fs::PathToString(m_banlist_dat))"
+            ]
+          },
+          "review_note": "Preserve old level/ALL category, readable bytes, exact evaluation order and surrounding return/exception/recovery branches. Quoted paths use copied original PathToString with consumer-only :fsq; JSON paths remain raw, anchor basename stays Name and is not falsely mapped to full file.path. Subnet is the original potentially-invalid ban-list value. DatabaseOperationMs stays signed integer milliseconds (not float-rounded elapsed_ms), because wall-clock elapsed diagnostics can be negative. No new path, subnet or secret disclosure beyond the existing diagnostic values."
+        },
+        {
+          "id": "ban_database_load_failed",
+          "old": "LogPrintf(\"Cannot load banlist %s: %s\\n\",\n                      fs::PathToString(m_banlist_json), err)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"ban_database_load_failed\", \"Cannot load banlist {path}: {error}\").Field(BCLog::LogField::Path, fs::PathToString(m_banlist_json)).Field(BCLog::LogField::Error, err)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Cannot load banlist %s: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(m_banlist_json)",
+              "err"
+            ]
+          },
+          "review_note": "Preserve old level/ALL category, readable bytes, exact evaluation order and surrounding return/exception/recovery branches. Quoted paths use copied original PathToString with consumer-only :fsq; JSON paths remain raw, anchor basename stays Name and is not falsely mapped to full file.path. Subnet is the original potentially-invalid ban-list value. DatabaseOperationMs stays signed integer milliseconds (not float-rounded elapsed_ms), because wall-clock elapsed diagnostics can be negative. No new path, subnet or secret disclosure beyond the existing diagnostic values."
+        },
+        {
+          "id": "ban_database_parse_failed",
+          "old": "LogPrintf(\"Cannot parse banlist %s: %s\\n\",\n                  fs::PathToString(m_banlist_json), e.what())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"ban_database_parse_failed\", \"Cannot parse banlist {path}: {error}\").Field(BCLog::LogField::Path, fs::PathToString(m_banlist_json)).Field(BCLog::LogField::Error, e.what())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Cannot parse banlist %s: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(m_banlist_json)",
+              "e.what()"
+            ]
+          },
+          "review_note": "Preserve old level/ALL category, readable bytes, exact evaluation order and surrounding return/exception/recovery branches. Quoted paths use copied original PathToString with consumer-only :fsq; JSON paths remain raw, anchor basename stays Name and is not falsely mapped to full file.path. Subnet is the original potentially-invalid ban-list value. DatabaseOperationMs stays signed integer milliseconds (not float-rounded elapsed_ms), because wall-clock elapsed diagnostics can be negative. No new path, subnet or secret disclosure beyond the existing diagnostic values."
+        },
+        {
+          "id": "address_database_loaded",
+          "old": "LogPrintf(\"Loaded %i addresses from peers.dat  %dms\\n\", addrman->size(),\n                  GetTimeMillis() - nStart)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"address_database_loaded\", \"Loaded {count} addresses from peers.dat  {database_operation_ms}ms\").Field(BCLog::LogField::Count, addrman->size()).Field(BCLog::LogField::DatabaseOperationMs, GetTimeMillis() - nStart)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Loaded %i addresses from peers.dat  %dms\n",
+            "specifiers": [
+              "%i",
+              "%d"
+            ],
+            "arguments": [
+              "addrman->size()",
+              "GetTimeMillis() - nStart"
+            ]
+          },
+          "review_note": "Preserve old level/ALL category, readable bytes, exact evaluation order and surrounding return/exception/recovery branches. Quoted paths use copied original PathToString with consumer-only :fsq; JSON paths remain raw, anchor basename stays Name and is not falsely mapped to full file.path. Subnet is the original potentially-invalid ban-list value. DatabaseOperationMs stays signed integer milliseconds (not float-rounded elapsed_ms), because wall-clock elapsed diagnostics can be negative. No new path, subnet or secret disclosure beyond the existing diagnostic values."
+        },
+        {
+          "id": "address_database_file_missing",
+          "old": "LogPrintf(\"Creating peers.dat because the file was not found (%s)\\n\",\n                  fs::quoted(fs::PathToString(path_addr)))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"address_database_file_missing\", \"Creating peers.dat because the file was not found ({path:fsq})\").Field(BCLog::LogField::Path, fs::PathToString(path_addr))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Creating peers.dat because the file was not found (%s)\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::quoted(fs::PathToString(path_addr))"
+            ]
+          },
+          "review_note": "Preserve old level/ALL category, readable bytes, exact evaluation order and surrounding return/exception/recovery branches. Quoted paths use copied original PathToString with consumer-only :fsq; JSON paths remain raw, anchor basename stays Name and is not falsely mapped to full file.path. Subnet is the original potentially-invalid ban-list value. DatabaseOperationMs stays signed integer milliseconds (not float-rounded elapsed_ms), because wall-clock elapsed diagnostics can be negative. No new path, subnet or secret disclosure beyond the existing diagnostic values."
+        },
+        {
+          "id": "address_database_version_unsupported",
+          "old": "LogPrintf(\"Creating new peers.dat because the file version was not \"\n                  \"compatible (%s). Original backed up to peers.dat.bak\\n\",\n                  fs::quoted(fs::PathToString(path_addr)))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"address_database_version_unsupported\", \"Creating new peers.dat because the file version was not compatible ({path:fsq}). Original backed up to peers.dat.bak\").Field(BCLog::LogField::Path, fs::PathToString(path_addr))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Creating new peers.dat because the file version was not compatible (%s). Original backed up to peers.dat.bak\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::quoted(fs::PathToString(path_addr))"
+            ]
+          },
+          "review_note": "Preserve old level/ALL category, readable bytes, exact evaluation order and surrounding return/exception/recovery branches. Quoted paths use copied original PathToString with consumer-only :fsq; JSON paths remain raw, anchor basename stays Name and is not falsely mapped to full file.path. Subnet is the original potentially-invalid ban-list value. DatabaseOperationMs stays signed integer milliseconds (not float-rounded elapsed_ms), because wall-clock elapsed diagnostics can be negative. No new path, subnet or secret disclosure beyond the existing diagnostic values."
+        },
+        {
+          "id": "anchor_database_loaded",
+          "old": "LogPrintf(\"Loaded %i addresses from %s\\n\", anchors.size(),\n                  fs::quoted(fs::PathToString(anchors_db_path.filename())))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"anchor_database_loaded\", \"Loaded {count} addresses from {name:fsq}\").Field(BCLog::LogField::Count, anchors.size()).Field(BCLog::LogField::Name, fs::PathToString(anchors_db_path.filename()))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Loaded %i addresses from %s\n",
+            "specifiers": [
+              "%i",
+              "%s"
+            ],
+            "arguments": [
+              "anchors.size()",
+              "fs::quoted(fs::PathToString(anchors_db_path.filename()))"
+            ]
+          },
+          "review_note": "Preserve old level/ALL category, readable bytes, exact evaluation order and surrounding return/exception/recovery branches. Quoted paths use copied original PathToString with consumer-only :fsq; JSON paths remain raw, anchor basename stays Name and is not falsely mapped to full file.path. Subnet is the original potentially-invalid ban-list value. DatabaseOperationMs stays signed integer milliseconds (not float-rounded elapsed_ms), because wall-clock elapsed diagnostics can be negative. No new path, subnet or secret disclosure beyond the existing diagnostic values."
+        }
+      ]
+    },
+    {
+      "path": "src/banman.cpp",
+      "rules": [
+        {
+          "id": "ban_database_loaded",
+          "old": "LogDebug(BCLog::NET, \"Loaded %d banned node addresses/subnets  %dms\\n\",\n                 m_banned.size(), GetTimeMillis() - n_start)",
+          "replacement": "LogEvent(BCLog::NET, \"ban_database_loaded\", \"Loaded {count} banned node addresses/subnets  {database_operation_ms}ms\").Field(BCLog::LogField::Count, m_banned.size()).Field(BCLog::LogField::DatabaseOperationMs, GetTimeMillis() - n_start)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Loaded %d banned node addresses/subnets  %dms\n",
+            "specifiers": [
+              "%d",
+              "%d"
+            ],
+            "arguments": [
+              "m_banned.size()",
+              "GetTimeMillis() - n_start"
+            ]
+          },
+          "review_note": "Preserve ban-manager lifecycle, exact text, debug/NET and Info/ALL gates, argument order and locking/control flow. Existing subnet ToString remains at its existing producer site because no CSubNet snapshot adapter exists; do not claim it was deferred. DatabaseOperationMs is signed integer milliseconds and covers the original full operation interval. The flush event reports completion of the existing attempted write, not a newly asserted successful persistence guarantee."
+        },
+        {
+          "id": "ban_database_recreated",
+          "old": "LogPrintf(\"Recreating the banlist database\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"ban_database_recreated\", \"Recreating the banlist database\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Recreating the banlist database\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve ban-manager lifecycle, exact text, debug/NET and Info/ALL gates, argument order and locking/control flow. Existing subnet ToString remains at its existing producer site because no CSubNet snapshot adapter exists; do not claim it was deferred. DatabaseOperationMs is signed integer milliseconds and covers the original full operation interval. The flush event reports completion of the existing attempted write, not a newly asserted successful persistence guarantee."
+        },
+        {
+          "id": "ban_database_flush_finished",
+          "old": "LogDebug(BCLog::NET,\n             \"Flushed %d banned node addresses/subnets to disk  %dms\\n\",\n             banmap.size(), GetTimeMillis() - n_start)",
+          "replacement": "LogEvent(BCLog::NET, \"ban_database_flush_finished\", \"Flushed {count} banned node addresses/subnets to disk  {database_operation_ms}ms\").Field(BCLog::LogField::Count, banmap.size()).Field(BCLog::LogField::DatabaseOperationMs, GetTimeMillis() - n_start)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Flushed %d banned node addresses/subnets to disk  %dms\n",
+            "specifiers": [
+              "%d",
+              "%d"
+            ],
+            "arguments": [
+              "banmap.size()",
+              "GetTimeMillis() - n_start"
+            ]
+          },
+          "review_note": "Preserve ban-manager lifecycle, exact text, debug/NET and Info/ALL gates, argument order and locking/control flow. Existing subnet ToString remains at its existing producer site because no CSubNet snapshot adapter exists; do not claim it was deferred. DatabaseOperationMs is signed integer milliseconds and covers the original full operation interval. The flush event reports completion of the existing attempted write, not a newly asserted successful persistence guarantee."
+        },
+        {
+          "id": "ban_database_entry_removed",
+          "old": "LogDebug(BCLog::NET, \"Removed banned node address/subnet: %s\\n\",\n                         sub_net.ToString())",
+          "replacement": "LogEvent(BCLog::NET, \"ban_database_entry_removed\", \"Removed banned node address/subnet: {subnet}\").Field(BCLog::LogField::Subnet, sub_net.ToString())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Removed banned node address/subnet: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "sub_net.ToString()"
+            ]
+          },
+          "review_note": "Preserve ban-manager lifecycle, exact text, debug/NET and Info/ALL gates, argument order and locking/control flow. Existing subnet ToString remains at its existing producer site because no CSubNet snapshot adapter exists; do not claim it was deferred. DatabaseOperationMs is signed integer milliseconds and covers the original full operation interval. The flush event reports completion of the existing attempted write, not a newly asserted successful persistence guarantee."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Append only Subnet STRING and signed DatabaseOperationMs INT at exact registry tail; no existing field IDs change.",
+          "old": "    X(UnusedMempoolCacheMiB, unused_mempool_cache_mib, FLOAT, \"\", \"\")\n\nnamespace BCLog {",
+          "new": "    X(UnusedMempoolCacheMiB, unused_mempool_cache_mib, FLOAT, \"\", \"\") \\\n    X(Subnet, subnet, STRING, \"\", \"\") \\\n    X(DatabaseOperationMs, database_operation_ms, INT, \"\", \"\")\n\nnamespace BCLog {"
+        }
+      ]
+    }
+  ]
+}
