@@ -46,8 +46,9 @@ def mini_parser(dat_file):
             tmp_header = BytesIO(tmp_header_raw)
             int.from_bytes(tmp_header.read(TIME_SIZE), "little")
             raw_msgtype = tmp_header.read(MSGTYPE_SIZE)
-            msgtype = raw_msgtype.split(b"\x00", 1)[0]
-            remainder = raw_msgtype.split(b"\x00", 1)[1]
+            # A 12-character message type (e.g. sendinvshort) fills the field
+            # and has no NUL terminator.
+            msgtype, _, remainder = raw_msgtype.partition(b"\x00")
             assert len(msgtype) > 0
             assert msgtype in MESSAGEMAP
             assert len(remainder) == 0 or not remainder.decode().isprintable()

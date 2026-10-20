@@ -1796,6 +1796,91 @@ class msg_sendcmpct:
         return f"msg_sendcmpct(announce={self.announce}, version={self.version})"
 
 
+# Nucleation relay capability flags (sendinvshort)
+TXRELAY_INVSHORT = 1 << 0
+TXRELAY_RECON = 1 << 1
+
+
+class msg_sendinvshort:
+    __slots__ = ("version", "flags")
+    msgtype = b"sendinvshort"
+
+    def __init__(self, version=1, flags=0):
+        self.version = version
+        self.flags = flags
+
+    def deserialize(self, f):
+        self.version = int.from_bytes(f.read(4), "little")
+        self.flags = int.from_bytes(f.read(8), "little")
+
+    def serialize(self) -> bytes:
+        return self.version.to_bytes(4, "little") + self.flags.to_bytes(8, "little")
+
+    def __repr__(self):
+        return f"msg_sendinvshort(version={self.version}, flags={self.flags})"
+
+
+class msg_invshort:
+    """Short-id transaction announcements: epoch id and 8-byte short ids"""
+
+    __slots__ = ("epoch_id", "short_ids")
+    msgtype = b"invshort"
+
+    def __init__(self, epoch_id=0, short_ids=None):
+        self.epoch_id = epoch_id
+        self.short_ids = short_ids or []
+
+    def deserialize(self, f):
+        self.epoch_id = deser_uint256(f)
+        n = deser_compact_size(f)
+        self.short_ids = [int.from_bytes(f.read(8), "little") for _ in range(n)]
+
+    def serialize(self) -> bytes:
+        return (
+            ser_uint256(self.epoch_id)
+            + ser_compact_size(len(self.short_ids))
+            + b"".join(s.to_bytes(8, "little") for s in self.short_ids)
+        )
+
+    def __repr__(self):
+        return f"msg_invshort(epoch_id={self.epoch_id:064x}, n={len(self.short_ids)})"
+
+
+class msg_getshorttx:
+    """Request transactions by short id (scope, context, SipHash key, ids)"""
+
+    __slots__ = ("scope", "context_id", "salt_k0", "salt_k1", "short_ids")
+    msgtype = b"getshorttx"
+
+    def __init__(self, scope=1, context_id=0, salt_k0=0, salt_k1=0, short_ids=None):
+        self.scope = scope
+        self.context_id = context_id
+        self.salt_k0 = salt_k0
+        self.salt_k1 = salt_k1
+        self.short_ids = short_ids or []
+
+    def deserialize(self, f):
+        self.scope = int.from_bytes(f.read(1), "little")
+        self.context_id = deser_uint256(f)
+        self.salt_k0 = int.from_bytes(f.read(8), "little")
+        self.salt_k1 = int.from_bytes(f.read(8), "little")
+        n = deser_compact_size(f)
+        self.short_ids = [int.from_bytes(f.read(8), "little") for _ in range(n)]
+
+    def serialize(self) -> bytes:
+        return (
+            self.scope.to_bytes(1, "little")
+            + ser_uint256(self.context_id)
+            + self.salt_k0.to_bytes(8, "little")
+            + self.salt_k1.to_bytes(8, "little")
+            + ser_compact_size(len(self.short_ids))
+            + b"".join(s.to_bytes(8, "little") for s in self.short_ids)
+        )
+
+    def __repr__(self):
+        return f"msg_getshorttx(scope={self.scope}, n={len(self.short_ids)})"
+
+
 class msg_cmpctblock:
     __slots__ = ("header_and_shortids",)
     msgtype = b"cmpctblock"
