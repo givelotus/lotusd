@@ -5,6 +5,8 @@
 
 #include <script/sigcache.h>
 
+#include <node/metrics.h>
+
 #include <crypto/common.h>
 #include <crypto/sha256.h>
 #include <logging.h>
@@ -105,6 +107,7 @@ void SignatureCache::ComputeEntry(uint256 &entry, const uint256 &hash,
 
 bool SignatureCache::Get(const uint256 &entry, const bool erase) {
     if (!erase && g_tls_sigcache.Contains(this, entry)) {
+        node::CountValidationCacheLookup(/*script_execution=*/false, true);
         return true;
     }
     if (erase) {
@@ -113,6 +116,7 @@ bool SignatureCache::Get(const uint256 &entry, const bool erase) {
     Shard &shard =
         m_shards[static_cast<size_t>(ReadLE64(entry.begin())) & (kNumShards - 1)];
     if (!shard.has_entries.load(std::memory_order_acquire)) {
+        node::CountValidationCacheLookup(/*script_execution=*/false, false);
         return false;
     }
     std::shared_lock<std::shared_mutex> lock(shard.mutex);
@@ -120,6 +124,7 @@ bool SignatureCache::Get(const uint256 &entry, const bool erase) {
     if (found && !erase) {
         g_tls_sigcache.Insert(this, entry);
     }
+    node::CountValidationCacheLookup(/*script_execution=*/false, found);
     return found;
 }
 
