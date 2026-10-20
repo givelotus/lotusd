@@ -344,7 +344,8 @@ void AppendQuotedText(std::string &out, std::string_view text);
  * The event's human message: its template with {field} placeholders
  * replaced by the fields' text values (or the event name if it has none).
  * FLOAT fields also accept :f/:g or :.Nf/:.Ng (precision 0..18), formatted
- * only on the consumer. Numeric structured fields retain their raw value.
+ * only on the consumer. Nonnegative INT/UINT fields accept :x or :0Nx
+ * (width 1..16). Numeric structured fields retain their raw value.
  * Bit i of *used is set if the template used field i.
  */
 void AppendEventMessage(std::string &out, const LogEventSite &site,
@@ -385,6 +386,16 @@ void AppendEventMessage(std::string &out, const LogEventSite &site,
     LOG_EVENT_(category, BCLog::Level::Trace, event __VA_OPT__(, ) __VA_ARGS__)
 #define LogInfoEvent(category, event, ...)                                     \
     LOG_EVENT_(category, BCLog::Level::Info, event __VA_OPT__(, ) __VA_ARGS__)
+/** Explicit bypass for progress events which already logged without a limiter.
+ * Ring-full/drop behavior is unchanged; this bypasses only the per-site limiter.
+ */
+#define LogInfoEventNoRateLimit(category, event, ...)                          \
+    if (!LogAcceptCategory((category), BCLog::Level::Info)) {                  \
+    } else                                                                   \
+        BCLog::EventBuilder {                                                \
+            LOG_EVENT_SITE_(category, BCLog::Level::Info,                     \
+                            event __VA_OPT__(, ) __VA_ARGS__), nullptr       \
+        }
 #define LogWarningEvent(category, event, ...)                                  \
     LOG_EVENT_(category, BCLog::Level::Warning,                                \
                event __VA_OPT__(, ) __VA_ARGS__)
