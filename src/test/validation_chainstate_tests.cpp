@@ -5,6 +5,7 @@
 #include <chainparams.h>
 #include <config.h>
 #include <consensus/validation.h>
+#include <lotus_v2/mempool_overlay.h>
 #include <random.h>
 #include <rpc/blockchain.h>
 #include <sync.h>
@@ -143,6 +144,52 @@ BOOST_FIXTURE_TEST_CASE(chainstate_update_tip, TestChain100Setup) {
     // validation chain.
     BOOST_CHECK(block_added);
     BOOST_CHECK_EQUAL(curr_tip, ::g_best_block);
+}
+
+// Loading into a fresh node must build its native parent state from the
+// authenticated snapshot, rather than accidentally reuse the miner's cache.
+BOOST_FIXTURE_TEST_CASE(snapshot_bootstraps_native_state_without_parent_cache,
+                        TestChain100Setup) {
+    auto &manager = *m_node.chainman;
+    mineBlocks(10);
+    CBlockIndex *anchor = WITH_LOCK(cs_main, return manager.ActiveChain().Tip());
+    const auto anchor_hash = anchor->GetBlockHash();
+    BOOST_REQUIRE(CreateAndActivateUTXOSnapshot(
+        this, NoMalleation, /*reset_chainstate=*/true,
+        /*in_memory_chainstate=*/true, [&] {
+            SetV2StatePersistDir(fs::PathToString(m_path_root / "empty-native-cache"));
+        }));
+    std::shared_ptr<const lotus::v2::SmtNode> root;
+    lotus::v2::MonetaryState monetary;
+    BOOST_REQUIRE(GetV2BlockStateSnapshot(anchor_hash, root, monetary));
+    const auto expected = lotus::v2::StateRoot(GetActiveV2ChainId(), 110,
+                                              lotus::v2::SmtRoot(root), monetary);
+    BOOST_CHECK(expected == anchor->GetBlockHeader().ToV2Header().state_root);
+    mineBlocks(1);
+    BOOST_CHECK_EQUAL(WITH_LOCK(cs_main, return manager.ActiveHeight()), 111);
+}
+
+// A valid legacy coin-stat commitment must not authorize a native state that
+// disagrees with its trusted anchor header. No native cache may be published.
+BOOST_FIXTURE_TEST_CASE(snapshot_rejects_mismatched_native_anchor,
+                        TestChain100Setup) {
+    auto &manager = *m_node.chainman;
+    mineBlocks(10);
+    CBlockIndex *anchor = WITH_LOCK(cs_main, return manager.ActiveChain().Tip());
+    const auto anchor_hash = anchor->GetBlockHash();
+    const auto original_root = anchor->hashStateRoot;
+    const bool accepted = CreateAndActivateUTXOSnapshot(
+        this, NoMalleation, /*reset_chainstate=*/true,
+        /*in_memory_chainstate=*/true, [&] {
+            SetV2StatePersistDir(fs::PathToString(m_path_root / "empty-native-cache"));
+            anchor->hashStateRoot.begin()[0] ^= 1;
+        });
+    anchor->hashStateRoot = original_root;
+    BOOST_CHECK(!accepted);
+    BOOST_CHECK(!manager.IsSnapshotActive());
+    std::shared_ptr<const lotus::v2::SmtNode> root;
+    lotus::v2::MonetaryState monetary;
+    BOOST_CHECK(!GetV2BlockStateSnapshot(anchor_hash, root, monetary));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
