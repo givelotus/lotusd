@@ -30,6 +30,7 @@
 #include <sync.h>
 #include <txmempool.h>
 #include <undo.h>
+#include <util/fs.h>
 #include <util/time.h>
 #include <util/translation.h>
 #include <validation.h>
@@ -37,6 +38,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <set>
 #include <source_location>
 #include <stdexcept>
 
@@ -46,6 +48,50 @@ using node::TransactionError;
 namespace chronik::native::abc {
 
 namespace {
+
+/** Deserialization stream over a hosts::FlatFileCursor. */
+class CursorStream {
+public:
+    explicit CursorStream(hosts::FlatFileCursor &cursor) : m_cursor{cursor} {}
+
+    void read(Span<std::byte> dst) {
+        m_cursor.Read(
+            std::span(reinterpret_cast<uint8_t *>(dst.data()), dst.size()));
+    }
+    void ignore(size_t num_bytes) { m_cursor.Skip(num_bytes); }
+
+    template <typename T> CursorStream &operator>>(T &&obj) {
+        ::Unserialize(*this, obj);
+        return *this;
+    }
+
+private:
+    hosts::FlatFileCursor &m_cursor;
+};
+
+/**
+ * Deserialize obj at pos of a cached file. False if the file isn't cached
+ * (the node may still append to it) or the read fails: the caller then
+ * reads through BlockManager, which also reports any error.
+ */
+template <typename T>
+bool ReadCached(hosts::FlatFileReadCache &cache, hosts::FlatFileKind kind,
+                uint32_t file_num, uint32_t pos, T &obj) {
+    std::shared_ptr<const hosts::CachedFlatFile> file =
+        cache.Acquire(kind, file_num);
+    if (!file) {
+        return false;
+    }
+    try {
+        hosts::FlatFileCursor cursor(std::move(file), pos);
+        CursorStream stream{cursor};
+        stream >> obj;
+        return true;
+    } catch (const std::exception &) {
+        obj = T{};
+        return false;
+    }
+}
 
 Hash32 ToHash(const uint256 &h) {
     Hash32 out;
@@ -194,6 +240,41 @@ AbcHost::AbcHost(const node::NodeContext &node, HostCapabilities caps)
     : m_node{node}, m_caps{std::move(caps)} {
     Assert(m_node.chainman);
     Assert(m_node.mempool);
+    node::BlockManager &blockman = m_node.chainman->m_blockman;
+    m_file_cache = std::make_unique<hosts::FlatFileReadCache>(
+        hosts::FlatFileReadCache::Hooks{
+            .file_path =
+                [&blockman](hosts::FlatFileKind kind, uint32_t file_num) {
+                    const FlatFilePos pos(int(file_num), 0);
+                    return fs::PathToString(
+                        kind == hosts::FlatFileKind::BLOCK
+                            ? blockman.GetBlockPosFilename(pos)
+                            : blockman.GetUndoPosFilename(pos));
+                },
+            // rev N is cached once blk N is complete: undo data can still be
+            // appended to it (a reorg connecting blocks stored in blk N), but
+            // pread reads the file's current contents and the bytes of
+            // undo data already written never change.
+            .may_append =
+                [&blockman](hosts::FlatFileKind, uint32_t file_num) {
+                    return blockman.MayAppendToBlockFile(int(file_num));
+                },
+        });
+    m_unlink_callback = blockman.RegisterUnlinkFilesCallback(
+        [cache = m_file_cache.get()](const std::set<int> &files) {
+            for (const int file_num : files) {
+                cache->Invalidate(uint32_t(file_num));
+            }
+        });
+}
+
+AbcHost::~AbcHost() {
+    m_node.chainman->m_blockman.UnregisterUnlinkFilesCallback(
+        m_unlink_callback);
+}
+
+hosts::FlatFileCacheStats AbcHost::FileCacheStats() const {
+    return m_file_cache->Stats();
 }
 
 const CBlockIndex *AbcHost::LookupIndex(const BlockHash &hash) const {
@@ -313,12 +394,16 @@ Tx AbcHost::LoadTx(uint32_t file_num, uint32_t data_pos,
     CMutableTransaction tx;
     CTxUndo txundo{};
     const bool is_coinbase = undo_pos == 0;
-    if (!m_node.chainman->m_blockman.ReadTxFromDisk(
+    if (!ReadCached(*m_file_cache, hosts::FlatFileKind::BLOCK, file_num,
+                    data_pos, tx) &&
+        !m_node.chainman->m_blockman.ReadTxFromDisk(
             tx, FlatFilePos(file_num, data_pos))) {
         throw std::runtime_error("Reading tx data from disk failed");
     }
     if (!is_coinbase) {
-        if (!m_node.chainman->m_blockman.ReadTxUndoFromDisk(
+        if (!ReadCached(*m_file_cache, hosts::FlatFileKind::UNDO, file_num,
+                        undo_pos, txundo) &&
+            !m_node.chainman->m_blockman.ReadTxUndoFromDisk(
                 txundo, FlatFilePos(file_num, undo_pos))) {
             throw std::runtime_error("Reading tx undo data from disk failed");
         }
@@ -328,7 +413,9 @@ Tx AbcHost::LoadTx(uint32_t file_num, uint32_t data_pos,
 
 Bytes AbcHost::LoadRawTx(uint32_t file_num, uint32_t data_pos) const {
     CMutableTransaction tx;
-    if (!m_node.chainman->m_blockman.ReadTxFromDisk(
+    if (!ReadCached(*m_file_cache, hosts::FlatFileKind::BLOCK, file_num,
+                    data_pos, tx) &&
+        !m_node.chainman->m_blockman.ReadTxFromDisk(
             tx, FlatFilePos(file_num, data_pos))) {
         throw std::runtime_error("Reading tx data from disk failed");
     }

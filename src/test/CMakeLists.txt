@@ -121,6 +121,7 @@ endif()
 if(BUILD_CHRONIK AND CHRONIK_IMPLEMENTATION STREQUAL "native")
 	set(BITCOIN_CHRONIK_TESTS
 		chronik_native_abc_tests.cpp
+		chronik_native_blockreader_tests.cpp
 	)
 endif()
 
