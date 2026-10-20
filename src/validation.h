@@ -495,6 +495,15 @@ struct StagedAdmissionOptions {
     std::function<void()> test_between_phases;
 };
 
+/**
+ * Snapshot and verify one transaction for a caller that will admit it later
+ * under cs_main. Cheap checks are advisory; admission repeats them and only
+ * reuses scripts when spent outputs and flags still match. No insertion.
+ */
+PrecomputedAdmissionChecks PrecomputeMempoolAdmission(
+    ChainstateManager &chainman, const CTransactionRef &tx,
+    const MempoolAdmissionLimits &limits) LOCKS_EXCLUDED(cs_main);
+
 /** Where one AcceptToMemoryPoolStaged call spent its time. */
 struct StagedAdmissionStats {
     /** Transactions whose checks ran in the unlocked phase. */

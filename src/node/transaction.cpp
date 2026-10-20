@@ -5,6 +5,7 @@
 
 #include <node/transaction.h>
 
+#include <common/args.h>
 #include <config.h>
 #include <consensus/validation.h>
 #include <index/txindex.h>
@@ -12,6 +13,7 @@
 #include <net_processing.h>
 #include <node/blockstorage.h>
 #include <node/context.h>
+#include <node/txadmission.h>
 #include <node/types.h>
 #include <primitives/blockhash.h>
 #include <primitives/txid.h>
@@ -51,6 +53,16 @@ TransactionError BroadcastTransaction(const NodeContext &node,
     std::promise<void> promise;
     TxId txid = tx->GetId();
     bool callback_set = false;
+    const MempoolAdmissionLimits limits{max_tx_fee, rpc_fee_hysteresis};
+    std::optional<PrecomputedAdmissionChecks> precomputed;
+    if (wait_callback && node.args &&
+        node.args->GetBoolArg("-parallelmempool", DEFAULT_PARALLEL_MEMPOOL)) {
+        // Synchronous callers guarantee they hold no chain/mempool/wallet
+        // locks. RPC clients can therefore verify concurrently. The existing
+        // critical section below decides every verdict,
+        // fee bound, broadcast marker and notification in the same order.
+        precomputed = PrecomputeMempoolAdmission(*node.chainman, tx, limits);
+    }
 
     {
         LOCK(cs_main);
@@ -71,9 +83,10 @@ TransactionError BroadcastTransaction(const NodeContext &node,
         if (!node.mempool->exists(txid)) {
             // Transaction is not already in the mempool.
             // Validate caller fee bounds before insertion in this one ATMP pass.
-            const MempoolAdmissionLimits limits{max_tx_fee, rpc_fee_hysteresis};
             const MempoolAcceptResult result =
-                node.chainman->ProcessTransaction(tx, /*test_accept=*/false, limits);
+                node.chainman->ProcessTransaction(
+                    tx, /*test_accept=*/false, limits,
+                    precomputed ? &*precomputed : nullptr);
             if (result.m_result_type !=
                 MempoolAcceptResult::ResultType::VALID) {
                 if (result.m_state.GetRejectReason() == "max-fee-exceeded") {
