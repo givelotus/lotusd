@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "batch": "asmap-file-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/util/asmap.cpp",
+      "rules": [
+        {
+          "id": "asmap_file_open_failed",
+          "old": "LogPrintf(\"Failed to open asmap file from disk\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"asmap_file_open_failed\", \"Failed to open asmap file from disk\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Failed to open asmap file from disk\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve Info level, open/read/parse returns and existing text. ftell length remains signed int (including possible negative values), not coerced into unsigned Bytes. Copy raw asmap version uint256; human path retains exact fs::quoted ampersand/quote escaping via existing :fsq; JSON retains raw filesystem path."
+        },
+        {
+          "id": "asmap_file_opened",
+          "old": "LogPrintf(\"Opened asmap file %s (%d bytes) from disk\\n\",\n              fs::quoted(fs::PathToString(path)), length)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"asmap_file_opened\", \"Opened asmap file {path:fsq} ({asmap_length_bytes} bytes) from disk\").Field(BCLog::LogField::Path, fs::PathToString(path)).Field(BCLog::LogField::ASMapLengthBytes, length)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Opened asmap file %s (%d bytes) from disk\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "fs::quoted(fs::PathToString(path))",
+              "length"
+            ]
+          },
+          "review_note": "Preserve Info level, open/read/parse returns and existing text. ftell length remains signed int (including possible negative values), not coerced into unsigned Bytes. Copy raw asmap version uint256; human path retains exact fs::quoted ampersand/quote escaping via existing :fsq; JSON retains raw filesystem path."
+        },
+        {
+          "id": "asmap_file_invalid",
+          "old": "LogPrintf(\"Sanity check of asmap file %s failed\\n\",\n                  fs::quoted(fs::PathToString(path)))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"asmap_file_invalid\", \"Sanity check of asmap file {path:fsq} failed\").Field(BCLog::LogField::Path, fs::PathToString(path))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Sanity check of asmap file %s failed\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::quoted(fs::PathToString(path))"
+            ]
+          },
+          "review_note": "Preserve Info level, open/read/parse returns and existing text. ftell length remains signed int (including possible negative values), not coerced into unsigned Bytes. Copy raw asmap version uint256; human path retains exact fs::quoted ampersand/quote escaping via existing :fsq; JSON retains raw filesystem path."
+        }
+      ]
+    },
+    {
+      "path": "src/init.cpp",
+      "rules": [
+        {
+          "id": "asmap_version_selected",
+          "old": "LogPrintf(\"Using asmap version %s for IP bucketing\\n\",\n                      asmap_version.ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"asmap_version_selected\", \"Using asmap version {asmap_hash} for IP bucketing\").Field(BCLog::LogField::ASMapHash, asmap_version)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Using asmap version %s for IP bucketing\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "asmap_version.ToString()"
+            ]
+          },
+          "review_note": "Preserve Info level, open/read/parse returns and existing text. ftell length remains signed int (including possible negative values), not coerced into unsigned Bytes. Copy raw asmap version uint256; human path retains exact fs::quoted ampersand/quote escaping via existing :fsq; JSON retains raw filesystem path."
+        }
+      ],
+      "support_adjustments": [
+        {
+          "purpose": "Include existing raw hash adapter explicitly for asmap version.",
+          "old": "#include <kernel/caches.h>\n",
+          "new": "#include <kernel/caches.h>\n#include <logging/values.h>\n"
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Register signed ftell byte length and actual asmap hash without confusing either with a block identifier.",
+          "old": "    X(PruneTargetMiB, prune_target_mib, UINT, \"\", \"\")\n",
+          "new": "    X(PruneTargetMiB, prune_target_mib, UINT, \"\", \"\") \\\n    X(ASMapLengthBytes, asmap_length_bytes, INT, \"\", \"\") \\\n    X(ASMapHash, asmap_hash, HASH, \"\", \"\")\n"
+        }
+      ]
+    }
+  ]
+}

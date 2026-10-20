@@ -18,6 +18,7 @@
 #include <streams.h>
 #include <test/util/setup_common.h>
 #include <univalue.h>
+#include <util/asmap.h>
 #include <util/fs.h>
 #include <util/fs_helpers.h>
 #include <util/strencodings.h>
@@ -1344,6 +1345,44 @@ BOOST_AUTO_TEST_CASE(ignored_config_option_does_not_log_its_value) {
     BOOST_CHECK(row.write().find("not-a-real-secret-canary-215") ==
                 std::string::npos);
     BOOST_CHECK(row["value"].isNull());
+    BOOST_CHECK(row["fields_truncated"].isNull());
+}
+
+BOOST_AUTO_TEST_CASE(
+    asmap_missing_and_invalid_files_keep_path_and_signed_length) {
+    Format(BCLog::LogFormat::JSON);
+    const fs::path missing{m_args.GetDataDirBase() / "missing-asmap"};
+    BOOST_CHECK(DecodeAsmap(missing).empty());
+    auto row{Json()};
+    BOOST_CHECK_EQUAL(row["event"].get_str(), "asmap_file_open_failed");
+    BOOST_CHECK_EQUAL(row["message"].get_str(),
+                      "Failed to open asmap file from disk");
+    BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
+    const fs::path malformed{m_args.GetDataDirBase() / "asmap&\"invalid.raw"};
+    {
+        std::ofstream file{malformed, std::ios::binary};
+        file.put('\0'); // Too short even for the minimum RETURN ASN encoding.
+        BOOST_REQUIRE(file.good());
+    }
+    BOOST_CHECK(DecodeAsmap(malformed).empty());
+    const auto lines{Lines()};
+    BOOST_REQUIRE_EQUAL(lines.size(), 2U);
+    BOOST_REQUIRE(row.read(lines[0]));
+    BOOST_CHECK_EQUAL(row["event"].get_str(), "asmap_file_opened");
+    BOOST_CHECK(row["asmap_length_bytes"].isNum());
+    BOOST_CHECK_EQUAL(row["asmap_length_bytes"].getInt<int64_t>(), 1);
+    BOOST_CHECK_EQUAL(row["path"].get_str(), fs::PathToString(malformed));
+    BOOST_CHECK_EQUAL(row["message"].get_str(),
+                      strprintf("Opened asmap file %s (%d bytes) from disk",
+                                fs::quoted(fs::PathToString(malformed)), 1));
+    BOOST_CHECK(row["fields_truncated"].isNull());
+    BOOST_REQUIRE(row.read(lines[1]));
+    BOOST_CHECK_EQUAL(row["event"].get_str(), "asmap_file_invalid");
+    BOOST_CHECK_EQUAL(row["path"].get_str(), fs::PathToString(malformed));
+    BOOST_CHECK_EQUAL(row["message"].get_str(),
+                      strprintf("Sanity check of asmap file %s failed",
+                                fs::quoted(fs::PathToString(malformed))));
+    BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
     BOOST_CHECK(row["fields_truncated"].isNull());
 }
 
