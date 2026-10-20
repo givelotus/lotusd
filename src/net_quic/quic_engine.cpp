@@ -6,10 +6,12 @@
 
 #include <net_quic/quic_connection.h>
 #include <net_quic/udp_socket.h>
+#include <net_quic/webtransport_h3.h>
 
 #include <logging.h>
 #include <random.h>
 #include <sync.h>
+#include <tinyformat.h>
 #include <tls_util.h>
 #include <util/thread.h>
 #include <util/threadnames.h>
@@ -137,6 +139,84 @@ private:
     std::vector<uint8_t> m_response;
 };
 
+/** Tests: the client side of WebTransportProbeForTest() */
+class ProbeHandler final : public WtSessionHandler {
+public:
+    struct Result {
+        std::promise<std::optional<WtProbeResult>> promise;
+        WtProbeResult value;
+        bool done{false};
+        void Finish(bool ok) {
+            if (!done) {
+                done = true;
+                promise.set_value(ok ? std::optional{value} : std::nullopt);
+            }
+        }
+    };
+
+    ProbeHandler(bool second_connect, std::shared_ptr<Result> result)
+        : m_second{second_connect}, m_result{std::move(result)} {}
+
+    void OnConnectResponse(H3Session &session, int status) override {
+        if (m_first) {
+            m_first = false;
+            m_result->value.status = status;
+            m_result->value.peer_draft_setting = session.PeerDraftSetting();
+            m_result->value.protocol = session.Protocol();
+            if (status != 200) {
+                m_result->Finish(true);
+            } else if (m_second) {
+                session.SubmitExtraConnectForTest();
+            }
+            return;
+        }
+        m_result->value.second_status = status;
+        m_second_done = true;
+        MaybeFinish(session);
+    }
+
+    void OnSessionReady(H3Session &session) override {
+        for (const StreamClass cls : ALL_STREAM_CLASSES) {
+            std::string msg{strprintf("probe-%s", StreamClassName(cls))};
+            m_expected[StreamClassIndex(cls)] = std::string(
+                1, static_cast<char>(cls)) + msg;
+            session.QueueClassData(cls,
+                                   std::vector<uint8_t>(msg.begin(), msg.end()));
+        }
+    }
+
+    void OnClassData(H3Session &session, StreamClass cls, const uint8_t *data,
+                     size_t len, bool) override {
+        session.ExtendCredit(cls, len);
+        m_got[StreamClassIndex(cls)].append(reinterpret_cast<const char *>(data),
+                                            len);
+        if (m_got == m_expected) {
+            m_result->value.classes_echoed = true;
+            m_echoed = true;
+            MaybeFinish(session);
+        }
+    }
+
+    void OnSessionClosed(H3Session &, uint32_t, const std::string &) override {
+        m_result->Finish(m_result->value.status != 0);
+    }
+
+private:
+    void MaybeFinish(H3Session &session) {
+        if (m_echoed && (!m_second || m_second_done)) {
+            m_result->Finish(true);
+            session.CloseSession(0, "probe done");
+        }
+    }
+
+    const bool m_second;
+    bool m_first{true};
+    bool m_second_done{false};
+    bool m_echoed{false};
+    std::array<std::string, NUM_STREAM_CLASSES> m_expected, m_got;
+    std::shared_ptr<Result> m_result;
+};
+
 std::string CidKey(const uint8_t *data, size_t len) {
     return std::string(reinterpret_cast<const char *>(data), len);
 }
@@ -195,6 +275,12 @@ public:
             std::string why;
             auto sock{UdpSocket::Bind(bind, why)};
             if (!sock) {
+                if (m_opts.bind_optional) {
+                    LogPrintf("WebTransport: unable to bind UDP %s: %s "
+                              "(continuing without it)\n",
+                              bind.ToStringAddrPort(), why);
+                    continue;
+                }
                 error = "unable to bind UDP " + bind.ToStringAddrPort() +
                         ": " + why;
                 return false;
@@ -293,6 +379,41 @@ public:
             conn->CancelFlag() = cancel;
             conn->SetApp(
                 std::make_unique<EchoApp>(payload, cert_sha256, result));
+        });
+        if (future.wait_for(timeout) != std::future_status::ready) {
+            *cancel = true;
+            Wake();
+            return std::nullopt;
+        }
+        return future.get();
+    }
+
+    std::optional<WtProbeResult>
+    WebTransportProbeForTest(const CService &target,
+                             const WtProbeOptions &options,
+                             std::chrono::milliseconds timeout)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_tasks_mutex) {
+        auto result{std::make_shared<ProbeHandler::Result>()};
+        auto future{result->promise.get_future()};
+        auto cancel{std::make_shared<std::atomic<bool>>(false)};
+        Post([this, target, options, result, cancel] {
+            QuicConnection *conn{CreateClient(target, "")};
+            if (!conn) {
+                result->Finish(false);
+                return;
+            }
+            conn->CancelFlag() = cancel;
+            H3Options h3;
+            h3.server = false;
+            h3.path = options.path;
+            h3.token = options.token;
+            h3.origin = options.origin;
+            h3.protocol_token = options.protocol_token;
+            h3.offer = options.offer;
+            h3.authority = target.ToStringAddrPort();
+            conn->SetApp(std::make_unique<H3Session>(
+                h3, std::make_unique<ProbeHandler>(options.second_connect,
+                                                   result)));
         });
         if (future.wait_for(timeout) != std::future_status::ready) {
             *cancel = true;
@@ -675,11 +796,21 @@ private:
             case QuicApplication::ECHO_FOR_TEST:
                 conn->SetApp(std::make_unique<EchoApp>());
                 break;
-            case QuicApplication::WEBTRANSPORT:
-                // Added with the HTTP/3 session layer.
+            case QuicApplication::WEBTRANSPORT: {
+                H3Options h3;
+                h3.server = true;
+                h3.path = m_opts.wt_path;
+                h3.origins = m_opts.wt_origins;
+                h3.token = m_opts.wt_token;
+                h3.echo = m_opts.wt_echo;
+                conn->SetApp(std::make_unique<H3Session>(h3, nullptr));
                 break;
+            }
         }
         QuicConnection &c{*conn};
+        LogDebug(BCLog::WEBTRANSPORT, "QUIC connection from %s%s\n",
+                 c.Remote().ToStringAddrPort(),
+                 token_type == NGTCP2_TOKEN_TYPE_RETRY ? " (after Retry)" : "");
         m_conns.push_back(std::move(conn));
         c.Read(d, now);
     }
@@ -747,6 +878,10 @@ private:
             if (gone) {
                 if (!c.HandshakeDone()) {
                     ++m_stats.handshakes_failed;
+                    LogDebug(BCLog::WEBTRANSPORT,
+                             "QUIC connection with %s ended before its "
+                             "handshake completed\n",
+                             c.Remote().ToStringAddrPort());
                 }
                 ForgetCids(c);
                 it = m_conns.erase(it);
@@ -904,6 +1039,13 @@ std::vector<CService> QuicEngine::BoundAddresses() const {
 
 QuicEngineStats QuicEngine::Stats() const {
     return m_impl->Stats();
+}
+
+std::optional<WtProbeResult>
+QuicEngine::WebTransportProbeForTest(const CService &target,
+                                     const WtProbeOptions &options,
+                                     std::chrono::milliseconds timeout) {
+    return m_impl->WebTransportProbeForTest(target, options, timeout);
 }
 
 std::optional<std::vector<uint8_t>>
