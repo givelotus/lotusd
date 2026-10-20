@@ -72,7 +72,8 @@ HttpResponse Response(int status, const Json &value) {
         return JsonResponse(
             413,
             "{\"api_version\":\"1\",\"error\":{\"code\":\"record_limit\","
-            "\"meaning\":\"The complete record exceeds the response limit\"},"
+            "\"meaning\":\"The complete record exceeds the response "
+            "limit\"},"
             "\"snapshot\":null,\"coverage\":null}",
             /*no_store=*/true);
     }
@@ -84,7 +85,8 @@ std::string_view Meaning(std::string_view code) {
         return "Absent from covered canonical history at this observation";
     }
     if (code == "stale_cursor") {
-        return "The continuation belongs to a different observation or query";
+        return "The continuation belongs to a different observation or "
+               "query";
     }
     if (code == "stale_snapshot") {
         return "The requested observation is no longer current";
@@ -542,6 +544,16 @@ Json Location(const TxLocation &l) {
 }
 
 Json OutputFields(const Output &out) {
+    if (out.legacy_script) {
+        return Json::Object({{"is_legacy", true},
+                             {"value", std::to_string(out.value)},
+                             {"legacy_script", Hex(*out.legacy_script)},
+                             {"branches", Json::Array()},
+                             {"paths", Json::Array()},
+                             {"is_burn", out.IsBurn()},
+                             {"has_token", false},
+                             {"has_state", false}});
+    }
     Json branches = Json::Array();
     for (const Hash32 &h : out.branches) {
         branches.Push(Hex(h.b));
@@ -1368,7 +1380,8 @@ Json Dispatch(std::string_view path, Params params, const Bytes &body,
                 Json path_index;
                 Json resolved;
                 switch (i->flags) {
-                    case 1: {
+                    case 1:
+                    case 4: {
                         if (!i->resolved_creation) {
                             throw Unavailable();
                         }
@@ -1378,14 +1391,16 @@ Json Dispatch(std::string_view path, Params params, const Bytes &body,
                             {{"txid", Hex(coin.outpoint.txid.hash.b)},
                              {"out_idx", std::to_string(coin.outpoint.out_idx)},
                              {"creation", Location(coin.creation)}}));
-                        kind = "spend";
-                        path_index = Json(std::to_string(i->path_index));
+                        kind = i->flags == 4 ? "legacy_spend" : "spend";
+                        if (i->flags != 4)
+                            path_index = Json(std::to_string(i->path_index));
                         resolved = Json::Object({{"availability", "complete"},
                                                  {"output", std::move(out)}});
                         break;
                     }
                     case 2:
-                        kind = "coinbase";
+                    case 5:
+                        kind = i->flags == 5 ? "legacy_coinbase" : "coinbase";
                         resolved =
                             Json::Object({{"availability", "not_applicable"}});
                         break;
@@ -1737,8 +1752,9 @@ HttpResponse Handle(const std::optional<V2HttpState> &state,
         return Failure(Unavailable(), nullptr);
     }
     AssetReadBudget budget(4096);
-    // Snapshot construction reads the checkpoint key. Reserve it before I/O;
-    // asset iteration and all secondary joins share the remaining budget.
+    // Snapshot construction reads the checkpoint key. Reserve it before
+    // I/O; asset iteration and all secondary joins share the remaining
+    // budget.
     try {
         budget.Charge();
     } catch (const std::exception &) {

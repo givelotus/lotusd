@@ -2,8 +2,8 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-use abc_rust_error::Result;
 use crate::db::ColumnFamilyDescriptor;
+use abc_rust_error::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -170,13 +170,13 @@ impl std::fmt::Debug for BlockStatsColumn<'_> {
 
 #[cfg(test)]
 mod tests {
+    use crate::db::WriteBatch;
     use abc_rust_error::Result;
     use bitcoinsuite_core::{
         script::{opcode::*, ScriptMut},
         tx::{Tx, TxId, TxMut, TxOutput},
     };
     use pretty_assertions::assert_eq;
-    use crate::db::WriteBatch;
 
     use crate::{
         db::Db,
@@ -211,6 +211,7 @@ mod tests {
             Tx::with_txid(
                 TxId::from([0x05; 32]),
                 TxMut {
+                    native_txid: None,
                     version: 1,
                     inputs: make_inputs_tx(0, [(0x03, 0, 60)], [])
                         .inputs

@@ -236,11 +236,11 @@ BOOST_AUTO_TEST_CASE(input_and_response_caps_preserve_checkpoint) {
     service->InitializeGenesis(Block(2, 0, 2, 10, {}));
     f::NativeBlock large = Block(4, 1, 2, 12, {});
     large.transactions[0].outputs.push_back(
-        f::NativeOutput{std::vector<uint8_t>(MAX_OUTPUT_BYTES + 1, 0)});
+        f::NativeOutput{std::vector<uint8_t>(MAX_COIN_OUTPUT_BYTES + 1, 0)});
     BOOST_CHECK(Fails([&] { service->ConnectBlock(large); }));
     f::NativeBlock oversized = Block(4, 1, 2, 12, {});
     oversized.transactions[0].outputs[0].wire =
-        std::vector<uint8_t>(MAX_OUTPUT_BYTES + 1, 0);
+        std::vector<uint8_t>(MAX_COIN_OUTPUT_BYTES + 1, 0);
     BOOST_CHECK(Fails([&] { service->ConnectBlock(oversized); }));
     f::NativeBlock malformed = Block(4, 1, 2, 12, {});
     malformed.transactions[0].index = 7;
@@ -299,7 +299,7 @@ BOOST_AUTO_TEST_CASE(exact_transport_response_and_block_boundaries) {
     V2TempDir refused("service");
     BOOST_CHECK(Fails([&] { Open(refused, TestBinding(), true, over); }));
     over = caps;
-    over.changes = 4;
+    over.changes = uint32_t(Bounds(caps.block_bytes).Changes() + 1);
     V2TempDir refused_changes("service");
     BOOST_CHECK(
         Fails([&] { Open(refused_changes, TestBinding(), true, over); }));
