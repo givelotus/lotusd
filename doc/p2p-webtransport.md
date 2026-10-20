@@ -356,3 +356,32 @@ Focused macOS W10 checks pass: combined daemon/unit build, 31 selected cases
 with the GSO option on/off on this host's portable fallback; the Linux-only
 case is not compiled here. These results do not validate Linux batching,
 actual GSO execution, Guix or the CPU gate.
+
+## Bulk preference and current transaction relay (W11)
+
+`-p2pwebtransportbulk=1` retains the default automatic preference for all
+advertised WT peers. With `0`, an address advertising chain service
+(`NODE_NETWORK` or `NODE_NETWORK_LIMITED`) without `NODE_AVALANCHE` uses its
+existing TCP/WebSocket path directly. It creates no failed-UDP cache entry or
+fallback failure metric. Peers without chain-service flags and Avalanche
+service hints retain WT preference. Explicit `wt://` URLs and `dial=only`
+override this bulk preference; proxy and `-onlynet` restrictions still apply.
+No CPU gate has been measured, so this does not recommend changing the default.
+
+Current Nucleation names `sendinvshort` and `invshort` share TX_ANNOUNCE with
+continuous Merklix summaries/buckets. `getshorttx`/`shorttx` remain TX_BODY.
+Capability messages travel on the same stream as the feature they gate;
+unknown message names remain CONTROL. The coverage inventory compares the
+current relay owner's message table with this branch and pins its two added
+names, without adding wire-version negotiation or claiming the whole relay
+runtime is already merged. The existing Merklix classifier implementation
+is retained.
+
+Focused W11 macOS checks: daemon/unit builds pass (39/171 actions); eleven
+URL/cache/service/classifier cases pass 330 assertions and the stock raw
+fallback policy case passes 18 assertions. Bulk routing (3.33 s) and existing
+fallback (6.09 s) functionals pass. The first bulk fixture's false Avalanche
+hint correctly selected WT but then failed the existing Avalanche-only
+service check; the corrected routing fixture uses full-relay connections.
+These tests do not validate a merged relay runtime or Avalanche proof/quorum
+behavior. The Linux CPU gate remains unmeasured.

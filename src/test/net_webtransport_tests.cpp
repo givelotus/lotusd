@@ -20,6 +20,49 @@
 
 BOOST_FIXTURE_TEST_SUITE(net_webtransport_tests, BasicTestingSetup)
 
+BOOST_AUTO_TEST_CASE(bulk_policy_retains_explicit_and_interactive_peers) {
+    const auto block{ServiceFlags(NODE_NETWORK | NODE_WEBTRANSPORT)};
+    const auto limited{ServiceFlags(NODE_NETWORK_LIMITED | NODE_WEBTRANSPORT)};
+    const auto avalanche{ServiceFlags(block | NODE_AVALANCHE)};
+    const auto browser{NODE_WEBTRANSPORT};
+    for (auto services : {block, limited}) {
+        BOOST_CHECK(ShouldTryWebTransport(
+            services, WebTransportDialPolicy::PREFER, true));
+        BOOST_CHECK(!ShouldTryWebTransport(
+            services, WebTransportDialPolicy::PREFER, false));
+        BOOST_CHECK(ShouldTryWebTransport(services,
+                                          WebTransportDialPolicy::ONLY, false));
+    }
+    for (auto services : {avalanche, browser}) {
+        BOOST_CHECK(ShouldTryWebTransport(
+            services, WebTransportDialPolicy::PREFER, false));
+        BOOST_CHECK(!ShouldTryWebTransport(services,
+                                           WebTransportDialPolicy::OFF, true));
+        BOOST_CHECK(!ShouldTryWebTransport(services,
+                                           WebTransportDialPolicy::OFF, false));
+    }
+    BOOST_CHECK(!ShouldTryWebTransport(NODE_NETWORK,
+                                       WebTransportDialPolicy::ONLY, true));
+}
+
+BOOST_AUTO_TEST_CASE(current_nucleation_messages_keep_their_stream_class) {
+    // Current relay owner 81386ab04d633164a3bf679894906b704b5155ae appends
+    // sendinvshort/invshort to getAllNetMessageTypes(). Merklix and short-body
+    // names already exist in this base. This pins the union without adding a
+    // private wire version or pretending the whole relay stack is merged.
+    for (const auto name : {"sendinvshort", "invshort", "merklixsync",
+                            "getmerklixbuck", "merklixbuck"}) {
+        BOOST_CHECK(HasExplicitStreamClass(name));
+        BOOST_CHECK(ClassifyMessage(name, {}) == StreamClass::TX_ANNOUNCE);
+    }
+    for (const auto name : {"getshorttx", "shorttx"}) {
+        BOOST_CHECK(HasExplicitStreamClass(name));
+        BOOST_CHECK(ClassifyMessage(name, {}) == StreamClass::TX_BODY);
+    }
+    BOOST_CHECK(ClassifyMessage("futuremsg", {}) == StreamClass::CONTROL);
+    BOOST_CHECK(!HasExplicitStreamClass("futuremsg"));
+}
+
 BOOST_AUTO_TEST_CASE(discovery_service_flag_is_optional) {
     BOOST_CHECK_EQUAL(serviceFlagsToStr(NODE_WEBTRANSPORT).front(),
                       "WEBTRANSPORT");
