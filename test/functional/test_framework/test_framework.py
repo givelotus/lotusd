@@ -1463,6 +1463,16 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         if not self.is_cli_compiled():
             raise SkipTest("bitcoin-cli has not been compiled.")
 
+    def skip_if_no_http2(self):
+        """Skip the test if the node was built without HTTP/2, or the Python
+        h2 package (used as an independent HTTP/2 client) is missing."""
+        if not self.is_http2_compiled():
+            raise SkipTest("bitcoind has not been built with HTTP/2 enabled.")
+        try:
+            import h2  # noqa: F401
+        except ImportError:
+            raise SkipTest("python3 h2 module not available.")
+
     def skip_if_no_chronik(self):
         """Skip the running test if Chronik indexer has not been compiled."""
         if not self.is_chronik_compiled():
@@ -1498,6 +1508,10 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         """Checks whether Chronik indexer plugins were compiled."""
         return self.config["components"].getboolean("ENABLE_CHRONIK_PLUGINS")
 
+    def is_http2_compiled(self):
+        """Checks whether the node was built with HTTP/2 (nghttp2)."""
+        return self.config["components"].getboolean("ENABLE_HTTP2", fallback=False)
+
     def is_zmq_compiled(self):
         """Checks whether the zmq module was compiled."""
         return self.config["components"].getboolean("ENABLE_ZMQ")
@@ -1528,6 +1542,7 @@ REQUIREMENTS = {
     "py3_zmq": BitcoinTestFramework.skip_if_no_py3_zmq,
     "chronik": BitcoinTestFramework.skip_if_no_chronik,
     "chronik_electrum": BitcoinTestFramework.skip_if_no_chronik_electrum,
+    "http2": BitcoinTestFramework.skip_if_no_http2,
     "chronik_plugins": BitcoinTestFramework.skip_if_no_chronik_plugins,
     "linux": BitcoinTestFramework.skip_if_platform_not_linux,
     "usdt": BitcoinTestFramework.skip_if_no_bitcoind_tracepoints,
