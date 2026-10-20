@@ -7620,9 +7620,10 @@ bool ChainstateManager::DumpRecentHeadersTime(const fs::path &filePath) const {
         bool missingIndex{false};
         for (uint64_t i = 0; i < numHeaders; i++) {
             if (!index) {
-                LogPrintf("Missing block index, stopping the headers time "
-                          "dumping after %d blocks.\n",
-                          i);
+                LogInfoEvent(
+                    BCLog::ALL, "header_times_dump_index_missing",
+                    "Missing block index, stopping the headers time dumping after {count} blocks.")
+                    .Field(BCLog::LogField::Count, i);
                 missingIndex = true;
                 break;
             }
@@ -7650,12 +7651,16 @@ bool ChainstateManager::DumpRecentHeadersTime(const fs::path &filePath) const {
                                                PathToString(filePath)));
         }
     } catch (const std::exception &e) {
-        LogPrintf("Failed to dump the headers time: %s.\n", e.what());
+        LogInfoEvent(BCLog::ALL, "header_times_dump_failed",
+                     "Failed to dump the headers time: {error}.")
+            .Field(BCLog::LogField::Error, e.what());
         return false;
     }
 
-    LogPrintf("Successfully dumped the last %d headers time to %s.\n",
-              numHeaders, PathToString(filePath));
+    LogInfoEvent(BCLog::ALL, "header_times_dumped",
+                 "Successfully dumped the last {count} headers time to {path}.")
+        .Field(BCLog::LogField::Count, numHeaders)
+        .Field(BCLog::LogField::Path, PathToString(filePath));
 
     return true;
 }
@@ -7697,17 +7702,21 @@ bool ChainstateManager::LoadRecentHeadersTime(const fs::path &filePath) {
 
             CBlockIndex *index = m_blockman.LookupBlockIndex(blockHash);
             if (!index) {
-                LogPrintf("Missing index for block %s, stopping the headers "
-                          "time loading after %d blocks.\n",
-                          blockHash.ToString(), i);
+                LogInfoEvent(
+                    BCLog::ALL, "header_times_load_index_missing",
+                    "Missing index for block {block_hash}, stopping the headers time loading after {count} blocks.")
+                    .Field(BCLog::LogField::BlockHash, blockHash)
+                    .Field(BCLog::LogField::Count, i);
                 return false;
             }
 
             index->nTimeReceived = receiveTime;
         }
     } catch (const std::exception &e) {
-        LogPrintf("Failed to read the headers time file data on disk: %s.\n",
-                  e.what());
+        LogInfoEvent(
+            BCLog::ALL, "header_times_load_failed",
+            "Failed to read the headers time file data on disk: {error}.")
+            .Field(BCLog::LogField::Error, e.what());
         return false;
     }
 
