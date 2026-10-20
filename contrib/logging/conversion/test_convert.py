@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """AST and fail-closed fixtures, plus exact reviewed before/after batch proof."""
+
 import json
-from pathlib import Path
-import unittest
 import subprocess
 import sys
 import tempfile
+import unittest
+from pathlib import Path
+
 import convert
 
 
@@ -52,16 +54,20 @@ class ConversionTest(unittest.TestCase):
             expected = "value=" + "\\" * (run // 2) + "'\n"
             self.assertEqual(convert.describe(node)["format"], expected)
         old = r'LogPrintf("Missing input %d in transaction \'%s\'\n", i, label)'
-        new = ('LogInfoEvent(BCLog::ALL,"missing_input",'
-               '"Missing input {count} in transaction \'{name}\'")'
-               '.Field(BCLog::LogField::Count,i)'
-               '.Field(BCLog::LogField::Name,label)')
+        new = (
+            'LogInfoEvent(BCLog::ALL,"missing_input",'
+            "\"Missing input {count} in transaction '{name}'\")"
+            ".Field(BCLog::LogField::Count,i)"
+            ".Field(BCLog::LogField::Name,label)"
+        )
         after, _ = convert.convert(old, [rule(old, new)])
         self.assertEqual(after, new)
         self.assertEqual(convert.convert(after, [rule(old, new)])[0], after)
         for escape in (r"\a", r"\v", r"\x27", r"\047", r"\?"):
             with self.assertRaises(ValueError):
-                convert.describe(convert.calls('LogPrintf("' + escape + '")', convert.LEGACY)[0])
+                convert.describe(
+                    convert.calls('LogPrintf("' + escape + '")', convert.LEGACY)[0]
+                )
 
     def test_unsupported_formats_are_rejected(self):
         for expression in [
@@ -111,30 +117,63 @@ class ConversionTest(unittest.TestCase):
             new = 'LogInfoEvent(BCLog::ALL,"value","value={count}").Field(BCLog::LogField::Count,x)'
             self.assertEqual(convert.convert(old, [rule(old, new)])[0], new)
 
-    def test_character_requires_original_byte_snapshot(self):
-        old = 'LogError("key=(%c,%d)", DB_PREFIX, height)'
-        new = ('LogErrorEvent(BCLog::ALL,"key_error","key=({value},{height})")'
-               '.Field(BCLog::LogField::Value,BCLog::LogChar{DB_PREFIX})'
-               '.Field(BCLog::LogField::Height,height)')
-        self.assertEqual(convert.convert(old, [rule(old, new)])[0], new)
-        for changed in [new.replace('LogChar{DB_PREFIX}', 'LogChar{OTHER_PREFIX}'),
-                        new.replace('BCLog::LogChar{DB_PREFIX}', 'DB_PREFIX'),
-                        new.replace('BCLog::LogChar{DB_PREFIX}', 'sizeof(BCLog::LogChar{DB_PREFIX})')]:
+    def test_bounded_decimal_padding_preserves_explicit_format(self):
+        for spec in ["%05u", "%15d", "%20u", "%020d", "%1d"]:
+            old = 'LogPrintf("value=' + spec + '", x)'
+            new = (
+                'LogInfoEvent(BCLog::ALL,"value","value={count:'
+                + spec[1:]
+                + '}").Field(BCLog::LogField::Count,x)'
+            )
+            self.assertEqual(convert.convert(old, [rule(old, new)])[0], new)
+            changed = new.replace(spec[1:] + "}", "}")
             with self.assertRaises(ValueError):
                 convert.convert(old, [rule(old, changed)])
-        for spec in ['%2c', '%lc']:
-            wide = old.replace('%c', spec)
+        for spec in ["%021u", "%21d", "%005u", "%+5d"]:
+            old = 'LogPrintf("value=' + spec + '", x)'
+            new = (
+                'LogInfoEvent(BCLog::ALL,"value","value={count:'
+                + spec[1:]
+                + '}").Field(BCLog::LogField::Count,x)'
+            )
+            with self.assertRaises(ValueError):
+                convert.convert(old, [rule(old, new)])
+
+    def test_character_requires_original_byte_snapshot(self):
+        old = 'LogError("key=(%c,%d)", DB_PREFIX, height)'
+        new = (
+            'LogErrorEvent(BCLog::ALL,"key_error","key=({value},{height})")'
+            ".Field(BCLog::LogField::Value,BCLog::LogChar{DB_PREFIX})"
+            ".Field(BCLog::LogField::Height,height)"
+        )
+        self.assertEqual(convert.convert(old, [rule(old, new)])[0], new)
+        for changed in [
+            new.replace("LogChar{DB_PREFIX}", "LogChar{OTHER_PREFIX}"),
+            new.replace("BCLog::LogChar{DB_PREFIX}", "DB_PREFIX"),
+            new.replace(
+                "BCLog::LogChar{DB_PREFIX}", "sizeof(BCLog::LogChar{DB_PREFIX})"
+            ),
+        ]:
+            with self.assertRaises(ValueError):
+                convert.convert(old, [rule(old, changed)])
+        for spec in ["%2c", "%lc"]:
+            wide = old.replace("%c", spec)
             with self.assertRaises(ValueError):
                 convert.convert(wide, [rule(wide, new)])
 
     def test_float_precision_is_exact(self):
         for spec in ["%f", "%g", "%.0f", "%.2f", "%.18g"]:
             old = 'LogPrintf("elapsed=' + spec + '", x)'
-            new = ('LogInfoEvent(BCLog::ALL,"elapsed","elapsed={elapsed_ms:'
-                   + spec[1:] + '}").Field(BCLog::LogField::ElapsedMs,x)')
+            new = (
+                'LogInfoEvent(BCLog::ALL,"elapsed","elapsed={elapsed_ms:'
+                + spec[1:]
+                + '}").Field(BCLog::LogField::ElapsedMs,x)'
+            )
             self.assertEqual(convert.convert(old, [rule(old, new)])[0], new)
-            for changed in [new.replace(spec[1:] + '}', '.1f}'),
-                            new.replace(':' + spec[1:], '')]:
+            for changed in [
+                new.replace(spec[1:] + "}", ".1f}"),
+                new.replace(":" + spec[1:], ""),
+            ]:
                 with self.assertRaises(ValueError):
                     convert.convert(old, [rule(old, changed)])
         for spec in ["%.19f", "%08.2f", "%+f", "%e"]:
@@ -145,15 +184,16 @@ class ConversionTest(unittest.TestCase):
 
     def test_hex_and_explicit_unthrottled_info(self):
         old = 'LogPrintLevel_(BCLog::ALL, BCLog::Level::Info, /*should_ratelimit=*/false, "v=%08x", v)'
-        new = ('LogInfoEventNoRateLimit(BCLog::ALL,"version","v={version:08x}")'
-               '.Field(BCLog::LogField::Version,uint32_t(v))')
+        new = (
+            'LogInfoEventNoRateLimit(BCLog::ALL,"version","v={version:08x}")'
+            ".Field(BCLog::LogField::Version,uint32_t(v))"
+        )
         self.assertEqual(convert.convert(old, [rule(old, new)])[0], new)
-        for changed in [new.replace('NoRateLimit', ''),
-                        new.replace(':08x', ':x')]:
+        for changed in [new.replace("NoRateLimit", ""), new.replace(":08x", ":x")]:
             with self.assertRaises(ValueError):
                 convert.convert(old, [rule(old, changed)])
         with self.assertRaises(ValueError):
-            changed = old.replace('false', 'true')
+            changed = old.replace("false", "true")
             convert.convert(changed, [rule(changed, new)])
 
     def test_filesystem_quoting_requires_old_ast_contract(self):
@@ -164,8 +204,10 @@ class ConversionTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             changed = new.replace(":fsq", "")
             convert.convert(old, [rule(old, changed)])
-        for plain in ['LogPrintf("path=(%s)\\n", fs::PathToString(path))',
-                      'LogPrintf("path=(%s)\\n", other::quoted(path))']:
+        for plain in [
+            'LogPrintf("path=(%s)\\n", fs::PathToString(path))',
+            'LogPrintf("path=(%s)\\n", other::quoted(path))',
+        ]:
             with self.assertRaises(ValueError):
                 convert.convert(plain, [rule(plain, new)])
 
