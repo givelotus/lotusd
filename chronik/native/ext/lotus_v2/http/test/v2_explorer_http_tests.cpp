@@ -29,7 +29,8 @@ struct Fixture : RouterFixture {
     V2TempDir dir{"explorer-http"};
     Bytes wire;
 
-    explicit Fixture(size_t count = 2, bool burn = false) {
+    explicit Fixture(size_t count = 2, bool burn = false,
+                     bool stateful = false) {
         auto db =
             std::make_shared<SharedV2Db>(dir.path, TestBinding(), TestBounds());
         ExplorerBlockFacts header;
@@ -53,6 +54,10 @@ struct Fixture : RouterFixture {
         token.branches = {Fill(8), Fill(7)};
         if (!burn) {
             token.paths = {{0, 1}};
+        }
+        if (stateful) {
+            token.flags |= 4;
+            token.state_root = Fill(3);
         }
         db->db.InitializeGenesis(CommittedBlock{
             kAnchor,
@@ -158,6 +163,24 @@ BOOST_AUTO_TEST_CASE(every_route_serves_schema_and_exact_native_facts) {
     // u64::MAX * 2 as u128
     BOOST_CHECK_EQUAL(Str(At(asset, "data", "items", 0, "output_units")),
                       "36893488147419103230");
+}
+
+BOOST_AUTO_TEST_CASE(output_fields_expose_state_roots) {
+    for (const bool state : {false, true}) {
+        Fixture f(2, false, state);
+        const Router app = f.MakeRouter();
+        const HttpResponse r =
+            Post(app, "/branches/outputs",
+                 "{\"any_branch\":[\"" + HexFill(8) + "\"],\"page_size\":\"1\"}");
+        BOOST_REQUIRE_EQUAL(r.status, 200);
+        const JsonNode v = Value(r);
+        BOOST_CHECK_EQUAL(Bool(At(v, "data", "items", 0, "record", "has_state")),
+                          state);
+        BOOST_CHECK_EQUAL(Str(At(v, "data", "items", 0, "record", "state_root")),
+                          HexFill(state ? 3 : 0));
+        BOOST_CHECK_EQUAL(Str(At(v, "data", "items", 0, "record", "flags")),
+                          state ? "5" : "1");
+    }
 }
 
 BOOST_AUTO_TEST_CASE(wire_chunks_reconstruct_only_with_pinned_snapshot) {
