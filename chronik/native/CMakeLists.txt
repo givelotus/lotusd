@@ -79,6 +79,19 @@ set_target_properties(chronik_native_core PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
+# ---- Host block-file reads shared by host adapters (no node headers) ----
+add_library(chronik_native_host_common STATIC
+    hosts/common/flat_file_reader.cpp
+)
+target_include_directories(chronik_native_host_common
+    PUBLIC "${CHRONIK_NATIVE_ROOT}"
+)
+set_target_properties(chronik_native_host_common PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+list(APPEND CHRONIK_NATIVE_TEST_SOURCES test/flat_file_reader_tests.cpp)
+list(APPEND CHRONIK_NATIVE_TEST_LIBRARIES chronik_native_host_common)
+
 # ---- Unit tests (core only, plus a fake host) ----
 add_executable(test_chronik_native ${CHRONIK_NATIVE_TEST_SOURCES})
 target_include_directories(test_chronik_native PRIVATE "${CHRONIK_NATIVE_ROOT}")
@@ -125,6 +138,7 @@ if(NOT CHRONIK_NATIVE_STANDALONE)
     )
     target_link_libraries(chronik_native_host_abc
         chronik_native_core
+        chronik_native_host_common
         chronik_native_service
         util
     )
