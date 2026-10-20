@@ -3218,13 +3218,19 @@ static bool EnsureGeneratedCertificate(const TlsFiles &files) {
     const bool ok{key_pem ? tls::ReplaceFile(files.cert, pem->cert_pem)
                           : tls::WritePemFiles(*pem, files.cert, files.key)};
     if (ok) {
-        LogPrintf("%s TLS certificate %s for %s (valid %d days)\n",
-                  key_pem ? "Renewed" : "Generated",
-                  fs::PathToString(files.cert), name,
-                  std::chrono::duration_cast<std::chrono::hours>(
-                      GENERATED_CERT_VALIDITY)
-                          .count() /
-                      24);
+        LogInfoEvent(
+            BCLog::ALL, "tls_certificate_issued",
+            "{certificate_action} TLS certificate {certificate_path} for {server_name} (valid {certificate_validity_days} days)")
+            .Field(BCLog::LogField::CertificateAction,
+                   key_pem ? "Renewed" : "Generated")
+            .Field(BCLog::LogField::CertificatePath,
+                   fs::PathToString(files.cert))
+            .Field(BCLog::LogField::ServerName, name)
+            .Field(BCLog::LogField::CertificateValidityDays,
+                   std::chrono::duration_cast<std::chrono::hours>(
+                       GENERATED_CERT_VALIDITY)
+                           .count() /
+                       24);
     }
     return ok;
 }
@@ -3239,9 +3245,14 @@ static void FileTimes(TlsFiles &files) {
 static tls::SslCtxPtr LoadServerContext(const TlsFiles &files) {
     auto ctx{tls::NewContext(/*server=*/true)};
     if (!ctx || !tls::UseCertificateFiles(ctx.get(), files.cert, files.key)) {
-        LogPrintf("Error: unable to load TLS certificate %s / key %s: %s\n",
-                  fs::PathToString(files.cert), fs::PathToString(files.key),
-                  tls::ErrorString());
+        const auto tls_error{tls::ErrorString()};
+        LogInfoEvent(
+            BCLog::ALL, "tls_certificate_load_failed",
+            "Error: unable to load TLS certificate {certificate_path} / key {key_path}: {error}")
+            .Field(BCLog::LogField::CertificatePath,
+                   fs::PathToString(files.cert))
+            .Field(BCLog::LogField::KeyPath, fs::PathToString(files.key))
+            .Field(BCLog::LogField::Error, tls_error);
         return {};
     }
     if (gArgs.GetBoolArg("-tlsmutual", DEFAULT_HTTP_TLS_MUTUAL) ||
@@ -3269,8 +3280,11 @@ static void ReloadTLSIfChanged() EXCLUSIVE_LOCKS_REQUIRED(g_tls_mutex) {
     if (files.generated && now >= g_tls_next_renewal_check) {
         g_tls_next_renewal_check = now + TLS_RENEWAL_CHECK_INTERVAL;
         if (!EnsureGeneratedCertificate(files)) {
-            LogPrintf("Error: failed to renew the TLS certificate %s\n",
-                      fs::PathToString(files.cert));
+            LogInfoEvent(
+                BCLog::ALL, "tls_certificate_renew_failed",
+                "Error: failed to renew the TLS certificate {certificate_path}")
+                .Field(BCLog::LogField::CertificatePath,
+                       fs::PathToString(files.cert));
         }
     }
     TlsFiles current{files};
@@ -3282,8 +3296,10 @@ static void ReloadTLSIfChanged() EXCLUSIVE_LOCKS_REQUIRED(g_tls_mutex) {
     files = current;
     if (auto ctx{LoadServerContext(files)}) {
         g_ssl_ctx = std::move(ctx);
-        LogPrintf("Reloaded TLS certificate %s\n",
-                  fs::PathToString(files.cert));
+        LogInfoEvent(BCLog::ALL, "tls_certificate_reloaded",
+                     "Reloaded TLS certificate {certificate_path}")
+            .Field(BCLog::LogField::CertificatePath,
+                   fs::PathToString(files.cert));
     }
 }
 
@@ -3332,8 +3348,9 @@ static bool InitTLS() {
     const auto now{std::chrono::steady_clock::now()};
     g_tls_next_check = now + TLS_RELOAD_CHECK_INTERVAL;
     g_tls_next_renewal_check = now + TLS_RENEWAL_CHECK_INTERVAL;
-    LogPrintf("TLS enabled on the RPC port using %s\n",
-              fs::PathToString(files.cert));
+    LogInfoEvent(BCLog::ALL, "rpc_tls_enabled",
+                 "TLS enabled on the RPC port using {certificate_path}")
+        .Field(BCLog::LogField::CertificatePath, fs::PathToString(files.cert));
     g_tls_files = std::move(files);
     return true;
 }
