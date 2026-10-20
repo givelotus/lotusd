@@ -1391,6 +1391,7 @@ impl ChronikIndexer {
                 .map(|tx| {
                     let txid = TxId::from(tx.tx.txid);
                     TxEntry {
+                        is_legacy: tx.tx.version != 7,
                         txid,
                         data_pos: tx.data_pos,
                         undo_pos: tx.undo_pos,
@@ -2116,11 +2117,10 @@ mod tests {
             data::DbOutpoint,
             groups::{
                 ScriptGroup, TokenIdGroup, TokenIdGroupAux,
-                TokenIdHistoryReader, TokenIdHistoryWriter,
-                TokenIdUtxoReader, TokenIdUtxoWriter, V2AssetGroup,
-                V2AssetHistoryReader, V2AssetHistoryWriter,
-                V2AssetUtxoReader, V2AssetUtxoWriter, V2BranchGroup,
-                V2BranchHistoryReader, V2BranchHistoryWriter,
+                TokenIdHistoryReader, TokenIdHistoryWriter, TokenIdUtxoReader,
+                TokenIdUtxoWriter, V2AssetGroup, V2AssetHistoryReader,
+                V2AssetHistoryWriter, V2AssetUtxoReader, V2AssetUtxoWriter,
+                V2BranchGroup, V2BranchHistoryReader, V2BranchHistoryWriter,
                 V2BranchUtxoReader, V2BranchUtxoWriter, V2ThreeBranchOutput,
             },
             index_tx::prepare_indexed_txs,
@@ -2156,7 +2156,8 @@ mod tests {
         let tx1 = Tx::with_txid(
             TxId::from([1u8; 32]),
             TxMut {
-                version: 2,
+                native_txid: None,
+                version: 7,
                 inputs: vec![],
                 outputs: vec![TxOutput {
                     sats: 5_000,
@@ -2223,6 +2224,7 @@ mod tests {
             &BlockTxs {
                 block_height: 0,
                 txs: vec![TxEntry {
+                    is_legacy: false,
                     txid: tx1.txid(),
                     data_pos: 100,
                     undo_pos: 0,
@@ -2326,7 +2328,8 @@ mod tests {
         let coinbase_1 = Tx::with_txid(
             TxId::from([9u8; 32]),
             TxMut {
-                version: 2,
+                native_txid: None,
+                version: 7,
                 inputs: vec![],
                 outputs: vec![],
                 locktime: 0,
@@ -2335,7 +2338,8 @@ mod tests {
         let tx2 = Tx::with_txid(
             TxId::from([2u8; 32]),
             TxMut {
-                version: 2,
+                native_txid: None,
+                version: 7,
                 inputs: vec![TxInput {
                     prev_out: OutPoint {
                         txid: tx1.txid(),
@@ -2344,6 +2348,7 @@ mod tests {
                     script: Default::default(),
                     sequence: 0,
                     coin: Some(Coin {
+                        is_legacy: false,
                         output: TxOutput {
                             sats: 5_000,
                             script: v2_script,
@@ -2363,6 +2368,7 @@ mod tests {
                 block_height: 1,
                 txs: vec![
                     TxEntry {
+                        is_legacy: false,
                         txid: coinbase_1.txid(),
                         data_pos: 180,
                         undo_pos: 0,
@@ -2370,6 +2376,7 @@ mod tests {
                         is_coinbase: true,
                     },
                     TxEntry {
+                        is_legacy: false,
                         txid: tx2.txid(),
                         data_pos: 200,
                         undo_pos: 250,

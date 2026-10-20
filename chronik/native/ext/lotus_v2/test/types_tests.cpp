@@ -71,6 +71,32 @@ std::optional<std::string_view> ValidateError(const Output &output) {
 
 BOOST_AUTO_TEST_SUITE(lotus_v2_types_tests)
 
+BOOST_AUTO_TEST_CASE(legacy_coin_frames_have_no_native_roots) {
+    for (const Bytes &script :
+         {Bytes{}, Bytes{0x51}, Bytes{0x6a, 1, 0x42}, Bytes(10000, 0x51), Bytes(10001, 0x51)}) {
+        Output output;
+        output.legacy_script = script;
+        output.flags =
+            0x80 | (((!script.empty() && script.front() == 0x6a) || script.size() > 10000) ? 2 : 0);
+        output.value = 123;
+        auto wire = output.Encode();
+        BOOST_REQUIRE(wire);
+        BOOST_CHECK_EQUAL(wire->front(), 0x80);
+        auto decoded = Output::Decode(*wire);
+        BOOST_REQUIRE(decoded);
+        BOOST_CHECK(*decoded == output);
+        BOOST_CHECK(decoded->branches.empty());
+        BOOST_CHECK(!decoded->HasToken());
+        for (size_t end = 0; end < std::min<size_t>(wire->size(), 32); ++end) {
+            BOOST_CHECK(!Output::Decode(ByteView(*wire).first(end)));
+        }
+        wire->push_back(0);
+        BOOST_CHECK(!Output::Decode(*wire));
+    }
+    Bytes nonminimal{0x80, 123, 0, 0, 0, 0, 0, 0, 0, 253, 1, 0, 0x51};
+    BOOST_CHECK(!Output::Decode(nonminimal));
+}
+
 BOOST_AUTO_TEST_CASE(native_reference_roundtrips) {
     for (const auto &[name, bytes] : Fixtures()) {
         BOOST_TEST_CONTEXT(name) {

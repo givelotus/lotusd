@@ -78,7 +78,7 @@ BOOST_AUTO_TEST_SUITE(lotus_v2_groups_tests)
 BOOST_AUTO_TEST_CASE(test_v2_three_branch_and_asset_groups) {
     Tx tx;
     tx.txid.b.fill(1);
-    tx.version = 2;
+    tx.version = 7;
     TxInput in;
     in.coin = Coin{TxOutput{500, ThreeBranch(500, false)}, 0, false};
     tx.inputs.push_back(in);
@@ -101,6 +101,18 @@ BOOST_AUTO_TEST_CASE(test_v2_three_branch_and_asset_groups) {
                 (std::vector<MemberItem>{{0, B(kAsset)}}));
     BOOST_CHECK(Outputs(asset, tx) ==
                 (std::vector<MemberItem>{{0, B(kAsset)}}));
+
+    Tx legacy = tx;
+    legacy.version = 2;
+    legacy.inputs[0].coin->is_legacy = true;
+    BOOST_CHECK(Inputs(branch, legacy).empty());
+    BOOST_CHECK(Outputs(branch, legacy).empty());
+    BOOST_CHECK(Inputs(asset, legacy).empty());
+    BOOST_CHECK(Outputs(asset, legacy).empty());
+    legacy.version = 7;
+    BOOST_CHECK(Inputs(branch, legacy).empty());
+    BOOST_CHECK(Inputs(asset, legacy).empty());
+    BOOST_CHECK(!Outputs(branch, legacy).empty());
 
     // Coinbase txs have no input members
     std::vector<MemberItem> cb;
@@ -164,7 +176,7 @@ BOOST_AUTO_TEST_CASE(test_v2_three_branch_and_asset_indexing) {
 
     const Bytes v2_script = ThreeBranch(5000, true);
     Tx tx1;
-    tx1.version = 2;
+    tx1.version = 7;
     TxInput in;
     in.prev_out.txid = genesis_cb.txid;
     in.coin = Coin{genesis_cb.outputs[0], 0, true};
