@@ -31,6 +31,7 @@ option(ENABLE_QRCODE "Enable QR code display" ON)
 option(ENABLE_CLANG_TIDY "Enable clang-tidy checks for Bitcoin ABC" OFF)
 option(ENABLE_PROFILING "Select the profiling tool to use" OFF)
 option(ENABLE_TRACING "Enable eBPF user static defined tracepoints" OFF)
+option(ENABLE_HTTP2 "Serve HTTP/2 on TLS listeners and offer it to WebSocket peers (needs nghttp2)" OFF)
 
 # Linker option
 if(CMAKE_CROSSCOMPILING)
@@ -77,6 +78,7 @@ native_add_cmake_flags(
 	"-DBUILD_CHRONIK=OFF"
 	"-DBUILD_QT=OFF"
 	"-DBUILD_ZMQ=OFF"
+	"-DENABLE_HTTP2=OFF"
 	"-DENABLE_QRCODE=OFF"
 	"-DUSE_JEMALLOC=OFF"
 	"-DENABLE_CLANG_TIDY=OFF"
@@ -773,6 +775,17 @@ include_directories(BEFORE SYSTEM ${OPENSSL_INCLUDE_DIR})
 find_package(Zstd 1.4.0 REQUIRED)
 target_link_libraries(server OpenSSL::SSL OpenSSL::Crypto Zstd::zstd)
 target_compile_definitions(server PRIVATE HAVE_ZSTD=1)
+
+# HTTP/2 framing and HPACK. 1.68.1 is the first release with fixes for all
+# the library's published advisories (see doc/http2.md).
+if(ENABLE_HTTP2)
+	find_package(NGHTTP2 1.68.1 REQUIRED)
+	target_link_libraries(server NGHTTP2::nghttp2)
+	if(WIN32)
+		# depends builds a static library
+		target_compile_definitions(server PUBLIC NGHTTP2_STATICLIB)
+	endif()
+endif()
 
 # Test suites.
 add_subdirectory(test)

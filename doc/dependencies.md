@@ -17,6 +17,7 @@ These are the dependencies currently used by Bitcoin ABC. You can find instructi
 | jemalloc | [5.2.1](https://github.com/jemalloc/jemalloc/releases) | 3.6.0 |  |  |  |
 | libpng |  |  |  |  | Yes |
 | librsvg | |  |  |  |  |
+| nghttp2 | [1.70.0](https://github.com/nghttp2/nghttp2/releases) | 1.68.1 | No |  |  |
 | Ninja |  | [1.5.1](https://github.com/ninja-build/ninja/releases) |  |  |  |
 | OpenSSL | [3.5.9](https://openssl-library.org/source/) | 3.0 | No |  |  |
 | PCRE |  |  |  |  | Yes |
@@ -45,3 +46,4 @@ factors that affect the dependency list.
 * qrencode is not needed with `-DENABLE_QRCODE=OFF`.
 * systemtap is not needed with `-DENABLE_TRACING=OFF`.
 * ZeroMQ is not needed with the `-DBUILD_ZMQ=OFF`.
+* nghttp2 is only needed with `-DENABLE_HTTP2=ON` (default OFF).
