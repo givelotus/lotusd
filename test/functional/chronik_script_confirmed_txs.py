@@ -11,6 +11,7 @@ from test_framework.address import (
     SCRIPTSIG_OP_TRUE,
 )
 from test_framework.blocktools import GENESIS_CB_PK, create_block, create_coinbase
+from test_framework.chronik.test_data import GENESIS_NATIVE_OUTPUT
 from test_framework.messages import COutPoint, CTransaction, CTxIn, CTxOut
 from test_framework.p2p import P2PDataStore
 from test_framework.test_framework import BitcoinTestFramework
@@ -72,21 +73,21 @@ class ChronikScriptConfirmedTxsTest(BitcoinTestFramework):
         )
 
         assert_equal(
-            chronik.script("p2pk", GENESIS_CB_PK)
+            chronik.script("other", GENESIS_NATIVE_OUTPUT.hex())
             .confirmed_txs(page=0, page_size=201)
             .err(400)
             .msg,
             "400: Requested page size 201 is too big, maximum is 200",
         )
         assert_equal(
-            chronik.script("p2pk", GENESIS_CB_PK)
+            chronik.script("other", GENESIS_NATIVE_OUTPUT.hex())
             .confirmed_txs(page=0, page_size=0)
             .err(400)
             .msg,
             "400: Requested page size 0 is too small, minimum is 1",
         )
         assert_equal(
-            chronik.script("p2pk", GENESIS_CB_PK)
+            chronik.script("other", GENESIS_NATIVE_OUTPUT.hex())
             .confirmed_txs(page=0, page_size=2**32)
             .err(400)
             .msg,
@@ -94,7 +95,7 @@ class ChronikScriptConfirmedTxsTest(BitcoinTestFramework):
             + "number too large to fit in target type",
         )
         assert_equal(
-            chronik.script("p2pk", GENESIS_CB_PK)
+            chronik.script("other", GENESIS_NATIVE_OUTPUT.hex())
             .confirmed_txs(page=2**32, page_size=1)
             .err(400)
             .msg,
@@ -104,16 +105,22 @@ class ChronikScriptConfirmedTxsTest(BitcoinTestFramework):
 
         from test_framework.chronik.client import pb
 
+        # Native genesis is indexed by its canonical output, not the embedded P2PK.
+        assert_equal(
+            chronik.script("p2pk", GENESIS_CB_PK).confirmed_txs().ok(),
+            pb.TxHistoryPage(),
+        )
+
         # Handle overflow gracefully on 32-bit
         assert_equal(
-            chronik.script("p2pk", GENESIS_CB_PK)
+            chronik.script("other", GENESIS_NATIVE_OUTPUT.hex())
             .confirmed_txs(page=2**32 - 1, page_size=200)
             .ok(),
             pb.TxHistoryPage(num_pages=1, num_txs=1),
         )
 
         genesis_db_script_history = (
-            chronik.script("p2pk", GENESIS_CB_PK).confirmed_txs().ok()
+            chronik.script("other", GENESIS_NATIVE_OUTPUT.hex()).confirmed_txs().ok()
         )
         from test_framework.chronik.test_data import genesis_cb_tx
 
