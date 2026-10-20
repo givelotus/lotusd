@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+  "batch": "crypto-startup-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/kernel/context.cpp",
+      "rules": [
+        {
+          "id": "sha256_implementation_selected",
+          "old": "LogPrintf(\"Using the '%s' SHA256 implementation\\n\", sha256_algo)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"sha256_implementation_selected\", \"Using the '{sha256_implementation}' SHA256 implementation\").Field(BCLog::LogField::SHA256Implementation, sha256_algo)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Using the '%s' SHA256 implementation\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "sha256_algo"
+            ]
+          },
+          "review_note": "Keep Info, exact SHA256/entropy human text, CPU capability and platform preprocessor guards, ordering and all cryptographic initialization. Record algorithm label only; no randomness, seeds or keys. Copy local algorithm string before its destruction. RdSeed/RdRand runtime is not exercised on macOSarm64."
+        }
+      ]
+    },
+    {
+      "path": "src/random.cpp",
+      "rules": [
+        {
+          "id": "entropy_rdseed_enabled",
+          "old": "LogPrintf(\"Using RdSeed as additional entropy source\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"entropy_rdseed_enabled\", \"Using RdSeed as additional entropy source\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Using RdSeed as additional entropy source\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Keep Info, exact SHA256/entropy human text, CPU capability and platform preprocessor guards, ordering and all cryptographic initialization. Record algorithm label only; no randomness, seeds or keys. Copy local algorithm string before its destruction. RdSeed/RdRand runtime is not exercised on macOSarm64."
+        },
+        {
+          "id": "entropy_rdrand_enabled",
+          "old": "LogPrintf(\"Using RdRand as an additional entropy source\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"entropy_rdrand_enabled\", \"Using RdRand as an additional entropy source\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Using RdRand as an additional entropy source\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Keep Info, exact SHA256/entropy human text, CPU capability and platform preprocessor guards, ordering and all cryptographic initialization. Record algorithm label only; no randomness, seeds or keys. Copy local algorithm string before its destruction. RdSeed/RdRand runtime is not exercised on macOSarm64."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Public SHA256 implementation label, not a hash result, entropy sample or V2 primary hash selection.",
+          "old": "    X(ExpectedChainTxCount, expected_chain_tx_count, UINT, \"\", \"\")\n",
+          "new": "    X(ExpectedChainTxCount, expected_chain_tx_count, UINT, \"\", \"\") \\\n    X(SHA256Implementation, sha256_implementation, STRING, \"\", \"\")\n"
+        }
+      ]
+    }
+  ]
+}

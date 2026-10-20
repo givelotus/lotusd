@@ -116,10 +116,12 @@ void ReportHardwareRand() {
     // indirectly called from global constructors, before logging is
     // initialized.
     if (g_rdseed_supported) {
-        LogPrintf("Using RdSeed as additional entropy source\n");
+        LogInfoEvent(BCLog::ALL, "entropy_rdseed_enabled",
+                     "Using RdSeed as additional entropy source");
     }
     if (g_rdrand_supported) {
-        LogPrintf("Using RdRand as an additional entropy source\n");
+        LogInfoEvent(BCLog::ALL, "entropy_rdrand_enabled",
+                     "Using RdRand as an additional entropy source");
     }
 }
 
