@@ -19,13 +19,16 @@
 #include <test/util/setup_common.h>
 #include <univalue.h>
 #include <util/fs.h>
+#include <util/fs_helpers.h>
 #include <util/strencodings.h>
 #include <util/translation.h>
 
 #include <boost/test/unit_test.hpp>
 
-#ifdef __linux__
+#if defined(__linux__) || defined(MAC_OSX)
 #include <fcntl.h>
+#endif
+#ifdef __linux__
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -1285,5 +1288,39 @@ BOOST_AUTO_TEST_CASE(
     BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
     BOOST_CHECK(row["fields_truncated"].isNull());
 }
+
+#if (defined(MAC_OSX) && defined(F_FULLFSYNC)) || defined(__linux__)
+BOOST_AUTO_TEST_CASE(
+    file_commit_failure_preserves_error_text_and_false_return) {
+    Format(BCLog::LogFormat::JSON);
+#if defined(MAC_OSX) && defined(F_FULLFSYNC)
+    // /dev/null accepts stdio writes but cannot perform F_FULLFSYNC.
+    AutoFile file{fsbridge::fopen(fs::path{"/dev/null"}, "wb")};
+    constexpr const char *event{"file_commit_fullfsync_failed"};
+    constexpr const char *prefix{"fcntl F_FULLFSYNC failed: "};
+#else
+    // Buffer one byte so /dev/full reports its actual ENOSPC in fflush.
+    std::array<char, 4096> buffer{};
+    AutoFile file{fsbridge::fopen(fs::path{"/dev/full"}, "wb")};
+    BOOST_REQUIRE(!file.IsNull());
+    BOOST_REQUIRE_EQUAL(
+        setvbuf(file.Get(), buffer.data(), _IOFBF, buffer.size()), 0);
+    constexpr const char *event{"file_commit_stdio_flush_failed"};
+    constexpr const char *prefix{"fflush failed: "};
+#endif
+    BOOST_REQUIRE(!file.IsNull());
+    const char value{'x'};
+    BOOST_REQUIRE_EQUAL(fwrite(&value, 1, 1, file.Get()), 1U);
+    BOOST_CHECK(!FileCommit(file.Get()));
+    const auto row{Json()};
+    BOOST_CHECK_EQUAL(row["event"].get_str(), event);
+    BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
+    BOOST_REQUIRE(row["error"].isStr());
+    BOOST_CHECK(!row["error"].get_str().empty());
+    BOOST_CHECK_EQUAL(row["message"].get_str(),
+                      std::string{prefix} + row["error"].get_str());
+    BOOST_CHECK(row["fields_truncated"].isNull());
+}
+#endif
 
 BOOST_AUTO_TEST_SUITE_END()
