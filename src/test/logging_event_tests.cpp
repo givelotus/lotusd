@@ -9,6 +9,7 @@
 #include <test/util/setup_common.h>
 #include <univalue.h>
 #include <util/fs.h>
+#include <util/strencodings.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -832,6 +833,39 @@ BOOST_AUTO_TEST_CASE(fee_rate_value_is_snapshot_and_preserves_text) {
     const auto record{Json()};
     BOOST_CHECK_EQUAL(record["fee_rate"].get_str(), expected);
     BOOST_CHECK_EQUAL(record["message"].get_str(), "rate=" + expected);
+}
+
+BOOST_AUTO_TEST_CASE(hex_value_is_snapshot_and_preserves_hexstr_output) {
+    Format(BCLog::LogFormat::JSON);
+    std::vector<std::vector<uint8_t>> cases{
+        {}, {0}, {0xff}, {0, 1, 0x80, 0xff}};
+    std::vector<uint8_t> all_bytes;
+    for (int i = 0; i < 256; ++i) {
+        all_bytes.push_back(uint8_t(i));
+    }
+    cases.push_back(all_bytes);
+    for (auto bytes : cases) {
+        const auto expected{HexStr(bytes)};
+        LogInfoEvent(BCLog::ALL, "hex_snapshot", "bytes={value}")
+            .Field(LogField::Value, BCLog::LogHex{bytes});
+        // The record must not retain the view or defer reading this buffer.
+        std::fill(bytes.begin(), bytes.end(), 0x55);
+        bytes.clear();
+        bytes.shrink_to_fit();
+        const auto record{Json()};
+        BOOST_CHECK_EQUAL(record["value"].get_str(), expected);
+        BOOST_CHECK_EQUAL(record["message"].get_str(), "bytes=" + expected);
+        BOOST_CHECK(record["fields_truncated"].isNull());
+    }
+    std::vector<uint8_t> oversized(BCLog::LogValue<BCLog::LogHex>::MAX_SIZE + 1,
+                                   0xab);
+    LogInfoEvent(BCLog::ALL, "hex_snapshot", "bytes={value}")
+        .Field(LogField::Value, BCLog::LogHex{oversized})
+        .Field(LogField::Count, oversized.size());
+    const auto record{Json()};
+    BOOST_CHECK(record["value"].isNull());
+    BOOST_CHECK(record["fields_truncated"].get_bool());
+    BOOST_CHECK_EQUAL(record["count"].getInt<uint64_t>(), oversized.size());
 }
 
 BOOST_AUTO_TEST_CASE(wss_packed_address_keeps_full_payload) {
