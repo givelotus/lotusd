@@ -400,6 +400,16 @@ Tx ChronikBridge::load_tx(uint32_t file_num, uint32_t data_pos,
     return BridgeTx(isCoinbase, CTransaction(std::move(tx)), txundo.vprevout);
 }
 
+std::shared_ptr<const CTransaction>
+ChronikBridge::read_tx_from_disk(uint32_t file_num, uint32_t data_pos) const {
+    CMutableTransaction tx;
+    if (!m_node.chainman->m_blockman.ReadTxFromDisk(
+            tx, FlatFilePos(file_num, data_pos))) {
+        throw std::runtime_error("Reading tx data from disk failed");
+    }
+    return std::make_shared<const CTransaction>(std::move(tx));
+}
+
 rust::Vec<uint8_t> ChronikBridge::load_raw_tx(uint32_t file_num,
                                               uint32_t data_pos) const {
     CMutableTransaction tx;

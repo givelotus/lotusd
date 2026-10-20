@@ -307,6 +307,168 @@ uint32_t get_v2_max_block_bytes(const chronik_bridge::ChronikBridge &) {
         std::min<uint64_t>(limit, std::numeric_limits<uint32_t>::max()));
 }
 
+namespace {
+/**
+ * Native V2 facts of one confirmed transaction. `coinbase` normalizes the
+ * first transaction of a block. The Rust V2 index stores only the block-file
+ * position and reads every transaction back through this conversion, so it
+ * must stay deterministic.
+ */
+NativeTx BridgeV2NativeTx(const CTransaction &ctx, bool coinbase, uint32_t n,
+                          uint32_t file_num, uint32_t data_pos) {
+    lotus::v2::Transaction v2tx = ctx.ToV2Transaction();
+    if (coinbase) {
+        v2tx.lock = 0;
+        if (v2tx.inputs.size() != 1) {
+            v2tx.inputs.resize(1);
+        }
+        auto &cb_in = v2tx.inputs[0];
+        cb_in.prev_txid.fill(0);
+        cb_in.prev_index = std::numeric_limits<uint32_t>::max();
+        cb_in.sequence = std::numeric_limits<uint32_t>::max();
+        cb_in.flags = 2;
+        cb_in.path_index = 0;
+        cb_in.witnesses.clear();
+        if (cb_in.coinbase_data.size() > 8192) {
+            cb_in.coinbase_data.resize(8192);
+        }
+        if (cb_in.has_coinbase_data && cb_in.coinbase_data.empty()) {
+            cb_in.has_coinbase_data = false;
+        } else if (!cb_in.has_coinbase_data) {
+            cb_in.coinbase_data.clear();
+        }
+        for (auto &out : v2tx.outputs) {
+            out.flags &= static_cast<uint8_t>(~1U);
+            out.token_id.fill(0);
+        }
+    } else {
+        for (auto &in : v2tx.inputs) {
+            in.has_coinbase_data = false;
+            in.coinbase_data.clear();
+            if (in.flags != 1 && in.flags != 3) {
+                in.flags = 1;
+            }
+            if (in.flags == 1) {
+                if (in.path_index >= lotus::v2::MAX_OUTPUT_PATHS) {
+                    in.path_index = 0;
+                }
+                if (in.sequence != std::numeric_limits<uint32_t>::max() &&
+                    (in.sequence & ~0x40ffffU) != 0) {
+                    in.sequence = std::numeric_limits<uint32_t>::max();
+                }
+                if (in.witnesses.empty()) {
+                    lotus::v2::BranchWitness w;
+                    w.script = {0x4e};
+                    in.witnesses.push_back(std::move(w));
+                } else if (in.witnesses.size() >
+                           lotus::v2::MAX_OUTPUT_BRANCHES) {
+                    in.witnesses.resize(lotus::v2::MAX_OUTPUT_BRANCHES);
+                }
+            }
+            for (auto &w : in.witnesses) {
+                if (w.script.size() >
+                    lotus::v2::DefaultTxProfile.max_script_bytes) {
+                    w.script.resize(
+                        lotus::v2::DefaultTxProfile.max_script_bytes);
+                }
+            }
+        }
+    }
+
+    std::vector<uint8_t> tx_wire;
+    std::string err;
+    if (!lotus::v2::EncodeTransaction(v2tx, lotus::v2::DefaultTxProfile,
+                                      tx_wire, err)) {
+        throw std::runtime_error("V2 EncodeTransaction failed: " + err);
+    }
+
+    std::vector<uint8_t> fact_wire;
+    std::vector<lotus::v2::ChronikFullInput> fact_inputs;
+    if (!lotus::v2::MakeChronikExplorerFacts(
+            v2tx, lotus::v2::DefaultTxProfile,
+            std::span<const uint8_t>(tx_wire.data(), tx_wire.size()),
+            fact_wire, fact_inputs, err)) {
+        throw std::runtime_error("MakeChronikExplorerFacts failed: " + err);
+    }
+
+    rust::Vec<Input> spend_inputs;
+    rust::Vec<NativeFullInput> full_inputs;
+    full_inputs.reserve(fact_inputs.size());
+    for (size_t i = 0; i < fact_inputs.size(); ++i) {
+        const auto &fi = fact_inputs[i];
+        if (fi.flags == 1) {
+            spend_inputs.push_back(Input{
+                .txid = fi.prev_txid,
+                .out_idx = fi.prev_index,
+                .input_index = static_cast<uint32_t>(i),
+            });
+        }
+        rust::Vec<NativeWitness> witnesses;
+        witnesses.reserve(fi.witnesses.size());
+        for (const auto &w : fi.witnesses) {
+            witnesses.push_back(NativeWitness{
+                .script =
+                    WireRange{
+                        .offset = w.script.offset,
+                        .length = w.script.length,
+                    },
+                .siblings_table =
+                    WireRange{
+                        .offset = w.siblings_table.offset,
+                        .length = w.siblings_table.length,
+                    },
+                .siblings_count = w.siblings_count,
+                .arguments_table =
+                    WireRange{
+                        .offset = w.arguments_table.offset,
+                        .length = w.arguments_table.length,
+                    },
+                .arguments_count = w.arguments_count,
+            });
+        }
+        full_inputs.push_back(NativeFullInput{
+            .prev_txid = fi.prev_txid,
+            .prev_index = fi.prev_index,
+            .sequence = fi.sequence,
+            .flags = fi.flags,
+            .path_index = fi.path_index,
+            .has_coinbase_data = fi.has_coinbase_data,
+            .coinbase_data =
+                WireRange{
+                    .offset = fi.coinbase_data.offset,
+                    .length = fi.coinbase_data.length,
+                },
+            .witnesses = std::move(witnesses),
+        });
+    }
+
+    rust::Vec<NativeOutput> outputs;
+    outputs.reserve(v2tx.outputs.size());
+    for (const auto &out : v2tx.outputs) {
+        std::vector<uint8_t> out_wire;
+        if (!lotus::v2::EncodeOutput(out, out_wire, err)) {
+            throw std::runtime_error("V2 EncodeOutput failed: " + err);
+        }
+        outputs.push_back(NativeOutput{
+            .wire = chronik::ToRustVec<uint8_t>(out_wire),
+        });
+    }
+
+    return NativeTx{
+        .txid = chronik::util::HashToArray(ctx.GetId()),
+        .txhash = chronik::util::HashToArray(ctx.GetHash()),
+        .index = n,
+        .inputs = std::move(spend_inputs),
+        .outputs = std::move(outputs),
+        .wire = chronik::ToRustVec<uint8_t>(fact_wire),
+        .lock = v2tx.lock,
+        .full_inputs = std::move(full_inputs),
+        .file_num = file_num,
+        .data_pos = data_pos,
+    };
+}
+} // namespace
+
 NativeBlock bridge_v2_native_block(const CBlock &block,
                                    const CBlockIndex &bindex) {
     if (bindex.nHeight < 0) {
@@ -338,158 +500,24 @@ NativeBlock bridge_v2_native_block(const CBlock &block,
         header_wire[62 + i] = static_cast<uint8_t>((height >> (8 * i)) & 0xffU);
     }
 
+    uint32_t file_num{0};
+    uint32_t block_data_pos{0};
+    {
+        LOCK(::cs_main);
+        file_num = uint32_t(bindex.nFile);
+        block_data_pos = bindex.nDataPos;
+    }
+    // Same offsets as the core Chronik index: the header and the
+    // transaction count precede the first transaction.
+    size_t data_pos = block_data_pos + ::GetSerializeSize(CBlockHeader()) +
+                      GetSizeOfCompactSize(block.vtx.size());
     rust::Vec<NativeTx> transactions;
     transactions.reserve(block.vtx.size());
     for (size_t n = 0; n < block.vtx.size(); ++n) {
         const CTransaction &ctx = *block.vtx[n];
-        lotus::v2::Transaction v2tx = ctx.ToV2Transaction();
-        if (n == 0) {
-            v2tx.lock = 0;
-            if (v2tx.inputs.size() != 1) {
-                v2tx.inputs.resize(1);
-            }
-            auto &cb_in = v2tx.inputs[0];
-            cb_in.prev_txid.fill(0);
-            cb_in.prev_index = std::numeric_limits<uint32_t>::max();
-            cb_in.sequence = std::numeric_limits<uint32_t>::max();
-            cb_in.flags = 2;
-            cb_in.path_index = 0;
-            cb_in.witnesses.clear();
-            if (cb_in.coinbase_data.size() > 8192) {
-                cb_in.coinbase_data.resize(8192);
-            }
-            if (cb_in.has_coinbase_data && cb_in.coinbase_data.empty()) {
-                cb_in.has_coinbase_data = false;
-            } else if (!cb_in.has_coinbase_data) {
-                cb_in.coinbase_data.clear();
-            }
-            for (auto &out : v2tx.outputs) {
-                out.flags &= static_cast<uint8_t>(~1U);
-                out.token_id.fill(0);
-            }
-        } else {
-            for (auto &in : v2tx.inputs) {
-                in.has_coinbase_data = false;
-                in.coinbase_data.clear();
-                if (in.flags != 1 && in.flags != 3) {
-                    in.flags = 1;
-                }
-                if (in.flags == 1) {
-                    if (in.path_index >= lotus::v2::MAX_OUTPUT_PATHS) {
-                        in.path_index = 0;
-                    }
-                    if (in.sequence != std::numeric_limits<uint32_t>::max() &&
-                        (in.sequence & ~0x40ffffU) != 0) {
-                        in.sequence = std::numeric_limits<uint32_t>::max();
-                    }
-                    if (in.witnesses.empty()) {
-                        lotus::v2::BranchWitness w;
-                        w.script = {0x4e};
-                        in.witnesses.push_back(std::move(w));
-                    } else if (in.witnesses.size() >
-                               lotus::v2::MAX_OUTPUT_BRANCHES) {
-                        in.witnesses.resize(lotus::v2::MAX_OUTPUT_BRANCHES);
-                    }
-                }
-                for (auto &w : in.witnesses) {
-                    if (w.script.size() >
-                        lotus::v2::DefaultTxProfile.max_script_bytes) {
-                        w.script.resize(
-                            lotus::v2::DefaultTxProfile.max_script_bytes);
-                    }
-                }
-            }
-        }
-
-        std::vector<uint8_t> tx_wire;
-        std::string err;
-        if (!lotus::v2::EncodeTransaction(v2tx, lotus::v2::DefaultTxProfile,
-                                          tx_wire, err)) {
-            throw std::runtime_error("V2 EncodeTransaction failed: " + err);
-        }
-
-        std::vector<uint8_t> fact_wire;
-        std::vector<lotus::v2::ChronikFullInput> fact_inputs;
-        if (!lotus::v2::MakeChronikExplorerFacts(
-                v2tx, lotus::v2::DefaultTxProfile,
-                std::span<const uint8_t>(tx_wire.data(), tx_wire.size()),
-                fact_wire, fact_inputs, err)) {
-            throw std::runtime_error("MakeChronikExplorerFacts failed: " + err);
-        }
-
-        rust::Vec<Input> spend_inputs;
-        rust::Vec<NativeFullInput> full_inputs;
-        full_inputs.reserve(fact_inputs.size());
-        for (size_t i = 0; i < fact_inputs.size(); ++i) {
-            const auto &fi = fact_inputs[i];
-            if (fi.flags == 1) {
-                spend_inputs.push_back(Input{
-                    .txid = fi.prev_txid,
-                    .out_idx = fi.prev_index,
-                    .input_index = static_cast<uint32_t>(i),
-                });
-            }
-            rust::Vec<NativeWitness> witnesses;
-            witnesses.reserve(fi.witnesses.size());
-            for (const auto &w : fi.witnesses) {
-                witnesses.push_back(NativeWitness{
-                    .script =
-                        WireRange{
-                            .offset = w.script.offset,
-                            .length = w.script.length,
-                        },
-                    .siblings_table =
-                        WireRange{
-                            .offset = w.siblings_table.offset,
-                            .length = w.siblings_table.length,
-                        },
-                    .siblings_count = w.siblings_count,
-                    .arguments_table =
-                        WireRange{
-                            .offset = w.arguments_table.offset,
-                            .length = w.arguments_table.length,
-                        },
-                    .arguments_count = w.arguments_count,
-                });
-            }
-            full_inputs.push_back(NativeFullInput{
-                .prev_txid = fi.prev_txid,
-                .prev_index = fi.prev_index,
-                .sequence = fi.sequence,
-                .flags = fi.flags,
-                .path_index = fi.path_index,
-                .has_coinbase_data = fi.has_coinbase_data,
-                .coinbase_data =
-                    WireRange{
-                        .offset = fi.coinbase_data.offset,
-                        .length = fi.coinbase_data.length,
-                    },
-                .witnesses = std::move(witnesses),
-            });
-        }
-
-        rust::Vec<NativeOutput> outputs;
-        outputs.reserve(v2tx.outputs.size());
-        for (const auto &out : v2tx.outputs) {
-            std::vector<uint8_t> out_wire;
-            if (!lotus::v2::EncodeOutput(out, out_wire, err)) {
-                throw std::runtime_error("V2 EncodeOutput failed: " + err);
-            }
-            outputs.push_back(NativeOutput{
-                .wire = chronik::ToRustVec<uint8_t>(out_wire),
-            });
-        }
-
-        transactions.push_back(NativeTx{
-            .txid = chronik::util::HashToArray(ctx.GetId()),
-            .txhash = chronik::util::HashToArray(ctx.GetHash()),
-            .index = static_cast<uint32_t>(n),
-            .inputs = std::move(spend_inputs),
-            .outputs = std::move(outputs),
-            .wire = chronik::ToRustVec<uint8_t>(fact_wire),
-            .lock = v2tx.lock,
-            .full_inputs = std::move(full_inputs),
-        });
+        transactions.push_back(BridgeV2NativeTx(ctx, n == 0, uint32_t(n),
+                                                file_num, uint32_t(data_pos)));
+        data_pos += ::GetSerializeSize(ctx);
     }
 
     return NativeBlock{
@@ -498,6 +526,13 @@ NativeBlock bridge_v2_native_block(const CBlock &block,
         .transactions = std::move(transactions),
         .header_wire = header_wire,
     };
+}
+
+NativeTx load_v2_native_tx(const chronik_bridge::ChronikBridge &bridge,
+                           uint32_t file_num, uint32_t data_pos,
+                           bool coinbase) {
+    const auto tx = bridge.read_tx_from_disk(file_num, data_pos);
+    return BridgeV2NativeTx(*tx, coinbase, 0, file_num, data_pos);
 }
 
 } // namespace chronik_v2
