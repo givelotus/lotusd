@@ -676,6 +676,7 @@ add_library(server
 	net_websocket_sock.cpp
 	net_websocket_tls.cpp
 	net_zstd_independent.cpp
+	net_webtransport.cpp
 	node/abort.cpp
 	node/blockfitter.cpp
 	node/blockmanager_args.cpp
@@ -1047,6 +1048,7 @@ if(BUILD_CHAINSTATE)
 		netaddress.cpp       # via net.cpp
 		netbase.cpp          # via net.cpp
 		net_permissions.cpp  # via net.cpp
+		net_webtransport.cpp # via net.cpp
 		node/eviction.cpp    # via net.cpp
 		node/connection_types.cpp  # via net.cpp
 		node/ui_interface.cpp  # via net.cpp and banman.cpp
