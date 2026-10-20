@@ -2215,6 +2215,18 @@ SigningResult CWallet::SignMessage(const std::string &message,
     return SigningResult::PRIVATE_KEY_NOT_AVAILABLE;
 }
 
+SigningResult CWallet::SignKeyHashMessage(const std::string &message,
+                                          const lotus::v2::Hash32 &key_hash,
+                                          std::string &signature) const {
+    LOCK(cs_wallet);
+    for (const auto &[id, manager] : m_spk_managers) {
+        const auto result =
+            manager->SignKeyHashMessage(message, key_hash, signature);
+        if (result != SigningResult::PRIVATE_KEY_NOT_AVAILABLE) return result;
+    }
+    return SigningResult::PRIVATE_KEY_NOT_AVAILABLE;
+}
+
 OutputType
 CWallet::TransactionChangeType(const std::optional<OutputType> &change_type,
                                const std::vector<CRecipient> &vecSend) const {
