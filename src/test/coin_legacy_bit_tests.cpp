@@ -8,7 +8,10 @@
 // the representation.
 
 #include <coins.h>
+#include <lotus_v2/block_cost.h>
+#include <lotus_v2/fast_sync.h>
 #include <lotus_v2/legacy_coin.h>
+#include <lotus_v2/output.h>
 #include <lotus_v2/sparse_state.h>
 #include <primitives/transaction.h>
 #include <primitives/v2_outputs.h>
@@ -191,7 +194,105 @@ BOOST_AUTO_TEST_CASE(state_coin_round_trip_is_exact) {
         BOOST_CHECK(rebuilt.scriptPubKey == out.scriptPubKey);
         BOOST_CHECK_EQUAL(rebuilt.IsLegacy(), out.IsLegacy());
         BOOST_CHECK(CTxOut::FromV2Output(out.ToV2Output()) == out);
+
+        // The coin wire alone, as other state codecs read it.
+        std::vector<uint8_t> wire;
+        std::string error;
+        BOOST_REQUIRE(lotus::v2::EncodeCoinOutput(coin.output, wire, error));
+        lotus::v2::Output decoded;
+        BOOST_REQUIRE_MESSAGE(lotus::v2::DecodeCoinOutput(wire, decoded, error),
+                              error);
+        BOOST_CHECK(decoded == coin.output);
     }
+
+    // Fast sync carries the same coins in utxoshard messages.
+    lotus::v2::UtxoShardMessage shard;
+    shard.pivot_block_id.fill(0x11);
+    for (size_t i = 0; i < outs.size(); ++i) {
+        lotus::v2::Coin coin;
+        coin.outpoint.tx_id.fill(uint8_t(i + 1));
+        coin.output = outs[i].ToV2Output();
+        shard.coins.push_back(coin);
+    }
+    std::vector<uint8_t> payload;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(lotus::v2::EncodeUtxoShardMessage(shard, payload, error),
+                          error);
+    lotus::v2::UtxoShardMessage back;
+    BOOST_REQUIRE_MESSAGE(lotus::v2::DecodeUtxoShardMessage(payload, back, error),
+                          error);
+    BOOST_REQUIRE_EQUAL(back.coins.size(), outs.size());
+    for (size_t i = 0; i < outs.size(); ++i) {
+        BOOST_CHECK(CTxOut::FromV2Output(back.coins[i].output) == outs[i]);
+    }
+}
+
+// The legacy coin wire decodes only in its canonical form.
+BOOST_AUTO_TEST_CASE(legacy_coin_wire_is_canonical) {
+    lotus::v2::Output out;
+    std::string error;
+    // 0x80 || value || CompactSize(1) || OP_TRUE.
+    std::vector<uint8_t> wire{0x80, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0x51};
+    BOOST_CHECK(lotus::v2::DecodeCoinOutput(wire, out, error));
+    BOOST_CHECK(out.legacy_script == std::vector<uint8_t>{0x51});
+    // Trailing byte, short script, non-minimal CompactSize.
+    std::vector<uint8_t> bad = wire;
+    bad.push_back(0);
+    BOOST_CHECK(!lotus::v2::DecodeCoinOutput(bad, out, error));
+    bad = wire;
+    bad.pop_back();
+    BOOST_CHECK(!lotus::v2::DecodeCoinOutput(bad, out, error));
+    bad = {0x80, 1, 0, 0, 0, 0, 0, 0, 0, 253, 1, 0, 0x51};
+    BOOST_CHECK(!lotus::v2::DecodeCoinOutput(bad, out, error));
+    // A script over the legacy limit.
+    bad = {0x80, 1, 0, 0, 0, 0, 0, 0, 0, 253, 0x11, 0x27};
+    bad.resize(bad.size() + 10001, 0x51);
+    BOOST_CHECK(!lotus::v2::DecodeCoinOutput(bad, out, error));
+}
+
+BOOST_AUTO_TEST_CASE(resolved_legacy_coin_cost_uses_coin_wire) {
+    const auto tx = V7Tx().ToV2Transaction();
+    lotus::v2::Coin resolved;
+    resolved.outpoint = {tx.inputs[0].prev_txid, tx.inputs[0].prev_index};
+    resolved.output = LegacyTx().vout[0].ToV2Output();
+    BOOST_REQUIRE(resolved.output.legacy_script.has_value());
+    resolved.creation_height = 7;
+    resolved.creation_parent_mtp = 10;
+    std::vector<uint8_t> wire;
+    std::string error;
+    BOOST_REQUIRE(lotus::v2::EncodeTransaction(
+        tx, lotus::v2::DefaultTxProfile, wire, error));
+
+    // Compare positive schedules differing only in resolution-byte charge. The
+    // legacy P2PKH Coin is independently 36-byte outpoint + 1-byte frame
+    // length + (discriminator + LE8 value + CS(script) + 25-byte script)
+    // + 34-byte versioned provenance = 106 bytes.
+    const lotus::v2::BlockCostProfile cost{1, 1, 1, 1};
+    const lotus::v2::BlockCostProfile doubled_resolution{1, 1, 2, 1};
+    const auto legacy = lotus::v2::AuthenticatedTransactionCostsResolved(
+        tx, lotus::v2::DefaultTxProfile, {resolved}, 8, 11, 0, cost);
+    const auto legacy_doubled = lotus::v2::AuthenticatedTransactionCostsResolved(
+        tx, lotus::v2::DefaultTxProfile, {resolved}, 8, 11, 0,
+        doubled_resolution);
+    BOOST_CHECK_EQUAL(legacy_doubled.account_linear - legacy.account_linear, 106);
+    BOOST_CHECK_EQUAL(legacy_doubled.enforce_linear - legacy.enforce_linear, 106);
+    const uint64_t wire_bytes = wire.size();
+    const auto cached = lotus::v2::AuthenticatedTransactionCostsResolved(
+        tx, lotus::v2::DefaultTxProfile, {resolved}, 8, 11, 0, cost,
+        &wire_bytes);
+    BOOST_CHECK_EQUAL(cached.account_linear, legacy.account_linear);
+    BOOST_CHECK_EQUAL(cached.enforce_linear, legacy.enforce_linear);
+
+    // A native OP_TRUE Coin has a 45-byte output, so its corresponding
+    // resolution charge is 36 + 1 + 45 + 34 = 116 bytes.
+    resolved.output = OpTrueOutput(1000 * SATOSHI).ToV2Output();
+    const auto native = lotus::v2::AuthenticatedTransactionCostsResolved(
+        tx, lotus::v2::DefaultTxProfile, {resolved}, 8, 11, 0, cost);
+    const auto native_doubled = lotus::v2::AuthenticatedTransactionCostsResolved(
+        tx, lotus::v2::DefaultTxProfile, {resolved}, 8, 11, 0,
+        doubled_resolution);
+    BOOST_CHECK_EQUAL(native_doubled.account_linear - native.account_linear, 116);
+    BOOST_CHECK_EQUAL(native_doubled.enforce_linear - native.enforce_linear, 116);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

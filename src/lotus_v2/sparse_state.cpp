@@ -152,23 +152,9 @@ bool DecodeCoinBytes(std::span<const uint8_t> encoded, Coin &out) {
     }
     if (out_len > encoded.size() - pos || encoded.size() - pos - out_len != COIN_METADATA_BYTES) return false;
     std::string error;
-    if (out_len && encoded[pos] == 0x80) {
-        const size_t end = pos + size_t(out_len);
-        size_t cursor = pos + 1;
-        if (end - cursor < 9) return false;
-        for (unsigned i = 0; i < 8; ++i) coin.output.value |= uint64_t(encoded[cursor++]) << (8 * i);
-        uint64_t len = encoded[cursor++];
-        if (len >= 253) {
-            const unsigned width = len == 253 ? 2 : len == 254 ? 4 : 8;
-            if (end - cursor < width) return false;
-            len = 0;
-            for (unsigned i = 0; i < width; ++i) len |= uint64_t(encoded[cursor++]) << (8 * i);
-        }
-        if (len > 10000 || len != end - cursor) return false;
-        coin.output.legacy_script.emplace(encoded.begin() + cursor, encoded.begin() + end);
-    } else if (!DecodeOutput(std::vector<uint8_t>(encoded.begin() + pos,
-                                           encoded.begin() + pos + out_len),
-                      coin.output, error)) {
+    if (!DecodeCoinOutput(std::vector<uint8_t>(encoded.begin() + pos,
+                                               encoded.begin() + pos + out_len),
+                          coin.output, error)) {
         return false;
     }
     pos += static_cast<size_t>(out_len);

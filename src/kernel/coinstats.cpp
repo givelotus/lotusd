@@ -29,10 +29,12 @@ namespace {
 template <typename Stream>
 void WriteNativeCoinStats(Stream &ss, const COutPoint &outpoint, const Coin &coin) {
     // Live V7 and disk-decoded transactions can expose different script views
-    // of the same native output. Commit its canonical semantic representation.
+    // of the same native output. Commit its canonical semantic representation:
+    // the coin wire (a V2 output's encoding, or a legacy coin's
+    // LegacyCoinWire).
     std::vector<uint8_t> output;
     std::string error;
-    if (!lotus::v2::EncodeOutput(coin.GetTxOut().ToV2Output(), output, error)) {
+    if (!lotus::v2::EncodeCoinOutput(coin.GetTxOut().ToV2Output(), output, error)) {
         throw std::runtime_error("invalid native output in UTXO statistics: " + error);
     }
     ss << outpoint << static_cast<uint32_t>(coin.GetHeight() * 2 + coin.IsCoinBase());
