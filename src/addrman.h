@@ -82,6 +82,9 @@ public:
     //! Return the number of (unique) addresses in all tables.
     size_t size() const;
 
+    //! Number of addresses in the new and in the tried tables.
+    std::pair<size_t, size_t> NewTriedCounts() const;
+
     /**
      * Attempt to add one or more addresses to addrman's new table.
      *
