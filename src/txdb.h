@@ -64,6 +64,14 @@ public:
     CCoinsViewCursor *Cursor() const override;
     void PrefetchOutpointsAsync(
         const std::vector<COutPoint> &outpoints) const override;
+    /** Database keys of these coins (unsorted, in order). */
+    static std::vector<std::vector<uint8_t>>
+    CoinKeys(Span<const COutPoint> outpoints);
+    /** For reading the database from threads that do not own it. The
+     * handle detaches when the database is closed or reopened. */
+    std::shared_ptr<DBBackgroundHandle> GetBackgroundHandle() const {
+        return m_db->GetBackgroundHandle();
+    }
 
     // One MDBX transaction publishes both the verified replacement UTXO set
     // and its provisional pivot marker. The old database survives aborts.
