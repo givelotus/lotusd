@@ -36,6 +36,11 @@ public:
     virtual void Shutdown(SOCKET fd) {}
     //! Whether the layer is TLS
     virtual bool IsTLS() const { return false; }
+    //! The layer holds bytes Write() accepted but could not send yet
+    //! (e.g. HTTP/2 framing waiting for a flow control window)
+    virtual bool HasPendingWrite() const { return false; }
+    //! Make progress on those bytes; false on a fatal error
+    virtual bool FlushBuffered(SOCKET fd) { return true; }
 };
 
 class PlainByteLayer final : public WebSocketByteLayer {
