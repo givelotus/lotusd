@@ -32,13 +32,13 @@ Output AssetOutput(uint8_t token, uint64_t value, bool burn) {
     return o;
 }
 
-ResolvedCreation Coin(uint8_t token, uint64_t value, uint32_t index) {
-    return ResolvedCreation{OutPoint{Location(0).txid, index},
-                            AssetOutput(token, value, false), Location(0)};
+SpentCoin Coin(uint8_t token, uint64_t value, uint32_t index) {
+    return SpentCoin::FromOutput(OutPoint{Location(0).txid, index},
+                                 AssetOutput(token, value, false));
 }
 
 AssetTxView View(std::span<const Output> outputs,
-                 std::span<const ResolvedCreation> spends,
+                 std::span<const SpentCoin> spends,
                  std::span<const Hash32> mints) {
     return AssetTxView{Location(1), outputs, spends, mints};
 }
@@ -56,7 +56,7 @@ void PutLocation(V2Env &db, const TxLocation &loc) {
 
 ReadSnapshot MakeReadSnapshot(const V2Env &db) {
     return ReadSnapshot(db.Snapshot(), Anchor{B32(9), 7}, TestBinding(),
-                        TestBounds());
+                        TestBounds(), std::make_shared<MemTxSource>());
 }
 
 } // namespace
@@ -67,7 +67,7 @@ BOOST_AUTO_TEST_CASE(full_union_input_only_implicit_burn_and_exact_positions) {
     const std::vector<Output> outputs{AssetOutput(2, 0, true),
                                       AssetOutput(3, 12, false),
                                       AssetOutput(3, 8, true)};
-    const std::vector<ResolvedCreation> spends{Coin(1, 55, 0), Coin(3, 13, 1)};
+    const std::vector<SpentCoin> spends{Coin(1, 55, 0), Coin(3, 13, 1)};
     const std::vector<Hash32> mints{Fill(3)};
     const auto events = DeriveAssetEvents(View(outputs, spends, mints));
     BOOST_REQUIRE_EQUAL(events.size(), 3u);
@@ -124,7 +124,7 @@ BOOST_AUTO_TEST_CASE(
 
 BOOST_AUTO_TEST_CASE(explicit_and_implicit_burns_remain_distinct) {
     const std::vector<Output> burn{AssetOutput(1, 4, true)};
-    const std::vector<ResolvedCreation> spends{Coin(1, 10, 0)};
+    const std::vector<SpentCoin> spends{Coin(1, 10, 0)};
     const auto events = DeriveAssetEvents(View(burn, spends, {}));
     BOOST_CHECK(events[0].spent_units == 10);
     BOOST_CHECK(events[0].output_units == 4);
@@ -137,11 +137,11 @@ BOOST_AUTO_TEST_CASE(explicit_and_implicit_burns_remain_distinct) {
 }
 
 BOOST_AUTO_TEST_CASE(malformed_duplicate_spends_and_burn_inputs_are_rejected) {
-    ResolvedCreation c = Coin(1, 0, 0);
-    const std::vector<ResolvedCreation> dup{c, c};
+    SpentCoin c = Coin(1, 0, 0);
+    const std::vector<SpentCoin> dup{c, c};
     BOOST_CHECK(Throws([&] { DeriveAssetEvents(View({}, dup, {})); }));
-    c.output = AssetOutput(1, 0, true);
-    const std::vector<ResolvedCreation> burn_input{c};
+    c.flags = 3;
+    const std::vector<SpentCoin> burn_input{c};
     BOOST_CHECK(Throws([&] { DeriveAssetEvents(View({}, burn_input, {})); }));
     Output malformed = AssetOutput(1, 0, false);
     malformed.flags |= 4;

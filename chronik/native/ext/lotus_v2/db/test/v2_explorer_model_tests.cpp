@@ -38,7 +38,8 @@ CommittedBlock Fixture() {
                    {},
                    {},
                    ExplorerTxFacts{Bytes(WIRE_CHUNK_BYTES + 3, 42), UINT64_MAX,
-                                   {input}}};
+                                   {input}},
+                   TxPos{3, 128}};
     return CommittedBlock{anchor, parent, {tx}, header};
 }
 
@@ -52,28 +53,23 @@ BOOST_AUTO_TEST_CASE(complete_native_facts_and_chunk_entries_roundtrip) {
     BOOST_CHECK(codec::Decode<ExplorerTxFacts>(codec::Encode(facts)) == facts);
     BOOST_CHECK(codec::Decode<ExplorerBlockFacts>(
                     codec::Encode(block.explorer)) == block.explorer);
-    const ExplorerPlan plan = PlanExplorerBlockAt(block, 0, 128);
+    const std::vector<std::pair<Bytes, Bytes>> entries =
+        PlanExplorerBlock(block);
     const TxId id = block.transactions[0].location.txid;
     const auto find = [&](const Bytes &key) {
         const auto it =
-            std::find_if(plan.entries.begin(), plan.entries.end(),
+            std::find_if(entries.begin(), entries.end(),
                          [&](const auto &kv) { return kv.first == key; });
-        BOOST_REQUIRE(it != plan.entries.end());
+        BOOST_REQUIRE(it != entries.end());
         return it->second;
     };
-    BOOST_REQUIRE_EQUAL(plan.flat_writes.size(), 1u);
-    BOOST_CHECK_EQUAL(plan.flat_writes[0].file_num, 0u);
-    BOOST_CHECK_EQUAL(plan.flat_writes[0].data_pos, 128u);
-    BOOST_CHECK(plan.flat_writes[0].wire == facts.wire);
-    BOOST_CHECK(plan.next_flat_pos ==
-                std::make_pair(uint32_t(0), uint64_t(128 + facts.wire.size())));
     const TxMeta tx_meta = DecodeRecord<TxMeta>(find(TxKey(id)));
-    BOOST_CHECK_EQUAL(tx_meta.file_num, 0u);
+    BOOST_CHECK_EQUAL(tx_meta.file_num, 3u);
     BOOST_CHECK_EQUAL(tx_meta.data_pos, 128u);
     BOOST_CHECK_EQUAL(tx_meta.wire_size, facts.wire.size());
     BOOST_CHECK_EQUAL(tx_meta.wire_checksum, chronik::native::SeaHash(facts.wire));
     BOOST_CHECK(std::none_of(
-        plan.entries.begin(), plan.entries.end(), [](const auto &kv) {
+        entries.begin(), entries.end(), [](const auto &kv) {
             return kv.first.size() >= 2 && kv.first[0] == 'e' &&
                    kv.first[1] == 'R';
         }));
@@ -81,7 +77,8 @@ BOOST_AUTO_TEST_CASE(complete_native_facts_and_chunk_entries_roundtrip) {
     const Bytes by_hash =
         find(TxHashKey(block.transactions[0].location.txhash));
     BOOST_CHECK(Bytes(id.hash.b.begin(), id.hash.b.end()) == by_hash);
-    const InputMeta input = DecodeRecord<InputMeta>(find(InputKey(id, 0)));
+    const StoredInputMeta input =
+        DecodeRecord<StoredInputMeta>(find(InputKey(id, 0)));
     BOOST_CHECK_EQUAL(input.sequence, UINT32_MAX);
     BOOST_CHECK_EQUAL(input.witness_count, 1u);
     BOOST_CHECK_EQUAL(input.coinbase_data.offset, WIRE_CHUNK_BYTES);
@@ -102,7 +99,7 @@ BOOST_AUTO_TEST_CASE(ranges_and_incomplete_spends_fail_before_entries) {
     BOOST_CHECK(ThrowsV2([&] { PlanExplorerBlock(block); }));
 }
 
-BOOST_AUTO_TEST_CASE(frozen_creation_is_serialized_without_spend_state) {
+BOOST_AUTO_TEST_CASE(spend_input_metadata_does_not_copy_the_spent_output) {
     CommittedBlock block = Fixture();
     InputFact &input = block.transactions[0].explorer.inputs[0];
     input.flags = 1;
@@ -113,9 +110,17 @@ BOOST_AUTO_TEST_CASE(frozen_creation_is_serialized_without_spend_state) {
     const ResolvedCreation coin{
         OutPoint{TxId{H(input.prev_txid)}, input.prev_index}, output,
         TxLocation{Fill(2), 0, 2, TxId{H(input.prev_txid)}, TxHash{Fill(8)}}};
-    input.resolved_creation = coin;
     block.transactions[0].spends.push_back(SpentInput{coin.outpoint, 0});
-    BOOST_CHECK_NO_THROW(PlanExplorerBlock(block));
+    const TxId id = block.transactions[0].location.txid;
+    const std::vector<std::pair<Bytes, Bytes>> entries =
+        PlanExplorerBlock(block);
+    const auto it =
+        std::find_if(entries.begin(), entries.end(), [&](const auto &kv) {
+            return kv.first == InputKey(id, 0);
+        });
+    BOOST_REQUIRE(it != entries.end());
+    BOOST_CHECK_EQUAL(DecodeRecord<StoredInputMeta>(it->second).flags, 1u);
+    BOOST_CHECK_LT(it->second.size(), 64u);
     const Bytes encoded = EncodeRecord(coin);
     BOOST_CHECK(DecodeRecord<ResolvedCreation>(encoded) == coin);
     BOOST_CHECK_EQUAL(coin.output.value, UINT64_MAX);
