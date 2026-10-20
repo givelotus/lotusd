@@ -203,6 +203,17 @@ work, under this naming scheme; they are not listed here.
 | `fullnode_adaptive_block_size_bytes` | gauge | `limit` (`max`, `target`, `max_generated`, `ema`) | 4 | Adaptive block capacity: the consensus limit it allows, its target, the mining limit with `-adaptiveblocksize`, and the moving average of block sizes. |
 | `fullnode_adaptive_block_size_history_complete` | gauge | | 1 | 1 once the adaptive capacity has a complete history. |
 
+### Chronik
+
+| Name | Type | Labels | Max series | Meaning |
+|---|---|---|---|---|
+| `fullnode_chronik_requests_total` | counter | `endpoint` (24), `code` (`2xx`, `4xx`, `5xx`, `other`) | 96 | Requests to Chronik's HTTP server (direct, or proxied under `/chronik`), by route family: `blockchain_info`, `block`, `block_header`, `block_txs`, `blocks`, `block_headers`, `unconfirmed_txs`, `chronik_info`, `tx`, `token`, `raw_tx`, `validate_tx`, `broadcast_tx`, `broadcast_txs`, `script_batch`, `script`, `token_id`, `lokad_id`, `plugin`, `ws`, `pause`, `resume`, `not_found`, `other`. |
+| `fullnode_chronik_request_duration_seconds` | histogram | `endpoint` (24) | 24 | Time to answer a request (for `ws`, until the upgrade). |
+| `fullnode_chronik_ws_connections` | gauge | | 1 | Open WebSocket connections. |
+| `fullnode_chronik_ws_subscriptions` | gauge | | 1 | Active WebSocket subscriptions over all connections. |
+| `fullnode_chronik_indexed_height` | gauge | | 1 | Height of the last block Chronik indexed (0 without Chronik). |
+| `fullnode_chronik_lag_blocks` | gauge | | 1 | Blocks the index is behind the chain tip, at scrape time. |
+
 
 ## Tests
 

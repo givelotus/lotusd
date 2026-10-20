@@ -8,6 +8,7 @@
 #include <kernel/chain.h>
 #include <logging.h>
 #include <node/context.h>
+#include <node/metrics.h>
 #include <primitives/block.h>
 #include <txmempool.h>
 #include <validationinterface.h>
@@ -129,6 +130,7 @@ private:
         Enqueue(
             [this, block, pindex]() {
                 m_chronik->handle_block_connected(*block, *pindex);
+                node::SetChronikIndexedHeight(pindex->nHeight);
             },
             validation_queue::BlockBytes(block));
     }
@@ -139,6 +141,7 @@ private:
         Enqueue(
             [this, block, pindex]() {
                 m_chronik->handle_block_disconnected(*block, *pindex);
+                node::SetChronikIndexedHeight(pindex->nHeight - 1);
             },
             validation_queue::BlockBytes(block));
     }

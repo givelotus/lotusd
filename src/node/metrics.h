@@ -111,6 +111,10 @@ namespace metric_labels {
     const std::vector<std::string> &MisbehaviorReasons();
     //! Index = DiscourageOutcome
     const std::vector<std::string> &DiscourageOutcomes();
+    //! Chronik HTTP endpoints, index = ChronikEndpointIndex()
+    const std::vector<std::string> &ChronikEndpoints();
+    //! 0 = 2xx, 1 = 4xx, 2 = 5xx, 3 = other
+    const std::vector<std::string> &ChronikCodeClasses();
 } // namespace metric_labels
 
 enum class HTTPEndpoint : size_t {
@@ -265,6 +269,19 @@ struct NodeMetrics {
     metrics::Counter &p2p_discouragements;
     //! By MisbehaviorReason
     metrics::Counter &p2p_misbehavior;
+
+    // Chronik
+    //! By endpoint x status class
+    metrics::Counter &chronik_requests;
+    //! By endpoint
+    metrics::EventHistogram &chronik_request_seconds;
+    metrics::Gauge &chronik_ws_connections;
+    metrics::Gauge &chronik_ws_subscriptions;
+    metrics::Gauge &chronik_indexed_height;
+    //! Chain tip height minus chronik_indexed_height, at scrape time
+    metrics::Gauge &chronik_lag;
+    //! Whether Chronik reported its height (it runs)
+    std::atomic<bool> chronik_indexed_height_known{false};
 
     /** Label index of an RPC method ("other" if not in the set) */
     size_t RPCMethodIndex(std::string_view method) const noexcept;
@@ -441,6 +458,25 @@ enum class DiscourageOutcome : size_t {
  * messages net_processing uses (OTHER for anything else).
  */
 MisbehaviorReason ClassifyMisbehavior(std::string_view message) noexcept;
+
+/**
+ * Label index (metric_labels::ChronikEndpoints) of a Chronik HTTP route
+ * template, as axum matched it (e.g. "/script/:type/:payload/history" is
+ * "script"); "" when no route matched (not_found).
+ */
+size_t ChronikEndpointIndex(std::string_view route) noexcept;
+
+/** Count a Chronik HTTP request (called by Chronik's HTTP server) */
+void RecordChronikRequest(std::string_view route, uint16_t status,
+                          uint64_t nanos) noexcept;
+
+/** Chronik indexed up to height (connected), or rewound to it */
+inline void SetChronikIndexedHeight(int height) noexcept {
+    if (auto *m{GetNodeMetrics()}) {
+        m->chronik_indexed_height.Set(double(height));
+        m->chronik_indexed_height_known.store(true, std::memory_order_relaxed);
+    }
+}
 
 /** Count a transaction pool's (orphans, conflicting) removals */
 void RecordTxPoolRemovals(std::string_view pool_kind, unsigned expired,

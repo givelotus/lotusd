@@ -301,6 +301,7 @@ impl ChronikServer {
             .route("/pause", routing::get(handle_pause))
             .route("/resume", routing::get(handle_resume))
             .fallback(handlers::handle_not_found)
+            .layer(axum::middleware::from_fn(record_request_metrics))
             .layer(Extension(indexer))
             .layer(Extension(node))
             .layer(Extension(pause_notify))
@@ -855,6 +856,27 @@ async fn handle_resume(
 ) -> Result<Protobuf<proto::Empty>, ReportError> {
     pause_notify.resume()?;
     Ok(Protobuf(proto::Empty {}))
+}
+
+/// Count each request in the node's /metrics, by its route template (a
+/// bounded set: the router's routes, or "" for none), status and duration.
+async fn record_request_metrics(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let route = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|path| path.as_str().to_string());
+    let start = std::time::Instant::now();
+    let response = next.run(request).await;
+    let nanos = u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+    crate::metrics::record_request(
+        route.as_deref().unwrap_or(""),
+        response.status().as_u16(),
+        nanos,
+    );
+    response
 }
 
 async fn handle_ws(
