@@ -402,6 +402,10 @@
     "chronik/test/chronikbridge_tests.cpp:1d0cbe549ab5311575fc:1": {
       "disposition": "intentionally_freeform",
       "reason": "Reviewed bridge rate-limit regression control, not an application event: BRIDGE_BARRIER is sent through the original LogPrintStr Error API to drain publications before reading callback counters. Preserve the legacy interface/quota/progress behavior under test; converting this marker changes its control path."
+    },
+    "src/dbwrapper.cpp:b52b54e6ff5175891c40:1": {
+      "disposition": "infrastructure",
+      "reason": "Reviewed CBitcoinLevelDBLogger::Logv external library va_list forwarder. This adapter has only a preformatted third-party message and continuation semantics, not a stable application event schema; preserve original debug/LEVELDB filtering and text instead of fabricating fields by parsing it. Typed node-owned database lifecycle sites are inventoried and converted separately."
     }
   },
   "additional_review_revision": "af414ca13af4eefec9f07ddc4037818bae2a7ca5"
