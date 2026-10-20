@@ -334,6 +334,64 @@ struct MempoolAdmissionLimits {
 /** Diagnostic count of single-transaction admission attempts, including dry runs. */
 uint64_t GetMempoolAdmissionAttempts() noexcept;
 
+class ValidationCache;
+
+/**
+ * The outcome of running a transaction's input scripts with one set of
+ * script verification flags against given spent outputs.
+ */
+struct ScriptCheckOutcome {
+    uint32_t flags{0};
+    bool ran{false};
+    /** Set when a script failed; mirrors what CheckInputScripts reports. */
+    std::optional<TxValidationResult> error_result;
+    std::string error_reason;
+    std::string error_debug;
+    int sigchecks{0};
+};
+
+/**
+ * Admission work for one transaction that can be done without cs_main or
+ * the mempool lock: context-free checks and script verification against the
+ * spent outputs that were current when they were looked up.
+ *
+ * Script validity depends only on the transaction, the outputs it spends and
+ * the verification flags. Admission uses an outcome here only when the flags
+ * and every spent output (amount and scriptPubKey) equal what it resolves
+ * itself under the locks; otherwise it verifies the scripts as usual. Using
+ * a matching outcome therefore cannot change any admission verdict.
+ */
+struct PrecomputedAdmissionChecks {
+    /** The transaction these checks are for; any other is not served. */
+    TxId txid;
+    /** Outputs spent by each input, in input order, when looked up. */
+    std::vector<CTxOut> spent_outputs;
+    bool regular_tx_checked{false};
+    bool regular_tx_valid{false};
+    TxValidationState regular_tx_state;
+    /** next-block flags | STANDARD_SCRIPT_VERIFY_FLAGS (policy checks). */
+    ScriptCheckOutcome standard;
+    /** next-block flags (consensus checks, cached on success). */
+    ScriptCheckOutcome consensus;
+};
+
+/** Script verification flags admission uses for the block after the tip. */
+uint32_t GetMempoolScriptFlags(const Chainstate &active_chainstate)
+    EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
+/**
+ * Fill `out` for tx: CheckRegularTransaction, then input scripts with the
+ * standard and, if those pass, the consensus flags for the next block.
+ * Takes no locks and touches only thread-safe state (the signature cache and
+ * the transaction's own sighash cache), so it may run concurrently for many
+ * transactions. `out.spent_outputs` must be set by the caller; `out.txid`
+ * is set here.
+ */
+void ComputeAdmissionChecks(const CTransaction &tx,
+                            uint32_t next_block_script_flags,
+                            ValidationCache &validation_cache,
+                            PrecomputedAdmissionChecks &out);
+
 /**
  * Try to add a transaction to the mempool. This is an internal function and is
  * exposed only for testing. Client code should use
@@ -352,6 +410,10 @@ uint64_t GetMempoolAdmissionAttempts() noexcept;
  *                                submit to mempool.
  * @param[in]  heightOverride     Override the block height of the transaction.
  *                                Used only upon reorg.
+ * @param[in]  limits             Optional caller fee limits.
+ * @param[in]  precomputed        Optional checks done outside the locks; used
+ *                                only where they match (see
+ *                                PrecomputedAdmissionChecks).
  *
  * @returns a MempoolAcceptResult indicating whether the transaction was
  *     accepted/rejected with reason.
@@ -360,7 +422,8 @@ MempoolAcceptResult
 AcceptToMemoryPool(Chainstate &active_chainstate, const CTransactionRef &tx,
                    int64_t accept_time, bool bypass_limits,
                    bool test_accept = false, unsigned int heightOverride = 0,
-                   const MempoolAdmissionLimits &limits = {})
+                   const MempoolAdmissionLimits &limits = {},
+                   const PrecomputedAdmissionChecks *precomputed = nullptr)
     EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 /**
