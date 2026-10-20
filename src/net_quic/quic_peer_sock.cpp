@@ -7,6 +7,7 @@
 #include <crypto/common.h>
 #include <hash.h>
 #include <net_websocket.h>
+#include <node/metrics.h>
 #include <protocol.h>
 
 #include <algorithm>
@@ -180,21 +181,38 @@ bool FrameReassembler::Feed(Span<const uint8_t> data, std::vector<Frame> &out) {
         }
         Frame f;
         f.flags = m_buf[pos + 4];
+        if (pos == 0 && m_buf.size() == 4 + size_t{len}) {
+            // Transfer a completed large frame instead of keeping a second
+            // full-sized buffer in each of the five reassemblers.
+            m_buf.erase(m_buf.begin(), m_buf.begin() + 5);
+            f.body = std::move(m_buf);
+            f.wire_size = 4 + size_t{len};
+            out.push_back(std::move(f));
+            return true;
+        }
         f.body.assign(m_buf.begin() + pos + 5, m_buf.begin() + pos + 4 + len);
         f.wire_size = 4 + size_t{len};
         out.push_back(std::move(f));
         pos += 4 + size_t{len};
     }
-    m_buf.erase(m_buf.begin(),
-                m_buf.begin() + static_cast<std::ptrdiff_t>(pos));
+    if (pos > 0 && m_buf.capacity() > 64 * 1024 &&
+        m_buf.size() - pos < 64 * 1024) {
+        std::vector<uint8_t> tail(m_buf.begin() + pos, m_buf.end());
+        m_buf.swap(tail);
+    } else {
+        m_buf.erase(m_buf.begin(),
+                    m_buf.begin() + static_cast<std::ptrdiff_t>(pos));
+    }
     return ok;
 }
 
 QuicPeerChannel::QuicPeerChannel(int notify_fd,
                                  std::shared_ptr<QuicTransportInfo> info,
-                                 std::function<void()> wake_engine)
+                                 std::function<void()> wake_engine,
+                                 uint64_t receive_limit)
     : m_notify_fd{notify_fd}, m_info{std::move(info)},
-      m_wake_engine{std::move(wake_engine)} {
+      m_wake_engine{std::move(wake_engine)},
+      m_receive_limit{std::max<uint64_t>(1, receive_limit)} {
 #ifdef SO_NOSIGPIPE
     const int no_sigpipe{1};
     ::setsockopt(m_notify_fd, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe,
@@ -259,21 +277,23 @@ void QuicPeerChannel::SetEngineUnsent(StreamClass cls, uint64_t bytes) {
     m_tx_engine[StreamClassIndex(cls)] = bytes;
 }
 
-void QuicPeerChannel::PushRx(RxFrame &&frame) {
-    m_rx_bytes += frame.wire_size;
+bool QuicPeerChannel::PushRx(RxFrame &&frame) {
     bool was_empty;
     {
         LOCK(m_mutex);
+        if (m_rx.size() >= MAX_PENDING_RX_FRAMES) return false;
+        m_rx_bytes += frame.wire_size;
         was_empty = m_rx.empty();
         m_rx.push_back(std::move(frame));
     }
     if (was_empty) {
         Notify();
     }
+    return true;
 }
 
 bool QuicPeerChannel::RxHasRoom() const {
-    return m_rx_bytes < RX_QUEUE_LIMIT;
+    return m_rx_bytes < m_receive_limit;
 }
 
 std::optional<QuicPeerChannel::RxFrame>
@@ -294,7 +314,8 @@ QuicPeerChannel::PopRx(bool after_verack) {
         m_rx.erase(it);
     }
     const uint64_t before{m_rx_bytes.fetch_sub(out->wire_size)};
-    if (before >= RX_QUEUE_LIMIT && before - out->wire_size < RX_QUEUE_LIMIT) {
+    if (before >= m_receive_limit &&
+        before - out->wire_size < m_receive_limit) {
         // Credit was being held back: let the engine give it now.
         credit_wanted = true;
         WakeEngine();
@@ -345,15 +366,25 @@ void QuicPeerSock::SendMessage(Span<const uint8_t> msg) const {
         info.msg_bytes_sent[StreamClassIndex(cls)] += msg.size();
         auto frame{m_framer.Encode(cls, msg)};
         info.stream_bytes_sent[StreamClassIndex(cls)] += frame.size();
+        if (auto *metrics{node::GetNodeMetrics()})
+            metrics->webtransport_bytes.Add(
+                NUM_STREAM_CLASSES + StreamClassIndex(cls), frame.size());
         m_channel->EnqueueTx(cls, std::move(frame));
         return;
     }
     ++info.splits;
+    if (auto *metrics{node::GetNodeMetrics()})
+        metrics->webtransport_split.Add(type == NetMsgType::INV       ? 0
+                                        : type == NetMsgType::GETDATA ? 1
+                                                                      : 2);
     for (const auto &[part_cls, part] : SplitByClass(type, payload)) {
         const auto rebuilt{RebuildMessage(msg, part)};
         info.msg_bytes_sent[StreamClassIndex(part_cls)] += rebuilt.size();
         auto frame{m_framer.Encode(part_cls, rebuilt)};
         info.stream_bytes_sent[StreamClassIndex(part_cls)] += frame.size();
+        if (auto *metrics{node::GetNodeMetrics()})
+            metrics->webtransport_bytes.Add(
+                NUM_STREAM_CLASSES + StreamClassIndex(part_cls), frame.size());
         m_channel->EnqueueTx(part_cls, std::move(frame));
     }
 }
@@ -439,6 +470,9 @@ bool QuicPeerSock::FillLocked() const {
         info.msg_bytes_recv[StreamClassIndex(frame->cls)] += msg.size();
         info.stream_bytes_recv[StreamClassIndex(frame->cls)] +=
             frame->wire_size;
+        if (auto *metrics{node::GetNodeMetrics()})
+            metrics->webtransport_bytes.Add(StreamClassIndex(frame->cls),
+                                            frame->wire_size);
         if (!m_after_verack && frame->cls == StreamClass::CONTROL &&
             MessageType(msg) == NetMsgType::VERACK) {
             m_after_verack = true;

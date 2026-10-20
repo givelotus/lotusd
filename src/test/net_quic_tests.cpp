@@ -9,9 +9,10 @@
 #include <net_quic/webtransport_wire.h>
 
 #include <netaddress.h>
+#include <netbase.h>
 #include <random.h>
-#include <tls_util.h>
 #include <tinyformat.h>
+#include <tls_util.h>
 #include <util/fs.h>
 #include <util/strencodings.h>
 
@@ -219,6 +220,128 @@ std::vector<uint8_t> RandomPayload(size_t n) {
 } // namespace
 
 BOOST_FIXTURE_TEST_SUITE(net_quic_tests, QuicTestSetup)
+
+BOOST_AUTO_TEST_CASE(admission_ip_groups_and_handshake_slots) {
+    using D = QuicAdmission::Decision;
+    const auto now{QuicAdmission::Clock::time_point{}};
+    const auto a{LookupNumeric("127.0.0.1", 1000)};
+    const auto same_ip{LookupNumeric("127.0.0.1", 2000)};
+    const auto b{LookupNumeric("127.0.0.2", 1000)};
+    const auto c{LookupNumeric("127.0.0.3", 1000)};
+    QuicAdmission policy{1, 2};
+    BOOST_CHECK(policy.Inspect(a, false, QuicRetryMode::OFF, now) == D::ACCEPT);
+    policy.Started(a);
+    BOOST_CHECK(policy.Inspect(same_ip, true, QuicRetryMode::OFF, now) ==
+                D::PER_IP);
+    BOOST_CHECK(policy.Inspect(b, true, QuicRetryMode::OFF, now) == D::ACCEPT);
+    policy.Started(b);
+    BOOST_CHECK_EQUAL(policy.Active(), 2U);
+    BOOST_CHECK(policy.Inspect(c, true, QuicRetryMode::OFF, now) ==
+                D::HANDSHAKING);
+    policy.HandshakeDone();
+    BOOST_CHECK_EQUAL(policy.Handshaking(), 1U);
+    BOOST_CHECK_EQUAL(policy.Active(), 2U);
+    // Completing TLS releases a handshake slot but not the address slot.
+    BOOST_CHECK(policy.Inspect(a, true, QuicRetryMode::OFF, now) == D::PER_IP);
+    policy.Closed(a, true);
+    BOOST_CHECK(policy.Inspect(a, true, QuicRetryMode::OFF, now) == D::ACCEPT);
+    policy.Closed(b, false);
+    BOOST_CHECK_EQUAL(policy.Handshaking(), 0U);
+    BOOST_CHECK_EQUAL(policy.Active(), 0U);
+
+    const auto v6a{LookupNumeric("2001:db8:1:2::1", 1000)};
+    const auto v6same{LookupNumeric("2001:db8:1:2::ffff", 2000)};
+    const auto v6other{LookupNumeric("2001:db8:1:3::1", 1000)};
+    BOOST_CHECK(policy.Inspect(v6a, true, QuicRetryMode::OFF, now) ==
+                D::ACCEPT);
+    policy.Started(v6a);
+    BOOST_CHECK(policy.Inspect(v6same, true, QuicRetryMode::OFF, now) ==
+                D::PER_IP);
+    BOOST_CHECK(policy.Inspect(v6other, true, QuicRetryMode::OFF, now) ==
+                D::ACCEPT);
+    policy.Closed(v6a, false);
+}
+
+BOOST_AUTO_TEST_CASE(admission_retry_window_and_bounded_table) {
+    using D = QuicAdmission::Decision;
+    const auto t{QuicAdmission::Clock::time_point{}};
+    const auto a{LookupNumeric("127.0.0.1", 1000)};
+    const auto b{LookupNumeric("127.0.0.2", 1000)};
+    const auto c{LookupNumeric("127.0.0.3", 1000)};
+    QuicAdmission policy;
+    for (unsigned i{0}; i < 8; ++i) {
+        BOOST_CHECK(policy.Inspect(a, false, QuicRetryMode::AUTO, t) ==
+                    D::ACCEPT);
+    }
+    BOOST_CHECK(policy.Inspect(a, false, QuicRetryMode::AUTO, t) == D::RETRY);
+    BOOST_CHECK(policy.Inspect(a, true, QuicRetryMode::AUTO, t) == D::ACCEPT);
+    BOOST_CHECK(policy.Inspect(a, false, QuicRetryMode::OFF, t) == D::ACCEPT);
+    BOOST_CHECK(policy.Inspect(a, false, QuicRetryMode::AUTO,
+                               t + std::chrono::seconds{10}) == D::ACCEPT);
+    BOOST_CHECK(policy.Inspect(a, false, QuicRetryMode::ALWAYS, t) == D::RETRY);
+
+    QuicAdmission bounded{16, 256, 1};
+    BOOST_CHECK(bounded.Inspect(a, false, QuicRetryMode::AUTO, t) == D::ACCEPT);
+    BOOST_CHECK(bounded.Inspect(b, false, QuicRetryMode::AUTO, t) == D::RETRY);
+    BOOST_CHECK_EQUAL(bounded.Buckets(), 1U);
+    BOOST_CHECK(bounded.Inspect(b, true, QuicRetryMode::AUTO, t) == D::ACCEPT);
+    bounded.Started(b);
+    BOOST_CHECK(bounded.Inspect(c, true, QuicRetryMode::AUTO, t) ==
+                D::TABLE_FULL);
+    bounded.Closed(b, false);
+    BOOST_CHECK(bounded.Inspect(c, false, QuicRetryMode::AUTO,
+                                t + std::chrono::seconds{10}) == D::ACCEPT);
+
+    QuicAdmission loaded{100, 256};
+    for (unsigned i{0}; i < 65; ++i) {
+        BOOST_REQUIRE(loaded.Inspect(a, true, QuicRetryMode::AUTO, t) ==
+                      D::ACCEPT);
+        loaded.Started(a);
+    }
+    BOOST_CHECK(loaded.Inspect(b, false, QuicRetryMode::AUTO, t) == D::RETRY);
+    for (unsigned i{0}; i < 65; ++i)
+        loaded.Closed(a, false);
+    BOOST_CHECK_EQUAL(loaded.Handshaking(), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(banned_initial_is_dropped_before_tls) {
+    auto observed{std::make_shared<std::atomic<size_t>>(0)};
+    auto options{ServerOptions()};
+    options.is_banned = [](const CNetAddr &) { return true; };
+    options.handshake_observer = [observed](QuicHandshakeObservation) {
+        ++*observed;
+    };
+    auto server{StartEngine(options)};
+    auto client{StartEngine(QuicEngineOptions{})};
+    const auto address{server->BoundAddresses().front()};
+    BOOST_CHECK(!client->EchoForTest(address, {1, 2, 3},
+                                     std::chrono::milliseconds{500}));
+    const auto stats{server->Stats()};
+    BOOST_CHECK_GT(stats.rejected[size_t(QuicRejectReason::BANNED)], 0U);
+    BOOST_CHECK_EQUAL(stats.handshakes_completed, 0U);
+    BOOST_CHECK_EQUAL(stats.handshaking, 0U);
+    BOOST_CHECK_EQUAL(observed->load(), 0U);
+    client->Stop();
+    server->Stop();
+}
+
+BOOST_AUTO_TEST_CASE(inbound_capacity_is_checked_before_tls) {
+    auto observed{std::make_shared<std::atomic<size_t>>(0)};
+    auto options{ServerOptions()};
+    options.max_inbound = 0;
+    options.handshake_observer = [observed](QuicHandshakeObservation) {
+        ++*observed;
+    };
+    auto server{StartEngine(options)};
+    auto client{StartEngine(QuicEngineOptions{})};
+    BOOST_CHECK(!client->EchoForTest(server->BoundAddresses().front(), {1},
+                                     std::chrono::milliseconds{500}));
+    BOOST_CHECK_GT(server->Stats().rejected[size_t(QuicRejectReason::CAPACITY)],
+                   0U);
+    BOOST_CHECK_EQUAL(observed->load(), 0U);
+    client->Stop();
+    server->Stop();
+}
 
 BOOST_AUTO_TEST_CASE(handshake_and_stream_echo) {
     auto server{StartEngine(ServerOptions())};
