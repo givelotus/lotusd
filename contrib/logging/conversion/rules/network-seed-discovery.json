@@ -1,0 +1,111 @@
+{
+  "schema": 1,
+  "batch": "network-seed-discovery",
+  "review_note": "Shared DNS, fixed seed and block-relay anchor discovery state. Exact structured counts and static lifecycle events; no network behavior changes.",
+  "files": [
+    {
+      "path": "src/net.cpp",
+      "rules": [
+        {
+          "id": "dns_seed_addresses_found",
+          "old": "LogPrintf(\"%d addresses found from DNS seeds\\n\",\n                                      found)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"dns_seed_addresses_found\",\n                                \"{count} addresses found from DNS seeds\")\n                                .Field(BCLog::LogField::Count, found)",
+          "count": 2,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%d addresses found from DNS seeds\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "found"
+            ]
+          },
+          "review_note": "Preserve original Info severity, ALL category, human text, DNS/fixed-seed/anchor branching, timing and peer selection. Count is nonnegative: DNS found starts at0 and increments only for added resolved addresses; anchors is vector size after max-anchor bounding. No new resolution, hostname or address disclosure; no new registry/API. Static transitions intentionally have no invented fields."
+        },
+        {
+          "id": "dns_seeding_finished_with_peers",
+          "old": "LogPrintf(\n                                \"P2P peers available. Finished DNS seeding.\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"dns_seeding_finished_with_peers\",\n                                \"P2P peers available. Finished DNS seeding.\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "P2P peers available. Finished DNS seeding.\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve original Info severity, ALL category, human text, DNS/fixed-seed/anchor branching, timing and peer selection. Count is nonnegative: DNS found starts at0 and increments only for added resolved addresses; anchors is vector size after max-anchor bounding. No new resolution, hostname or address disclosure; no new registry/API. Static transitions intentionally have no invented fields."
+        },
+        {
+          "id": "dns_seeding_skipped_with_peers",
+          "old": "LogPrintf(\n                                \"P2P peers available. Skipped DNS seeding.\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"dns_seeding_skipped_with_peers\",\n                                \"P2P peers available. Skipped DNS seeding.\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "P2P peers available. Skipped DNS seeding.\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve original Info severity, ALL category, human text, DNS/fixed-seed/anchor branching, timing and peer selection. Count is nonnegative: DNS found starts at0 and increments only for added resolved addresses; anchors is vector size after max-anchor bounding. No new resolution, hostname or address disclosure; no new registry/API. Static transitions intentionally have no invented fields."
+        },
+        {
+          "id": "dns_seeding_waiting_for_network",
+          "old": "LogPrintf(\"Waiting for network to be reactivated before querying \"\n                      \"DNS seeds.\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"dns_seeding_waiting_for_network\",\n                \"Waiting for network to be reactivated before querying DNS seeds.\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Waiting for network to be reactivated before querying DNS seeds.\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve original Info severity, ALL category, human text, DNS/fixed-seed/anchor branching, timing and peer selection. Count is nonnegative: DNS found starts at0 and increments only for added resolved addresses; anchors is vector size after max-anchor bounding. No new resolution, hostname or address disclosure; no new registry/API. Static transitions intentionally have no invented fields."
+        },
+        {
+          "id": "fixed_seeds_added_after_wait",
+          "old": "LogPrintf(\"Adding fixed seeds as 60 seconds have passed and \"\n                          \"addrman is empty\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"fixed_seeds_added_after_wait\",\n                    \"Adding fixed seeds as 60 seconds have passed and addrman is empty\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Adding fixed seeds as 60 seconds have passed and addrman is empty\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve original Info severity, ALL category, human text, DNS/fixed-seed/anchor branching, timing and peer selection. Count is nonnegative: DNS found starts at0 and increments only for added resolved addresses; anchors is vector size after max-anchor bounding. No new resolution, hostname or address disclosure; no new registry/API. Static transitions intentionally have no invented fields."
+        },
+        {
+          "id": "fixed_seeds_added_without_other_sources",
+          "old": "LogPrintf(\"Adding fixed seeds as -dnsseed=0 and neither \"\n                              \"-addnode nor -seednode are provided\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"fixed_seeds_added_without_other_sources\",\n                        \"Adding fixed seeds as -dnsseed=0 and neither -addnode nor -seednode are provided\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Adding fixed seeds as -dnsseed=0 and neither -addnode nor -seednode are provided\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve original Info severity, ALL category, human text, DNS/fixed-seed/anchor branching, timing and peer selection. Count is nonnegative: DNS found starts at0 and increments only for added resolved addresses; anchors is vector size after max-anchor bounding. No new resolution, hostname or address disclosure; no new registry/API. Static transitions intentionally have no invented fields."
+        },
+        {
+          "id": "block_relay_connection_anchors_ready",
+          "old": "LogPrintf(\n            \"%i block-relay-only anchors will be tried for connections.\\n\",\n            m_anchors.size())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_relay_connection_anchors_ready\",\n            \"{count} block-relay-only anchors will be tried for connections.\")\n            .Field(BCLog::LogField::Count, m_anchors.size())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%i block-relay-only anchors will be tried for connections.\n",
+            "specifiers": [
+              "%i"
+            ],
+            "arguments": [
+              "m_anchors.size()"
+            ]
+          },
+          "review_note": "Preserve original Info severity, ALL category, human text, DNS/fixed-seed/anchor branching, timing and peer selection. Count is nonnegative: DNS found starts at0 and increments only for added resolved addresses; anchors is vector size after max-anchor bounding. No new resolution, hostname or address disclosure; no new registry/API. Static transitions intentionally have no invented fields."
+        }
+      ]
+    }
+  ]
+}

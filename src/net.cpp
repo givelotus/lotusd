@@ -2374,13 +2374,17 @@ void CConnman::ThreadDNSAddressSeed() {
                     }
                     if (nRelevant >= 2) {
                         if (found > 0) {
-                            LogPrintf("%d addresses found from DNS seeds\n",
-                                      found);
-                            LogPrintf(
-                                "P2P peers available. Finished DNS seeding.\n");
+                            LogInfoEvent(
+                                BCLog::ALL, "dns_seed_addresses_found",
+                                "{count} addresses found from DNS seeds")
+                                .Field(BCLog::LogField::Count, found);
+                            LogInfoEvent(
+                                BCLog::ALL, "dns_seeding_finished_with_peers",
+                                "P2P peers available. Finished DNS seeding.");
                         } else {
-                            LogPrintf(
-                                "P2P peers available. Skipped DNS seeding.\n");
+                            LogInfoEvent(
+                                BCLog::ALL, "dns_seeding_skipped_with_peers",
+                                "P2P peers available. Skipped DNS seeding.");
                         }
                         return;
                     }
@@ -2394,8 +2398,9 @@ void CConnman::ThreadDNSAddressSeed() {
 
         // hold off on querying seeds if P2P network deactivated
         if (!fNetworkActive) {
-            LogPrintf("Waiting for network to be reactivated before querying "
-                      "DNS seeds.\n");
+            LogInfoEvent(
+                BCLog::ALL, "dns_seeding_waiting_for_network",
+                "Waiting for network to be reactivated before querying DNS seeds.");
             do {
                 if (!interruptNet.sleep_for(std::chrono::seconds{1})) {
                     return;
@@ -2442,7 +2447,9 @@ void CConnman::ThreadDNSAddressSeed() {
         }
         --seeds_right_now;
     }
-    LogPrintf("%d addresses found from DNS seeds\n", found);
+    LogInfoEvent(BCLog::ALL, "dns_seed_addresses_found",
+                 "{count} addresses found from DNS seeds")
+        .Field(BCLog::LogField::Count, found);
 }
 
 void CConnman::DumpAddresses() {
@@ -2586,15 +2593,17 @@ void CConnman::ThreadOpenConnections(
             if (GetTime<std::chrono::seconds>() >
                 start + std::chrono::minutes{1}) {
                 add_fixed_seeds_now = true;
-                LogPrintf("Adding fixed seeds as 60 seconds have passed and "
-                          "addrman is empty\n");
+                LogInfoEvent(
+                    BCLog::ALL, "fixed_seeds_added_after_wait",
+                    "Adding fixed seeds as 60 seconds have passed and addrman is empty");
             } else if (!dnsseed && !use_seednodes) {
                 // Lock the mutex after performing the above cheap checks.
                 LOCK(m_added_nodes_mutex);
                 if (m_added_nodes.empty()) {
                     add_fixed_seeds_now = true;
-                    LogPrintf("Adding fixed seeds as -dnsseed=0 and neither "
-                              "-addnode nor -seednode are provided\n");
+                    LogInfoEvent(
+                        BCLog::ALL, "fixed_seeds_added_without_other_sources",
+                        "Adding fixed seeds as -dnsseed=0 and neither -addnode nor -seednode are provided");
                 }
             }
 
@@ -3430,9 +3439,10 @@ bool CConnman::Start(CScheduler &scheduler, const Options &connOptions) {
         if (m_anchors.size() > MAX_BLOCK_RELAY_ONLY_ANCHORS) {
             m_anchors.resize(MAX_BLOCK_RELAY_ONLY_ANCHORS);
         }
-        LogPrintf(
-            "%i block-relay-only anchors will be tried for connections.\n",
-            m_anchors.size());
+        LogInfoEvent(
+            BCLog::ALL, "block_relay_connection_anchors_ready",
+            "{count} block-relay-only anchors will be tried for connections.")
+            .Field(BCLog::LogField::Count, m_anchors.size());
     }
 
     if (m_client_interface) {
