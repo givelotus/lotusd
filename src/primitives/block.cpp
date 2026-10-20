@@ -3,6 +3,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <lotus_v2/node_profile.h>
 #include <primitives/block.h>
 
 #include <algorithm>
@@ -858,6 +859,10 @@ void CollectSmtCoins(const std::shared_ptr<const SmtNode> &node,
     CollectSmtCoins(node->child[1], out);
 }
 } // namespace
+
+const lotus::v2::MonetaryProfile &NodeV2MonetaryProfile() {
+    return kDefaultMonetaryProfile;
+}
 
 ScopedV2ChainId::ScopedV2ChainId(const lotus::v2::ChainId &chain_id) noexcept
     : m_chain_id(chain_id), m_previous(g_scoped_v2_chain_id) {
