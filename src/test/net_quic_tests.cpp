@@ -7,6 +7,7 @@
 #include <crypto/common.h>
 #include <net_quic/quic_certificate.h>
 #include <net_quic/quic_engine.h>
+#include <net_quic/udp_socket.h>
 #include <net_quic/webtransport_wire.h>
 
 #include <netaddress.h>
@@ -123,6 +124,7 @@ public:
     std::atomic<bool> corrupt_tokens{false};
     std::atomic<bool> drop{false};
     std::atomic<int> tokens_corrupted{0};
+    std::atomic<bool> rebind_on_short_header{false}, rebound{false};
 
 private:
     static int Bind() {
@@ -185,6 +187,13 @@ private:
                         Corrupt(buf.data(), static_cast<size_t>(r));
                     }
                     if (!drop) {
+                        if (rebind_on_short_header && !rebound &&
+                            !(buf[0] & 0x80)) {
+                            const int replacement{Bind()};
+                            close(m_back);
+                            m_back = replacement;
+                            rebound = true;
+                        }
                         sendto(m_back, buf.data(), static_cast<size_t>(r), 0,
                                reinterpret_cast<sockaddr *>(&m_server),
                                sizeof(m_server));
@@ -222,6 +231,128 @@ std::vector<uint8_t> RandomPayload(size_t n) {
 } // namespace
 
 BOOST_FIXTURE_TEST_SUITE(net_quic_tests, QuicTestSetup)
+
+BOOST_AUTO_TEST_CASE(udp_segment_fallback_preserves_boundaries) {
+    std::string error;
+    auto receiver{UdpSocket::Bind(Loopback(), error)};
+    auto sender{UdpSocket::Bind(Loopback(), error)};
+    BOOST_REQUIRE(receiver && sender);
+    UdpDatagram packet;
+    packet.remote_len = sizeof(packet.remote);
+    BOOST_REQUIRE(receiver->Local().GetSockAddr(
+        reinterpret_cast<sockaddr *>(&packet.remote), &packet.remote_len));
+    packet.data = RandomPayload(3 * 1200 + 17);
+    packet.segment_size = 1200;
+    BOOST_CHECK(!sender->GsoSupported());
+    BOOST_REQUIRE_EQUAL(sender->SendBatch({&packet, 1}), 1U);
+    std::vector<UdpDatagram> received;
+    const auto deadline{std::chrono::steady_clock::now() + 2s};
+    while (received.size() < 4 && std::chrono::steady_clock::now() < deadline) {
+        receiver->RecvBatch(received, 64);
+        if (received.size() < 4) std::this_thread::sleep_for(1ms);
+    }
+    BOOST_REQUIRE_EQUAL(received.size(), 4U);
+    std::vector<uint8_t> joined;
+    for (size_t i{0}; i < received.size(); ++i) {
+        BOOST_CHECK_EQUAL(received[i].data.size(), i == 3 ? 17U : 1200U);
+        joined.insert(joined.end(), received[i].data.begin(),
+                      received[i].data.end());
+    }
+    BOOST_CHECK(joined == packet.data);
+}
+
+BOOST_AUTO_TEST_CASE(quic_megabyte_with_gso_option_on_and_off) {
+    const auto payload{RandomPayload(1024 * 1024)};
+    for (bool enabled : {false, true}) {
+        auto server_options{ServerOptions()};
+        server_options.gso = enabled;
+        QuicEngineOptions client_options;
+        client_options.gso = enabled;
+        auto server{StartEngine(server_options)};
+        auto client{StartEngine(client_options)};
+        const auto result{client->EchoForTest(server->BoundAddresses().front(),
+                                              payload, 5s, cert_sha256)};
+        BOOST_REQUIRE(result);
+        BOOST_CHECK(*result == payload);
+        client->Stop();
+        server->Stop();
+    }
+}
+
+BOOST_AUTO_TEST_CASE(quic_rebinding_uses_generated_packet_path) {
+    auto server{StartEngine(ServerOptions())};
+    auto client{StartEngine(QuicEngineOptions{})};
+    Relay relay{server->BoundAddresses().front()};
+    relay.rebind_on_short_header = true;
+    const auto payload{RandomPayload(1024 * 1024)};
+    const auto result{
+        client->EchoForTest(relay.Address(), payload, 5s, cert_sha256)};
+    BOOST_REQUIRE(result);
+    BOOST_CHECK(*result == payload);
+    BOOST_CHECK(relay.rebound.load());
+    BOOST_CHECK_EQUAL(client->Stats().handshakes_completed, 1U);
+    BOOST_CHECK_EQUAL(server->Stats().handshakes_completed, 1U);
+    client->Stop();
+    server->Stop();
+}
+
+#ifdef __linux__
+BOOST_AUTO_TEST_CASE(linux_udp_batch_megabyte_gso_on_and_off) {
+    const auto expected{RandomPayload(1024 * 1024)};
+    for (bool offload : {false, true}) {
+        std::string error;
+        auto receiver{UdpSocket::Bind(Loopback(), error)};
+        auto sender{UdpSocket::Bind(Loopback(), error)};
+        BOOST_REQUIRE(receiver && sender);
+        if (offload)
+            BOOST_TEST_MESSAGE(
+                "UDP_SEGMENT runtime probe: " << sender->EnableGso());
+        std::vector<uint8_t> actual;
+        size_t offset{0};
+        while (offset < expected.size()) {
+            std::vector<UdpDatagram> packets;
+            const size_t start{offset};
+            // <=64 wire datagrams fit below ordinary loopback socket limits.
+            for (size_t count{0}; count < 64 && offset < expected.size();) {
+                UdpDatagram packet;
+                packet.remote_len = sizeof(packet.remote);
+                BOOST_REQUIRE(receiver->Local().GetSockAddr(
+                    reinterpret_cast<sockaddr *>(&packet.remote),
+                    &packet.remote_len));
+                const size_t segments{offload ? std::min<size_t>(10, 64 - count)
+                                              : 1};
+                const size_t length{
+                    std::min(expected.size() - offset, segments * 1200)};
+                packet.data.assign(expected.begin() + offset,
+                                   expected.begin() + offset + length);
+                packet.segment_size = offload ? 1200 : 0;
+                packets.push_back(std::move(packet));
+                offset += length;
+                count += (length + 1199) / 1200;
+            }
+            BOOST_REQUIRE_EQUAL(sender->SendBatch(packets), packets.size());
+            const auto deadline{std::chrono::steady_clock::now() + 2s};
+            const size_t target{actual.size() + offset - start};
+            while (actual.size() < target &&
+                   std::chrono::steady_clock::now() < deadline) {
+                std::vector<UdpDatagram> received;
+                receiver->RecvBatch(received, 64);
+                for (const auto &packet : received) {
+                    BOOST_CHECK_LE(packet.data.size(), 1200U);
+                    actual.insert(actual.end(), packet.data.begin(),
+                                  packet.data.end());
+                }
+                if (actual.size() < target) std::this_thread::sleep_for(1ms);
+            }
+            BOOST_REQUIRE_EQUAL(actual.size(), target);
+        }
+        BOOST_CHECK(actual == expected);
+        BOOST_TEST_MESSAGE("UDP GSO requested=" << offload
+                                                << " active after transfer="
+                                                << sender->GsoSupported());
+    }
+}
+#endif
 
 BOOST_AUTO_TEST_CASE(browser_certificate_overlap_and_key_stability) {
     int64_t now{GetTime<std::chrono::seconds>().count()};

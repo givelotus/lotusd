@@ -185,6 +185,7 @@ bool StartNodeWebTransport(const ArgsManager &args, CConnman &connman,
         return false;
     }
     opts.bbr = cc == "bbr";
+    opts.gso = args.GetBoolArg("-p2pwebtransportgso", true);
     opts.idle_timeout = std::chrono::seconds{
         std::max<int64_t>(5, args.GetIntArg("-p2pwebtransportidle", 30))};
     // Ask for client certificates when keys grant permissions.

@@ -80,7 +80,8 @@ public:
 
     /** Whether UDP segmentation offload (UDP_SEGMENT) works on this socket */
     bool GsoSupported() const { return m_gso; }
-    /** Try to enable UDP GSO/GRO (Linux); returns whether it is on */
+    /** Probe per-message UDP_SEGMENT (Linux); GRO is deliberately not enabled
+     */
     bool EnableGso();
 
     //! Datagrams that the OS refused (other than EAGAIN), for metrics
@@ -95,6 +96,8 @@ private:
     //! Bound to 0.0.0.0 / :: : use packet info for the local address
     bool m_wildcard{false};
     bool m_gso{false};
+    bool m_recv_batch_supported{true};
+    bool m_send_batch_supported{true};
     std::atomic<uint64_t> m_send_errors{0};
 };
 
