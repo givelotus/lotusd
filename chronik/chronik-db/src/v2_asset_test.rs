@@ -11,6 +11,7 @@ fn location(index: u32) -> TxLocation {
 }
 fn output(token: u8, value: u64, burn: bool) -> Output {
     Output {
+        legacy_script: None,
         flags: if burn { 3 } else { 1 },
         value,
         token_id: Hash32([token; 32]),
@@ -41,8 +42,41 @@ fn view<'a>(
     }
 }
 #[test]
+fn legacy_native_value_spends_do_not_create_token_events() {
+    let legacy = Output {
+        flags: 0x80,
+        value: 500,
+        legacy_script: Some(vec![0x51]),
+        ..Output::default()
+    };
+    let spends = [SpentCoin::from_output(
+        OutPoint {
+            txid: location(0).txid,
+            out_idx: 0,
+        },
+        &legacy,
+    )];
+    let native = Output {
+        flags: 0,
+        value: 490,
+        branches: vec![Hash32([8; 32])],
+        paths: vec![vec![0]],
+        ..Output::default()
+    };
+    for output in [legacy, native] {
+        assert!(derive_asset_events(view(&[output], &spends, &[]))
+            .unwrap()
+            .is_empty());
+    }
+    let mut bad = spends;
+    bad[0].token_id = Hash32([1; 32]);
+    assert!(derive_asset_events(view(&[], &bad, &[])).is_err());
+}
+
+#[test]
 fn full_union_input_only_implicit_burn_and_exact_positions() {
-    let outputs = [output(2, 0, true), output(3, 12, false), output(3, 8, true)];
+    let outputs =
+        [output(2, 0, true), output(3, 12, false), output(3, 8, true)];
     let spends = [coin(1, 55, 0), coin(3, 13, 1)];
     let mints = [Hash32([3; 32])];
     let events = derive_asset_events(view(&outputs, &spends, &mints)).unwrap();
@@ -95,11 +129,21 @@ fn mint_bijection_rejects_duplicate_missing_extra_and_zero_selectors() {
     ] {
         assert!(derive_asset_events(view(&outputs, &[], &mints)).is_err());
     }
-    assert!(derive_asset_events(view(&[output(1, 0, true)], &[], &[Hash32([1; 32])])).is_err());
+    assert!(derive_asset_events(view(
+        &[output(1, 0, true)],
+        &[],
+        &[Hash32([1; 32])]
+    ))
+    .is_err());
 }
 #[test]
 fn explicit_and_implicit_burns_remain_distinct() {
-    let events = derive_asset_events(view(&[output(1, 4, true)], &[coin(1, 10, 0)], &[])).unwrap();
+    let events = derive_asset_events(view(
+        &[output(1, 4, true)],
+        &[coin(1, 10, 0)],
+        &[],
+    ))
+    .unwrap();
     assert_eq!(
         (
             events[0].spent_units,
@@ -109,7 +153,8 @@ fn explicit_and_implicit_burns_remain_distinct() {
         ),
         (10, 4, 4, 6)
     );
-    let zero = derive_asset_events(view(&[output(2, 0, true)], &[], &[])).unwrap();
+    let zero =
+        derive_asset_events(view(&[output(2, 0, true)], &[], &[])).unwrap();
     assert_eq!(zero.len(), 1);
     assert_eq!(zero[0].output_units, 0);
 }
@@ -139,16 +184,22 @@ fn summary_checked_counts_first_seen_and_reconnect_plan_parity() {
         location: location(2),
         ..tx
     };
-    let updated = plan_asset_tx(later, &BTreeMap::from([(token, Some(summary.clone()))])).unwrap();
+    let updated =
+        plan_asset_tx(later, &BTreeMap::from([(token, Some(summary.clone()))]))
+            .unwrap();
     let next: AssetSummary = decode(&updated[0].1).unwrap();
     assert_eq!(next.first_seen, summary.first_seen);
     assert_eq!((next.event_count, next.output_count), (2, 4));
     let mut bad = summary.clone();
     bad.event_count = u64::MAX;
-    assert!(plan_asset_tx(later, &BTreeMap::from([(token, Some(bad))])).is_err());
+    assert!(
+        plan_asset_tx(later, &BTreeMap::from([(token, Some(bad))])).is_err()
+    );
     let mut bad = summary;
     bad.output_count = u64::MAX;
-    assert!(plan_asset_tx(later, &BTreeMap::from([(token, Some(bad))])).is_err());
+    assert!(
+        plan_asset_tx(later, &BTreeMap::from([(token, Some(bad))])).is_err()
+    );
 }
 #[test]
 fn amount_addition_detects_u128_overflow() {

@@ -63,6 +63,25 @@ ReadSnapshot MakeReadSnapshot(const V2Env &db) {
 
 BOOST_AUTO_TEST_SUITE(lotus_v2_asset_tests)
 
+BOOST_AUTO_TEST_CASE(legacy_native_value_spends_do_not_create_token_events) {
+    Output legacy;
+    legacy.flags = 0x80;
+    legacy.value = 500;
+    legacy.legacy_script = Bytes{0x51};
+    const std::vector<SpentCoin> spends{SpentCoin::FromOutput(OutPoint{Location(0).txid, 0}, legacy)};
+    Output native;
+    native.value = 490;
+    native.branches = {Fill(8)};
+    native.paths = {{0}};
+    for (const Output &output : {legacy, native}) {
+        const std::vector<Output> outputs{output};
+        BOOST_CHECK(DeriveAssetEvents(View(outputs, spends, {})).empty());
+    }
+    auto bad = spends;
+    bad[0].token_id = Fill(1);
+    BOOST_CHECK(Throws([&] { DeriveAssetEvents(View({}, bad, {})); }));
+}
+
 BOOST_AUTO_TEST_CASE(full_union_input_only_implicit_burn_and_exact_positions) {
     const std::vector<Output> outputs{AssetOutput(2, 0, true),
                                       AssetOutput(3, 12, false),

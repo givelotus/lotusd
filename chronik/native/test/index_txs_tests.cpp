@@ -24,6 +24,29 @@ Range R(TxNum a, TxNum b) {
 
 BOOST_AUTO_TEST_SUITE(index_txs_tests)
 
+BOOST_AUTO_TEST_CASE(legacy_kind_preserves_coinbase_and_undo_positions) {
+    TestDb db("legacy-txs");
+    const TxWriter writer(*db);
+    TxsMemData mem;
+    std::vector<TxEntry> entries;
+    for (uint32_t pos : {0U, 123U, 0x7fffffffU, 0x80000000U, UINT32_MAX}) {
+        for (bool legacy : {false, true}) {
+            TxEntry entry{TxIdNum(entries.size()+1), 100, pos, 0, pos == 0, legacy};
+            entries.push_back(entry);
+        }
+    }
+    auto txn = db->BeginWrite();
+    writer.Insert(*txn, BlockTxs{entries, 0}, mem);
+    txn->Commit();
+    auto read = db->BeginRead();
+    const TxReader reader(*db, *read);
+    for (size_t i = 0; i < entries.size(); ++i) {
+        auto found = reader.TxByTxNum(i);
+        BOOST_REQUIRE(found);
+        BOOST_CHECK(found->entry == entries[i]);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(test_insert_txs) {
     TestDb db("txs");
     const TxWriter tx_writer(*db);

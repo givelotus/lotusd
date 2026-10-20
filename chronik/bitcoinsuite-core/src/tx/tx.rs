@@ -17,6 +17,7 @@ use crate::{
 /// let tx = Tx::with_txid(
 ///     txid,
 ///     TxMut {
+///         native_txid: None,
 ///         version: 1,
 ///         inputs: vec![],
 ///         outputs: vec![],
@@ -49,6 +50,9 @@ pub struct Tx {
 /// compute.
 #[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct TxMut {
+    /// Node-computed structural identity for a v7 projection. The flattened
+    /// script fields do not encode native witnesses, selectors or lock types.
+    pub native_txid: Option<TxId>,
     /// nVersion of the tx.
     pub version: u32,
     /// Tx inputs.
@@ -103,6 +107,8 @@ pub struct TxOutput {
 /// Coin, can be spent by providing a valid unlocking script.
 #[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Coin {
+    /// Whether this coin was created by a legacy v1/v2 transaction.
+    pub is_legacy: bool,
     /// Output, locking the coins.
     pub output: TxOutput,
     /// Height of the coin in the chain.
@@ -113,6 +119,7 @@ pub struct Coin {
 
 /// Empty tx, serializes to 00000000000000000000.
 pub static EMPTY_TX: TxMut = TxMut {
+    native_txid: None,
     version: 0,
     inputs: vec![],
     outputs: vec![],
@@ -147,7 +154,10 @@ impl Tx {
     ///
     /// It is the responsibility of the caller to ensure the `txid` matches
     /// `tx`.
-    pub fn with_txid(txid: TxId, tx: TxMut) -> Self {
+    pub fn with_txid(txid: TxId, mut tx: TxMut) -> Self {
+        if tx.version == 7 {
+            tx.native_txid = Some(txid);
+        }
         Tx { txid, tx }
     }
 
@@ -186,6 +196,7 @@ impl BitcoinSer for TxMut {
 
     fn deser(data: &mut bytes::Bytes) -> Result<Self, DataError> {
         Ok(TxMut {
+            native_txid: None,
             version: BitcoinSer::deser(data)?,
             inputs: BitcoinSer::deser(data)?,
             outputs: BitcoinSer::deser(data)?,
@@ -278,6 +289,7 @@ mod tests {
         verify_ser(TxMut::default(), &[0; 10]);
         verify_ser(
             TxMut {
+                native_txid: None,
                 version: 0x12345678,
                 inputs: vec![],
                 outputs: vec![],
@@ -286,6 +298,7 @@ mod tests {
             &hex::decode("785634120000f1debc9a")?,
         );
         let genesis_tx = TxMut {
+            native_txid: None,
             version: 1,
             inputs: vec![TxInput {
                 prev_out: OutPoint {

@@ -17,6 +17,7 @@
 #include <lotus_v2/header.h>
 #include <node/blockstorage.h>
 #include <primitives/v2_outputs.h>
+#include <streams.h>
 #include <validation.h>
 
 #include <test/util/setup_common.h>
@@ -58,6 +59,43 @@ cn::Block InfoBlock(const CBlockIndex &bindex) {
 
 BOOST_AUTO_TEST_SUITE(chronik_native_abc_v2_tests)
 
+BOOST_FIXTURE_TEST_CASE(test_legacy_facts_preserve_wire_and_coin_kind,
+                        BasicTestingSetup) {
+    for (int version : {1, 2}) {
+        CMutableTransaction mtx;
+        mtx.nVersion = version;
+        mtx.nLockTime = 123;
+        mtx.vin.emplace_back(COutPoint(::TxId(uint256::ONE), 5),
+                             CScript() << OP_1, 0x80000001);
+        mtx.vout.emplace_back(123 * SATOSHI,
+                              CScript() << OP_DUP << OP_HASH160
+                                        << std::vector<uint8_t>(20, 7)
+                                        << OP_EQUALVERIFY << OP_CHECKSIG);
+        const CTransaction ctx(mtx);
+        const auto tx = cn::abc::ConvertV2NativeTx(ctx, false, 2, 3, 4);
+        BOOST_CHECK(tx.txid == Bytes(ctx.GetId()));
+        BOOST_CHECK(tx.txhash == Bytes(ctx.GetHash()));
+        DataStream ss;
+        ss << ctx;
+        const auto raw = MakeUCharSpan(ss);
+        BOOST_CHECK_EQUAL_COLLECTIONS(tx.wire.begin(), tx.wire.end(),
+                                      raw.begin(), raw.end());
+        BOOST_REQUIRE_EQUAL(tx.full_inputs.size(), 1);
+        BOOST_CHECK_EQUAL(tx.full_inputs[0].flags, 4);
+        BOOST_CHECK_EQUAL(tx.full_inputs[0].sequence, 0x80000001);
+        BOOST_CHECK(tx.full_inputs[0].witnesses.empty());
+        BOOST_REQUIRE_EQUAL(tx.inputs.size(), 1);
+        BOOST_REQUIRE_EQUAL(tx.outputs.size(), 1);
+        const auto output = cn::lotus_v2::Output::Decode(tx.outputs[0].wire);
+        BOOST_REQUIRE(output);
+        BOOST_REQUIRE(output->legacy_script);
+        BOOST_CHECK(output->branches.empty());
+        BOOST_CHECK_EQUAL_COLLECTIONS(
+            output->legacy_script->begin(), output->legacy_script->end(),
+            mtx.vout[0].scriptPubKey.begin(), mtx.vout[0].scriptPubKey.end());
+    }
+}
+
 BOOST_FIXTURE_TEST_CASE(test_v2_native_block_conversion, TestChain100Setup) {
     ChainstateManager &chainman = *Assert(m_node.chainman);
     const CBlockIndex &tip = Tip(chainman);
@@ -95,7 +133,8 @@ BOOST_FIXTURE_TEST_CASE(test_v2_native_block_conversion, TestChain100Setup) {
         // The normalized coinbase input spends nothing.
         const ffi::NativeTx &cb = native.transactions[0];
         BOOST_REQUIRE_EQUAL(cb.full_inputs.size(), 1u);
-        BOOST_CHECK_EQUAL(cb.full_inputs[0].flags, 2);
+        BOOST_CHECK_EQUAL(cb.full_inputs[0].flags,
+                          block.vtx[0]->nVersion == 7 ? 2 : 5);
         BOOST_CHECK(cb.inputs.empty());
         BOOST_CHECK_EQUAL(cb.lock, 0u);
     }
