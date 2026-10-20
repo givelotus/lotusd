@@ -808,10 +808,13 @@ if(ENABLE_WEBTRANSPORT)
 	find_package(Nghttp3 1.18.0 REQUIRED COMPONENTS nghttp3)
 	find_package(Ngtcp2 1.25.0 REQUIRED COMPONENTS ngtcp2 crypto_ossl)
 	target_sources(server PRIVATE
+		net_quic/node_webtransport.cpp
 		net_quic/quic_connection.cpp
 		net_quic/quic_engine.cpp
 		net_quic/udp_socket.cpp
 		net_quic/version_check.cpp
+		net_quic/webtransport_h3.cpp
+		net_quic/webtransport_wire.cpp
 	)
 	# Search these headers first, for this directory and the tests below
 	# (as for OpenSSL above): Homebrew links its own, unpatched nghttp3 and

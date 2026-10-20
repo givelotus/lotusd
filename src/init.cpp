@@ -50,6 +50,10 @@
 #include <net_processing.h>
 #include <net_websocket_dialer.h>
 #include <net_zstd_independent.h>
+#include <net_webtransport.h>
+#ifdef ENABLE_WEBTRANSPORT
+#include <net_quic/node_webtransport.h>
+#endif
 #include <netbase.h>
 #include <node/blockmanager_args.h>
 #include <node/blockprefetch.h>
@@ -329,6 +333,9 @@ void Shutdown(NodeContext &node) {
         node.connman->Stop();
     }
     StopP2PWebSocketDialer();
+#ifdef ENABLE_WEBTRANSPORT
+    StopNodeWebTransport();
+#endif
 
     StopTorControl();
 
@@ -1329,6 +1336,57 @@ void SetupServerArgs(NodeContext &node) {
         "Shorthand for -trustedproxy=127.0.0.0/8 -trustedproxy=::1 (a reverse "
         "proxy on this host) (default: 0)",
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+#ifdef ENABLE_WEBTRANSPORT
+    static const char *const WT_BUILD{""};
+#else
+    static const char *const WT_BUILD{
+        " (needs a build with -DENABLE_WEBTRANSPORT=ON)"};
+#endif
+    argsman.AddArg(
+        "-p2pwebtransport",
+        strprintf("Accept and make P2P connections over WebTransport "
+                  "(HTTP/3 over QUIC, UDP) at %s, see "
+                  "doc/p2p-webtransport.md (default: %d)%s",
+                  P2P_WEBTRANSPORT_PATH, false, WT_BUILD),
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
+        "-p2pwebtransportbind=<addr>[:port]",
+        "Accept WebTransport on this UDP address (default: every address, "
+        "on the P2P port, if -listen). Can be specified multiple times.",
+        ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY,
+        OptionsCategory::CONNECTION);
+    argsman.AddArg(
+        "-p2pwebtransportpath=<path>",
+        strprintf("Request path of WebTransport sessions (default: %s)",
+                  P2P_WEBTRANSPORT_PATH),
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
+        "-p2pwebtransporttoken=<token>",
+        "Only accept WebTransport sessions whose URL carries ?t=<token> "
+        "(1-256 of A-Z a-z 0-9 . _ ~ -); dial such a peer with "
+        "wt://host:port/path?t=<token>",
+        ArgsManager::ALLOW_ANY | ArgsManager::SENSITIVE,
+        OptionsCategory::CONNECTION);
+    argsman.AddArg(
+        "-p2pwebtransportorigins=<origin>,...",
+        "Only accept WebTransport sessions from browsers whose Origin is "
+        "listed (default: any). Peers sending no Origin (nodes) are not "
+        "affected. Can be specified multiple times.",
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg("-p2pwebtransportcc=<cubic|bbr>",
+                   "QUIC congestion control for WebTransport (default: cubic)",
+                   ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
+                   OptionsCategory::CONNECTION);
+    argsman.AddArg("-p2pwebtransportidle=<seconds>",
+                   "QUIC idle timeout for WebTransport (default: 30)",
+                   ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
+                   OptionsCategory::CONNECTION);
+    argsman.AddArg("-p2pwebtransportecho",
+                   "Echo WebTransport streams and datagrams instead of "
+                   "running P2P sessions (browser interop tests only) "
+                   "(default: 0)",
+                   ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
+                   OptionsCategory::DEBUG_TEST);
     argsman.AddArg(
         "-listenonion",
         strprintf("Automatically create Tor onion service (default: %d)",
@@ -4121,6 +4179,18 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
                 ws_path));
         }
         AddLocal(CService{domain, port}, LOCAL_MANUAL);
+    }
+
+    if (args.GetBoolArg("-p2pwebtransport", false)) {
+#ifdef ENABLE_WEBTRANSPORT
+        bilingual_str error;
+        if (!StartNodeWebTransport(args, error)) {
+            return InitError(error);
+        }
+#else
+        return InitError(_("-p2pwebtransport needs a build with "
+                           "-DENABLE_WEBTRANSPORT=ON"));
+#endif
     }
 
     if (fListen && GetP2PWebSocketListen(args)) {

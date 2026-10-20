@@ -1,0 +1,88 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>WebTransport interop test</title>
+<style>body{font-family:monospace;white-space:pre-wrap;padding:16px;background:#111;color:#ddd}</style>
+</head>
+<body>
+<div id="log">loading…</div>
+<script>
+// Opens a WebTransport session to a node started with
+// -p2pwebtransportecho=1, using serverCertificateHashes when ?hash= is given
+// (an ECDSA P-256 certificate valid for at most 14 days), then exercises a
+// bidirectional stream (echo), a unidirectional stream and datagrams. The
+// result is reported to the page server as GET /result?<json>.
+const params = new URLSearchParams(location.search);
+const port = params.get("port") || "46433";
+const host = params.get("host") || "127.0.0.1";
+const path = params.get("path") || "/p2p/wt";
+const hashHex = params.get("hash");
+const url = `https://${host}:${port}${path}`;
+const out = [];
+const log = (m) => { out.push(m); document.getElementById("log").textContent = out.join("\n"); };
+function hexToBytes(h) { const a = new Uint8Array(h.length / 2); for (let i = 0; i < a.length; i++) a[i] = parseInt(h.substr(2 * i, 2), 16); return a; }
+const result = { url, ok: false, steps: {} };
+window.__wt_result = result;
+(async () => {
+  try {
+    log(`UA: ${navigator.userAgent}`);
+    log(`WebTransport in window: ${typeof WebTransport}`);
+    const opts = hashHex ? { serverCertificateHashes: [{ algorithm: "sha-256", value: hexToBytes(hashHex) }] } : {};
+    const t0 = performance.now();
+    const wt = new WebTransport(url, opts);
+    wt.closed.then(() => log("session closed cleanly")).catch(e => log(`session closed with error: ${e}`));
+    await wt.ready;
+    result.steps.ready_ms = +(performance.now() - t0).toFixed(1);
+    log(`ready after ${result.steps.ready_ms} ms; reliability=${wt.reliability} congestionControl=${wt.congestionControl}`);
+    // bidi echo
+    const bidi = await wt.createBidirectionalStream();
+    const w = bidi.writable.getWriter();
+    const msg = new TextEncoder().encode("hello-from-browser-" + Date.now());
+    const t1 = performance.now();
+    await w.write(msg);
+    const r = bidi.readable.getReader();
+    let got = new Uint8Array(0);
+    while (got.length < msg.length) {
+      const { value, done } = await r.read();
+      if (done) break;
+      const n = new Uint8Array(got.length + value.length); n.set(got); n.set(value, got.length); got = n;
+    }
+    result.steps.bidi_echo_ok = new TextDecoder().decode(got) === new TextDecoder().decode(msg);
+    result.steps.bidi_rtt_ms = +(performance.now() - t1).toFixed(2);
+    log(`bidi echo ok=${result.steps.bidi_echo_ok} rtt=${result.steps.bidi_rtt_ms} ms`);
+    // uni stream: send; server echoes on a server-initiated uni stream
+    const uni = await wt.createUnidirectionalStream();
+    const uw = uni.getWriter();
+    await uw.write(new TextEncoder().encode("uni-hello"));
+    await uw.close();
+    const incoming = wt.incomingUnidirectionalStreams.getReader();
+    const { value: inStream } = await Promise.race([incoming.read(), new Promise((_, rej) => setTimeout(() => rej(new Error("uni timeout")), 3000))]);
+    const ir = inStream.getReader();
+    const { value: uniEcho } = await ir.read();
+    result.steps.uni_echo = new TextDecoder().decode(uniEcho);
+    log(`uni echo: ${result.steps.uni_echo}`);
+    // datagram echo
+    const dw = wt.datagrams.writable.getWriter();
+    const dr = wt.datagrams.readable.getReader();
+    const t2 = performance.now();
+    await dw.write(new TextEncoder().encode("dgram-hello"));
+    const { value: dg } = await Promise.race([dr.read(), new Promise((_, rej) => setTimeout(() => rej(new Error("datagram timeout")), 3000))]);
+    result.steps.dgram_echo = new TextDecoder().decode(dg);
+    result.steps.dgram_rtt_ms = +(performance.now() - t2).toFixed(2);
+    log(`datagram echo: ${result.steps.dgram_echo} rtt=${result.steps.dgram_rtt_ms} ms`);
+    result.ok = result.steps.bidi_echo_ok && result.steps.uni_echo === "uni-hello" && result.steps.dgram_echo === "dgram-hello";
+    log(`RESULT: ${result.ok ? "PASS" : "FAIL"}`);
+    wt.close({ closeCode: 0, reason: "done" });
+  } catch (e) {
+    result.error = String(e);
+    log(`ERROR: ${e}`);
+    log(`RESULT: FAIL`);
+  }
+  document.title = result.ok ? "WT PASS" : "WT FAIL";
+  result.ua = navigator.userAgent;
+  // Report back through the page server's access log (GET /result?...).
+  await new Promise(r => setTimeout(r, 200));
+  location.href = "/result?" + encodeURIComponent(JSON.stringify(result));
+})();
+</script>
+</body>
+</html>
