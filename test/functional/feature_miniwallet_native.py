@@ -11,7 +11,7 @@ from io import BytesIO
 from test_framework.messages import CTransaction
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal, assert_greater_than
-from test_framework.wallet import MiniWallet, MiniWalletMode
+from test_framework.wallet import MiniWalletMode, NativeMiniWallet
 
 
 class NativeMiniWalletTest(BitcoinTestFramework):
@@ -42,7 +42,7 @@ class NativeMiniWalletTest(BitcoinTestFramework):
 
     def run_test(self):
         node = self.nodes[0]
-        wallet = MiniWallet(node)
+        wallet = NativeMiniWallet(node)
         if self.options.cached_chain:
             assert_greater_than(len(wallet.get_utxos(mark_as_spent=False)), 0)
         wallet.generate(140)
@@ -81,7 +81,7 @@ class NativeMiniWalletTest(BitcoinTestFramework):
         )
         node.reconsiderblock(block)
 
-        signed = MiniWallet(node, mode=MiniWalletMode.RAW_P2PK)
+        signed = NativeMiniWallet(node, mode=MiniWalletMode.RAW_P2PK)
         signed.generate(102)
         inputs = signed.get_utxos(mark_as_spent=False)[:2]
         assert_equal(len(inputs), 2)
