@@ -83,6 +83,12 @@ if(BUILD_WALLET)
 	)
 endif()
 
+if(ENABLE_WEBTRANSPORT)
+	set(BITCOIN_WEBTRANSPORT_TESTS
+		net_quic_tests.cpp
+	)
+endif()
+
 function(gen_asmap_headers HEADERS_VAR)
 	foreach(INPUT_FILE ${ARGN})
 		set(OUTPUT_FILE "${CMAKE_CURRENT_BINARY_DIR}/${INPUT_FILE}.h")
@@ -316,6 +322,8 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 
 		# HTTP/2 tests
 		${BITCOIN_HTTP2_TESTS}
+		# P2P over WebTransport (QUIC) tests
+		${BITCOIN_WEBTRANSPORT_TESTS}
 )
 
 function(add_boost_test_runners_with_upgrade_activated SUITE EXECUTABLE)
