@@ -1,0 +1,467 @@
+{
+  "schema": 1,
+  "batch": "index-lifecycle-and-filters",
+  "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred.",
+  "files": [
+    {
+      "path": "src/index/base.cpp",
+      "rules": [
+        {
+          "id": "index_sync_interrupted",
+          "old": "LogPrintf(\"%s: m_interrupt set; exiting ThreadSync\\n\",\n                          GetName())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"index_sync_interrupted\", \"{name}: m_interrupt set; exiting ThreadSync\").Field(BCLog::LogField::Name, GetName())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: m_interrupt set; exiting ThreadSync\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "GetName()"
+            ]
+          },
+          "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred."
+        },
+        {
+          "id": "index_sync_progress",
+          "old": "LogInfo(\"Syncing %s with block chain from height %d\\n\",\n                        GetName(), pindex->nHeight)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"index_sync_progress\", \"Syncing {name} with block chain from height {height}\").Field(BCLog::LogField::Name, GetName()).Field(BCLog::LogField::Height, pindex->nHeight)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogInfo",
+            "format": "Syncing %s with block chain from height %d\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "GetName()",
+              "pindex->nHeight"
+            ]
+          },
+          "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred."
+        },
+        {
+          "id": "index_enabled_at_height",
+          "old": "LogPrintf(\"%s is enabled at height %d\\n\", GetName(), pindex->nHeight)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"index_enabled_at_height\", \"{name} is enabled at height {height}\").Field(BCLog::LogField::Name, GetName()).Field(BCLog::LogField::Height, pindex->nHeight)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s is enabled at height %d\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "GetName()",
+              "pindex->nHeight"
+            ]
+          },
+          "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred."
+        },
+        {
+          "id": "index_enabled",
+          "old": "LogPrintf(\"%s is enabled\\n\", GetName())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"index_enabled\", \"{name} is enabled\").Field(BCLog::LogField::Name, GetName())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s is enabled\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "GetName()"
+            ]
+          },
+          "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred."
+        },
+        {
+          "id": "index_commit_failed",
+          "old": "LogError(\"%s: Failed to commit latest %s state\\n\", __func__, GetName())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"index_commit_failed\", \"{source_function}: Failed to commit latest {name} state\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::Name, GetName())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: Failed to commit latest %s state\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "GetName()"
+            ]
+          },
+          "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred."
+        },
+        {
+          "id": "index_notification_parent_unknown",
+          "old": "LogPrintf(\"%s: WARNING: Block %s does not connect to an ancestor \"\n                      \"of known best chain (tip=%s); not updating index\\n\",\n                      __func__, pindex->GetBlockHash().ToString(),\n                      best_block_index->GetBlockHash().ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"index_notification_parent_unknown\", \"{source_function}: WARNING: Block {block_hash} does not connect to an ancestor of known best chain (tip={best_block_hash}); not updating index\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::BlockHash, pindex->GetBlockHash()).Field(BCLog::LogField::BestBlockHash, best_block_index->GetBlockHash())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: WARNING: Block %s does not connect to an ancestor of known best chain (tip=%s); not updating index\n",
+            "specifiers": [
+              "%s",
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "pindex->GetBlockHash().ToString()",
+              "best_block_index->GetBlockHash().ToString()"
+            ]
+          },
+          "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred."
+        },
+        {
+          "id": "index_locator_tip_unknown",
+          "old": "LogPrintf(\"%s: WARNING: Locator contains block (hash=%s) not on known \"\n                  \"best chain (tip=%s); not writing index locator\\n\",\n                  __func__, locator_tip_hash.ToString(),\n                  best_block_index->GetBlockHash().ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"index_locator_tip_unknown\", \"{source_function}: WARNING: Locator contains block (hash={block_hash}) not on known best chain (tip={best_block_hash}); not writing index locator\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::BlockHash, locator_tip_hash).Field(BCLog::LogField::BestBlockHash, best_block_index->GetBlockHash())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: WARNING: Locator contains block (hash=%s) not on known best chain (tip=%s); not writing index locator\n",
+            "specifiers": [
+              "%s",
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "locator_tip_hash.ToString()",
+              "best_block_index->GetBlockHash().ToString()"
+            ]
+          },
+          "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred."
+        },
+        {
+          "id": "index_notifications_catching_up",
+          "old": "LogPrintf(\"%s: %s is catching up on block notifications\\n\", __func__,\n              GetName())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"index_notifications_catching_up\", \"{source_function}: {name} is catching up on block notifications\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::Name, GetName())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: %s is catching up on block notifications\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "GetName()"
+            ]
+          },
+          "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred."
+        }
+      ]
+    },
+    {
+      "path": "src/index/blockfilterindex.cpp",
+      "rules": [
+        {
+          "id": "block_filter_state_read_failed",
+          "old": "LogError(\n                \"%s: Cannot read current %s state; index may be corrupted\\n\",\n                __func__, GetName())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"block_filter_state_read_failed\", \"{source_function}: Cannot read current {name} state; index may be corrupted\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::Name, GetName())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: Cannot read current %s state; index may be corrupted\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "GetName()"
+            ]
+          },
+          "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred."
+        },
+        {
+          "id": "block_filter_commit_open_failed",
+          "old": "LogError(\"%s: Failed to open filter file %d\\n\", __func__, pos.nFile)",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"block_filter_commit_open_failed\", \"{source_function}: Failed to open filter file {file_number}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::FileNumber, pos.nFile)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: Failed to open filter file %d\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "__func__",
+              "pos.nFile"
+            ]
+          },
+          "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred."
+        },
+        {
+          "id": "block_filter_commit_failed",
+          "old": "LogError(\"%s: Failed to commit filter file %d\\n\", __func__, pos.nFile)",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"block_filter_commit_failed\", \"{source_function}: Failed to commit filter file {file_number}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::FileNumber, pos.nFile)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: Failed to commit filter file %d\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "__func__",
+              "pos.nFile"
+            ]
+          },
+          "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred."
+        },
+        {
+          "id": "block_filter_deserialization_failed",
+          "old": "LogError(\"%s: Failed to deserialize block filter from disk: %s\\n\",\n                 __func__, e.what())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"block_filter_deserialization_failed\", \"{source_function}: Failed to deserialize block filter from disk: {error}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::Error, e.what())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: Failed to deserialize block filter from disk: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "e.what()"
+            ]
+          },
+          "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred."
+        },
+        {
+          "id": "block_filter_write_open_failed",
+          "old": "LogPrintf(\"%s: Failed to open filter file %d\\n\", __func__,\n                      pos.nFile)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_filter_write_open_failed\", \"{source_function}: Failed to open filter file {file_number}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::FileNumber, pos.nFile)",
+          "count": 2,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: Failed to open filter file %d\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "__func__",
+              "pos.nFile"
+            ]
+          },
+          "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred."
+        },
+        {
+          "id": "block_filter_write_truncate_failed",
+          "old": "LogPrintf(\"%s: Failed to truncate filter file %d\\n\", __func__,\n                      pos.nFile)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_filter_write_truncate_failed\", \"{source_function}: Failed to truncate filter file {file_number}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::FileNumber, pos.nFile)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: Failed to truncate filter file %d\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "__func__",
+              "pos.nFile"
+            ]
+          },
+          "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred."
+        },
+        {
+          "id": "block_filter_write_commit_failed",
+          "old": "LogPrintf(\"%s: Failed to commit filter file %d\\n\", __func__,\n                      pos.nFile)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_filter_write_commit_failed\", \"{source_function}: Failed to commit filter file {file_number}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::FileNumber, pos.nFile)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: Failed to commit filter file %d\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "__func__",
+              "pos.nFile"
+            ]
+          },
+          "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred."
+        },
+        {
+          "id": "block_filter_disk_space_unavailable",
+          "old": "LogPrintf(\"%s: out of disk space\\n\", __func__)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_filter_disk_space_unavailable\", \"{source_function}: out of disk space\").Field(BCLog::LogField::SourceFunction, __func__)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: out of disk space\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred."
+        },
+        {
+          "id": "block_filter_previous_block_unexpected",
+          "old": "LogError(\"%s: previous block header belongs to unexpected \"\n                     \"block %s; expected %s\\n\",\n                     __func__, read_out.first.ToString(),\n                     expected_block_hash.ToString())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"block_filter_previous_block_unexpected\", \"{source_function}: previous block header belongs to unexpected block {block_hash}; expected {expected_block_hash}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::BlockHash, read_out.first).Field(BCLog::LogField::ExpectedBlockHash, expected_block_hash)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: previous block header belongs to unexpected block %s; expected %s\n",
+            "specifiers": [
+              "%s",
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "read_out.first.ToString()",
+              "expected_block_hash.ToString()"
+            ]
+          },
+          "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred."
+        },
+        {
+          "id": "block_filter_database_key_unexpected",
+          "old": "LogError(\"%s: unexpected key in %s: expected (%c, %d)\\n\", __func__,\n                     index_name, DB_BLOCK_HEIGHT, height)",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"block_filter_database_key_unexpected\", \"{source_function}: unexpected key in {name}: expected ({database_key_prefix}, {height})\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::Name, index_name).Field(BCLog::LogField::DatabaseKeyPrefix, BCLog::LogChar{DB_BLOCK_HEIGHT}).Field(BCLog::LogField::Height, height)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: unexpected key in %s: expected (%c, %d)\n",
+            "specifiers": [
+              "%s",
+              "%s",
+              "%c",
+              "%d"
+            ],
+            "arguments": [
+              "__func__",
+              "index_name",
+              "DB_BLOCK_HEIGHT",
+              "height"
+            ]
+          },
+          "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred."
+        },
+        {
+          "id": "block_filter_database_height_read_failed",
+          "old": "LogError(\"%s: unable to read value in %s at key (%c, %d)\\n\",\n                     __func__, index_name, DB_BLOCK_HEIGHT, height)",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"block_filter_database_height_read_failed\", \"{source_function}: unable to read value in {name} at key ({database_key_prefix}, {height})\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::Name, index_name).Field(BCLog::LogField::DatabaseKeyPrefix, BCLog::LogChar{DB_BLOCK_HEIGHT}).Field(BCLog::LogField::Height, height)",
+          "count": 2,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: unable to read value in %s at key (%c, %d)\n",
+            "specifiers": [
+              "%s",
+              "%s",
+              "%c",
+              "%d"
+            ],
+            "arguments": [
+              "__func__",
+              "index_name",
+              "DB_BLOCK_HEIGHT",
+              "height"
+            ]
+          },
+          "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred."
+        },
+        {
+          "id": "block_filter_start_height_negative",
+          "old": "LogError(\"%s: start height (%d) is negative\\n\", __func__, start_height)",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"block_filter_start_height_negative\", \"{source_function}: start height ({index_start_height}) is negative\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::IndexStartHeight, start_height)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: start height (%d) is negative\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "__func__",
+              "start_height"
+            ]
+          },
+          "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred."
+        },
+        {
+          "id": "block_filter_height_range_reversed",
+          "old": "LogError(\"%s: start height (%d) is greater than stop height (%d)\\n\",\n                 __func__, start_height, stop_index->nHeight)",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"block_filter_height_range_reversed\", \"{source_function}: start height ({index_start_height}) is greater than stop height ({index_stop_height})\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::IndexStartHeight, start_height).Field(BCLog::LogField::IndexStopHeight, stop_index->nHeight)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: start height (%d) is greater than stop height (%d)\n",
+            "specifiers": [
+              "%s",
+              "%d",
+              "%d"
+            ],
+            "arguments": [
+              "__func__",
+              "start_height",
+              "stop_index->nHeight"
+            ]
+          },
+          "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred."
+        },
+        {
+          "id": "block_filter_database_hash_read_failed",
+          "old": "LogError(\"%s: unable to read value in %s at key (%c, %s)\\n\",\n                     __func__, index_name, DB_BLOCK_HASH,\n                     block_hash.ToString())",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"block_filter_database_hash_read_failed\", \"{source_function}: unable to read value in {name} at key ({database_key_prefix}, {block_hash})\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::Name, index_name).Field(BCLog::LogField::DatabaseKeyPrefix, BCLog::LogChar{DB_BLOCK_HASH}).Field(BCLog::LogField::BlockHash, block_hash)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "%s: unable to read value in %s at key (%c, %s)\n",
+            "specifiers": [
+              "%s",
+              "%s",
+              "%c",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "index_name",
+              "DB_BLOCK_HASH",
+              "block_hash.ToString()"
+            ]
+          },
+          "review_note": "Preserve original message, severity, category, control flow, return values, locks and index state. Warning prose originally logged at Info stays Info. File numbers/heights stay signed; hash fields copy raw BlockHash instead of producer ToString. Database prefixes copy their unchanged uint8_t via LogChar into STRING; no guessed Unicode or decimal conversion. FatalErrorf helpers are outside this direct-producer batch and remain explicitly deferred."
+        }
+      ],
+      "support_adjustments": [
+        {
+          "purpose": "Use copied byte adapter for original ASCII database-prefix %c fields.",
+          "old": "#include <index/blockfilterindex.h>\n",
+          "new": "#include <index/blockfilterindex.h>\n#include <logging/values.h>\n"
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Append precise index chain/file/range/key semantics without reusing incompatible tip or numeric prefix fields.",
+          "old": "    X(NewAddressCount, new_address_count, INT, \"\", \"\")\n\nnamespace BCLog {",
+          "new": "    X(NewAddressCount, new_address_count, INT, \"\", \"\") \\\n    X(BestBlockHash, best_block_hash, HASH, \"\", \"\") \\\n    X(FileNumber, file_number, INT, \"\", \"\") \\\n    X(ExpectedBlockHash, expected_block_hash, HASH, \"\", \"\") \\\n    X(DatabaseKeyPrefix, database_key_prefix, STRING, \"\", \"\") \\\n    X(IndexStartHeight, index_start_height, INT, \"\", \"\") \\\n    X(IndexStopHeight, index_stop_height, INT, \"\", \"\")\n\nnamespace BCLog {"
+        }
+      ]
+    }
+  ]
+}

@@ -3,7 +3,11 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <addrman.h>
+#include <chain.h>
+#include <chainparams.h>
 #include <common/args.h>
+#include <index/blockfilterindex.h>
+#include <interfaces/chain.h>
 #include <logging.h>
 #include <logging/values.h>
 #include <netbase.h>
@@ -1125,6 +1129,45 @@ BOOST_AUTO_TEST_CASE(wss_packed_address_keeps_full_payload) {
     const auto oversized{Json()};
     BOOST_CHECK(oversized["addr"].isNull());
     BOOST_CHECK(oversized["fields_truncated"].get_bool());
+}
+
+BOOST_AUTO_TEST_CASE(
+    block_filter_range_errors_keep_signed_heights_and_messages) {
+    Format(BCLog::LogFormat::JSON);
+    BlockFilterIndex index(interfaces::MakeChain(m_node, Params()),
+                           BlockFilterType::BASIC, 1 << 20, true);
+    Lines(); // Exclude database setup diagnostics from the operation
+             // assertions.
+    CBlockIndex stop;
+    stop.nHeight = 4;
+    std::vector<BlockFilter> filters;
+    BOOST_CHECK(!index.LookupFilterRange(-1, &stop, filters));
+    BOOST_CHECK(filters.empty());
+    auto row{Json()};
+    BOOST_CHECK_EQUAL(row["event"].get_str(),
+                      "block_filter_start_height_negative");
+    BOOST_CHECK_EQUAL(row["level"].get_str(), "error");
+    BOOST_CHECK(row["index_start_height"].isNum());
+    BOOST_CHECK_EQUAL(row["index_start_height"].getInt<int>(), -1);
+    BOOST_CHECK_EQUAL(row["source_function"].get_str(), "LookupRange");
+    BOOST_CHECK_EQUAL(row["message"].get_str(),
+                      "LookupRange: start height (-1) is negative");
+    BOOST_CHECK(row["fields_truncated"].isNull());
+
+    BOOST_CHECK(!index.LookupFilterRange(5, &stop, filters));
+    BOOST_CHECK(filters.empty());
+    row = Json();
+    BOOST_CHECK_EQUAL(row["event"].get_str(),
+                      "block_filter_height_range_reversed");
+    BOOST_CHECK_EQUAL(row["level"].get_str(), "error");
+    BOOST_CHECK(row["index_start_height"].isNum());
+    BOOST_CHECK(row["index_stop_height"].isNum());
+    BOOST_CHECK_EQUAL(row["index_start_height"].getInt<int>(), 5);
+    BOOST_CHECK_EQUAL(row["index_stop_height"].getInt<int>(), 4);
+    BOOST_CHECK_EQUAL(
+        row["message"].get_str(),
+        "LookupRange: start height (5) is greater than stop height (4)");
+    BOOST_CHECK(row["fields_truncated"].isNull());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

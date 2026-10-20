@@ -130,7 +130,13 @@
     X(ExistingAddr, existing_addr, STRING, "", "") \
     X(CandidateCount, candidate_count, UINT, "", "") \
     X(TriedAddressCount, tried_address_count, INT, "", "") \
-    X(NewAddressCount, new_address_count, INT, "", "")
+    X(NewAddressCount, new_address_count, INT, "", "") \
+    X(BestBlockHash, best_block_hash, HASH, "", "") \
+    X(FileNumber, file_number, INT, "", "") \
+    X(ExpectedBlockHash, expected_block_hash, HASH, "", "") \
+    X(DatabaseKeyPrefix, database_key_prefix, STRING, "", "") \
+    X(IndexStartHeight, index_start_height, INT, "", "") \
+    X(IndexStopHeight, index_stop_height, INT, "", "")
 
 namespace BCLog {
 
