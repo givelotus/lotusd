@@ -1,0 +1,95 @@
+{
+  "schema": 1,
+  "batch": "node-shutdown-lifecycle",
+  "review_note": "Reviewed shared shutdown/RPC lifecycle producers, unchanged readable diagnostics and branch behavior. Actual functional checks must follow compilation.",
+  "files": [
+    {
+      "path": "src/init.cpp",
+      "rules": [
+        {
+          "id": "node_shutdown_started",
+          "old": "LogPrintf(\"%s: In progress...\\n\", __func__)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"node_shutdown_started\", \"{source_function}: In progress...\").Field(BCLog::LogField::SourceFunction, __func__)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: In progress...\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve exact severity, category, readable text, evaluation site, shutdown ordering and exception branches. SourceFunction and Error are existing copied snapshot fields. No new registry/API keys, option semantics, file paths or secrets. Failure variants retain existing level; WarningEvent remains never-drop. RPC stop remains debug/RPC opt-in."
+        },
+        {
+          "id": "node_shutdown_pid_file_missing",
+          "old": "LogPrintf(\"%s: Unable to remove PID file: File does not exist\\n\",\n                      __func__)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"node_shutdown_pid_file_missing\", \"{source_function}: Unable to remove PID file: File does not exist\").Field(BCLog::LogField::SourceFunction, __func__)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: Unable to remove PID file: File does not exist\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve exact severity, category, readable text, evaluation site, shutdown ordering and exception branches. SourceFunction and Error are existing copied snapshot fields. No new registry/API keys, option semantics, file paths or secrets. Failure variants retain existing level; WarningEvent remains never-drop. RPC stop remains debug/RPC opt-in."
+        },
+        {
+          "id": "node_shutdown_pid_file_remove_failed",
+          "old": "LogWarning(\"%s: Unable to remove PID file: %s\\n\", __func__,\n                   e.code().message())",
+          "replacement": "LogWarningEvent(BCLog::ALL, \"node_shutdown_pid_file_remove_failed\", \"{source_function}: Unable to remove PID file: {error}\").Field(BCLog::LogField::SourceFunction, __func__).Field(BCLog::LogField::Error, e.code().message())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogWarning",
+            "format": "%s: Unable to remove PID file: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "e.code().message()"
+            ]
+          },
+          "review_note": "Preserve exact severity, category, readable text, evaluation site, shutdown ordering and exception branches. SourceFunction and Error are existing copied snapshot fields. No new registry/API keys, option semantics, file paths or secrets. Failure variants retain existing level; WarningEvent remains never-drop. RPC stop remains debug/RPC opt-in."
+        },
+        {
+          "id": "node_shutdown_completed",
+          "old": "LogPrintf(\"%s: done\\n\", __func__)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"node_shutdown_completed\", \"{source_function}: done\").Field(BCLog::LogField::SourceFunction, __func__)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: done\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "__func__"
+            ]
+          },
+          "review_note": "Preserve exact severity, category, readable text, evaluation site, shutdown ordering and exception branches. SourceFunction and Error are existing copied snapshot fields. No new registry/API keys, option semantics, file paths or secrets. Failure variants retain existing level; WarningEvent remains never-drop. RPC stop remains debug/RPC opt-in."
+        },
+        {
+          "id": "rpc_service_stopped",
+          "old": "LogDebug(BCLog::RPC, \"RPC stopped.\\n\")",
+          "replacement": "LogEvent(BCLog::RPC, \"rpc_service_stopped\", \"RPC stopped.\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "RPC stopped.\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve exact severity, category, readable text, evaluation site, shutdown ordering and exception branches. SourceFunction and Error are existing copied snapshot fields. No new registry/API keys, option semantics, file paths or secrets. Failure variants retain existing level; WarningEvent remains never-drop. RPC stop remains debug/RPC opt-in."
+        }
+      ]
+    }
+  ]
+}
