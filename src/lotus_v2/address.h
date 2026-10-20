@@ -7,6 +7,7 @@
 #include "output.h"
 
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -23,9 +24,20 @@ std::string_view AddressPrefix(AddressNetwork network);
 // Always lowercase.
 std::string EncodeAddress(AddressNetwork network, const Hash32 &root);
 
+// Type 1 commits BLAKE3(x-only secp256k1 public key). It is a native
+// BIP340 spending template, not a legacy P2PKH script or address alias.
+std::string EncodeKeyHashAddress(AddressNetwork network, const Hash32 &key_hash);
+Hash32 NativeKeyHash(std::span<const uint8_t, 32> xonly_key);
+std::vector<uint8_t> KeyHashProgram(const Hash32 &key_hash);
+Hash32 KeyHashRoot(const Hash32 &key_hash);
+
 struct DecodedAddress {
     AddressNetwork network;
+    // For type 0 this is the root; for type 1 this is the key hash.
     Hash32 root;
+    uint8_t type = 0;
+
+    Hash32 BranchRoot() const;
 };
 
 // Accepts all-lowercase or all-uppercase input, nothing else (callers strip
