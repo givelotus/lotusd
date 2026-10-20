@@ -24,3 +24,16 @@ to finish before releasing node dependencies. Statistics return copies rather
 than references to mutable worker/job state. Startup and final shutdown are
 serialized by the node lifecycle; concurrently invoking startup twice is not a
 supported API. Test-only Reset requires no active job/share operation.
+
+Jobs require an explicit native address for this network in `pooladdress`.
+Both native address types use their canonical branch root; legacy addresses,
+raw script hex, and invented hash-of-label keys are not payout destinations.
+Native-address workers (optionally followed by `.worker`) pay that address.
+Short symbolic worker labels and `sub:` newsletter workers explicitly pay the
+configured pool address. The operator must control that recipient's native
+spending policy; type0 addresses do not prove knowledge of its witness.
+Missing or invalid configuration leaves statistics available with
+`payout_ready=false` and a diagnostic, but job creation fails before caching a
+job. Unknown native policies for required legacy miner-fund/staking payees fail
+closed. Configuration becomes immutable on first worker/job use. The pool does
+not add a legacy signing bridge or change consensus reward policy.
