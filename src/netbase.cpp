@@ -468,9 +468,11 @@ bool Socks5(const std::string &strDest, uint16_t port,
     uint8_t pchRet1[2];
     if (InterruptibleRecv(pchRet1, 2, g_socks5_recv_timeout, sock) !=
         IntrRecvError::OK) {
-        LogPrintf("Socks5() connect to %s:%d failed: InterruptibleRecv() "
-                  "timeout or other failure\n",
-                  strDest, port);
+        LogInfoEvent(
+            BCLog::ALL, "socks5_initial_response_failed",
+            "Socks5() connect to {peer_address}:{peer_port} failed: InterruptibleRecv() timeout or other failure")
+            .Field(BCLog::LogField::PeerAddress, strDest)
+            .Field(BCLog::LogField::PeerPort, port);
         return false;
     }
     if (pchRet1[0] != SOCKSVersion::SOCKS5) {
@@ -562,8 +564,12 @@ bool Socks5(const std::string &strDest, uint16_t port,
     }
     if (pchRet2[1] != SOCKS5Reply::SUCCEEDED) {
         // Failures to connect to a peer that are not proxy errors
-        LogPrintf("Socks5() connect to %s:%d failed: %s\n", strDest, port,
-                  Socks5ErrorString(pchRet2[1]));
+        LogInfoEvent(
+            BCLog::ALL, "socks5_connection_refused",
+            "Socks5() connect to {peer_address}:{peer_port} failed: {error}")
+            .Field(BCLog::LogField::PeerAddress, strDest)
+            .Field(BCLog::LogField::PeerPort, port)
+            .Field(BCLog::LogField::Error, Socks5ErrorString(pchRet2[1]));
         return false;
     }
     // Reserved field must be 0
@@ -645,17 +651,21 @@ std::unique_ptr<Sock> CreateSockOS(int domain, int type, int protocol) {
     // should use the MSG_NOSIGNAL flag for every send.
     if (sock->SetSockOpt(SOL_SOCKET, SO_NOSIGPIPE, (sockopt_arg_type)&set,
                          sizeof(int)) == SOCKET_ERROR) {
-        LogPrintf(
-            "Error setting SO_NOSIGPIPE on socket: %s, continuing anyway\n",
-            NetworkErrorString(WSAGetLastError()));
+        const int socket_error{WSAGetLastError()};
+        LogInfoEvent(
+            BCLog::ALL, "network_socket_nosigpipe_failed",
+            "Error setting SO_NOSIGPIPE on socket: {error}, continuing anyway")
+            .Field(BCLog::LogField::Error, NetworkErrorString(socket_error));
     }
 #endif
 
     // Set the non-blocking option on the socket.
     if (!sock->SetNonBlocking()) {
-        LogPrintf("CreateSocket: Setting socket to non-blocking "
-                  "failed, error %s\n",
-                  NetworkErrorString(WSAGetLastError()));
+        const int socket_error{WSAGetLastError()};
+        LogInfoEvent(
+            BCLog::ALL, "network_socket_nonblocking_failed",
+            "CreateSocket: Setting socket to non-blocking failed, error {error}")
+            .Field(BCLog::LogField::Error, NetworkErrorString(socket_error));
         return nullptr;
     }
 
@@ -687,9 +697,11 @@ static void LogConnectFailure(bool manual_connection, const char *fmt,
                               const Args &...args) {
     std::string error_message = tfm::format(fmt, args...);
     if (manual_connection) {
-        LogPrintf("%s\n", error_message);
+        LogInfoEvent(BCLog::ALL, "network_manual_connection_failed", "{error}")
+            .Field(BCLog::LogField::Error, error_message);
     } else {
-        LogDebug(BCLog::NET, "%s\n", error_message);
+        LogEvent(BCLog::NET, "network_automatic_connection_failed", "{error}")
+            .Field(BCLog::LogField::Error, error_message);
     }
 }
 
@@ -709,8 +721,13 @@ static bool ConnectToSocket(const Sock &sock, struct sockaddr *sockaddr,
             Sock::Event occurred;
             if (!sock.Wait(std::chrono::milliseconds{nConnectTimeout},
                            requested, &occurred)) {
-                LogPrintf("wait for connect to %s failed: %s\n", dest_str,
-                          NetworkErrorString(WSAGetLastError()));
+                const int socket_error{WSAGetLastError()};
+                LogInfoEvent(
+                    BCLog::ALL, "network_connect_wait_failed",
+                    "wait for connect to {peer_address} failed: {error}")
+                    .Field(BCLog::LogField::PeerAddress, dest_str)
+                    .Field(BCLog::LogField::Error,
+                           NetworkErrorString(socket_error));
                 return false;
             } else if (occurred == 0) {
                 LogDebug(BCLog::NET, "connection attempt to %s timed out\n",
@@ -727,8 +744,12 @@ static bool ConnectToSocket(const Sock &sock, struct sockaddr *sockaddr,
             if (sock.GetSockOpt(SOL_SOCKET, SO_ERROR,
                                 (sockopt_arg_type)&sockerr,
                                 &sockerr_len) == SOCKET_ERROR) {
-                LogPrintf("getsockopt() for %s failed: %s\n", dest_str,
-                          NetworkErrorString(WSAGetLastError()));
+                const int socket_error{WSAGetLastError()};
+                LogInfoEvent(BCLog::ALL, "network_connect_sockopt_failed",
+                             "getsockopt() for {peer_address} failed: {error}")
+                    .Field(BCLog::LogField::PeerAddress, dest_str)
+                    .Field(BCLog::LogField::Error,
+                           NetworkErrorString(socket_error));
                 return false;
             }
             if (sockerr != 0) {
@@ -766,8 +787,10 @@ std::unique_ptr<Sock> ConnectDirectly(const CService &dest,
     struct sockaddr_storage sockaddr;
     socklen_t len = sizeof(sockaddr);
     if (!dest.GetSockAddr((struct sockaddr *)&sockaddr, &len)) {
-        LogPrintf("Cannot get sockaddr for %s: unsupported network\n",
-                  dest.ToStringAddrPort());
+        LogInfoEvent(
+            BCLog::ALL, "network_destination_unsupported",
+            "Cannot get sockaddr for {peer_address}: unsupported network")
+            .Field(BCLog::LogField::PeerAddress, dest.ToStringAddrPort());
         return {};
     }
 
