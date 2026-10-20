@@ -5,6 +5,7 @@
 #include <addrman.h>
 #include <chain.h>
 #include <chainparams.h>
+#include <checkqueue.h>
 #include <coins.h>
 #include <common/args.h>
 #include <flatfile.h>
@@ -46,9 +47,11 @@
 #include <chrono>
 #include <cmath>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -1569,6 +1572,20 @@ BOOST_AUTO_TEST_CASE(
                 size_t(allocated), size_t(2), kind, size_t(capacity)));
         BOOST_CHECK(row["fields_truncated"].isNull());
     }
+}
+
+BOOST_AUTO_TEST_CASE(
+    actual_checkqueue_constructor_keeps_additional_worker_count) {
+    Format(BCLog::LogFormat::JSON);
+    CCheckQueue<std::function<std::optional<int>()>> queue{128, 0};
+    const auto row{Json()};
+    BOOST_CHECK_EQUAL(row["event"].get_str(), "script_verification_workers");
+    BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
+    BOOST_CHECK(row["script_worker_threads"].isNum());
+    BOOST_CHECK_EQUAL(row["script_worker_threads"].getInt<int64_t>(), 0);
+    BOOST_CHECK_EQUAL(row["message"].get_str(),
+                      "Script verification uses 0 additional threads");
+    BOOST_CHECK(row["fields_truncated"].isNull());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
