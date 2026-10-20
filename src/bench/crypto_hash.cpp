@@ -13,6 +13,7 @@
 #include <hash.h>
 #include <random.h>
 #include <uint256.h>
+#include <util/hasher.h>
 
 #include <string>
 
@@ -148,3 +149,28 @@ BENCHMARK(MuHashMul);
 BENCHMARK(MuHashDiv);
 BENCHMARK(MuHashPrecompute);
 BENCHMARK(MuHashFinalize);
+
+/** Every coins view and mempool admission constructs a few of these. */
+static void SaltedOutpointHasherConstruct(benchmark::Bench &bench) {
+    uint64_t sink = 0;
+    bench.run([&] {
+        SaltedOutpointHasher hasher;
+        sink += hasher(COutPoint());
+    });
+    ankerl::nanobench::doNotOptimizeAway(sink);
+}
+BENCHMARK(SaltedOutpointHasherConstruct);
+
+/** Reference cost of independently seeding each salt word. */
+static void SaltedOutpointHasherTwoContexts(benchmark::Bench &bench) {
+    uint64_t sink = 0;
+    bench.run([&] {
+        const uint64_t k0 = FastRandomContext().rand64();
+        const uint64_t k1 = FastRandomContext().rand64();
+        const COutPoint outpoint;
+        sink +=
+            SipHashUint256Extra(k0, k1, outpoint.GetTxId(), outpoint.GetN());
+    });
+    ankerl::nanobench::doNotOptimizeAway(sink);
+}
+BENCHMARK(SaltedOutpointHasherTwoContexts);
