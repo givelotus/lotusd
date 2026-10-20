@@ -199,7 +199,9 @@
     X(SnapshotHash, snapshot_hash, HASH, "", "") \
     X(BlockIndexDescription, block_index_description, STRING, "", "") \
     X(SnapshotCacheMB, snapshot_cache_mb, UINT, "", "") \
-    X(SnapshotProgressPercent, snapshot_progress_percent, FLOAT, "", "")
+    X(SnapshotProgressPercent, snapshot_progress_percent, FLOAT, "", "") \
+    X(ImportedBlockCount, imported_block_count, INT, "", "") \
+    X(ElapsedMilliseconds, elapsed_milliseconds, INT, "", "")
 
 namespace BCLog {
 
