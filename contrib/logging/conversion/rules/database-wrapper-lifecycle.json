@@ -1,0 +1,206 @@
+{
+  "schema": 1,
+  "batch": "database-wrapper-lifecycle",
+  "review_note": "Shared database lifecycle and existing public obfuscation diagnostics; requires copied-byte LogHex API. No consensus, migration behavior or level changes. External LevelDB Logv continuation remains infrastructure, reviewed separately.",
+  "files": [
+    {
+      "path": "src/dbwrapper.cpp",
+      "rules": [
+        {
+          "id": "database_fatal_error",
+          "old": "LogPrintf(\"%s\\n\", errmsg)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"database_fatal_error\", \"{error}\").Field(BCLog::LogField::Error, errmsg)",
+          "count": 2,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "errmsg"
+            ]
+          },
+          "review_note": "Preserve exact original message, level/category, argument evaluation order and control flow. Keep both fatal diagnostics Info as before; Error retains already formatted backend context. Max-open-file limits stay signed. DB basename is Name, full paths are Path. Existing public XOR obfuscation bytes (not wallet/private encryption keys) are copied via LogHex and formatted only by the consumer; no new diagnostic disclosure. Existing LevelDB migration compatibility is unchanged."
+        },
+        {
+          "id": "database_open_file_limit",
+          "old": "LogDebug(BCLog::LEVELDB, \"LevelDB using max_open_files=%d (default=%d)\\n\",\n             options->max_open_files, default_open_files)",
+          "replacement": "LogEvent(BCLog::LEVELDB, \"database_open_file_limit\", \"LevelDB using max_open_files={max_open_files} (default={default_open_files})\").Field(BCLog::LogField::MaxOpenFiles, options->max_open_files).Field(BCLog::LogField::DefaultOpenFiles, default_open_files)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "LevelDB using max_open_files=%d (default=%d)\n",
+            "specifiers": [
+              "%d",
+              "%d"
+            ],
+            "arguments": [
+              "options->max_open_files",
+              "default_open_files"
+            ]
+          },
+          "review_note": "Preserve exact original message, level/category, argument evaluation order and control flow. Keep both fatal diagnostics Info as before; Error retains already formatted backend context. Max-open-file limits stay signed. DB basename is Name, full paths are Path. Existing public XOR obfuscation bytes (not wallet/private encryption keys) are copied via LogHex and formatted only by the consumer; no new diagnostic disclosure. Existing LevelDB migration compatibility is unchanged."
+        },
+        {
+          "id": "database_migration_started",
+          "old": "LogPrintf(\"Migrating LevelDB database in %s to libmdbx...\\n\",\n              fs::PathToString(dir))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"database_migration_started\", \"Migrating LevelDB database in {path} to libmdbx...\").Field(BCLog::LogField::Path, fs::PathToString(dir))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Migrating LevelDB database in %s to libmdbx...\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(dir)"
+            ]
+          },
+          "review_note": "Preserve exact original message, level/category, argument evaluation order and control flow. Keep both fatal diagnostics Info as before; Error retains already formatted backend context. Max-open-file limits stay signed. DB basename is Name, full paths are Path. Existing public XOR obfuscation bytes (not wallet/private encryption keys) are copied via LogHex and formatted only by the consumer; no new diagnostic disclosure. Existing LevelDB migration compatibility is unchanged."
+        },
+        {
+          "id": "database_migration_finished",
+          "old": "LogPrintf(\"Migrated %zu keys from LevelDB to libmdbx in %s (backed up LevelDB to leveldb.bak)\\n\",\n              total_keys, fs::PathToString(dir))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"database_migration_finished\", \"Migrated {count} keys from LevelDB to libmdbx in {path} (backed up LevelDB to leveldb.bak)\").Field(BCLog::LogField::Count, total_keys).Field(BCLog::LogField::Path, fs::PathToString(dir))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Migrated %zu keys from LevelDB to libmdbx in %s (backed up LevelDB to leveldb.bak)\n",
+            "specifiers": [
+              "%zu",
+              "%s"
+            ],
+            "arguments": [
+              "total_keys",
+              "fs::PathToString(dir)"
+            ]
+          },
+          "review_note": "Preserve exact original message, level/category, argument evaluation order and control flow. Keep both fatal diagnostics Info as before; Error retains already formatted backend context. Max-open-file limits stay signed. DB basename is Name, full paths are Path. Existing public XOR obfuscation bytes (not wallet/private encryption keys) are copied via LogHex and formatted only by the consumer; no new diagnostic disclosure. Existing LevelDB migration compatibility is unchanged."
+        },
+        {
+          "id": "database_wipe_started",
+          "old": "LogPrintf(\"Wiping libmdbx in %s\\n\",\n                      fs::PathToString(m_active_path))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"database_wipe_started\", \"Wiping libmdbx in {path}\").Field(BCLog::LogField::Path, fs::PathToString(m_active_path))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Wiping libmdbx in %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(m_active_path)"
+            ]
+          },
+          "review_note": "Preserve exact original message, level/category, argument evaluation order and control flow. Keep both fatal diagnostics Info as before; Error retains already formatted backend context. Max-open-file limits stay signed. DB basename is Name, full paths are Path. Existing public XOR obfuscation bytes (not wallet/private encryption keys) are copied via LogHex and formatted only by the consumer; no new diagnostic disclosure. Existing LevelDB migration compatibility is unchanged."
+        },
+        {
+          "id": "database_open_started",
+          "old": "LogPrintf(\"Opening libmdbx in %s\\n\", fs::PathToString(m_active_path))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"database_open_started\", \"Opening libmdbx in {path}\").Field(BCLog::LogField::Path, fs::PathToString(m_active_path))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Opening libmdbx in %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(m_active_path)"
+            ]
+          },
+          "review_note": "Preserve exact original message, level/category, argument evaluation order and control flow. Keep both fatal diagnostics Info as before; Error retains already formatted backend context. Max-open-file limits stay signed. DB basename is Name, full paths are Path. Existing public XOR obfuscation bytes (not wallet/private encryption keys) are copied via LogHex and formatted only by the consumer; no new diagnostic disclosure. Existing LevelDB migration compatibility is unchanged."
+        },
+        {
+          "id": "database_open_finished",
+          "old": "LogPrintf(\"Opened libmdbx successfully\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"database_open_finished\", \"Opened libmdbx successfully\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Opened libmdbx successfully\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve exact original message, level/category, argument evaluation order and control flow. Keep both fatal diagnostics Info as before; Error retains already formatted backend context. Max-open-file limits stay signed. DB basename is Name, full paths are Path. Existing public XOR obfuscation bytes (not wallet/private encryption keys) are copied via LogHex and formatted only by the consumer; no new diagnostic disclosure. Existing LevelDB migration compatibility is unchanged."
+        },
+        {
+          "id": "database_obfuscation_key_created",
+          "old": "LogPrintf(\"Wrote new obfuscate key for %s: %s\\n\",\n                  fs::PathToString(params.path), HexStr(obfuscate_key))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"database_obfuscation_key_created\", \"Wrote new obfuscate key for {path}: {obfuscation_key}\").Field(BCLog::LogField::Path, fs::PathToString(params.path)).Field(BCLog::LogField::ObfuscationKey, BCLog::LogHex{obfuscate_key})",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Wrote new obfuscate key for %s: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(params.path)",
+              "HexStr(obfuscate_key)"
+            ]
+          },
+          "review_note": "Preserve exact original message, level/category, argument evaluation order and control flow. Keep both fatal diagnostics Info as before; Error retains already formatted backend context. Max-open-file limits stay signed. DB basename is Name, full paths are Path. Existing public XOR obfuscation bytes (not wallet/private encryption keys) are copied via LogHex and formatted only by the consumer; no new diagnostic disclosure. Existing LevelDB migration compatibility is unchanged."
+        },
+        {
+          "id": "database_obfuscation_key_selected",
+          "old": "LogPrintf(\"Using obfuscation key for %s: %s\\n\",\n              fs::PathToString(params.path), HexStr(obfuscate_key))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"database_obfuscation_key_selected\", \"Using obfuscation key for {path}: {obfuscation_key}\").Field(BCLog::LogField::Path, fs::PathToString(params.path)).Field(BCLog::LogField::ObfuscationKey, BCLog::LogHex{obfuscate_key})",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Using obfuscation key for %s: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(params.path)",
+              "HexStr(obfuscate_key)"
+            ]
+          },
+          "review_note": "Preserve exact original message, level/category, argument evaluation order and control flow. Keep both fatal diagnostics Info as before; Error retains already formatted backend context. Max-open-file limits stay signed. DB basename is Name, full paths are Path. Existing public XOR obfuscation bytes (not wallet/private encryption keys) are copied via LogHex and formatted only by the consumer; no new diagnostic disclosure. Existing LevelDB migration compatibility is unchanged."
+        },
+        {
+          "id": "database_shutdown_sync_failed",
+          "old": "LogPrintf(\"Error synchronizing MDBX database %s at shutdown: %s\\n\",\n                          m_name, mdbx_strerror(rc))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"database_shutdown_sync_failed\", \"Error synchronizing MDBX database {name} at shutdown: {error}\").Field(BCLog::LogField::Name, m_name).Field(BCLog::LogField::Error, mdbx_strerror(rc))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Error synchronizing MDBX database %s at shutdown: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "m_name",
+              "mdbx_strerror(rc)"
+            ]
+          },
+          "review_note": "Preserve exact original message, level/category, argument evaluation order and control flow. Keep both fatal diagnostics Info as before; Error retains already formatted backend context. Max-open-file limits stay signed. DB basename is Name, full paths are Path. Existing public XOR obfuscation bytes (not wallet/private encryption keys) are copied via LogHex and formatted only by the consumer; no new diagnostic disclosure. Existing LevelDB migration compatibility is unchanged."
+        }
+      ],
+      "support_adjustments": [
+        {
+          "purpose": "Make typed value adapter explicit rather than rely on transitive includes.",
+          "old": "#include <dbwrapper.h>\n",
+          "new": "#include <dbwrapper.h>\n\n#include <logging/values.h>\n"
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Append signed file limits and existing public XOR key display; preserve prior field ids.",
+          "old": "    X(DatabaseOperationMs, database_operation_ms, INT, \"\", \"\")\n\nnamespace BCLog {",
+          "new": "    X(DatabaseOperationMs, database_operation_ms, INT, \"\", \"\") \\\n    X(MaxOpenFiles, max_open_files, INT, \"\", \"\") \\\n    X(DefaultOpenFiles, default_open_files, INT, \"\", \"\") \\\n    X(ObfuscationKey, obfuscation_key, STRING, \"\", \"\")\n\nnamespace BCLog {"
+        }
+      ]
+    }
+  ]
+}
