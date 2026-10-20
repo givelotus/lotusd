@@ -8,6 +8,7 @@
 // Internal to the QUIC engine (net_quic/*.cpp): includes ngtcp2 and OpenSSL.
 // Everything here runs on the engine thread only.
 
+#include <net_quic/quic_transport_info.h>
 #include <net_quic/udp_socket.h>
 #include <netaddress.h>
 
@@ -17,6 +18,7 @@
 
 #include <openssl/ssl.h>
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <deque>
@@ -240,6 +242,8 @@ private:
     uint64_t m_close_deadline{0};
     std::vector<uint8_t> m_close_pkt;
     std::map<int64_t, QuicStream> m_streams;
+    std::array<bool, QuicTransportInfo::NUM_CLASSES>
+        m_connection_flow_blocked{};
     //! Round-robin among OWN streams of equal priority
     int64_t m_rr_last{-1};
     std::vector<std::string> m_cids;
@@ -273,6 +277,8 @@ public:
     virtual void OnPacketSent(size_t bytes) = 0;
     virtual void OnHandshakeDone(QuicConnection &conn) = 0;
     virtual void OnIdleClose(QuicConnection &conn) = 0;
+    virtual void OnRejected(QuicRejectReason reason) = 0;
+    virtual void OnStreamBlocked(uint64_t class_tag) = 0;
 };
 
 #endif // BITCOIN_NET_QUIC_QUIC_CONNECTION_H

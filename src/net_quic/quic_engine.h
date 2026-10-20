@@ -5,10 +5,12 @@
 #ifndef BITCOIN_NET_QUIC_QUIC_ENGINE_H
 #define BITCOIN_NET_QUIC_QUIC_ENGINE_H
 
+#include <net_quic/quic_admission.h>
 #include <net_webtransport.h>
 #include <netaddress.h>
 #include <util/fs.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -24,18 +26,6 @@
  * No ngtcp2 type appears in this header, so it can be used by init and the
  * tests without the QUIC libraries' headers.
  */
-
-/** When the server answers a new connection with a Retry (RFC 9000 §8.1) */
-enum class QuicRetryMode {
-    //! Never: the 3x anti-amplification limit alone protects against
-    //! reflection
-    OFF,
-    //! Under load: many handshakes in progress, or many token-less Initials
-    //! from one address
-    AUTO,
-    //! Always validate the client's address first (one extra round trip)
-    ALWAYS,
-};
 
 /** What the engine's connections run on top of QUIC */
 enum class QuicApplication {
@@ -78,6 +68,14 @@ struct QuicEngineOptions {
     std::chrono::milliseconds handshake_timeout{std::chrono::seconds{10}};
     //! Stateless resets sent per second at most
     uint32_t stateless_reset_rate{10};
+    size_t max_per_ip{16};
+    size_t max_handshaking{256};
+    //! Includes established TLS connections that have not opened WT yet.
+    size_t max_inbound{256};
+    //! Node receive-flood threshold; one maximum frame may finish above it.
+    uint64_t receive_buffer{8 * 1024 * 1024};
+    //! Checked before allocating inbound TLS state. Callback outlives Stop().
+    std::function<bool(const CNetAddr &)> is_banned;
 
     //! WebTransport (server): request path of the extended CONNECT,
     //! accepted Origin values (empty: any) and required access token
@@ -141,6 +139,7 @@ struct QuicEngineStats {
     uint64_t bytes_recv{0};
     uint64_t bytes_sent{0};
     uint64_t send_errors{0};
+    std::array<uint64_t, QUIC_REJECT_REASONS> rejected{};
 };
 
 class QuicEngine {

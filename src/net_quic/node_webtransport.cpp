@@ -4,6 +4,7 @@
 
 #include <net_quic/node_webtransport.h>
 
+#include <banman.h>
 #include <common/args.h>
 #include <httpserver.h>
 #include <logging.h>
@@ -56,8 +57,38 @@ bool CertificateFiles(const ArgsManager &args, fs::path &cert, fs::path &key,
 } // namespace
 
 bool StartNodeWebTransport(const ArgsManager &args, CConnman &connman,
-                           bilingual_str &error) {
+                           BanMan *banman, bilingual_str &error) {
     QuicEngineOptions opts;
+    const auto per_ip{args.GetIntArg("-p2pwebtransportmaxperip", 16)};
+    const auto handshaking{
+        args.GetIntArg("-p2pwebtransportmaxhandshaking", 256)};
+    const auto receive{
+        args.GetIntArg("-maxreceivebuffer", DEFAULT_MAXRECEIVEBUFFER)};
+    if (per_ip < 1 || per_ip > 4096 || handshaking < 1 || handshaking > 4096 ||
+        receive < 0 || receive > UINT32_MAX / 1000) {
+        error = Untranslated("WebTransport admission limits must be 1-4096 and "
+                             "-maxreceivebuffer must be 0-4294967 kB");
+        return false;
+    }
+    opts.max_per_ip = per_ip;
+    opts.max_handshaking = handshaking;
+    opts.max_inbound = connman.GetMaxInboundConnections();
+    opts.receive_buffer = std::max<uint64_t>(1, uint64_t(receive) * 1000);
+    const auto retry{args.GetArg("-p2pwebtransportretry", "auto")};
+    if (retry != "off" && retry != "auto" && retry != "always") {
+        error =
+            Untranslated("-p2pwebtransportretry must be off, auto or always");
+        return false;
+    }
+    opts.retry = retry == "off"      ? QuicRetryMode::OFF
+                 : retry == "always" ? QuicRetryMode::ALWAYS
+                                     : QuicRetryMode::AUTO;
+    if (banman) {
+        // Shutdown joins the engine before destroying BanMan.
+        opts.is_banned = [banman](const CNetAddr &addr) {
+            return banman->IsBanned(addr) || banman->IsDiscouraged(addr);
+        };
+    }
     fs::path cert, key;
     if (!CertificateFiles(args, cert, key, error)) {
         return false;

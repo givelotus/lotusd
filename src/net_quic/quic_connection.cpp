@@ -551,6 +551,8 @@ void QuicConnection::Write(uint64_t now) {
         return;
     }
     now = Clamp(now);
+    if (ngtcp2_conn_get_max_data_left2(m_conn) > 0)
+        m_connection_flow_blocked.fill(false);
     if (m_app) {
         m_app->BeforeWrite(*this);
     }
@@ -655,6 +657,7 @@ void QuicConnection::Write(uint64_t now) {
                         m_app->OnLibraryBlocked(*this, stream_id);
                     } else if (own) {
                         own->blocked = true;
+                        m_engine.OnStreamBlocked(own->app_tag);
                     }
                     continue;
                 case NGTCP2_ERR_STREAM_SHUT_WR:
@@ -702,6 +705,13 @@ void QuicConnection::Write(uint64_t now) {
             }
         }
         if (n == 0) {
+            if (own && own->unsent > 0 && own->app_tag >= 1 &&
+                own->app_tag <= QuicTransportInfo::NUM_CLASSES &&
+                ngtcp2_conn_get_max_data_left2(m_conn) == 0 &&
+                !m_connection_flow_blocked[own->app_tag - 1]) {
+                m_connection_flow_blocked[own->app_tag - 1] = true;
+                m_engine.OnStreamBlocked(own->app_tag);
+            }
             // Congestion, pacing or nothing left.
             break;
         }

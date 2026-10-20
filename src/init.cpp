@@ -1398,6 +1398,21 @@ void SetupServerArgs(NodeContext &node) {
                    "retrying UDP (default: 3600; 0 disables caching)",
                    ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg(
+        "-p2pwebtransportmaxperip=<n>",
+        "Maximum inbound QUIC connections per IPv4 address or IPv6 /64 "
+        "(default: 16; range: 1-4096)",
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
+        "-p2pwebtransportmaxhandshaking=<n>",
+        "Maximum concurrent inbound QUIC handshakes, including closing "
+        "handshake state (default: 256; range: 1-4096)",
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
+        "-p2pwebtransportretry=<off|auto|always>",
+        "QUIC Retry address validation: auto above 64 pending handshakes "
+        "or 8 token-less Initials per IP group in 10s (default: auto)",
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
         "-listenonion",
         strprintf("Automatically create Tor onion service (default: %d)",
                   DEFAULT_LISTEN_ONION),
@@ -4212,7 +4227,8 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
     if (args.GetBoolArg("-p2pwebtransport", false)) {
 #ifdef ENABLE_WEBTRANSPORT
         bilingual_str error;
-        if (!StartNodeWebTransport(args, *node.connman, error)) {
+        if (!StartNodeWebTransport(args, *node.connman, node.banman.get(),
+                                   error)) {
             return InitError(error);
         }
 #else
