@@ -6,6 +6,7 @@
 #include <test/data/key_io_valid.json.h>
 
 #include <chainparams.h>
+#include <config.h>
 #include <key.h>
 #include <key_io.h>
 #include <script/script.h>
@@ -20,6 +21,19 @@
 extern UniValue read_json(const std::string &jsondata);
 
 BOOST_FIXTURE_TEST_SUITE(key_io_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(native_destination_is_not_a_legacy_alias) {
+    CKey key;
+    key.MakeNewKey(true);
+    const CTxDestination native = NativeKeyHashDestination(key.GetPubKey());
+    const auto encoded = EncodeDestination(native, GetConfig());
+    BOOST_CHECK(DecodeDestination(encoded, Params()) == native);
+    BOOST_CHECK(EncodeLegacyAddr(native, Params()).empty());
+    BOOST_CHECK(!IsValidDestination(DecodeLegacyAddr(encoded, Params())));
+    BOOST_CHECK_THROW(GetScriptForDestination(native), std::invalid_argument);
+    auto wrong = CreateChainParams(m_args, ChainType::REGTEST);
+    BOOST_CHECK(!IsValidDestination(DecodeDestination(encoded, *wrong)));
+}
 
 // Goal: check that parsed keys match test payload
 BOOST_AUTO_TEST_CASE(key_io_valid_parse) {

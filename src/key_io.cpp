@@ -8,11 +8,13 @@
 #include <cashaddrenc.h>
 #include <chainparams.h>
 #include <config.h>
+#include <util/chaintype.h>
 #include <util/strencodings.h>
 
 #include <algorithm>
 #include <cassert>
 #include <cstring>
+#include <stdexcept>
 
 namespace {
 class DestinationEncoder {
@@ -36,6 +38,8 @@ public:
         data.insert(data.end(), id.begin(), id.end());
         return EncodeBase58Check(data);
     }
+
+    std::string operator()(const NativeDestination &) const { return {}; }
 
     std::string operator()(const CNoDestination &no) const { return {}; }
 };
@@ -164,15 +168,64 @@ std::string EncodeExtKey(const CExtKey &key) {
     return ret;
 }
 
+lotus::v2::AddressNetwork NativeAddressNetwork(const CChainParams &params) {
+    switch (params.GetChainType()) {
+        case ChainType::MAIN:
+            return lotus::v2::AddressNetwork::MAINNET;
+        case ChainType::REGTEST:
+            return lotus::v2::AddressNetwork::REGTEST;
+        default:
+            return lotus::v2::AddressNetwork::TESTNET;
+    }
+}
+
+lotus::v2::Hash32 NativeDestinationRoot(const NativeDestination &dest) {
+    lotus::v2::Hash32 payload;
+    std::copy(dest.payload.begin(), dest.payload.end(), payload.begin());
+    return dest.type == 1 ? lotus::v2::KeyHashRoot(payload) : payload;
+}
+
+NativeDestination NativeKeyHashDestination(const CPubKey &pubkey) {
+    if (!pubkey.IsFullyValid() || !pubkey.IsCompressed()) {
+        throw std::invalid_argument(
+            "Native keyhash addresses require a compressed public key");
+    }
+    const auto hash = lotus::v2::NativeKeyHash(
+        std::span<const uint8_t, 32>(pubkey.data() + 1, 32));
+    NativeDestination dest;
+    dest.type = 1;
+    std::copy(hash.begin(), hash.end(), dest.payload.begin());
+    return dest;
+}
+
 std::string EncodeDestination(const CTxDestination &dest,
                               const Config &config) {
     const CChainParams &params = config.GetChainParams();
+    if (const auto *native = std::get_if<NativeDestination>(&dest)) {
+        lotus::v2::Hash32 payload;
+        std::copy(native->payload.begin(), native->payload.end(),
+                  payload.begin());
+        return native->type == 1 ? lotus::v2::EncodeKeyHashAddress(
+                                       NativeAddressNetwork(params), payload)
+                                 : lotus::v2::EncodeAddress(
+                                       NativeAddressNetwork(params), payload);
+    }
     return config.UseCashAddrEncoding() ? EncodeCashAddr(dest, params)
                                         : EncodeLegacyAddr(dest, params);
 }
 
 CTxDestination DecodeDestination(const std::string &addr,
                                  const CChainParams &params) {
+    std::string native_error;
+    if (const auto native = lotus::v2::DecodeAddress(addr, native_error)) {
+        if (native->network != NativeAddressNetwork(params))
+            return CNoDestination();
+        NativeDestination dest;
+        dest.type = native->type;
+        std::copy(native->root.begin(), native->root.end(),
+                  dest.payload.begin());
+        return dest;
+    }
     CTxDestination dst = DecodeCashAddr(addr, params);
     if (IsValidDestination(dst)) {
         return dst;

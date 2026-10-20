@@ -20,6 +20,7 @@
 #include <key_io.h>
 #include <policy/policy.h>
 #include <primitives/transaction.h>
+#include <primitives/v2_outputs.h>
 #include <random.h>
 #include <script/descriptor.h>
 #include <script/script.h>
@@ -1527,6 +1528,12 @@ isminetype CWallet::IsMine(const CTxOut &txout) const {
 
 isminetype CWallet::IsMine(const CTxDestination &dest) const {
     AssertLockHeld(cs_wallet);
+    if (const auto *native = std::get_if<NativeDestination>(&dest)) {
+        lotus::v2::Output policy;
+        policy.branches = {NativeDestinationRoot(*native)};
+        policy.paths = {{0}};
+        return IsMine(CTxOut::FromV2Output(policy));
+    }
     return IsMine(GetScriptForDestination(dest));
 }
 
@@ -2460,6 +2467,77 @@ CWallet::GetNewDestination(const OutputType type, const std::string &label) {
     }
 
     return op_dest;
+}
+
+util::Result<CTxDestination>
+CWallet::GetNewNativeDestination(const std::string &label) {
+    LOCK(cs_wallet);
+    auto *manager = GetScriptPubKeyMan(OutputType::LEGACY, false);
+    if (!manager) return util::Error{_("No native receiving keys available")};
+    manager->TopUp();
+    auto legacy = manager->GetNewDestination(OutputType::LEGACY);
+    if (!legacy) return util::Error{util::ErrorString(legacy)};
+    const auto *keyhash = std::get_if<PKHash>(&*legacy);
+    if (!keyhash)
+        return util::Error{
+            _("Native receiving requires a single compressed key")};
+    const auto provider =
+        manager->GetSolvingProvider(GetScriptForDestination(*legacy));
+    CPubKey pubkey;
+    if (!provider || !provider->GetPubKey(ToKeyID(*keyhash), pubkey) ||
+        !pubkey.IsCompressed()) {
+        return util::Error{
+            _("Native receiving requires a known compressed public key")};
+    }
+    CTxDestination native = NativeKeyHashDestination(pubkey);
+    if (!SetAddressBook(native, label, "receive")) {
+        return util::Error{_("Unable to persist native receiving address")};
+    }
+    return native;
+}
+
+bool CWallet::GetDestinationForOutput(const CTxOut &out,
+                                      CTxDestination &dest) const {
+    AssertLockHeld(cs_wallet);
+    if (out.IsLegacy()) return ExtractDestination(out.scriptPubKey, dest);
+    if (out.nFlags != 0 || !out.tokenId.IsNull() || !out.stateRoot.IsNull() ||
+        out.vBranches.size() != 1 ||
+        out.vPaths != std::vector<std::vector<uint8_t>>{{0}}) {
+        return false;
+    }
+    // Preserve the explicitly issued address template where the wallet knows
+    // it.
+    for (const auto &[address, entry] : m_address_book) {
+        if (const auto *native = std::get_if<NativeDestination>(&address)) {
+            if (NativeDestinationRoot(*native) == out.vBranches[0]) {
+                dest = address;
+                return true;
+            }
+        }
+    }
+    // Recognized key policies can also come from imported wallet keys, without
+    // manufacturing a label or rewriting the received output.
+    CTxDestination owner;
+    const auto owner_script = GetScriptForOutput(out);
+    if (ExtractDestination(owner_script, owner)) {
+        if (const auto *keyhash = std::get_if<PKHash>(&owner)) {
+            const auto provider = GetSolvingProvider(owner_script);
+            CPubKey pubkey;
+            if (provider && provider->GetPubKey(ToKeyID(*keyhash), pubkey) &&
+                pubkey.IsCompressed()) {
+                const auto native = NativeKeyHashDestination(pubkey);
+                if (NativeDestinationRoot(native) == out.vBranches[0]) {
+                    dest = native;
+                    return true;
+                }
+            }
+        }
+    }
+    NativeDestination opaque;
+    std::copy(out.vBranches[0].begin(), out.vBranches[0].end(),
+              opaque.payload.begin());
+    dest = opaque;
+    return true;
 }
 
 util::Result<CTxDestination>

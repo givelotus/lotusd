@@ -69,6 +69,8 @@ class CashAddrEncoder {
 public:
     explicit CashAddrEncoder(const CChainParams &p) : params(p) {}
 
+    std::string operator()(const NativeDestination &) const { return {}; }
+
     std::string operator()(const PKHash &id) const {
         std::vector<uint8_t> data = PackAddrData(id, PUBKEY_TYPE);
         return cashaddr::Encode(params.CashAddrPrefix(), data);
