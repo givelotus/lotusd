@@ -77,6 +77,7 @@ add_executable(bitcoin-bench
 	transaction_lifetime.cpp
 	util_time.cpp
 	verify_script.cpp
+	ws_block_serve.cpp
 
 	# Add the generated headers to trigger the conversion command
 	${BENCH_DATA_GENERATED_HEADERS}
