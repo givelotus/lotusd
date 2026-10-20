@@ -74,6 +74,10 @@ one `_bucket` per bound plus `+Inf`, a `_sum` and a `_count`.
 |---|---|---|---|---|
 | `fullnode_build_info` | gauge | `version`, `commit` | 1 | Always 1; the build's version (`major.minor.revision`) and commit (empty if unknown). |
 | `process_start_time_seconds` | gauge | | 1 | Start time of the process (Unix time). |
+| `process_resident_memory_bytes` | gauge | | 1 | Resident memory size (Linux: /proc/self/statm; macOS: task_info). |
+| `process_virtual_memory_bytes` | gauge | | 1 | Virtual memory size. |
+| `process_open_fds` | gauge | | 1 | Open file descriptors (Linux: /proc/self/fd; macOS: proc_pidinfo). |
+| `process_max_fds` | gauge | | 1 | Soft limit on open file descriptors. |
 | `fullnode_metrics_dropped_samples_total` | counter | | 1 | Event samples dropped because a recording thread's ring was full. |
 | `fullnode_log_dropped_lines_total` | counter | | 1 | Debug and info log lines dropped because the logging thread could not keep up. |
 | `fullnode_log_journal_failures_total` | counter | | 1 | Journal sends that failed and fell back to stderr. |
@@ -86,6 +90,11 @@ one `_bucket` per bound plus `+Inf`, a `_sum` and a `_count`.
 | `fullnode_http_request_duration_seconds` | histogram | `endpoint` (7) | 7 | Time from a request's header to its response. |
 | `fullnode_http_tls_handshakes_total` | counter | `result` (2) | 2 | TLS handshakes on the HTTP listeners (`ok`, `failed`). |
 | `fullnode_rpc_request_duration_seconds` | histogram | `method` | registered RPC commands + 1 | RPC execution time by method; a method's series appears once it is called. |
+| `fullnode_rpc_work_queue_depth` | gauge | | 1 | HTTP requests (RPC, REST, ...) queued for a worker. |
+| `fullnode_rpc_work_queue_capacity` | gauge | | 1 | Requests the queue holds before refusing more (`-rpcworkqueue`). |
+| `fullnode_rpc_work_in_flight` | gauge | | 1 | Requests queued or being handled (suspended long polls included). |
+| `fullnode_rpc_work_suspended` | gauge | | 1 | Requests suspended without a worker (long polls such as `waitforblockheight`). |
+| `fullnode_rpc_work_queue_rejected_total` | counter | | 1 | Requests refused (503) because the queue was full. |
 
 ### P2P
 
