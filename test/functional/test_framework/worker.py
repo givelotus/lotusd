@@ -32,6 +32,7 @@ import unittest
 from .discovery import module_name
 from .results import CRASHED, FAILED, PASSED, SKIPPED, TIMEOUT, JobResult, tail
 from .test_framework import TEST_EXIT_PASSED, TEST_EXIT_SKIPPED
+from .timeline import TIMELINE_FILE
 
 
 def load_class(tests_dir, file, class_name):
@@ -118,6 +119,9 @@ def result_from_output(job, status, exit_code, start, test=None):
         result.skip_reason = test.skip_reason
         result.failure = test.failure
         result.phases = list(test._phases)
+    timeline_path = os.path.join(job["tmpdir"], TIMELINE_FILE)
+    if os.path.isfile(timeline_path):
+        result.timeline = timeline_path
     # (The framework clears test.nodes on shutdown: find the logs on disk.)
     result.node_logs = sorted(
         glob.glob(os.path.join(job["tmpdir"], "node*", "*", "debug.log"))
@@ -143,6 +147,7 @@ def run_job(job, conn):
         sys.argv = [os.path.join(job["tests_dir"], job["file"])] + job["argv"]
         test = cls(argv=job["argv"])
         test.on_phase = progress.phase
+        test.runner_writes_timeline = True
         exit_code = test.main(exit_process=False)
     except BaseException as e:
         # The test could not even be set up (import error, bad arguments...)

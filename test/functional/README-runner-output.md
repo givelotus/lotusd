@@ -2,12 +2,13 @@
 
 `test_runner.py` keeps one result per test job (a test file, with its
 arguments). The result is defined by `JobResult` in
-`test_framework/results.py`; its JSON form carries `"schema": 1`. Fields may
+`test_framework/results.py`; its JSON form carries `"schema": 2`. Fields may
 be added in a later schema version, but existing fields keep their meaning.
+Schema 2 added `timeline`.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `schema` | int | Version of this format (1) |
+| `schema` | int | Version of this format (2) |
 | `name` | str | Display name: the file, its variant in brackets, then any extra arguments, e.g. `wallet_basic.py`, `rpc_bind.py[ipv4]` |
 | `file` | str | Test file, relative to `test/functional` |
 | `class_name` | str | Test class that ran |
@@ -23,6 +24,7 @@ be added in a later schema version, but existing fields keep their meaning.
 | `tmpdir` | str | The test's directory, kept when it fails |
 | `framework_log` | str | Path of its `test_framework.log` |
 | `node_logs` | list | Paths of the nodes' `debug.log` |
+| `timeline` | str | Path of the test's `timeline.jsonl` (see below), or empty: written for every failed test, and for passing tests with `--timeline` |
 | `stdout_tail`, `stderr_tail` | str | The last 200 lines of the test's stdout and stderr |
 | `stderr_nonempty` | bool | Whether the test wrote anything to stderr |
 
@@ -30,7 +32,8 @@ be added in a later schema version, but existing fields keep their meaning.
 
 ## JSON lines (`--jsonl-file=FILE`)
 
-One JSON object per line, each with `"event"` and `"schema": 1`:
+One JSON object per line, each with `"event"` and `"schema": 1` (the
+version of these events; a `finish` event's `result` has its own `schema`):
 
 - `{"event": "start", "name": ...}` when a test starts;
 - `{"event": "phase", "name": ..., "phase": ...}` as each of the test's phases
@@ -72,7 +75,12 @@ For a failed test the runner prints, once each:
   node1  12:00:01.131002 WARNING [validation] ...
   test   12:00:02.004000 ERROR Unexpected exception
   ```
-- the test directory, the command that reruns the test, and `combined.log`.
+- the test directory, the command that reruns the test, `combined.log` and
+  `timeline.jsonl`.
+
+Where a log has structured records (a node's JSON sidecar, the framework's
+`test_framework.jsonl`), a timeline line also shows a few identifying fields
+compactly, e.g. `{event=p2p_message peer_id=0 txid=1f2e…}`.
 
 `<test directory>/combined.log` is the whole timeline as plain text, written
 when the test fails: the text logs (`test_framework.log` and each node's
@@ -95,8 +103,65 @@ log's first timestamp are shown with the time they are ordered by.
   do not start with such a timestamp are parsed line by line. About 500
   MB/s of CPU time on an Apple M-series core.
 
-For an HTML version of the same logs, run
+For an HTML version of the text logs, run
 `combine_logs.py --html <test directory> > combined.html` (needs `jinja2`).
+
+## Structured timeline (`timeline.jsonl`)
+
+`<test directory>/timeline.jsonl` has one JSON object per log event of the
+test, from every source, sorted by `time`. It is written for every failed
+test (by the runner, after the test's processes have stopped; a test run on
+its own writes it at shutdown), and also for passing tests with
+`--timeline` (on the runner or on the test), in which case the cleanup of
+the test directory keeps that file.
+
+Every record has:
+
+| Key | Meaning |
+|---|---|
+| `time` | RFC 3339, UTC, with microseconds (the wall clock; `mocktime` is a separate field) |
+| `source` | `test` for the framework, `node0`, `node1`, ... for the nodes |
+| `level` | `trace`, `debug`, `info`, `warning` or `error` |
+| `message` | The human-readable message; for the framework, without the traceback |
+
+and then the record's own fields under their own names:
+
+- A node record comes from its JSON sidecar, `debug-framework.jsonl` (see
+  `doc/logging-test-framework.md`), and keeps its fields as the node wrote
+  them, i.e. under their field-registry names (`category`, `thread`,
+  `event`, `peer_id`, `txid`, `mocktime`, ...). The one exception: the
+  node's source-location object, `source`, is renamed `source_location`,
+  since `source` names the process. A node without a sidecar is read from
+  `debug.log`, and its records have `category`, `thread`, `mocktime` and
+  `source_location` when the line has them; their `level` is the line's,
+  or `debug` for a categorized line and `info` otherwise, as bitcoind
+  logs them.
+- A framework record comes from `test_framework.jsonl`, which the framework
+  writes next to `test_framework.log` (compact JSON, `time` first, like the
+  nodes'): `category` (the logger, e.g.
+  `TestFramework.node0`), `thread`, `source_location` (`file`, `line`,
+  `function`), `exception` (the traceback, when one was logged), and any
+  fields a test passes with `self.log.info(..., extra={"fields": {...}})`.
+
+`test_framework/timeline.py` builds it in constant memory, merging the JSON
+logs in large binary blocks without parsing records. Every record of the
+nodes' sidecars and of `test_framework.jsonl` starts with the same fixed
+prefix, `{"time":"<27-byte timestamp>","level":"`: the timestamps are
+compared as bytes, `"source":"<source>"` is inserted after the time and the
+node's `"source":{` object renamed with byte replacements (a JSON string
+cannot contain an unescaped quote, so these sequences only occur as keys).
+Blocks with any other line (a partial record, or another writer) are
+parsed record by record, with the same result. About 300 MB/s of CPU time
+on an Apple M-series core.
+
+That prefix is what the nodes' JSON encoder writes today: the sidecar has
+one write path, with timestamps and microseconds always on, and the
+encoder writes `time` then `level` first. It is not a documented format
+guarantee; if it changes, the merge is still correct, only slower.
+
+`timeline.check_timeline(path)` checks that a file has the required keys
+in time order. Events of one source written slightly out of time order
+(the node logs asynchronously) are reordered within a block of about 4 MB.
 
 ## Summary (`--json-summary=FILE`)
 

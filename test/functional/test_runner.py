@@ -383,6 +383,15 @@ def main():
         ),
     )
     parser.add_argument(
+        "--timeline",
+        action="store_true",
+        help=(
+            "Also for tests that pass, write <test directory>/timeline.jsonl"
+            " (every log record of the test and its nodes, sorted by time) and"
+            " keep that file. Failed tests always get one."
+        ),
+    )
+    parser.add_argument(
         "--json-summary",
         help="Write the run's summary (counts, times, failed tests) as JSON",
     )
@@ -444,6 +453,8 @@ def main():
     if args.phase_report:
         phase_dir = os.path.join(tmpdir, "phases")
         passon_args.append(f"--phasedir={phase_dir}")
+    if args.timeline:
+        passon_args.append("--timeline")
 
     logging.debug(f"Temporary test directory at {tmpdir}")
 
@@ -787,13 +798,18 @@ def execute_test_processes(
             test_results.append(test_result)
             result = job_result_of(test_result)
 
+            # A failed test's timeline files are written first, so that the
+            # finish event can point to them.
+            details = None
+            if not test_result.was_successful:
+                details = reporting.failure_timeline(result)
             live.clear()
             print(reporting.finish_line(result))
             if jsonl is not None:
                 jsonl.write("finish", result=result.to_dict())
             if not test_result.was_successful:
                 print()
-                print(reporting.failure_block(result, tests_dir))
+                print(reporting.failure_block(result, tests_dir, details))
                 print()
 
                 # Write a symlink to the failed test directory for easy inspection
