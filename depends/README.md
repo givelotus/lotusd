@@ -103,6 +103,7 @@ The following can be set when running make: `make FOO=bar`
 - `DEBUG`: Disable some optimizations and enable more runtime checking
 - `NO_PROTOBUF`: Don't download/build/cache protobuf (used for BIP70 support)
 - `NO_OPENSSL`: Don't download/build/cache OpenSSL (required by the bitcoind HTTP/TLS server; only useful for builds without bitcoind)
+- `NO_WEBTRANSPORT`: Don't download/build/cache nghttp3 and ngtcp2 (only needed for `-DENABLE_WEBTRANSPORT=ON`, P2P over WebTransport; ngtcp2 needs the OpenSSL >= 3.5 package)
 - `HOST_ID_SALT`: Optional salt to use when generating host package ids
 - `BUILD_ID_SALT`: Optional salt to use when generating build package ids
 - `JOBS`: Number of jobs to use for each package build
