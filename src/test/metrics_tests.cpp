@@ -2,11 +2,13 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <coins.h>
 #include <config/bitcoin-config.h>
 #include <consensus/validation.h>
 #include <metrics/metrics.h>
 #include <node/metrics.h>
 #include <protocol.h>
+#include <script/script.h>
 #include <txmempool.h>
 
 #include <test/util/setup_common.h>
@@ -415,6 +417,45 @@ BOOST_AUTO_TEST_CASE(mempool_reason_labels) {
                           RemovalReasonToString(MemPoolRemovalReason(r)));
     }
     BOOST_CHECK_EQUAL(removal.size(), size_t(MemPoolRemovalReason::MANUAL) + 1);
+}
+
+BOOST_AUTO_TEST_CASE(utxo_cache_lookups) {
+    Registry reg;
+    auto &lookups{reg.Add(std::make_unique<Counter>(
+        "l_total", "L.",
+        std::vector<LabelDim>{{"result", {"hit", "miss", "absent"}}}))};
+    CCoinsView empty;
+    CCoinsViewCache base{&empty};
+    const COutPoint present{TxId{uint256::ONE}, 0};
+    const COutPoint absent{TxId{uint256::ONE}, 1};
+    base.AddCoin(present, Coin{CTxOut{SATOSHI, CScript{} << OP_TRUE}, 1, false},
+                 /*possible_overwrite=*/false);
+    CCoinsViewCache cache{&base};
+    // Uncounted until the metric is set (the node sets it on the chainstate's
+    // cache only)
+    BOOST_CHECK(cache.HaveCoin(absent) == false);
+    BOOST_CHECK_EQUAL(lookups.Value(2), 0U);
+    cache.SetLookupMetric(&lookups);
+    BOOST_CHECK(cache.HaveCoin(present)); // read from the base
+    BOOST_CHECK(cache.HaveCoin(present)); // cached
+    BOOST_CHECK(cache.HaveCoin(present));
+    BOOST_CHECK(!cache.HaveCoin(absent));
+    BOOST_CHECK_EQUAL(lookups.Value(0), 2U);
+    BOOST_CHECK_EQUAL(lookups.Value(1), 1U);
+    BOOST_CHECK_EQUAL(lookups.Value(2), 1U);
+    // The base cache counts nothing
+    BOOST_CHECK_EQUAL(lookups.Value(0) + lookups.Value(1) + lookups.Value(2),
+                      4U);
+}
+
+BOOST_AUTO_TEST_CASE(block_labels) {
+    BOOST_CHECK_EQUAL(node::metric_labels::BlockStages().size(),
+                      size_t(node::BlockStage::POST_CONNECT) + 1);
+    BOOST_CHECK_EQUAL(
+        node::metric_labels::BlockStages()[size_t(node::BlockStage::VERIFY)],
+        "verify");
+    BOOST_CHECK_EQUAL(node::metric_labels::BlockParkReasons().size(),
+                      size_t(node::BlockParkReason::REQUESTED) + 1);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -93,6 +93,10 @@ namespace metric_labels {
     const std::vector<std::string> &MempoolRemovalReasons();
     //! 0 = orphan, 1 = conflicting (TxPool kinds)
     const std::vector<std::string> &TxPools();
+    //! Index = BlockStage
+    const std::vector<std::string> &BlockStages();
+    //! Index = BlockParkReason
+    const std::vector<std::string> &BlockParkReasons();
 } // namespace metric_labels
 
 enum class HTTPEndpoint : size_t {
@@ -178,6 +182,31 @@ struct NodeMetrics {
     //! By TxPools x reason (0 = expired, 1 = evicted)
     metrics::Counter &tx_pool_removed;
 
+    // Validation and UTXO
+    //! By BlockStage
+    metrics::EventHistogram &block_stage_seconds;
+    //! Per block: transactions whose scripts were checked in parallel
+    metrics::EventHistogram &script_check_transactions;
+    //! Per block: script check workers used
+    metrics::EventHistogram &script_check_workers;
+    //! By cache (0 = signature, 1 = script_execution) x result (0 = hit,
+    //! 1 = miss)
+    metrics::Counter &validation_cache_lookups;
+    metrics::Gauge &utxo_cache_bytes;
+    metrics::Gauge &utxo_cache_entries;
+    //! Lookups in the chainstate's UTXO cache: 0 = hit, 1 = miss (read
+    //! from the database), 2 = absent
+    metrics::Counter &utxo_cache_lookups;
+    //! By mode: 0 = flush (cache emptied), 1 = sync (cache kept)
+    metrics::EventHistogram &utxo_flush_seconds;
+    metrics::Counter &chain_reorgs;
+    //! Blocks disconnected per reorganization
+    metrics::EventHistogram &chain_reorg_depth;
+    //! By source: 0 = validation, 1 = invalidateblock
+    metrics::Counter &blocks_invalid;
+    //! By BlockParkReason
+    metrics::Counter &blocks_parked;
+
     /** Label index of an RPC method ("other" if not in the set) */
     size_t RPCMethodIndex(std::string_view method) const noexcept;
 
@@ -241,6 +270,48 @@ inline size_t MempoolRejectSeries(int result) noexcept {
     // ("unknown", TX_UNKNOWN)
     constexpr int LAST{13};
     return size_t((result >= 1 && result <= LAST ? result : LAST) - 1);
+}
+
+enum class BlockStage : size_t {
+    // ConnectBlock
+    CHECK,
+    FORKS,
+    CONNECT,
+    VERIFY,
+    INDEX,
+    // ConnectTip
+    LOAD,
+    FLUSH,
+    CHAINSTATE,
+    POST_CONNECT,
+};
+enum class BlockParkReason : size_t {
+    POLICY,
+    FINALIZATION_CONFLICT,
+    DEEP_REORG,
+    REQUESTED,
+};
+
+inline void RecordBlockStage(BlockStage stage,
+                             std::chrono::steady_clock::duration d) noexcept {
+    if (auto *m{GetNodeMetrics()}) {
+        m->block_stage_seconds.RecordDuration(d, size_t(stage));
+    }
+}
+
+inline void CountParkedBlock(BlockParkReason reason) noexcept {
+    if (auto *m{GetNodeMetrics()}) {
+        m->blocks_parked.Add(size_t(reason));
+    }
+}
+
+/** Count a signature or script execution cache lookup */
+inline void CountValidationCacheLookup(bool script_execution,
+                                       bool hit) noexcept {
+    if (auto *m{GetNodeMetrics()}) {
+        m->validation_cache_lookups.Add((script_execution ? 2 : 0) +
+                                        (hit ? 0 : 1));
+    }
 }
 
 /** Count a transaction pool's (orphans, conflicting) removals */

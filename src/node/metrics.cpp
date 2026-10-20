@@ -103,6 +103,17 @@ namespace metric_labels {
         static const std::vector<std::string> labels{"orphan", "conflicting"};
         return labels;
     }
+    const std::vector<std::string> &BlockStages() {
+        static const std::vector<std::string> labels{
+            "check", "forks", "connect",    "verify",      "index",
+            "load",  "flush", "chainstate", "post_connect"};
+        return labels;
+    }
+    const std::vector<std::string> &BlockParkReasons() {
+        static const std::vector<std::string> labels{
+            "policy", "finalization_conflict", "deep_reorg", "requested"};
+        return labels;
+    }
     const std::vector<std::string> &HTTPCodeClasses() {
         static const std::vector<std::string> labels{"1xx", "2xx", "3xx",
                                                      "4xx", "5xx", "other"};
@@ -135,6 +146,23 @@ namespace {
     const std::vector<double> FEE_RATE_BUCKETS{
         0, 0.5, 1,  1.01, 1.1, 1.25, 1.5, 2,    3,
         5, 10,  20, 50,   100, 200,  500, 1000, 10000};
+    //! Seconds; block validation stages, from microseconds (an empty
+    //! regtest block's checks) to minutes (a huge block's scripts)
+    const std::vector<double> STAGE_BUCKETS{
+        0.00001, 0.000025, 0.00005, 0.0001, 0.00025, 0.0005, 0.001,
+        0.0025,  0.005,    0.01,    0.025,  0.05,    0.1,    0.25,
+        0.5,     1,        2.5,     5,      10,      30,     60};
+    //! Seconds; UTXO cache flushes, from an almost clean cache to gigabytes
+    const std::vector<double> FLUSH_BUCKETS{0.001, 0.005, 0.01, 0.05, 0.1,
+                                            0.25,  0.5,   1,    2.5,  5,
+                                            10,    30,    60,   120,  300};
+    //! Counts per block (transactions, workers); powers of two
+    const std::vector<double> COUNT_BUCKETS{
+        1,   2,    4,    8,    16,   32,    64,    128,   256,
+        512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072};
+    //! Blocks
+    const std::vector<double> REORG_DEPTH_BUCKETS{1, 2,  3,  4,  5,   6,
+                                                  8, 10, 20, 50, 100, 1000};
     //! Seconds; HTTP and RPC requests (long polls can take minutes)
     const std::vector<double> REQUEST_BUCKETS{
         0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1,
@@ -437,6 +465,73 @@ NodeMetrics::NodeMetrics(std::vector<std::string> rpc_methods)
           "they expired, or evicted at random when the pool was full.",
           std::vector<LabelDim>{{"pool", L::TxPools()},
                                 {"reason", {"expired", "evicted"}}})},
+      block_stage_seconds{Add<EventHistogram>(
+          registry, MetricName("block_validation_stage_seconds"),
+          "Time spent connecting a block, by stage. ConnectBlock: check "
+          "(sanity checks), forks (deployment and policy checks), connect "
+          "(spending inputs), verify (script and signature checks), index "
+          "(undo data and index); ConnectTip: load (reading the block), flush "
+          "(into the UTXO cache), chainstate (writing it if needed), "
+          "post_connect (mempool update, new tip). Blocks that fail are not "
+          "counted.",
+          STAGE_BUCKETS, /*divisor=*/1e9,
+          std::vector<LabelDim>{{"stage", L::BlockStages()}})},
+      script_check_transactions{Add<EventHistogram>(
+          registry, MetricName("script_check_transactions"),
+          "Transactions whose scripts a block had to check (those not in the "
+          "script cache): the parallel script check queue's depth, per "
+          "block.",
+          COUNT_BUCKETS, /*divisor=*/1)},
+      script_check_workers{Add<EventHistogram>(
+          registry, MetricName("script_check_workers"),
+          "Script check workers used per block (its parallelism: one per "
+          "transaction up to the hardware threads).",
+          COUNT_BUCKETS, /*divisor=*/1)},
+      validation_cache_lookups{Add<Counter>(
+          registry, MetricName("validation_cache_lookups_total"),
+          "Lookups in the signature cache and the script execution cache, "
+          "by result.",
+          std::vector<LabelDim>{{"cache", {"signature", "script_execution"}},
+                                {"result", {"hit", "miss"}}})},
+      utxo_cache_bytes{
+          Add<Gauge>(registry, MetricName("utxo_cache_bytes"),
+                     "Memory used by the chainstate's UTXO cache, as of its "
+                     "last flush check (each block, and periodically).")},
+      utxo_cache_entries{
+          Add<Gauge>(registry, MetricName("utxo_cache_entries"),
+                     "Coins in the chainstate's UTXO cache, as of its last "
+                     "flush check.")},
+      utxo_cache_lookups{Add<Counter>(
+          registry, MetricName("utxo_cache_lookups_total"),
+          "Coin lookups in the chainstate's UTXO cache: hit, miss (read from "
+          "the database) or absent (in neither).",
+          std::vector<LabelDim>{{"result", {"hit", "miss", "absent"}}})},
+      utxo_flush_seconds{Add<EventHistogram>(
+          registry, MetricName("utxo_cache_flush_seconds"),
+          "Time to write the UTXO cache to the database, by mode: flush "
+          "(emptying the cache) or sync (keeping it). _count is the number "
+          "of flushes.",
+          FLUSH_BUCKETS, /*divisor=*/1e9,
+          std::vector<LabelDim>{{"mode", {"flush", "sync"}}})},
+      chain_reorgs{Add<Counter>(registry, MetricName("chain_reorgs_total"),
+                                "Chain reorganizations: tip changes that "
+                                "disconnected blocks.")},
+      chain_reorg_depth{Add<EventHistogram>(
+          registry, MetricName("chain_reorg_depth_blocks"),
+          "Blocks disconnected by each chain reorganization.",
+          REORG_DEPTH_BUCKETS, /*divisor=*/1)},
+      blocks_invalid{Add<Counter>(
+          registry, MetricName("blocks_invalid_total"),
+          "Blocks marked invalid: by validation, or by invalidateblock.",
+          std::vector<LabelDim>{
+              {"source", {"validation", "invalidateblock"}}})},
+      blocks_parked{Add<Counter>(
+          registry, MetricName("blocks_parked_total"),
+          "Blocks parked, by reason: policy (a block policy failed), "
+          "finalization_conflict (forks below the Avalanche-finalized tip), "
+          "deep_reorg (-parkdeepreorg), requested (parkblock, or an "
+          "Avalanche rejection).",
+          std::vector<LabelDim>{{"reason", L::BlockParkReasons()}})},
       m_rpc_methods{SortedWithOther(std::move(rpc_methods))} {
     build_info.Set(1);
     registry.Add(std::make_unique<metrics::FunctionCounter>(
