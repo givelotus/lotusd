@@ -199,11 +199,14 @@ target_link_libraries(lotus_v2_validation PUBLIC
     lotus_v2_block_template lotus_v2_sparse_state lotus_v2_incremental_utxo lotus_v2_mdbx Boost::headers secp256k1 leveldb OpenSSL::Crypto crypto)
 
 # Wallet interchange only: no transaction or block consensus changes.
-add_library(lotus_v2_psbt STATIC psbt.cpp)
+add_library(lotus_v2_psbt STATIC psbt.cpp psbt_signing.cpp)
 target_link_libraries(lotus_v2_psbt PUBLIC lotus_v2_validation)
 add_executable(test_lotus_v2_psbt test_psbt.cpp)
 target_link_libraries(test_lotus_v2_psbt PRIVATE lotus_v2_psbt)
 add_test(NAME lotus_v2_psbt COMMAND test_lotus_v2_psbt)
+add_executable(test_lotus_v2_psbt_signing test_psbt_signing.cpp)
+target_link_libraries(test_lotus_v2_psbt_signing PRIVATE lotus_v2_psbt)
+add_test(NAME lotus_v2_psbt_signing COMMAND test_lotus_v2_psbt_signing)
 add_test(NAME lotus_v2_psbt_vectors
     COMMAND ${Python_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/psbt_test/check_vectors.py
