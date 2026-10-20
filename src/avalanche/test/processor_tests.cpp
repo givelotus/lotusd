@@ -15,6 +15,7 @@
 #include <config.h>
 #include <core_io.h>
 #include <key_io.h>
+#include <logging.h>
 #include <net_processing.h> // For ::PeerManager
 #include <reverse_iterator.h>
 #include <scheduler.h>
@@ -23,6 +24,7 @@
 #include <validation.h>
 
 #include <avalanche/test/util.h>
+#include <test/util/logging.h>
 #include <test/util/net.h>
 #include <test/util/setup_common.h>
 
@@ -1110,7 +1112,11 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(poll_and_response, P, VoteItemProviders) {
     // Respond to the request.
     Response resp = {round, 0, {Vote(0, itemid)}};
     std::vector<avalanche::VoteItemUpdate> updates;
-    BOOST_CHECK(registerVotes(avanodeid, resp, updates));
+    {
+        ASSERT_DEBUG_LOG("poll_rtt peer=" + std::to_string(avanodeid) +
+                         " round=" + std::to_string(round) + " rtt_ms=");
+        BOOST_CHECK(registerVotes(avanodeid, resp, updates));
+    }
     BOOST_CHECK_EQUAL(updates.size(), 0);
 
     // Now that avanode fullfilled his request, it is added back to the list of
@@ -1121,7 +1127,18 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(poll_and_response, P, VoteItemProviders) {
                                        const avalanche::Response &response,
                                        const std::string &expectedError) {
         std::string error;
-        BOOST_CHECK(!registerVotes(nodeid, response, updates, error));
+        LogInstance().Flush(); // Exclude earlier valid responses still queued.
+        bool observed_rtt{false};
+        {
+            DebugLogHelper observer("poll_rtt", [&](const std::string *line) {
+                if (line) {
+                    observed_rtt = true;
+                }
+                return false; // Keep observing; no event is expected.
+            });
+            BOOST_CHECK(!registerVotes(nodeid, response, updates, error));
+        }
+        BOOST_CHECK(!observed_rtt);
         BOOST_CHECK_EQUAL(error, expectedError);
         BOOST_CHECK_EQUAL(updates.size(), 0);
     };
