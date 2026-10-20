@@ -32,6 +32,41 @@ CService Addr(const std::string &s) { return LookupNumeric(s, 0); }
 
 BOOST_FIXTURE_TEST_SUITE(proxy_protocol_tests, BasicTestingSetup)
 
+BOOST_AUTO_TEST_CASE(v2_ssl_tlv) {
+    const std::vector<uint8_t> tcp4{203, 0, 113,  7,    10,   0,
+                                    0,   5, 0xC7, 0x38, 0x29, 0x6D};
+    const auto with{[&](const std::vector<uint8_t> &tlvs) {
+        auto addrs{tcp4};
+        addrs.insert(addrs.end(), tlvs.begin(), tlvs.end());
+        return ParseV2(V2(0x1, 0x11, addrs));
+    }};
+    // No TLV, or other TLVs: the client's TLS use is unknown.
+    BOOST_CHECK(!with({})->client_tls);
+    BOOST_CHECK(!with({0x03, 0x00, 0x01, 0xAA})->client_tls);
+    // PP2_TYPE_SSL with PP2_CLIENT_SSL (client, then a 4-byte verify).
+    auto h{with({0x20, 0x00, 0x05, 0x01, 0, 0, 0, 0})};
+    BOOST_REQUIRE(h && h->source);
+    BOOST_CHECK(h->client_tls);
+    BOOST_CHECK_EQUAL(h->source->ToStringAddrPort(), "203.0.113.7:51000");
+    // ... after another TLV, and with sub-TLVs (PP2_SUBTYPE_SSL_VERSION).
+    BOOST_CHECK(with({0x03, 0x00, 0x01, 0xAA, 0x20, 0x00, 0x0C, 0x05, 0, 0, 0,
+                      0, 0x21, 0x00, 0x04, 'T', 'L', 'S', '3'})
+                    ->client_tls);
+    // PP2_TYPE_SSL without PP2_CLIENT_SSL (e.g. only a certificate flag).
+    BOOST_CHECK(!with({0x20, 0x00, 0x05, 0x02, 0, 0, 0, 0})->client_tls);
+    // Truncated TLVs are not believed.
+    BOOST_CHECK(!with({0x20, 0x00, 0x05, 0x01})->client_tls);
+    BOOST_CHECK(!with({0x20})->client_tls);
+    // IPv6
+    std::vector<uint8_t> a6(36, 0);
+    a6[0] = 0x20;
+    a6.insert(a6.end(), {0x20, 0x00, 0x01, 0x01});
+    BOOST_CHECK(ParseV2(V2(0x1, 0x21, a6))->client_tls);
+    // v1 cannot carry it.
+    BOOST_CHECK(!ParseV1("PROXY TCP4 203.0.113.7 10.0.0.5 51000 10605\r\n")
+                     ->client_tls);
+}
+
 BOOST_AUTO_TEST_CASE(v2_headers) {
     // TCP over IPv4: 203.0.113.7:51000 -> 10.0.0.5:10605
     const auto tcp4{V2(0x1, 0x11, {203, 0, 113, 7, 10, 0, 0, 5, 0xC7, 0x38,

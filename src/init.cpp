@@ -1112,6 +1112,17 @@ void SetupServerArgs(NodeContext &node) {
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
         OptionsCategory::CONNECTION);
     argsman.AddArg(
+        "-p2prequiretls",
+        strprintf("Refuse P2P WebSocket peers that did not use TLS, wherever "
+                  "WebSocket is accepted (the P2P port, -publicbind, the RPC "
+                  "port): a ws:// upgrade gets the answer of any unserved "
+                  "request (404, or -publicfallback). A -trustedproxy "
+                  "connection counts as TLS when the proxy says the client "
+                  "used it (\"X-Forwarded-Proto: https\", or a PROXY v2 SSL "
+                  "TLV). Raw P2P is controlled by -p2prawlisten (default: %d)",
+                  DEFAULT_P2P_REQUIRE_TLS),
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
         "-p2pwebsocketpath=<path>",
         strprintf("Serve P2P WebSocket upgrades at this path instead of %s. "
                   "It is advertised with -externaldomain; otherwise peers "
@@ -1247,7 +1258,9 @@ void SetupServerArgs(NodeContext &node) {
             "networks. When wss is among them (e.g. -onlynet=wss for a "
             "WebSocket-only node), manual connections (-addnode, -connect) "
             "follow it too: raw P2P is then only dialed to the networks "
-            "listed, local and private addresses included.",
+            "listed, local and private addresses included. wss means "
+            "WebSocket over TLS: unencrypted ws:// also needs ipv4 or ipv6 "
+            "(onion hosts need onion).",
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg("-peerbloomfilters",
                    strprintf("Support filtering of blocks and transaction with "
