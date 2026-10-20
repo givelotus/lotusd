@@ -811,6 +811,13 @@ public:
         }
     }
 
+    bool IsRequested(NodeId peer, const uint256 &invid) const override {
+        const auto it = m_index.get<ByPeer>().find(
+            ByPeerView{peer, false, invid});
+        return it != m_index.get<ByPeer>().end() &&
+               it->GetState() == State::REQUESTED;
+    }
+
     size_t CountInFlight(NodeId peer) const override {
         auto it = m_peerinfo.find(peer);
         if (it != m_peerinfo.end()) {

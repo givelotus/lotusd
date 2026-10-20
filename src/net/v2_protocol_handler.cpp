@@ -414,6 +414,52 @@ bool V2PeerProtocolHandler::CheckPeerRateLimit(
     return true;
 }
 
+bool V2PeerProtocolHandler::CheckPeerRelayRateLimit(
+    NodeId peer_id, std::chrono::microseconds time_received) {
+    LOCK(m_mutex);
+    auto &state = m_peer_relay_windows[peer_id];
+    const auto window_us =
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            RATE_LIMIT_WINDOW);
+    if (time_received < state.window_start ||
+        (time_received - state.window_start) >= window_us) {
+        state.window_start = time_received;
+        state.count = 1;
+        return true;
+    }
+    if (state.count >= MAX_RELAY_MESSAGES_PER_WINDOW) {
+        ++m_stats.rate_limited_messages;
+        return false;
+    }
+    ++state.count;
+    return true;
+}
+
+bool V2PeerProtocolHandler::IsRelayEpoch(ReconScope scope,
+                                         const uint256 &context_id, uint64_t k0,
+                                         uint64_t k1) const {
+    if (scope != ReconScope::LIVE_MEMPOOL || !m_relay_epochs ||
+        context_id.IsNull()) {
+        return false;
+    }
+    const auto key{m_relay_epochs->RelayEpochKey(context_id)};
+    return key && key->first == k0 && key->second == k1;
+}
+
+uint64_t V2PeerProtocolHandler::ScopedShortId(ReconScope scope,
+                                              const uint256 &context_id,
+                                              uint64_t k0, uint64_t k1,
+                                              const TxId &txid) const {
+    uint64_t short_id{ComputeMerklixShortId(k0, k1, txid)};
+    if (IsRelayEpoch(scope, context_id, k0, k1)) {
+        short_id &= m_relay_epochs->RelayShortIdMask();
+        if (short_id == 0) {
+            short_id = 1;
+        }
+    }
+    return short_id;
+}
+
 bool V2PeerProtocolHandler::CheckPeerShardRateLimit(
     NodeId peer_id, std::chrono::microseconds time_received) {
     LOCK(m_mutex);
@@ -1231,6 +1277,7 @@ void V2PeerProtocolHandler::RemovePeer(NodeId peer_id) {
     m_peer_rates.erase(peer_id);
     m_peer_shorttx_windows.erase(peer_id);
     m_peer_shard_windows.erase(peer_id);
+    m_peer_relay_windows.erase(peer_id);
     m_peer_window_start.erase(peer_id);
     m_peer_msg_counts.erase(peer_id);
     m_peer_known_blocks.erase(peer_id);
@@ -1514,16 +1561,24 @@ void V2PeerProtocolHandler::HandleMerklixBuck(
 
 void V2PeerProtocolHandler::HandleGetShortTx(
     CNode &pfrom, DataStream &vRecv, std::chrono::microseconds time_received) {
-    if (!CheckPeerRateLimit(pfrom.GetId(), time_received)) {
-        return;
-    }
-
     ShortTxRequest req;
     try {
         vRecv >> req;
     } catch (const std::exception &) {
+        if (!CheckPeerRateLimit(pfrom.GetId(), time_received)) {
+            return;
+        }
         LOCK(m_mutex);
         ++m_stats.malformed_messages;
+        return;
+    }
+
+    const bool relay_epoch{IsValidReconScope(req.scope) &&
+                           IsRelayEpoch(static_cast<ReconScope>(req.scope),
+                                        req.context_id, req.salt_k0,
+                                        req.salt_k1)};
+    if (!(relay_epoch ? CheckPeerRelayRateLimit(pfrom.GetId(), time_received)
+                      : CheckPeerRateLimit(pfrom.GetId(), time_received))) {
         return;
     }
 
@@ -1531,6 +1586,26 @@ void V2PeerProtocolHandler::HandleGetShortTx(
         req.short_ids.size() > ShortTxRequest::MAX_SHORT_IDS) {
         LOCK(m_mutex);
         ++m_stats.malformed_messages;
+        return;
+    }
+
+    if (relay_epoch) {
+        // Nucleation relay: answer from the relay index (O(request)).
+        {
+            LOCK(m_mutex);
+            ++m_stats.getshorttx_received;
+        }
+        std::vector<CTransactionRef> resolved{
+            m_relay_epochs->ResolveRelayShortIds(req.context_id,
+                                                 req.short_ids)};
+        if (!resolved.empty()) {
+            ShortTxResponse resp;
+            resp.scope = req.scope;
+            resp.context_id = req.context_id;
+            resp.txs = std::move(resolved);
+            m_connman.PushMessage(&pfrom,
+                                  NetMsg::Make(NetMsgType::SHORTTX, resp));
+        }
         return;
     }
 
@@ -1565,16 +1640,25 @@ void V2PeerProtocolHandler::HandleGetShortTx(
 
 void V2PeerProtocolHandler::HandleShortTx(
     CNode &pfrom, DataStream &vRecv, std::chrono::microseconds time_received) {
-    if (!CheckPeerRateLimit(pfrom.GetId(), time_received)) {
-        return;
-    }
-
     ShortTxResponse resp;
     try {
         vRecv >> resp;
     } catch (const std::exception &) {
+        if (!CheckPeerRateLimit(pfrom.GetId(), time_received)) {
+            return;
+        }
         LOCK(m_mutex);
         ++m_stats.malformed_messages;
+        return;
+    }
+
+    // Responses to relay-epoch requests come every tick: their own limit.
+    const bool relay_epoch{
+        resp.scope == static_cast<uint8_t>(ReconScope::LIVE_MEMPOOL) &&
+        m_relay_epochs && !resp.context_id.IsNull() &&
+        m_relay_epochs->RelayEpochKey(resp.context_id).has_value()};
+    if (!(relay_epoch ? CheckPeerRelayRateLimit(pfrom.GetId(), time_received)
+                      : CheckPeerRateLimit(pfrom.GetId(), time_received))) {
         return;
     }
 
@@ -1594,24 +1678,43 @@ void V2PeerProtocolHandler::HandleShortTx(
     }
 
     const ReconScope scope = static_cast<ReconScope>(resp.scope);
+    const bool high_bandwidth_opt_in = WITH_LOCK(
+        m_mutex,
+        return pfrom.m_bip152_highbandwidth_to.load() ||
+               pfrom.m_bip152_highbandwidth_from.load() ||
+               m_high_bandwidth_shorttx_peers.count(pfrom.GetId()) > 0 ||
+               pfrom.HasPermission(NetPermissionFlags::Relay) ||
+               gArgs.GetBoolArg("-highbandwidthtx", false));
+    if (relay_epoch) {
+        // Relay requests already live in the ordinary request tracker. A
+        // second 4096-ID set cannot represent all requests outstanding in it.
+        auto selected{m_peerman.FilterRequestedShortTxResponse(
+            pfrom.GetId(), resp.context_id, resp.txs, high_bandwidth_opt_in)};
+        {
+            LOCK(m_mutex);
+            if (selected.empty()) {
+                ++m_stats.unsolicited_shorttx;
+                ++m_stats.unsolicited_shorttx_dropped;
+                return;
+            }
+            ++m_stats.shorttx_received;
+        }
+        m_peerman.ProcessShortTxResponse(pfrom, selected);
+        return;
+    }
+
     std::vector<CTransactionRef> solicited_txs;
     {
         LOCK(m_mutex);
         const PendingShortTxKey key{pfrom.GetId(), scope, resp.context_id};
         auto it = m_pending_shorttx_requests.find(key);
-        const bool high_bandwidth_opt_in =
-            pfrom.m_bip152_highbandwidth_to.load() ||
-            pfrom.m_bip152_highbandwidth_from.load() ||
-            m_high_bandwidth_shorttx_peers.count(pfrom.GetId()) > 0 ||
-            pfrom.HasPermission(NetPermissionFlags::Relay) ||
-            gArgs.GetBoolArg("-highbandwidthtx", false);
-
         if (it != m_pending_shorttx_requests.end() &&
             !it->second.requested_short_ids.empty()) {
             solicited_txs.reserve(resp.txs.size());
             for (const auto &tx : resp.txs) {
-                const uint64_t sid = ComputeMerklixShortId(
-                    it->second.salt_k0, it->second.salt_k1, tx->GetId());
+                const uint64_t sid =
+                    ScopedShortId(scope, resp.context_id, it->second.salt_k0,
+                                  it->second.salt_k1, tx->GetId());
                 // Receiving one requested body does not revoke opt-in for
                 // the other bodies in the same high-bandwidth response.
                 if (it->second.requested_short_ids.erase(sid) > 0 ||
@@ -1750,7 +1853,8 @@ void V2PeerProtocolHandler::HandleShortTx(
 
     m_peerman.MarkPeerKnownTxBatch(pfrom.GetId(), valid_txs);
 
-    if (!valid_txs.empty() &&
+    // The live mempool (null or relay-epoch context) is not a scoped set.
+    if (!valid_txs.empty() && !relay_epoch &&
         !(scope == ReconScope::LIVE_MEMPOOL && resp.context_id.IsNull())) {
         std::vector<CTransactionRef> merged =
             GetScopedTransactions(scope, resp.context_id);
