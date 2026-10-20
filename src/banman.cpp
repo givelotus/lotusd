@@ -26,10 +26,15 @@ BanMan::BanMan(fs::path ban_file, const CChainParams &chainparams,
         // sweep out unused entries
         SweepBanned();
 
-        LogDebug(BCLog::NET, "Loaded %d banned node addresses/subnets  %dms\n",
-                 m_banned.size(), GetTimeMillis() - n_start);
+        LogEvent(
+            BCLog::NET, "ban_database_loaded",
+            "Loaded {count} banned node addresses/subnets  {database_operation_ms}ms")
+            .Field(BCLog::LogField::Count, m_banned.size())
+            .Field(BCLog::LogField::DatabaseOperationMs,
+                   GetTimeMillis() - n_start);
     } else {
-        LogPrintf("Recreating the banlist database\n");
+        LogInfoEvent(BCLog::ALL, "ban_database_recreated",
+                     "Recreating the banlist database");
         m_banned = {};
         m_is_dirty = true;
     }
@@ -57,9 +62,11 @@ void BanMan::DumpBanlist() {
         SetBannedSetDirty(false);
     }
 
-    LogDebug(BCLog::NET,
-             "Flushed %d banned node addresses/subnets to disk  %dms\n",
-             banmap.size(), GetTimeMillis() - n_start);
+    LogEvent(
+        BCLog::NET, "ban_database_flush_finished",
+        "Flushed {count} banned node addresses/subnets to disk  {database_operation_ms}ms")
+        .Field(BCLog::LogField::Count, banmap.size())
+        .Field(BCLog::LogField::DatabaseOperationMs, GetTimeMillis() - n_start);
 }
 
 void BanMan::ClearBanned() {
@@ -195,8 +202,9 @@ void BanMan::SweepBanned() {
                 m_banned.erase(it++);
                 m_is_dirty = true;
                 notify_ui = true;
-                LogDebug(BCLog::NET, "Removed banned node address/subnet: %s\n",
-                         sub_net.ToString());
+                LogEvent(BCLog::NET, "ban_database_entry_removed",
+                         "Removed banned node address/subnet: {subnet}")
+                    .Field(BCLog::LogField::Subnet, sub_net.ToString());
             } else {
                 ++it;
             }
