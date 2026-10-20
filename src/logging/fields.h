@@ -203,7 +203,8 @@
     X(ImportedBlockCount, imported_block_count, INT, "", "") \
     X(ElapsedMilliseconds, elapsed_milliseconds, INT, "", "") \
     X(ClientName, client_name, STRING, "", "") \
-    X(ClientVersion, client_version, STRING, "", "")
+    X(ClientVersion, client_version, STRING, "", "") \
+    X(SigChecks, sig_checks, UINT, "", "")
 
 namespace BCLog {
 
