@@ -113,7 +113,9 @@
     X(MempoolCopySeconds, mempool_copy_seconds, FLOAT, "", "") \
     X(MempoolDumpSeconds, mempool_dump_seconds, FLOAT, "", "") \
     X(DatabaseCacheMiB, database_cache_mib, FLOAT, "", "") \
-    X(UnusedMempoolCacheMiB, unused_mempool_cache_mib, FLOAT, "", "")
+    X(UnusedMempoolCacheMiB, unused_mempool_cache_mib, FLOAT, "", "") \
+    X(Subnet, subnet, STRING, "", "") \
+    X(DatabaseOperationMs, database_operation_ms, INT, "", "")
 
 namespace BCLog {
 
