@@ -20,6 +20,7 @@
 #include <logging.h>
 #include <net_permissions.h>
 #include <net_websocket.h>
+#include <net_webtransport.h>
 #include <netaddress.h>
 #include <netbase.h>
 #include <node/connection_types.h>
@@ -317,6 +318,8 @@ struct CNodeStats {
     std::optional<double> m_availabilityScore;
     //! Set for peers connected over WebSocket (/p2p/ws)
     std::shared_ptr<const WebSocketTransportInfo> m_websocket_info;
+    //! Set for peers connected over WebTransport (HTTP/3 over QUIC)
+    std::shared_ptr<const QuicTransportInfo> m_quic_info;
 };
 
 /**
@@ -456,6 +459,8 @@ struct CNodeOptions {
     size_t recv_flood_size{DEFAULT_MAXRECEIVEBUFFER * 1000};
     //! Set for peers connected over WebSocket (/p2p/ws)
     std::shared_ptr<WebSocketTransportInfo> websocket_info = nullptr;
+    //! Set for peers connected over WebTransport (/p2p/wt)
+    std::shared_ptr<QuicTransportInfo> quic_info = nullptr;
 };
 
 /** Information about a peer */
@@ -556,6 +561,12 @@ public:
     //! Sent part of its first bytes (socket handler thread only)
     bool m_p2p_port_partial{false};
     std::chrono::steady_clock::time_point m_p2p_port_deadline;
+    /**
+     * Transport details if this peer is connected over WebTransport; m_sock
+     * is then a QuicPeerSock (one end of a socketpair the QUIC engine
+     * signals on).
+     */
+    const std::shared_ptr<QuicTransportInfo> m_quic_info;
     //! Series of the peer gauges this node was counted in (metrics on at
     //! construction), so that its destruction removes exactly that.
     std::optional<std::pair<size_t, std::optional<size_t>>> m_metrics_series;
@@ -1140,6 +1151,16 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!m_added_nodes_mutex);
 
     /**
+     * Accept an inbound peer whose WebTransport session (/p2p/wt) is
+     * established, like AcceptWebSocketPeer(). Called on the QUIC engine's
+     * thread.
+     */
+    void AcceptWebTransportPeer(std::unique_ptr<Sock> &&sock,
+                                const CAddress &addr,
+                                const CAddress &addr_bind,
+                                std::shared_ptr<QuicTransportInfo> info);
+
+    /**
      * Accept an inbound peer that connected over WebSocket (/p2p/ws).
      * Subject to the same limits, bans and eviction as TCP inbound peers.
      *
@@ -1281,7 +1302,8 @@ private:
         std::unique_ptr<Sock> &&sock, NetPermissionFlags permission_flags,
         const CAddress &addr_bind, const CAddress &addr,
         std::shared_ptr<WebSocketTransportInfo> websocket_info = nullptr,
-        bool classify = false);
+        bool classify = false,
+        std::shared_ptr<QuicTransportInfo> quic_info = nullptr);
 
     void DisconnectNodes();
     void NotifyNumConnectionsChanged();
@@ -1363,6 +1385,13 @@ private:
     CNode *ConnectWebSocketNode(const std::string &url,
                                 const CAddress *wss_addr, bool fCountFailure,
                                 ConnectionType conn_type);
+    /**
+     * Open an outbound P2P connection over WebTransport to `url` (wt://),
+     * via the dialer set with SetWebTransportDialer(). Never through a
+     * proxy: UDP cannot use one, so with -proxy/-onion it fails closed.
+     */
+    CNode *ConnectWebTransportNode(const std::string &url, bool fCountFailure,
+                                   ConnectionType conn_type);
     ;
     void AddWhitelistPermissionFlags(
         NetPermissionFlags &flags, const CNetAddr &addr,
