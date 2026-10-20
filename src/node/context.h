@@ -91,6 +91,7 @@ struct NodeContext {
     std::thread background_init_thread;
 
     std::unique_ptr<avalanche::Processor> avalanche;
+    // Atomic publication; each handler retains a strong reference until return.
     std::shared_ptr<MiningPoolManager> mining_pool;
 
     //! Declare default constructor and destructor that are not inline, so code
