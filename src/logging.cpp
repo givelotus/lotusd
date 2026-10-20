@@ -417,9 +417,10 @@ static const std::map<std::string, BCLog::LogFlags, std::less<>>
         {"blockstorage", BCLog::BLOCKSTORE},
         {"netdebug", BCLog::NETDEBUG},
         {"txpackages", BCLog::TXPACKAGES},
+        {"txrelay", BCLog::TXRELAY},
         {"1", BCLog::ALL},
         {"all", BCLog::ALL},
-    };
+};
 
 static const std::unordered_map<BCLog::LogFlags, std::string>
     LOG_CATEGORIES_BY_FLAG{
