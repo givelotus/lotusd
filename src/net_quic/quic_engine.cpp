@@ -953,6 +953,13 @@ private:
     }
 
     void MaybeReloadServerContext() {
+        if (m_opts.certificate_generation) {
+            const auto generation{m_opts.certificate_generation()};
+            if (generation != m_certificate_generation) {
+                m_certificate_generation = generation;
+                m_next_cert_check = {};
+            }
+        }
         const auto now{std::chrono::steady_clock::now()};
         if (!m_server_ctx || now < m_next_cert_check) {
             return;
@@ -1525,6 +1532,7 @@ private:
     uint32_t m_reset_tokens{0};
     std::chrono::steady_clock::time_point m_reset_refill{};
     tls::SslCtxPtr m_server_ctx;
+    uint64_t m_certificate_generation{0};
     tls::SslCtxPtr m_client_ctx;
     fs::file_time_type m_cert_mtime{}, m_key_mtime{};
     std::chrono::steady_clock::time_point m_next_cert_check{};
