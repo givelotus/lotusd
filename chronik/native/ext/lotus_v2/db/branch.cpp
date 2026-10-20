@@ -208,7 +208,7 @@ Coin DecodeCoin(ByteView bytes) {
         ThrowCorrupt();
     }
     Coin coin = Dec<Coin>(bytes);
-    if ((coin.flags & ~3) != 0 ||
+    if ((coin.flags & ~7) != 0 ||
         coin.token_id.has_value() != ((coin.flags & 1) != 0)) {
         ThrowCorrupt();
     }

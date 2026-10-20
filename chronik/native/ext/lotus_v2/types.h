@@ -47,7 +47,7 @@ struct OutPoint {
 };
 
 /** Hard native framing bound, independent of stricter deployment profiles. */
-inline constexpr size_t MAX_OUTPUT_BYTES = 812;
+inline constexpr size_t MAX_OUTPUT_BYTES = 844;
 /** Maximum branches and paths in the native output grammar. */
 inline constexpr size_t MAX_OUTPUT_BRANCHES = 16;
 
@@ -65,12 +65,18 @@ struct OutputError {
  * spendability; burns also carry public roots.
  */
 struct Output {
-    /** Bit 0: token; bit 1: burn. All other bits must be zero. */
+    /** Bit 0: token; bit 1: burn; bit 2: state. All other bits zero. */
     uint8_t flags = 0;
     /** Unsigned native/token quantity, including the full u64 range. */
     uint64_t value = 0;
     /** Nonzero exactly when the token flag is set; otherwise all zero. */
     Hash32 token_id;
+    /**
+     * Nonzero exactly when the state flag is set; otherwise all zero. A
+     * contract-defined commitment authorized by the creating transaction's
+     * scripts (ENFORCEOUTPUT); never set on burns.
+     */
+    Hash32 state_root;
     /** Complete ordered, distinct public authorization roots. */
     std::vector<Hash32> branches;
     /** Lexicographically ordered paths of strictly increasing indices. */
@@ -81,6 +87,8 @@ struct Output {
     bool HasToken() const { return (flags & 1) != 0; }
     /** Whether this is a burn commitment (excluded from UTXOs). */
     bool IsBurn() const { return (flags & 2) != 0; }
+    /** Whether the output carries a 32-byte state root. */
+    bool HasState() const { return (flags & 4) != 0; }
 
     /** Check native output structure only (no coin or script validation). */
     std::optional<OutputError> Validate() const;
