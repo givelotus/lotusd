@@ -185,7 +185,14 @@
     X(FileFirstHeight, file_first_height, UINT, "", "") \
     X(FileLastHeight, file_last_height, UINT, "", "") \
     X(FileFirstTimeSeconds, file_first_time_seconds, UINT, "", "") \
-    X(FileLastTimeSeconds, file_last_time_seconds, UINT, "", "")
+    X(FileLastTimeSeconds, file_last_time_seconds, UINT, "", "") \
+    X(LocalScore, local_score, INT, "", "") \
+    X(InflightState, inflight_state, STRING, "", "") \
+    X(InflightBytes, inflight_bytes, UINT, "", "") \
+    X(InflightLimitBytes, inflight_limit_bytes, UINT, "", "") \
+    X(WaitSeconds, wait_seconds, INT, "", "") \
+    X(NetworkActive, network_active, BOOL, "", "") \
+    X(WaitMilliseconds, wait_milliseconds, INT, "", "")
 
 namespace BCLog {
 
