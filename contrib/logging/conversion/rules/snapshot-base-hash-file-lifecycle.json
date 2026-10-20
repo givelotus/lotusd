@@ -1,0 +1,144 @@
+{
+  "schema": 1,
+  "batch": "snapshot-base-hash-file-lifecycle",
+  "tier": "shared",
+  "files": [
+    {
+      "path": "src/node/utxo_snapshot.cpp",
+      "rules": [
+        {
+          "id": "snapshot_base_hash_write_open_failed",
+          "old": "LogPrintf(\n            \"[snapshot] failed to open base blockhash file for writing: %s\\n\",\n            fs::PathToString(write_to))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_base_hash_write_open_failed\", \"[snapshot] failed to open base blockhash file for writing: {path}\").Field(BCLog::LogField::Path, fs::PathToString(write_to))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] failed to open base blockhash file for writing: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(write_to)"
+            ]
+          },
+          "review_note": "Preserve original Info severity including warning prose, original path conversions/bytes and optional/hash return values. Distinguish missing chainstate directory from missing hash file and its recovery target. No hash contents are newly logged; this is lifecycle metadata only, not snapshot consensus or migration work. Existing producer filesystem-to-string conversion remains explicit; no claim to defer that conversion."
+        },
+        {
+          "id": "snapshot_base_hash_write_close_failed",
+          "old": "LogPrintf(\n            \"[snapshot] failed to close base blockhash file %s after writing\\n\",\n            fs::PathToString(write_to))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_base_hash_write_close_failed\", \"[snapshot] failed to close base blockhash file {path} after writing\").Field(BCLog::LogField::Path, fs::PathToString(write_to))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] failed to close base blockhash file %s after writing\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(write_to)"
+            ]
+          },
+          "review_note": "Preserve original Info severity including warning prose, original path conversions/bytes and optional/hash return values. Distinguish missing chainstate directory from missing hash file and its recovery target. No hash contents are newly logged; this is lifecycle metadata only, not snapshot consensus or migration work. Existing producer filesystem-to-string conversion remains explicit; no claim to defer that conversion."
+        },
+        {
+          "id": "snapshot_base_hash_directory_missing",
+          "old": "LogPrintf(\"[snapshot] cannot read base blockhash: no chainstate dir \"\n                  \"exists at path %s\\n\",\n                  fs::PathToString(chaindir))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_base_hash_directory_missing\", \"[snapshot] cannot read base blockhash: no chainstate dir exists at path {path}\").Field(BCLog::LogField::Path, fs::PathToString(chaindir))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] cannot read base blockhash: no chainstate dir exists at path %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(chaindir)"
+            ]
+          },
+          "review_note": "Preserve original Info severity including warning prose, original path conversions/bytes and optional/hash return values. Distinguish missing chainstate directory from missing hash file and its recovery target. No hash contents are newly logged; this is lifecycle metadata only, not snapshot consensus or migration work. Existing producer filesystem-to-string conversion remains explicit; no claim to defer that conversion."
+        },
+        {
+          "id": "snapshot_base_hash_file_missing",
+          "old": "LogPrintf(\"[snapshot] snapshot chainstate dir is malformed! no base \"\n                  \"blockhash file exists at path %s. Try deleting %s and \"\n                  \"calling loadtxoutset again?\\n\",\n                  fs::PathToString(chaindir), read_from_str)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_base_hash_file_missing\", \"[snapshot] snapshot chainstate dir is malformed! no base blockhash file exists at path {directory}. Try deleting {path} and calling loadtxoutset again?\").Field(BCLog::LogField::Directory, fs::PathToString(chaindir)).Field(BCLog::LogField::Path, read_from_str)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] snapshot chainstate dir is malformed! no base blockhash file exists at path %s. Try deleting %s and calling loadtxoutset again?\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(chaindir)",
+              "read_from_str"
+            ]
+          },
+          "review_note": "Preserve original Info severity including warning prose, original path conversions/bytes and optional/hash return values. Distinguish missing chainstate directory from missing hash file and its recovery target. No hash contents are newly logged; this is lifecycle metadata only, not snapshot consensus or migration work. Existing producer filesystem-to-string conversion remains explicit; no claim to defer that conversion."
+        },
+        {
+          "id": "snapshot_base_hash_read_open_failed",
+          "old": "LogPrintf(\n            \"[snapshot] failed to open base blockhash file for reading: %s\\n\",\n            read_from_str)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_base_hash_read_open_failed\", \"[snapshot] failed to open base blockhash file for reading: {path}\").Field(BCLog::LogField::Path, read_from_str)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] failed to open base blockhash file for reading: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "read_from_str"
+            ]
+          },
+          "review_note": "Preserve original Info severity including warning prose, original path conversions/bytes and optional/hash return values. Distinguish missing chainstate directory from missing hash file and its recovery target. No hash contents are newly logged; this is lifecycle metadata only, not snapshot consensus or migration work. Existing producer filesystem-to-string conversion remains explicit; no claim to defer that conversion."
+        },
+        {
+          "id": "snapshot_base_hash_trailing_data",
+          "old": "LogPrintf(\"[snapshot] warning: unexpected trailing data in %s\\n\",\n                  read_from_str)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_base_hash_trailing_data\", \"[snapshot] warning: unexpected trailing data in {path}\").Field(BCLog::LogField::Path, read_from_str)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] warning: unexpected trailing data in %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "read_from_str"
+            ]
+          },
+          "review_note": "Preserve original Info severity including warning prose, original path conversions/bytes and optional/hash return values. Distinguish missing chainstate directory from missing hash file and its recovery target. No hash contents are newly logged; this is lifecycle metadata only, not snapshot consensus or migration work. Existing producer filesystem-to-string conversion remains explicit; no claim to defer that conversion."
+        },
+        {
+          "id": "snapshot_base_hash_read_error",
+          "old": "LogPrintf(\"[snapshot] warning: i/o error reading %s\\n\", read_from_str)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"snapshot_base_hash_read_error\", \"[snapshot] warning: i/o error reading {path}\").Field(BCLog::LogField::Path, read_from_str)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] warning: i/o error reading %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "read_from_str"
+            ]
+          },
+          "review_note": "Preserve original Info severity including warning prose, original path conversions/bytes and optional/hash return values. Distinguish missing chainstate directory from missing hash file and its recovery target. No hash contents are newly logged; this is lifecycle metadata only, not snapshot consensus or migration work. Existing producer filesystem-to-string conversion remains explicit; no claim to defer that conversion."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Directory context distinct from primary missing-file path, with no guessed external schema annotations.",
+          "old": "    X(Caption, caption, STRING, \"\", \"\")\n\nnamespace BCLog {",
+          "new": "    X(Caption, caption, STRING, \"\", \"\") \\\n    X(Directory, directory, STRING, \"\", \"\")\n\nnamespace BCLog {"
+        }
+      ]
+    }
+  ]
+}
