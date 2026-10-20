@@ -3,10 +3,15 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <config.h>
-#include <protocol.h>
+#include <hash.h>
 #include <net_websocket_codec.h>
 #include <net_websocket_sock.h>
 #include <net_websocket_tls.h>
+#include <net_zstd_dict.h>
+#include <net_zstd_independent.h>
+#include <primitives/block.h>
+#include <protocol.h>
+#include <streams.h>
 #include <tls_util.h>
 
 #include <random.h>
@@ -23,6 +28,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <future>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -704,6 +710,508 @@ BOOST_AUTO_TEST_CASE(incompressible_stream_wire_overhead_is_allowed) {
     BOOST_CHECK_LE(wire.size(), server.MaxWireMessageSize() + 14);
     BOOST_REQUIRE(!server.Decode(wire, plain, reply).error);
     BOOST_CHECK(plain == payload);
+}
+
+// Independent (compress-once) frames of the zstd modes.
+namespace {
+/** Restore g_p2p_compress_once_threshold when a test changes it */
+struct RestoreThreshold {
+    const size_t old{g_p2p_compress_once_threshold.load()};
+    ~RestoreThreshold() { g_p2p_compress_once_threshold = old; }
+};
+
+/** A complete P2P message: 24-byte header, then the payload */
+struct P2PMessage {
+    std::vector<uint8_t> header, payload;
+    std::vector<uint8_t> Bytes() const {
+        std::vector<uint8_t> all{header};
+        all.insert(all.end(), payload.begin(), payload.end());
+        return all;
+    }
+};
+
+P2PMessage MakeMessage(const char *type, std::vector<uint8_t> payload) {
+    P2PMessage msg;
+    msg.payload = std::move(payload);
+    CMessageHeader hdr{CMessageHeader::MessageMagic{0xe3, 0xe1, 0xf3, 0xe8},
+                       type, uint32_t(msg.payload.size())};
+    const uint256 hash{Hash(msg.payload)};
+    std::memcpy(hdr.pchChecksum, hash.begin(), CMessageHeader::CHECKSUM_SIZE);
+    VectorWriter{msg.header, 0, hdr};
+    BOOST_REQUIRE_EQUAL(msg.header.size(), CMessageHeader::HEADER_SIZE);
+    return msg;
+}
+
+/** A block message: a block header, then `size` partly compressible bytes */
+P2PMessage MakeBlockMessage(FastRandomContext &rng, size_t size) {
+    std::vector<uint8_t> payload;
+    CBlockHeader header;
+    header.nNonce = rng.rand32();
+    header.nTime = rng.rand32();
+    VectorWriter{payload, 0, header};
+    auto body{rng.randbytes<uint8_t>(size)};
+    // Like transactions: random hashes and keys between repeated structure.
+    for (size_t i = 0; i < body.size(); i += 64) {
+        std::fill(body.begin() + i,
+                  body.begin() + std::min(body.size(), i + 24), 0x76);
+    }
+    payload.insert(payload.end(), body.begin(), body.end());
+    return MakeMessage(NetMsgType::BLOCK, std::move(payload));
+}
+
+/** A server and client WebSocketSock with the given compression */
+struct ModePair {
+    std::unique_ptr<WebSocketSock> client, server;
+    explicit ModePair(C mode) {
+        int sv[2];
+        BOOST_REQUIRE_EQUAL(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+        BigBuffers(sv);
+        client = std::make_unique<WebSocketSock>(
+            SOCKET(sv[0]), Role::CLIENT, Info(mode),
+            std::make_unique<PlainByteLayer>());
+        server = std::make_unique<WebSocketSock>(
+            SOCKET(sv[1]), Role::SERVER, Info(mode),
+            std::make_unique<PlainByteLayer>());
+    }
+};
+
+/** Send a P2P message as CConnman does: header with MSG_MORE, payload */
+void SendLikeConnman(const Sock &sock, const P2PMessage &msg, bool more) {
+    int flags{0};
+#ifdef MSG_MORE
+    flags = MSG_MORE;
+#endif
+    BOOST_REQUIRE_EQUAL(sock.Send(msg.header.data(), msg.header.size(), flags),
+                        ssize_t(msg.header.size()));
+    BOOST_REQUIRE_EQUAL(
+        sock.Send(msg.payload.data(), msg.payload.size(), more ? flags : 0),
+        ssize_t(msg.payload.size()));
+}
+
+std::vector<uint8_t> Concat(std::initializer_list<const P2PMessage *> msgs) {
+    std::vector<uint8_t> all;
+    for (const auto *m : msgs) {
+        const auto bytes{m->Bytes()};
+        all.insert(all.end(), bytes.begin(), bytes.end());
+    }
+    return all;
+}
+} // namespace
+
+BOOST_AUTO_TEST_CASE(independent_frames_are_part_of_zstd_modes) {
+    BOOST_CHECK(WebSocketCodec(Role::SERVER, C::ZSTD_DICT).IndependentFrames());
+    BOOST_CHECK(WebSocketCodec(Role::SERVER, C::ZSTD).IndependentFrames());
+    BOOST_CHECK(!WebSocketCodec(Role::SERVER, C::NONE).IndependentFrames());
+    BOOST_CHECK(!WebSocketCodec(Role::SERVER, C::PERMESSAGE_DEFLATE)
+                     .IndependentFrames());
+}
+
+BOOST_AUTO_TEST_CASE(independent_frames_keep_stream_history) {
+    FastRandomContext rng{true};
+    const auto block{MakeBlockMessage(rng, 200000)};
+    const auto block_bytes{block.Bytes()};
+    const std::vector<uint8_t> small(4096, 0x71);
+    WebSocketCodec encoder{Role::SERVER, C::ZSTD_DICT};
+    WebSocketCodec decoder{Role::CLIENT, C::ZSTD_DICT};
+    std::vector<uint8_t> wire, plain, reply;
+    encoder.EncodeMessage(small, wire);
+    const size_t first{wire.size()};
+    const auto frame{CompressP2PIndependent(block.header, block.payload)};
+    encoder.EncodeIndependent(frame, wire);
+    BOOST_CHECK_EQUAL(wire[first] & 0x70, 0x20);
+    encoder.EncodeMessage(small, wire);
+    BOOST_REQUIRE(!decoder.Decode(wire, plain, reply).error);
+    std::vector<uint8_t> expected{small};
+    expected.insert(expected.end(), block_bytes.begin(), block_bytes.end());
+    expected.insert(expected.end(), small.begin(), small.end());
+    BOOST_CHECK(plain == expected);
+    BOOST_CHECK_EQUAL(decoder.IndependentFramesRecv(), 1U);
+    // The frame alone decodes for a brand-new peer: no stream history.
+    WebSocketCodec fresh_encoder{Role::SERVER, C::ZSTD_DICT};
+    WebSocketCodec fresh{Role::CLIENT, C::ZSTD_DICT};
+    wire.clear();
+    plain.clear();
+    fresh_encoder.EncodeIndependent(frame, wire);
+    BOOST_REQUIRE(!fresh.Decode(wire, plain, reply).error);
+    BOOST_CHECK(plain == block_bytes);
+    // A client (masked) can send them too.
+    WebSocketCodec client{Role::CLIENT, C::ZSTD_DICT};
+    WebSocketCodec server{Role::SERVER, C::ZSTD_DICT};
+    wire.clear();
+    plain.clear();
+    client.EncodeIndependent(frame, wire);
+    BOOST_REQUIRE(!server.Decode(wire, plain, reply).error);
+    BOOST_CHECK(plain == block_bytes);
+}
+
+BOOST_AUTO_TEST_CASE(independent_frames_rejected_without_zstd) {
+    FastRandomContext rng{true};
+    const auto block{MakeBlockMessage(rng, 70000)};
+    const auto frame{CompressP2PIndependent(block.header, block.payload)};
+    WebSocketCodec sender{Role::SERVER, C::ZSTD_DICT};
+    std::vector<uint8_t> wire;
+    sender.EncodeIndependent(frame, wire);
+    // Uncompressed connections have no RSV bits at all.
+    {
+        WebSocketCodec decoder{Role::CLIENT, C::NONE};
+        std::vector<uint8_t> plain, reply;
+        const auto result{decoder.Decode(wire, plain, reply)};
+        BOOST_REQUIRE(result.error);
+        BOOST_CHECK(result.error->find("reserved bits") != std::string::npos);
+        BOOST_CHECK(plain.empty());
+    }
+    // p2p-zstd (no stream dictionary) decodes them too.
+    {
+        WebSocketCodec decoder{Role::CLIENT, C::ZSTD};
+        std::vector<uint8_t> plain, reply;
+        BOOST_REQUIRE(!decoder.Decode(wire, plain, reply).error);
+        BOOST_CHECK(plain == block.Bytes());
+    }
+    // RSV1, RSV3, RSV1|RSV2, RSV2 on a fragment,
+    // continuation, text or control frame are invalid.
+    for (const uint8_t first :
+         {uint8_t(0xc2), uint8_t(0x92), uint8_t(0xe2), uint8_t(0x22),
+          uint8_t(0xa1), uint8_t(0xa9), uint8_t(0xa8)}) {
+        WebSocketCodec decoder{Role::CLIENT, C::ZSTD_DICT};
+        std::vector<uint8_t> plain, reply;
+        BOOST_CHECK(
+            decoder.Decode(std::vector<uint8_t>{first, 1, 0}, plain, reply)
+                .error);
+    }
+    {
+        // A fragmented message cannot continue with an RSV2 frame.
+        WebSocketCodec decoder{Role::CLIENT, C::ZSTD_DICT};
+        std::vector<uint8_t> plain, reply;
+        BOOST_CHECK(decoder
+                        .Decode(std::vector<uint8_t>{0x02, 1, 0, 0xa0, 1, 0},
+                                plain, reply)
+                        .error);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(independent_frame_strict_validation) {
+    FastRandomContext rng{true};
+    const auto block{MakeBlockMessage(rng, 70000)};
+    const auto bytes{block.Bytes()};
+    const auto original{CompressP2PIndependent(block.header, block.payload)};
+    std::vector<uint8_t> out;
+    DecompressP2PIndependent(original, out, bytes.size());
+    BOOST_CHECK(out == bytes);
+    out.clear();
+    auto expect_reject = [&](const std::vector<uint8_t> &frame,
+                             size_t maximum) {
+        out.assign(3, 0x55);
+        BOOST_CHECK_THROW(DecompressP2PIndependent(frame, out, maximum),
+                          std::runtime_error);
+        // Nothing was appended.
+        BOOST_CHECK(out == std::vector<uint8_t>(3, 0x55));
+    };
+    auto bad{original};
+    bad[0] = 2; // Unknown format
+    expect_reject(bad, 100000);
+    bad = original;
+    bad[1] ^= 1; // Unknown dictionary version
+    expect_reject(bad, 100000);
+    bad = original;
+    bad.push_back(0); // Trailing data
+    expect_reject(bad, 100000);
+    bad = original;
+    bad.pop_back(); // Truncated
+    expect_reject(bad, 100000);
+    bad = original;
+    bad.insert(bad.end(), original.begin() + P2P_INDEPENDENT_ENVELOPE,
+               original.end()); // Two concatenated frames
+    expect_reject(bad, 1000000);
+    expect_reject(original, bytes.size() - 1); // Above the message limit
+    expect_reject({}, 100000);
+    expect_reject({1, 1, 0, 0, 0}, 100000); // Envelope only
+    // A skippable frame is not a compressed P2P message.
+    bad.assign(13, 0);
+    bad[0] = P2P_INDEPENDENT_FORMAT;
+    WriteLE32(bad.data() + 1, P2P_INDEPENDENT_DICT_VERSION);
+    WriteLE32(bad.data() + 5, 0x184d2a50);
+    expect_reject(bad, 100000);
+    // Without a content size.
+    {
+        std::vector<uint8_t> frame(P2P_INDEPENDENT_ENVELOPE +
+                                   ZSTD_compressBound(bytes.size()));
+        frame[0] = P2P_INDEPENDENT_FORMAT;
+        WriteLE32(frame.data() + 1, P2P_INDEPENDENT_DICT_VERSION);
+        std::unique_ptr<ZSTD_CCtx, size_t (*)(ZSTD_CCtx *)> ctx{
+            ZSTD_createCCtx(), &ZSTD_freeCCtx};
+        BOOST_REQUIRE(!ZSTD_isError(
+            ZSTD_CCtx_setParameter(ctx.get(), ZSTD_c_contentSizeFlag, 0)));
+        ZSTD_outBuffer output{frame.data(), frame.size(),
+                              P2P_INDEPENDENT_ENVELOPE};
+        ZSTD_inBuffer input{bytes.data(), bytes.size(), 0};
+        BOOST_REQUIRE(!ZSTD_isError(
+            ZSTD_compressStream2(ctx.get(), &output, &input, ZSTD_e_end)));
+        frame.resize(output.pos);
+        BOOST_REQUIRE_EQUAL(
+            ZSTD_getFrameContentSize(frame.data() + P2P_INDEPENDENT_ENVELOPE,
+                                     frame.size() - P2P_INDEPENDENT_ENVELOPE),
+            ZSTD_CONTENTSIZE_UNKNOWN);
+        expect_reject(frame, 1000000);
+    }
+    // A declared window above the decoder limit, even though the content
+    // fits the message limit.
+    {
+        const std::vector<uint8_t> big(2 * 1024 * 1024, 0x24);
+        std::vector<uint8_t> frame(P2P_INDEPENDENT_ENVELOPE +
+                                   ZSTD_compressBound(big.size()));
+        frame[0] = P2P_INDEPENDENT_FORMAT;
+        WriteLE32(frame.data() + 1, P2P_INDEPENDENT_DICT_VERSION);
+        const size_t n{ZSTD_compress(frame.data() + P2P_INDEPENDENT_ENVELOPE,
+                                     frame.size() - P2P_INDEPENDENT_ENVELOPE,
+                                     big.data(), big.size(), 3)};
+        BOOST_REQUIRE(!ZSTD_isError(n));
+        frame.resize(P2P_INDEPENDENT_ENVELOPE + n);
+        expect_reject(frame, 4 * 1024 * 1024);
+    }
+    // Over the wire, a bad frame is a fatal decode error.
+    WebSocketCodec sender{Role::SERVER, C::ZSTD_DICT};
+    WebSocketCodec decoder{Role::CLIENT, C::ZSTD_DICT};
+    std::vector<uint8_t> wire, plain, reply;
+    bad = original;
+    bad.push_back(0);
+    sender.EncodeIndependent(bad, wire);
+    const auto result{decoder.Decode(wire, plain, reply)};
+    BOOST_REQUIRE(result.error);
+    BOOST_CHECK(result.error->find("independent zstd") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(independent_frame_message_limit) {
+    RestoreBlockLimit restore;
+    BOOST_REQUIRE(restore.config.SetMaxBlockSize(32 * 1000000));
+    const uint64_t limit{GetP2PWebSocketMessageSizeLimit()};
+    WebSocketCodec sender{Role::SERVER, C::ZSTD_DICT};
+    WebSocketCodec decoder{Role::CLIENT, C::ZSTD_DICT};
+    // Incompressible: the frame is larger than its content, and accepted.
+    FastRandomContext rng{true};
+    const auto random{rng.randbytes<uint8_t>(limit - 24)};
+    const std::vector<uint8_t> header(24, 0);
+    std::vector<uint8_t> wire, plain, reply;
+    sender.EncodeIndependent(CompressP2PIndependent(header, random), wire);
+    BOOST_CHECK_GT(wire.size(), limit);
+    BOOST_REQUIRE(!decoder.Decode(wire, plain, reply).error);
+    BOOST_CHECK_EQUAL(plain.size(), limit);
+    // One byte over the configured message limit is refused before output.
+    wire.clear();
+    plain.clear();
+    sender.EncodeIndependent(
+        CompressP2PIndependent(header, std::vector<uint8_t>(limit - 23, 0)),
+        wire);
+    const auto result{decoder.Decode(wire, plain, reply)};
+    BOOST_REQUIRE(result.error);
+    BOOST_CHECK(result.error->find("content size") != std::string::npos);
+    BOOST_CHECK(plain.empty());
+}
+
+BOOST_AUTO_TEST_CASE(block_frame_cache_bounds_and_identity) {
+    FastRandomContext rng{true};
+    const auto block{MakeBlockMessage(rng, 20000)};
+    P2PIndependentFrameCache cache{1 << 20, 2};
+    const auto held{cache.Encode(block.header, block.payload)};
+    BOOST_CHECK(cache.Encode(block.header, block.payload) == held);
+    // Same block header, different body (so a different P2P checksum).
+    auto changed{block.payload};
+    changed.back() ^= 1;
+    const auto changed_msg{MakeMessage(NetMsgType::BLOCK, changed)};
+    const auto second{cache.Encode(changed_msg.header, changed_msg.payload)};
+    BOOST_CHECK(second != held);
+    std::vector<uint8_t> decoded;
+    DecompressP2PIndependent(*second, decoded, 100000);
+    BOOST_CHECK(decoded == changed_msg.Bytes());
+    // A third block evicts the least recently used (the first).
+    const auto third{MakeBlockMessage(rng, 20000)};
+    cache.Encode(third.header, third.payload);
+    auto stats{cache.GetStats()};
+    BOOST_CHECK_EQUAL(stats.hits, 1U);
+    BOOST_CHECK_EQUAL(stats.misses, 3U);
+    BOOST_CHECK_EQUAL(stats.encodes, 3U);
+    BOOST_CHECK_EQUAL(stats.entries, 2U);
+    BOOST_CHECK_EQUAL(stats.evictions, 1U);
+    BOOST_CHECK_LE(stats.bytes, 1U << 20);
+    // The evicted frame stays valid for whoever holds it.
+    decoded.clear();
+    DecompressP2PIndependent(*held, decoded, 100000);
+    BOOST_CHECK(decoded == block.Bytes());
+    // Non-block messages and unparsable bodies are not cached.
+    const auto tx{MakeMessage(NetMsgType::TX, std::vector<uint8_t>(5000, 1))};
+    cache.Encode(tx.header, tx.payload);
+    const auto stub{
+        MakeMessage(NetMsgType::BLOCK, std::vector<uint8_t>(10, 1))};
+    cache.Encode(stub.header, stub.payload);
+    stats = cache.GetStats();
+    BOOST_CHECK_EQUAL(stats.encodes, 5U);
+    BOOST_CHECK_EQUAL(stats.misses, 3U);
+    BOOST_CHECK_EQUAL(stats.entries, 2U);
+    // The byte budget is of allocated capacity; shrinking it evicts.
+    cache.SetMaxBytes(held->capacity());
+    stats = cache.GetStats();
+    BOOST_CHECK_LE(stats.bytes, held->capacity());
+    BOOST_CHECK_LE(stats.entries, 1U);
+    // A frame larger than the whole budget is served but not kept.
+    P2PIndependentFrameCache tiny{16, 2};
+    BOOST_CHECK(tiny.Encode(block.header, block.payload));
+    BOOST_CHECK_EQUAL(tiny.GetStats().entries, 0U);
+    BOOST_CHECK_EQUAL(tiny.GetStats().bytes, 0U);
+    P2PIndependentFrameCache off{0, 2};
+    off.Encode(block.header, block.payload);
+    off.Encode(block.header, block.payload);
+    BOOST_CHECK_EQUAL(off.GetStats().encodes, 2U);
+}
+
+BOOST_AUTO_TEST_CASE(block_frame_cache_same_header_different_payload) {
+    FastRandomContext rng{true};
+    const auto block{MakeBlockMessage(rng, 20000)};
+    auto changed{block.payload};
+    changed.back() ^= 1;
+    P2PIndependentFrameCache cache;
+    const auto first{cache.Encode(block.header, block.payload)};
+    // The API does not validate the checksum. Reuse the entire P2P header,
+    // including its 32-bit checksum, with different supplied body bytes.
+    const auto second{cache.Encode(block.header, changed)};
+    BOOST_CHECK(first != second);
+    BOOST_CHECK(cache.Encode(block.header, changed) == second);
+    std::vector<uint8_t> expected{block.header};
+    expected.insert(expected.end(), changed.begin(), changed.end());
+    std::vector<uint8_t> decoded;
+    DecompressP2PIndependent(*second, decoded, expected.size());
+    BOOST_CHECK(decoded == expected);
+    const auto stats{cache.GetStats()};
+    BOOST_CHECK_EQUAL(stats.encodes, 2U);
+    BOOST_CHECK_EQUAL(stats.misses, 2U);
+    BOOST_CHECK_EQUAL(stats.hits, 1U);
+}
+
+BOOST_AUTO_TEST_CASE(block_frame_cache_concurrent_single_compression) {
+    FastRandomContext rng{true};
+    const auto block{MakeBlockMessage(rng, 2000000)};
+    P2PIndependentFrameCache cache;
+    std::array<P2PIndependentFrameCache::Frame, 8> results;
+    std::promise<void> start;
+    const std::shared_future<void> go{start.get_future().share()};
+    std::vector<std::thread> workers;
+    for (size_t i = 0; i < results.size(); ++i) {
+        workers.emplace_back([&, i] {
+            go.wait();
+            results[i] = cache.Encode(block.header, block.payload);
+        });
+    }
+    start.set_value();
+    for (auto &thread : workers) {
+        thread.join();
+    }
+    const auto stats{cache.GetStats()};
+    BOOST_CHECK_EQUAL(stats.encodes, 1U);
+    BOOST_CHECK_EQUAL(stats.misses, 1U);
+    BOOST_CHECK_EQUAL(stats.hits, 7U);
+    for (const auto &result : results) {
+        BOOST_CHECK(result == results[0]);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(mixed_peers_receive_identical_streams) {
+    RestoreThreshold restore;
+    g_p2p_compress_once_threshold = DEFAULT_P2P_COMPRESS_ONCE_THRESHOLD;
+    FastRandomContext rng{true};
+    const auto ping{MakeMessage("ping", rng.randbytes<uint8_t>(8))};
+    const auto block{MakeBlockMessage(rng, 3000000)};
+    const auto small_block{MakeBlockMessage(rng, 1000)};
+    const auto inv{MakeMessage("inv", std::vector<uint8_t>(37, 2))};
+    const auto expected{Concat({&ping, &block, &small_block, &inv})};
+    // Three zstd peers (two modes) and two uncompressed peers.
+    std::vector<std::unique_ptr<ModePair>> peers;
+    for (const C mode :
+         {C::ZSTD_DICT, C::NONE, C::ZSTD, C::NONE, C::ZSTD_DICT}) {
+        peers.push_back(std::make_unique<ModePair>(mode));
+    }
+    const auto before{GetP2PIndependentFrameCache().GetStats()};
+    for (const auto &p : peers) {
+        SendLikeConnman(*p->server, ping, true);
+        SendLikeConnman(*p->server, block, true);
+        SendLikeConnman(*p->server, small_block, true);
+        SendLikeConnman(*p->server, inv, false);
+    }
+    for (const auto &p : peers) {
+        BOOST_CHECK(ReceiveAll(*p->server, *p->client, expected.size()) ==
+                    expected);
+        const auto &info{*p->server->Info()};
+        // Only the large block goes alone, and only to zstd peers.
+        const bool zstd{info.compression != C::NONE};
+        BOOST_CHECK_EQUAL(info.independent_frames_sent.load(), zstd ? 1U : 0U);
+        BOOST_CHECK_EQUAL(p->client->Info()->independent_frames_recv.load(),
+                          zstd ? 1U : 0U);
+        BOOST_CHECK_EQUAL(info.payload_bytes_sent.load(), expected.size());
+    }
+    // Compressed once for the three zstd peers.
+    const auto after{GetP2PIndependentFrameCache().GetStats()};
+    BOOST_CHECK_EQUAL(after.encodes - before.encodes, 1U);
+    BOOST_CHECK_EQUAL(after.misses - before.misses, 1U);
+    BOOST_CHECK_EQUAL(after.hits - before.hits, 2U);
+}
+
+BOOST_AUTO_TEST_CASE(independent_frames_follow_unusual_send_patterns) {
+    RestoreThreshold restore;
+    g_p2p_compress_once_threshold = DEFAULT_P2P_COMPRESS_ONCE_THRESHOLD;
+    FastRandomContext rng{true};
+    const auto block{MakeBlockMessage(rng, 300000)};
+    const auto block2{MakeBlockMessage(rng, 300000)};
+    const auto tx{MakeMessage(NetMsgType::TX, rng.randbytes<uint8_t>(200000))};
+    {
+        // Payload in pieces, and a header split by a flush: both still
+        // deliver the same bytes; the split block goes in the stream.
+        ModePair p{C::ZSTD_DICT};
+        const auto bytes{block.Bytes()};
+        size_t off{0};
+        for (const size_t piece :
+             {size_t(24), size_t(100000), bytes.size() - 100024}) {
+            BOOST_REQUIRE_EQUAL(p.server->Send(bytes.data() + off, piece, 0),
+                                ssize_t(piece));
+            off += piece;
+        }
+        const auto bytes2{block2.Bytes()};
+        // Header split by a flush (no MSG_MORE), then the rest at once.
+        BOOST_REQUIRE_EQUAL(p.server->Send(bytes2.data(), 7, 0), 7);
+        BOOST_REQUIRE_EQUAL(
+            p.server->Send(bytes2.data() + 7, bytes2.size() - 7, 0),
+            ssize_t(bytes2.size() - 7));
+        // A large non-block message stays in the stream.
+        SendLikeConnman(*p.server, tx, false);
+        const auto expected{Concat({&block, &block2, &tx})};
+        BOOST_CHECK(ReceiveAll(*p.server, *p.client, expected.size()) ==
+                    expected);
+        BOOST_CHECK_EQUAL(p.server->Info()->independent_frames_sent.load(), 1U);
+    }
+    {
+        // Threshold 0: the streaming control, frames never sent.
+        g_p2p_compress_once_threshold = 0;
+        ModePair p{C::ZSTD_DICT};
+        SendLikeConnman(*p.server, block, false);
+        BOOST_CHECK(ReceiveAll(*p.server, *p.client, block.Bytes().size()) ==
+                    block.Bytes());
+        BOOST_CHECK_EQUAL(p.server->Info()->independent_frames_sent.load(), 0U);
+        // Above the threshold only.
+        g_p2p_compress_once_threshold = block.Bytes().size() + 1;
+        SendLikeConnman(*p.server, block2, false);
+        ReceiveAll(*p.server, *p.client, block2.Bytes().size());
+        BOOST_CHECK_EQUAL(p.server->Info()->independent_frames_sent.load(), 0U);
+        g_p2p_compress_once_threshold = block2.Bytes().size();
+        SendLikeConnman(*p.server, block2, false);
+        BOOST_CHECK(ReceiveAll(*p.server, *p.client, block2.Bytes().size()) ==
+                    block2.Bytes());
+        BOOST_CHECK_EQUAL(p.server->Info()->independent_frames_sent.load(), 1U);
+    }
+    {
+        // Clients send them too.
+        g_p2p_compress_once_threshold = DEFAULT_P2P_COMPRESS_ONCE_THRESHOLD;
+        ModePair p{C::ZSTD_DICT};
+        SendLikeConnman(*p.client, block, false);
+        BOOST_CHECK(ReceiveAll(*p.client, *p.server, block.Bytes().size()) ==
+                    block.Bytes());
+        BOOST_CHECK_EQUAL(p.server->Info()->independent_frames_recv.load(), 1U);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

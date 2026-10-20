@@ -3,13 +3,16 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 // Per-peer costs of serving one block message: serializing it, its P2P
-// checksum, and the WebSocket p2p-zstd-v1 stream compression. Run with
+// checksum, and the WebSocket p2p-zstd-v1 stream compression, against
+// compress-once independent frames. Run with
 // -filter='WsServe.*'. See contrib/bench/ws-block-frames/README.md.
 
 #include <bench/bench.h>
 
 #include <hash.h>
+#include <net_websocket_codec.h>
 #include <net_zstd_dict.h>
+#include <net_zstd_independent.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <protocol.h>
@@ -140,6 +143,64 @@ void BenchStreamDecompress(benchmark::Bench &bench, size_t bytes) {
         assert(out.size() == f.message.size());
     });
 }
+
+/** independent frames: the one compression of a block for all peers */
+void BenchIndependentCompress(benchmark::Bench &bench, size_t bytes) {
+    const auto &f{GetFixture(bytes)};
+    Setup(bench, f);
+    bench.run([&] {
+        const auto frame{CompressP2PIndependent(f.header, f.payload)};
+        ankerl::nanobench::doNotOptimizeAway(frame.data());
+    });
+}
+
+/**
+ * independent frames: each further peer, served from the cache and copied
+ * into that peer's WebSocket frame (server role: unmasked)
+ */
+void BenchIndependentPerPeer(benchmark::Bench &bench, size_t bytes) {
+    const auto &f{GetFixture(bytes)};
+    P2PIndependentFrameCache cache;
+    cache.Encode(f.header, f.payload);
+    WebSocketCodec codec{WebSocketCodec::Role::SERVER,
+                         P2PWebSocketCompression::ZSTD_DICT};
+    Setup(bench, f);
+    std::vector<uint8_t> wire;
+    bench.run([&] {
+        const auto frame{cache.Encode(f.header, f.payload)};
+        wire.clear();
+        codec.EncodeIndependent(*frame, wire);
+        ankerl::nanobench::doNotOptimizeAway(wire.data());
+    });
+    assert(cache.GetStats().encodes == 1);
+}
+
+/** p2p-zstd-v1: each peer, compressed and framed for it */
+void BenchStreamPerPeer(benchmark::Bench &bench, size_t bytes) {
+    const auto &f{GetFixture(bytes)};
+    Setup(bench, f);
+    std::vector<uint8_t> wire;
+    bench.run([&] {
+        WebSocketCodec codec{WebSocketCodec::Role::SERVER,
+                             P2PWebSocketCompression::ZSTD_DICT};
+        wire.clear();
+        codec.EncodeMessage(f.message, wire);
+        ankerl::nanobench::doNotOptimizeAway(wire.data());
+    });
+}
+
+/** independent frames: what each receiving peer spends decompressing it */
+void BenchIndependentDecompress(benchmark::Bench &bench, size_t bytes) {
+    const auto &f{GetFixture(bytes)};
+    const auto frame{CompressP2PIndependent(f.header, f.payload)};
+    Setup(bench, f);
+    std::vector<uint8_t> out;
+    bench.run([&] {
+        out.clear();
+        DecompressP2PIndependent(frame, out, f.message.size());
+        assert(out.size() == f.message.size());
+    });
+}
 } // namespace
 
 #define WS_SERVE_BENCH(name, fn)                                               \
@@ -160,3 +221,7 @@ WS_SERVE_BENCH(BlockSerialize, BenchSerialize)
 WS_SERVE_BENCH(BlockChecksum, BenchChecksum)
 WS_SERVE_BENCH(StreamCompress, BenchStreamCompress)
 WS_SERVE_BENCH(StreamDecompress, BenchStreamDecompress)
+WS_SERVE_BENCH(IndependentCompress, BenchIndependentCompress)
+WS_SERVE_BENCH(IndependentPerPeer, BenchIndependentPerPeer)
+WS_SERVE_BENCH(StreamPerPeer, BenchStreamPerPeer)
+WS_SERVE_BENCH(IndependentDecompress, BenchIndependentDecompress)
