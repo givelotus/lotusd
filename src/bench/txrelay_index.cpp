@@ -32,7 +32,8 @@ static void RelayIndexRekey(benchmark::Bench &bench, size_t n) {
     txrelay::TxRelayIndex index;
     // One run = one new epoch over the whole mempool.
     bench.batch(n).unit("tx").run([&] {
-        index.SetEpoch(txrelay::MakeEpochKey(BlockHash{rng.rand256()}, 1), txs);
+        index.SetEpoch(txrelay::MakeEpochKey(BlockHash{rng.rand256()}, 1),
+                       [&] { return txs; });
     });
 }
 
@@ -48,7 +49,7 @@ static void RelayIndexRekey1M(benchmark::Bench &bench) {
 static void RelayIndexAddRemove(benchmark::Bench &bench) {
     const auto txs{MakeMempool(100'000)};
     txrelay::TxRelayIndex index;
-    index.SetEpoch(txrelay::MakeEpochKey(BlockHash{}, 1), txs);
+    index.SetEpoch(txrelay::MakeEpochKey(BlockHash{}, 1), [&] { return txs; });
     FastRandomContext rng{true};
     bench.minEpochIterations(20'000).run([&] {
         const TxId txid{rng.rand256()};
@@ -61,7 +62,7 @@ static void RelayIndexFind(benchmark::Bench &bench) {
     const auto txs{MakeMempool(100'000)};
     txrelay::TxRelayIndex index;
     const auto key{txrelay::MakeEpochKey(BlockHash{}, 1)};
-    index.SetEpoch(key, txs);
+    index.SetEpoch(key, [&] { return txs; });
     size_t i{0};
     std::vector<TxId> out;
     bench.minEpochIterations(200'000).run([&] {

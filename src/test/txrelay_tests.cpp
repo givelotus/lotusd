@@ -10,12 +10,14 @@
 #include <common/args.h>
 #include <net.h>
 #include <net/txrelay_index.h>
+
 #include <net/v2_protocol_handler.h>
 #include <node/snapshot.h>
 #include <primitives/transaction.h>
 #include <protocol.h>
 #include <script/script.h>
 #include <script/standard.h>
+#include <stdexcept>
 #include <streams.h>
 #include <txmempool.h>
 #include <util/time.h>
@@ -445,7 +447,7 @@ BOOST_AUTO_TEST_CASE(shortid_index_epochs_and_collisions) {
         mempool.emplace_back(TxId{rng.rand256()},
                              std::chrono::microseconds{i * 1'000'000});
     }
-    index.SetEpoch(key1, mempool);
+    index.SetEpoch(key1, [&] { return mempool; });
     BOOST_CHECK(index.Current() == key1);
     BOOST_CHECK_EQUAL(index.Size(), 50U);
     const TxId &a{mempool[0].first};
@@ -462,7 +464,9 @@ BOOST_AUTO_TEST_CASE(shortid_index_epochs_and_collisions) {
     index.Remove(a);
     BOOST_CHECK(index.Find(key1.epoch_id, index.ShortId(key1, a)) ==
                 TxRelayIndex::Lookup::MISSING);
-    index.SetEpoch(key2, {mempool.begin() + 1, mempool.end()});
+    index.SetEpoch(key2, [&] {
+        return TxRelayIndex::Snapshot{mempool.begin() + 1, mempool.end()};
+    });
     BOOST_CHECK(index.Current() == key2);
     BOOST_CHECK(index.FindEpoch(key1.epoch_id) == key1);
     const TxId &b{mempool[1].first};
@@ -474,13 +478,13 @@ BOOST_AUTO_TEST_CASE(shortid_index_epochs_and_collisions) {
     index.Remove(b);
     BOOST_CHECK(index.Find(key1.epoch_id, index.ShortId(key1, b)) ==
                 TxRelayIndex::Lookup::HAVE);
-    index.SetEpoch(key3, {});
+    index.SetEpoch(key3, [] { return TxRelayIndex::Snapshot{}; });
     BOOST_CHECK(!index.FindEpoch(key1.epoch_id));
     BOOST_CHECK(index.FindEpoch(key2.epoch_id));
 
     // Window: transactions admitted since a time, still indexed.
     TxRelayIndex window_index;
-    window_index.SetEpoch(key1, mempool);
+    window_index.SetEpoch(key1, [&] { return mempool; });
     const auto recent{
         window_index.AdmittedSince(std::chrono::microseconds{40'000'000})};
     BOOST_CHECK_EQUAL(recent.size(), 10U);
@@ -498,7 +502,7 @@ BOOST_AUTO_TEST_CASE(shortid_index_epochs_and_collisions) {
     // Collisions (forced with 4-bit ids): both are kept under the id and
     // counted.
     TxRelayIndex narrow{4};
-    narrow.SetEpoch(key1, mempool);
+    narrow.SetEpoch(key1, [&] { return mempool; });
     BOOST_CHECK_GT(narrow.Collisions(), 30U);
     size_t total{0};
     for (uint64_t id = 1; id < 16; ++id) {
@@ -507,6 +511,71 @@ BOOST_AUTO_TEST_CASE(shortid_index_epochs_and_collisions) {
         total += under.size();
     }
     BOOST_CHECK_EQUAL(total, 50U);
+}
+
+BOOST_AUTO_TEST_CASE(shortid_epoch_rebuild_preserves_mutations) {
+    using txrelay::TxRelayIndex;
+    FastRandomContext rng{true};
+    const auto key1{txrelay::MakeEpochKey(BlockHash{rng.rand256()}, 100)};
+    const auto key2{txrelay::MakeEpochKey(BlockHash{rng.rand256()}, 101)};
+    const auto key3{txrelay::MakeEpochKey(BlockHash{rng.rand256()}, 102)};
+    const TxId removed{rng.rand256()}, retained{rng.rand256()},
+        added{rng.rand256()};
+    const TxRelayIndex::Clock time{1'000'000};
+    const TxRelayIndex::Snapshot stale{{removed, time}, {retained, time}};
+    TxRelayIndex index;
+    index.SetEpoch(key1, [&] { return stale; });
+    index.SetEpoch(key2, [&] {
+        // Deliberately mutate after taking a stale snapshot: these events
+        // must also survive the index being built outside its mutex.
+        index.Add(added, time);
+        index.Remove(removed);
+        return stale;
+    });
+    BOOST_CHECK(index.Current() == key2);
+    BOOST_CHECK_EQUAL(index.Size(), 2U);
+    BOOST_CHECK(index.Find(key2.epoch_id, index.ShortId(key2, added)) ==
+                TxRelayIndex::Lookup::HAVE);
+    BOOST_CHECK(index.Find(key2.epoch_id, index.ShortId(key2, removed)) ==
+                TxRelayIndex::Lookup::MISSING);
+    BOOST_CHECK(index.Find(key2.epoch_id, index.ShortId(key2, retained)) ==
+                TxRelayIndex::Lookup::HAVE);
+
+    // A journal overflow abandons one bounded attempt, keeping the complete
+    // current epoch; the next update can retry without an internal spin.
+    index.SetEpoch(key3, [&] {
+        for (size_t i = 0; i < 65'537; ++i) {
+            index.Add(added, time);
+        }
+        return stale;
+    });
+    BOOST_CHECK(index.Current() == key2);
+    index.SetEpoch(key3, [&] {
+        return TxRelayIndex::Snapshot{{retained, time}, {added, time}};
+    });
+    BOOST_CHECK(index.Current() == key3);
+    BOOST_CHECK_EQUAL(index.Size(), 2U);
+
+    // Snapshot failure must stop journaling and allow a later rebuild.
+    BOOST_CHECK_THROW(index.SetEpoch(key1,
+                                     []() -> TxRelayIndex::Snapshot {
+                                         throw std::runtime_error(
+                                             "snapshot failure");
+                                     }),
+                      std::runtime_error);
+    BOOST_CHECK(index.Current() == key3);
+    index.SetEpoch(key1, [&] {
+        return TxRelayIndex::Snapshot{{retained, time}, {added, time}};
+    });
+    BOOST_CHECK(index.Current() == key1);
+
+    TxRelayIndex initial;
+    initial.SetEpoch(key1, [&] {
+        initial.Add(added, time);
+        return stale;
+    });
+    BOOST_CHECK_EQUAL(initial.Size(), 3U);
+    BOOST_CHECK_EQUAL(initial.AdmittedSince(TxRelayIndex::Clock{0}).size(), 3U);
 }
 
 BOOST_AUTO_TEST_CASE(invshort_negotiation_and_announcements) {
