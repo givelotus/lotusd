@@ -153,7 +153,13 @@
     X(FileDescriptorLimit, file_descriptor_limit, INT, "", "") \
     X(DataDirectoryArgument, data_directory_argument, STRING, "", "") \
     X(InputIndex, input_index, UINT, "", "") \
-    X(TxHash, tx_hash, HASH, "", "")
+    X(TxHash, tx_hash, HASH, "", "") \
+    X(CacheAllocatedMiB, cache_allocated_mib, UINT, "", "") \
+    X(CacheRequestedMiB, cache_requested_mib, UINT, "", "") \
+    X(CacheCapacity, cache_capacity, UINT, "", "") \
+    X(CacheSizeBytes, cache_size_bytes, INT, "", "") \
+    X(CacheBudgetBytes, cache_budget_bytes, INT, "", "") \
+    X(CoinsTipCacheBudgetMiB, coins_tip_cache_budget_mib, FLOAT, "", "")
 
 namespace BCLog {
 
