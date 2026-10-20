@@ -653,6 +653,16 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
         }
     }
 
+    // Opt-in debug observation for transport experiments. Only matched,
+    // content-consistent responses reach here; the caller verified signatures.
+    // This measures dispatch-to-processing latency, including local queues,
+    // rather than claiming a pure wire RTT. No payload or key material is logged.
+    if (now >= sentTime) {
+        LogDebug(BCLog::AVALANCHE,
+                 "poll_rtt peer=%d round=%u rtt_ms=%d\n", nodeid,
+                 response.getRound(), (now - sentTime).count());
+    }
+
     std::map<AnyVoteItem, Vote, VoteMapComparator> responseItems;
 
     // At this stage we are certain that invs[i] matches votes[i], so we can use
