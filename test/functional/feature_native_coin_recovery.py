@@ -8,7 +8,7 @@ import http.client
 
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal
-from test_framework.wallet import MiniWallet
+from test_framework.wallet import NativeMiniWallet
 
 
 class NativeCoinRecoveryTest(BitcoinTestFramework):
@@ -24,9 +24,19 @@ class NativeCoinRecoveryTest(BitcoinTestFramework):
 
     def run_test(self):
         recovering, reference = self.nodes
-        wallet = MiniWallet(reference)
-        wallet.rescan_utxos()
-        wallet.send_self_transfer_multi(from_node=reference, num_outputs=5000)
+        wallet = NativeMiniWallet(reference)
+        # Mature enough actual native coinbases for twenty independent paid
+        # transactions. Replay this setup explicitly into the recovery node.
+        for blockhash in self.generate(wallet, 120, sync_fun=self.no_op):
+            assert_equal(
+                recovering.submitblock(reference.getblock(blockhash, False)), None
+            )
+        funding = [
+            wallet.send_self_transfer_multi(from_node=reference, num_outputs=250)
+            for _ in range(20)
+        ]
+        assert_equal(sum(len(tx["new_utxos"]) for tx in funding), 5000)
+        assert all(tx["tx"].nVersion == 7 for tx in funding)
         [tip] = self.generate(reference, 1, sync_fun=self.no_op)
         expected = reference.gettxoutsetinfo()["hash_serialized"]
         block = reference.getblock(tip, False)

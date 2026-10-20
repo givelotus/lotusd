@@ -175,6 +175,7 @@ class FastSyncAndReversePeelTest(BitcoinTestFramework):
             node0,
             101,
             V2_OP_TRUE_ADDRESS,
+            coinbase_version=7,
             sync_fun=lambda: self.sync_all(self.nodes[0:2]),
         )
 
@@ -196,6 +197,7 @@ class FastSyncAndReversePeelTest(BitcoinTestFramework):
             node0,
             1,
             V2_OP_TRUE_ADDRESS,
+            coinbase_version=7,
             sync_fun=lambda: self.sync_all(self.nodes[0:2]),
         )
         assert_equal(node0.getblockcount(), 102)
@@ -214,6 +216,7 @@ class FastSyncAndReversePeelTest(BitcoinTestFramework):
             node0,
             1,
             V2_OP_TRUE_ADDRESS,
+            coinbase_version=7,
             sync_fun=lambda: self.sync_all(self.nodes[0:2]),
         )
         assert_equal(node0.getblockcount(), 103)
@@ -223,6 +226,7 @@ class FastSyncAndReversePeelTest(BitcoinTestFramework):
             node0,
             1,
             V2_OP_TRUE_ADDRESS,
+            coinbase_version=7,
             sync_fun=lambda: self.sync_all(self.nodes[0:2]),
         )
         assert_equal(node0.getblockcount(), 104)
@@ -417,7 +421,9 @@ class FastSyncAndReversePeelTest(BitcoinTestFramework):
         )
         spend_tx = build_v2_op_true_tx(child_tx.txid_int, 0, [child_val - 5_000])
         node2.sendrawtransaction(spend_tx.serialize().hex())
-        self.generatetoaddress(node2, 1, V2_OP_TRUE_ADDRESS, sync_fun=self.no_op)
+        self.generatetoaddress(
+            node2, 1, V2_OP_TRUE_ADDRESS, coinbase_version=7, sync_fun=self.no_op
+        )
         assert_equal(node2.getblockcount(), 105)
         hash_105 = node2.getblockhash(105)
         block_105_hex = node2.getblock(hash_105, 0)

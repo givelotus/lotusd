@@ -4,7 +4,7 @@
 """Test UTXO set hash value calculation in gettxoutsetinfo."""
 
 from test_framework.blocktools import COINBASE_MATURITY, create_transaction
-from test_framework.messages import CBlock, COutPoint, FromHex
+from test_framework.messages import CBlock, COutPoint, FromHex, ser_string
 from test_framework.muhash import MuHash3072
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal
@@ -23,7 +23,7 @@ class UTXOSetHashTest(BitcoinTestFramework):
         # the cache
         assert_equal(
             self.nodes[0].gettxoutsetinfo()["hash_serialized"],
-            "e1ef57f2326ac3349dc21e3d23b1bd7b83e02a418677f548b032bb30caa33502",
+            "0160d9861236344c05c01f240be8378c59c981de2c4a318b54b3b194f643f27a",
         )
         assert_equal(
             self.nodes[0].gettxoutsetinfo("muhash")["muhash"],
@@ -37,7 +37,7 @@ class UTXOSetHashTest(BitcoinTestFramework):
 
         # Generate 100 blocks and remove the first since we plan to spend its
         # coinbase
-        block_hashes = self.generate(node, COINBASE_MATURITY)
+        block_hashes = self.generate(node, COINBASE_MATURITY, coinbase_version=2)
         blocks = [
             FromHex(CBlock(), node.getblock(block, False)) for block in block_hashes
         ]
@@ -50,7 +50,7 @@ class UTXOSetHashTest(BitcoinTestFramework):
         txid = node.sendrawtransaction(hexstring=tx.serialize().hex(), maxfeerate=0)
 
         tx_block = self.generateblock(
-            node, output=node.getnewaddress(), transactions=[txid]
+            node, output=node.getnewaddress(), transactions=[txid], coinbase_version=2
         )
         blocks.append(FromHex(CBlock(), node.getblock(tx_block["hash"], False)))
 
@@ -76,7 +76,25 @@ class UTXOSetHashTest(BitcoinTestFramework):
 
                     data = COutPoint(tx.txid_int, n).serialize()
                     data += (height * 2 + coinbase).to_bytes(4, "little", signed=True)
-                    data += tx_out.serialize()
+                    # Canonical LegacyCoinWire and C17a lifetime metadata,
+                    # calculated from this fixture's real input/output values.
+                    assert tx.nVersion in (1, 2)
+                    coin_wire = b"\x80" + tx_out.serialize()
+                    data += ser_string(coin_wire)
+                    if coinbase:
+                        fee_per_output = 0
+                        lifespan = 21_024_000
+                    else:
+                        assert_equal(tx.txid_hex, txid)
+                        assert_equal(tx.vin[0].prevout.txid, spending.vtx[0].txid_int)
+                        assert_equal(tx.vin[0].prevout.n, 0)
+                        fee = spending.vtx[0].vout[0].nValue - sum(
+                            out.nValue for out in tx.vout
+                        )
+                        fee_per_output = fee // len(tx.vout)
+                        lifespan = min(21_024_000, 131_400 + fee_per_output)
+                    data += fee_per_output.to_bytes(8, "little")
+                    data += (height + lifespan).to_bytes(8, "little")
 
                     muhash.insert(data)
 

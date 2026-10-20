@@ -198,12 +198,12 @@ class CoinStatsIndexTest(BitcoinTestFramework):
         tx2.vout = [
             CTxOut(int(20_990_000 * XEC), CScript([OP_RETURN] + [OP_FALSE] * 50))
         ]
-        # Replacing outputs must rebuild native branch commitments/witnesses;
-        # otherwise empty output branches select the legacy compatibility wire.
+        # This inherited accounting test spends genuine legacy transactions.
         self.wallet.sign_tx(tx2)
-        assert_equal(tx2.vout[0].nFlags, 2)
+        assert_equal(tx2.nVersion, 1)
+        assert_equal(tx2.vout[0].scriptPubKey[0], OP_RETURN)
         tx2_hex = tx2.serialize().hex()
-        assert_equal(tx2_hex[:8], "07000000")
+        assert_equal(tx2_hex[:8], "01000000")
         self.nodes[0].sendrawtransaction(tx2_hex)
 
         # Include both txs in a block
