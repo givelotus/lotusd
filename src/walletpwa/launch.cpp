@@ -73,8 +73,9 @@ static void OpenBrowser(const std::string &url) {
     const auto result{reinterpret_cast<intptr_t>(ShellExecuteW(
         nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL))};
     if (result <= 32) {
-        LogPrintf("Could not open a browser for the wallet UI; open the URL "
-                  "above or run `getwalletpwaurl`\n");
+        LogInfoEvent(
+            BCLog::ALL, "wallet_ui_browser_open_failed",
+            "Could not open a browser for the wallet UI; open the URL above or run `getwalletpwaurl`");
     }
 #else
 #ifdef __APPLE__
@@ -82,8 +83,9 @@ static void OpenBrowser(const std::string &url) {
 #else
     const char *opener{"xdg-open"};
     if (!std::getenv("DISPLAY") && !std::getenv("WAYLAND_DISPLAY")) {
-        LogPrintf("No desktop session; open the URL above or run "
-                  "`getwalletpwaurl`\n");
+        LogInfoEvent(
+            BCLog::ALL, "wallet_ui_desktop_session_unavailable",
+            "No desktop session; open the URL above or run `getwalletpwaurl`");
         return;
     }
 #endif
@@ -92,9 +94,10 @@ static void OpenBrowser(const std::string &url) {
     char *argv[]{arg0.data(), arg1.data(), nullptr};
     pid_t pid;
     if (posix_spawnp(&pid, opener, nullptr, nullptr, argv, environ) != 0) {
-        LogPrintf("Could not start %s to open the wallet UI; open the URL "
-                  "above or run `getwalletpwaurl`\n",
-                  opener);
+        LogInfoEvent(
+            BCLog::ALL, "wallet_ui_browser_launcher_failed",
+            "Could not start {name} to open the wallet UI; open the URL above or run `getwalletpwaurl`")
+            .Field(BCLog::LogField::Name, opener);
         return;
     }
     // Reap the opener when it exits, without holding up startup.
@@ -134,7 +137,8 @@ void LaunchWalletPwa(const ArgsManager &args) {
         tfm::format(std::cout, "Wallet: %s\n", url);
         std::cout.flush();
     }
-    LogPrintf("Opening the wallet UI in the default browser\n");
+    LogInfoEvent(BCLog::ALL, "wallet_ui_browser_open_started",
+                 "Opening the wallet UI in the default browser");
     OpenBrowser(url);
 }
 
