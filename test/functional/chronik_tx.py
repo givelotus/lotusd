@@ -91,6 +91,7 @@ class ChronikTxTest(BitcoinTestFramework):
             version=tx.nVersion,
             inputs=[
                 pb.TxInput(
+                    is_legacy=True,
                     prev_out=pb.OutPoint(txid=bytes.fromhex(cointx)[::-1], out_idx=0),
                     input_script=bytes(tx.vin[0].scriptSig),
                     output_script=bytes(P2SH_OP_TRUE),
@@ -100,6 +101,7 @@ class ChronikTxTest(BitcoinTestFramework):
             ],
             outputs=[
                 pb.TxOutput(
+                    is_legacy=True,
                     sats=value,
                     output_script=bytes(script),
                 )
@@ -149,6 +151,7 @@ class ChronikTxTest(BitcoinTestFramework):
             version=tx2.nVersion,
             inputs=[
                 pb.TxInput(
+                    is_legacy=True,
                     prev_out=pb.OutPoint(txid=bytes.fromhex(txid)[::-1], out_idx=i),
                     input_script=bytes(tx2.vin[i].scriptSig),
                     output_script=bytes(script),
@@ -159,6 +162,7 @@ class ChronikTxTest(BitcoinTestFramework):
             ],
             outputs=[
                 pb.TxOutput(
+                    is_legacy=True,
                     sats=tx2.vout[0].nValue,
                     output_script=bytes(tx2.vout[0].scriptPubKey),
                 )

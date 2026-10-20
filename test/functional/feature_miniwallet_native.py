@@ -5,13 +5,13 @@
 """Exercise actual native MiniWallet outputs, witnesses, signatures and rescans."""
 
 from copy import deepcopy
-from decimal import Decimal
 from io import BytesIO
 
+from test_framework.currency import RpcCurrency
 from test_framework.messages import CTransaction
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal, assert_greater_than
-from test_framework.wallet import MiniWalletMode, NativeMiniWallet
+from test_framework.wallet import MiniWallet, MiniWalletMode, NativeMiniWallet
 
 
 class NativeMiniWalletTest(BitcoinTestFramework):
@@ -42,9 +42,14 @@ class NativeMiniWalletTest(BitcoinTestFramework):
 
     def run_test(self):
         node = self.nodes[0]
+        currency = RpcCurrency.from_node(node)
         wallet = NativeMiniWallet(node)
         if self.options.cached_chain:
-            assert_greater_than(len(wallet.get_utxos(mark_as_spent=False)), 0)
+            # Cached funding belongs to the inherited legacy wallet. Native
+            # ownership must stay separate until native outputs are generated.
+            legacy = MiniWallet(node)
+            assert_greater_than(len(legacy.get_utxos(mark_as_spent=False)), 0)
+            assert_equal(len(wallet.get_utxos(mark_as_spent=False)), 0)
         wallet.generate(140)
         assert_greater_than(len(wallet.get_utxos(mark_as_spent=False)), 0)
         transfer = wallet.create_self_transfer(sequence=0xFFFFFFFF)
@@ -53,7 +58,9 @@ class NativeMiniWalletTest(BitcoinTestFramework):
         self.check_native(locked["tx"])
         assert_equal(locked["tx"].nLockTime, node.getblockcount() - 1)
         assert_equal(transfer["tx"].vin[0].nSequence, 0xFFFFFFFF)
-        assert_equal(transfer["fee"], Decimal(len(transfer["tx"].serialize())) * 3)
+        assert_equal(
+            currency.to_atoms(transfer["fee"]), len(transfer["tx"].serialize()) * 300
+        )
         wallet.sendrawtransaction(from_node=node, tx_hex=transfer["hex"])
         chain = wallet.send_self_transfer_chain(
             from_node=node, chain_length=3, utxo_to_spend=transfer["new_utxo"]
@@ -124,7 +131,7 @@ class NativeMiniWalletTest(BitcoinTestFramework):
         )
         wallet.rescan_utxos()
         received = wallet.get_utxo(txid=txid, vout=vout, mark_as_spent=False)
-        assert_equal(received["value"], Decimal(1000))
+        assert_equal(currency.to_atoms(received["value"]), 100000)
         signed.generate(1)
         self.restart_node(0)
         wallet.rescan_utxos()

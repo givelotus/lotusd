@@ -1,5 +1,6 @@
 // Copyright (c) 2026 The Lotus developers
 #include <primitives/block.h>
+#include <primitives/v2_outputs.h>
 #include <lotus_v2/candidate_state_key.h>
 #include <lotus_v2/mempool_overlay.h>
 #include <script/script.h>
@@ -84,10 +85,11 @@ BOOST_AUTO_TEST_CASE(accepted_zero_root_state_uses_actual_header_hash) {
 BOOST_AUTO_TEST_CASE(overlay_mismatch_does_not_publish_state_or_supply) {
     SetV2StatePersistDir("");
     CMutableTransaction cb;
+    cb.nVersion = 7;
     cb.vin.resize(1);
     cb.vin[0].prevout = COutPoint();
     cb.vin[0].nFlags = 2;
-    cb.vout.emplace_back(100 * SATOSHI, CScript() << OP_TRUE);
+    cb.vout.push_back(OpTrueOutput(100 * SATOSHI));
     const CTransaction coinbase{std::move(cb)};
     lotus::v2::MempoolOverlayLayer overlay;
     const auto expected = ComputeV2StateRootFromOverlay(coinbase, overlay, 0x207fffff, 1, 0);

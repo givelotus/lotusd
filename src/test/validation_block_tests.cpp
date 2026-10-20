@@ -13,6 +13,7 @@
 #include <consensus/validation.h>
 #include <node/miner.h>
 #include <primitives/v2_outputs.h>
+#include <lotus_v2/mempool_overlay.h>
 #include <pow/pow.h>
 #include <random.h>
 #include <script/standard.h>
@@ -33,6 +34,7 @@ using node::BlockAssembler;
 namespace validation_block_tests {
 struct MinerTestingSetup : public TestingSetup {
     MinerTestingSetup();
+    ~MinerTestingSetup() { SetV2StatePersistDir(""); }
 
     std::map<BlockHash, int> m_block_heights;
     std::map<BlockHash, uint64_t> m_block_times;
@@ -107,6 +109,9 @@ struct TestSubscriber final : public CValidationInterface {
 // Disable reorg protection for this test.
 MinerTestingSetup::MinerTestingSetup()
     : TestingSetup(ChainType::REGTEST, {"-parkdeepreorg=0"}) {
+    // Random branch construction can exceed the bounded native snapshot cache.
+    // Persist evicted ancestors in this fixture's isolated temporary directory.
+    SetV2StatePersistDir(fs::PathToString(m_path_root / "native-branch-states"));
     const CBlock &genesis = Params().GenesisBlock();
     m_block_heights.emplace(genesis.GetHash(), 0);
     m_block_times.emplace(genesis.GetHash(), genesis.GetBlockTime());
@@ -252,6 +257,38 @@ BOOST_AUTO_TEST_CASE(processnewblock_signals_ordering) {
     // Process all the headers so we understand the toplogy of the chain
     BOOST_CHECK(
         Assert(m_node.chainman)->ProcessNewBlockHeaders(headers, true, state));
+
+    // A purported good fixture must commit the same state with its actual
+    // indexed parent context through both complete and empty-overlay paths.
+    // Diagnose fixture/context divergence before concurrent event delivery.
+    for (const auto &block : blocks) {
+        if (block->vtx.size() != 1) continue;
+        const CBlockIndex *parent = nullptr;
+        {
+            LOCK(cs_main);
+            parent = m_node.chainman->m_blockman.LookupBlockIndex(block->hashPrevBlock);
+        }
+        BOOST_REQUIRE(parent);
+        const uint64_t parent_mtp = parent->GetMedianTimePast();
+        const uint64_t height = parent->nHeight + 1;
+        const auto full = ComputeV2BlockStateRoot(
+            *block, block->hashPrevBlock, height, parent_mtp, false);
+        std::shared_ptr<const lotus::v2::SmtNode> root;
+        lotus::v2::MonetaryState monetary;
+        BOOST_REQUIRE(GetV2BlockStateSnapshot(block->hashPrevBlock, root, monetary));
+        lotus::v2::Hash parent_id{};
+        std::copy_n(block->hashPrevBlock.begin(), 32, parent_id.begin());
+        lotus::v2::MempoolOverlayLayer overlay(parent_id, root, monetary, height, parent_mtp);
+        const auto fast = ComputeV2StateRootFromOverlay(
+            *block->vtx[0], overlay, block->nBits, height, parent_mtp);
+        BOOST_REQUIRE_MESSAGE(
+            full == block->hashStateRoot && fast == full,
+            "block=" << block->GetHash().GetHex() << " height=" << height
+            << " fixture_mtp=" << GetParentMedianTimePast(block->hashPrevBlock)
+            << " indexed_mtp=" << parent_mtp << " declared="
+            << block->hashStateRoot.GetHex() << " full=" << full.GetHex()
+            << " overlay=" << fast.GetHex());
+    }
 
     // Connect the genesis block and drain any outstanding events
     BOOST_CHECK(Assert(m_node.chainman)

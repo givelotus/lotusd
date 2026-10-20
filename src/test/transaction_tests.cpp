@@ -122,14 +122,20 @@ BOOST_AUTO_TEST_CASE(slab_script_v2_bridge_and_move) {
         mutable_tx.vout.emplace_back(123 * SATOSHI, expected);
         CTransactionRef tx = MakeTransactionRef(std::move(mutable_tx));
         const CTxOut &original = tx->vout[0];
-        const auto native_output = original.ToV2Output();
+        const auto legacy_output = original.ToV2Output();
+        const CTxOut legacy_roundtrip = CTxOut::FromV2Output(legacy_output);
+        BOOST_CHECK(legacy_roundtrip == original);
+        // Creating a native V0Leaf is explicit; a legacy output retains its
+        // original script and kind through the ordinary coin adapter.
+        const auto native_output = V0LeafV2Output(original.nValue,
+                                                 original.scriptPubKey);
         std::vector<uint8_t> expected_wire;
         std::string encode_error;
         BOOST_REQUIRE(lotus::v2::EncodeOutput(native_output, expected_wire,
                                              encode_error));
         const CScript expected_native_script(expected_wire.begin(), expected_wire.end());
         const CTxOut roundtrip = CTxOut::FromV2Output(native_output);
-        BOOST_CHECK(roundtrip == original);
+        BOOST_CHECK(roundtrip.ToV2Output() == native_output);
         // The transaction's const view must copy on std::move, rather than
         // transferring a view whose lifetime would end with its slab owner.
         const auto *storage = original.scriptPubKey.data();
@@ -1741,6 +1747,7 @@ BOOST_AUTO_TEST_CASE(native_retained_memory_counts_nested_capacity_without_doubl
         CMutableTransaction mutable_tx;
         mutable_tx.nVersion = 7;
         mutable_tx.vin.resize(coinbase ? 1 : 2);
+        uint32_t input_index = 0;
         for (auto &input : mutable_tx.vin) {
             input.nFlags = coinbase ? 2 : 1;
             if (coinbase) {
@@ -1748,7 +1755,7 @@ BOOST_AUTO_TEST_CASE(native_retained_memory_counts_nested_capacity_without_doubl
                 input.vCoinbaseData.resize(80, 0x42);
                 input.fHasCoinbaseData = true;
             } else {
-                input.prevout = COutPoint(TxId{uint256::ONE}, 0);
+                input.prevout = COutPoint(TxId{uint256::ONE}, input_index++);
                 input.vWitnesses.reserve(4);
                 input.vWitnesses.resize(2);
                 for (auto &witness : input.vWitnesses) {
@@ -1769,6 +1776,7 @@ BOOST_AUTO_TEST_CASE(native_retained_memory_counts_nested_capacity_without_doubl
         for (auto &output : mutable_tx.vout) {
             output.nValue = 1000 * SATOSHI;
             output.vBranches.resize(2);
+            output.vBranches[1][0] = 1; // Distinct, canonically ordered branches.
             output.vPaths.reserve(4);
             output.vPaths = {{0}, {1}};
             for (auto &path : output.vPaths) path.reserve(50);
