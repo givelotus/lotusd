@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "batch": "mempool-priority-finality-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/txmempool.cpp",
+      "rules": [
+        {
+          "id": "mempool_finalization_transaction_missing",
+          "old": "LogPrintf(\"Trying to finalize tx %s that is not in the mempool\\n\",\n                  tx->GetTx().GetId().ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"mempool_finalization_transaction_missing\", \"Trying to finalize tx {txid} that is not in the mempool\").Field(BCLog::LogField::TxId, tx->GetTx().GetId())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Trying to finalize tx %s that is not in the mempool\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "tx->GetTx().GetId().ToString()"
+            ]
+          },
+          "review_note": "Preserve Info, exact readable fee formatting, native TxId (not TxHash), pool/cs_main locks, missing-entry return and all finalization/priority/snapshot accounting. Keep FormatMoney output as a string while additionally exposing original signed base-unit delta /SATOSHI; do not convert currency display or mutate deltas."
+        },
+        {
+          "id": "mempool_transaction_priority_changed",
+          "old": "LogPrintf(\"PrioritiseTransaction: %s fee += %s\\n\", txid.ToString(),\n              FormatMoney(nFeeDelta))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"mempool_transaction_priority_changed\", \"PrioritiseTransaction: {txid} fee += {fee_delta}\").Field(BCLog::LogField::TxId, txid).Field(BCLog::LogField::FeeDelta, FormatMoney(nFeeDelta)).Field(BCLog::LogField::AmountSats, nFeeDelta / SATOSHI)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "PrioritiseTransaction: %s fee += %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "txid.ToString()",
+              "FormatMoney(nFeeDelta)"
+            ]
+          },
+          "review_note": "Preserve Info, exact readable fee formatting, native TxId (not TxHash), pool/cs_main locks, missing-entry return and all finalization/priority/snapshot accounting. Keep FormatMoney output as a string while additionally exposing original signed base-unit delta /SATOSHI; do not convert currency display or mutate deltas."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Append formatted fee delta string, preserving existing Currency-dependent FormatMoney text separately from signed raw AmountSats.",
+          "old": "    X(SigChecks, sig_checks, UINT, \"\", \"\")\n",
+          "new": "    X(SigChecks, sig_checks, UINT, \"\", \"\") \\\n    X(FeeDelta, fee_delta, STRING, \"\", \"\")\n"
+        }
+      ]
+    }
+  ]
+}

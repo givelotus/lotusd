@@ -13,8 +13,10 @@
 #include <consensus/tx_verify.h>
 #include <kernel/disconnected_transactions.h>
 #include <kernel/mempool_entry.h>
+#include <logging.h>
 #include <policy/settings.h>
 #include <reverse_iterator.h>
+#include <univalue.h>
 #include <util/time.h>
 #include <validation.h>
 
@@ -150,6 +152,53 @@ BOOST_AUTO_TEST_CASE(optional_consistency_check_diamond_mined_parent_and_reaccep
     for (const auto &tx : graph) pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx));
     BOOST_CHECK_EQUAL(pool.size(), 4U);
     pool.check(coins, 2);
+}
+
+BOOST_AUTO_TEST_CASE(
+    logging_finalization_missing_transaction_keeps_id_and_state) {
+    LogInstance().Flush();
+    struct RestoreFormat {
+        BCLog::LogFormat previous{LogInstance().m_log_format};
+        ~RestoreFormat() {
+            LogInstance().Flush();
+            LogInstance().m_log_format = previous;
+        }
+    } restore;
+    LogInstance().m_log_format = BCLog::LogFormat::JSON;
+    CTxMemPool &pool = *Assert(m_node.mempool);
+    ChainstateManager &chainman = *Assert(m_node.chainman);
+    CMutableTransaction tx;
+    tx.vin.emplace_back(TxId{uint256{uint8_t(41)}}, 0);
+    tx.vout.emplace_back(1000 * SATOSHI, CScript() << OP_TRUE);
+    const auto transaction{MakeTransactionRef(tx)};
+    const auto entry{TestMemPoolEntryHelper().FromTx(transaction)};
+    std::string rendered;
+    {
+        DebugLogHelper capture("mempool_finalization_transaction_missing",
+                               [&](const std::string *line) {
+                                   if (line) rendered = *line;
+                                   return false; // Check missing capture as a
+                                                 // normal test assertion.
+                               });
+        LOCK2(cs_main, pool.cs);
+        std::vector<TxId> finalized;
+        BOOST_CHECK(!pool.setAvalancheFinalized(
+            entry, chainman.GetConsensus(), *Assert(chainman.ActiveTip()),
+            chainman.ActiveChainstate(), finalized));
+        BOOST_CHECK(finalized.empty());
+        BOOST_CHECK_EQUAL(pool.size(), 0U);
+    } // DebugLogHelper flushes the async consumer before inspecting its result.
+    UniValue row;
+    BOOST_REQUIRE(row.read(rendered));
+    BOOST_CHECK_EQUAL(row["event"].get_str(),
+                      "mempool_finalization_transaction_missing");
+    BOOST_CHECK_EQUAL(row["txid"].get_str(), transaction->GetId().ToString());
+    BOOST_CHECK_EQUAL(row["message"].get_str(),
+                      "Trying to finalize tx " +
+                          transaction->GetId().ToString() +
+                          " that is not in the mempool");
+    BOOST_CHECK_EQUAL(row["level"].get_str(), "info");
+    BOOST_CHECK(row["fields_truncated"].isNull());
 }
 
 BOOST_AUTO_TEST_CASE(MempoolRemoveTest) {

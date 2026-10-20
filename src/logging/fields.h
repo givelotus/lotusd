@@ -204,7 +204,8 @@
     X(ElapsedMilliseconds, elapsed_milliseconds, INT, "", "") \
     X(ClientName, client_name, STRING, "", "") \
     X(ClientVersion, client_version, STRING, "", "") \
-    X(SigChecks, sig_checks, UINT, "", "")
+    X(SigChecks, sig_checks, UINT, "", "") \
+    X(FeeDelta, fee_delta, STRING, "", "")
 
 namespace BCLog {
 
