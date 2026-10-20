@@ -1375,6 +1375,12 @@ void SetupServerArgs(NodeContext &node) {
         "(default: 1; unsupported kernels use ordinary UDP datagrams)",
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg(
+        "-p2pwebtransportbulk",
+        "Prefer automatic WebTransport for block-serving peers without "
+        "Avalanche (default: 1); 0 uses their existing TCP/WebSocket path. "
+        "Explicit wt:// URLs and dial=only still force WebTransport.",
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
         "-p2pwebtransporttoken=<token>",
         "Only accept WebTransport sessions whose URL carries ?t=<token> "
         "(1-256 of A-Z a-z 0-9 . _ ~ -); dial such a peer with "
@@ -4098,6 +4104,7 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         wt_dial == "off"    ? WebTransportDialPolicy::OFF
         : wt_dial == "only" ? WebTransportDialPolicy::ONLY
                             : WebTransportDialPolicy::PREFER;
+    connOptions.m_wt_bulk = args.GetBoolArg("-p2pwebtransportbulk", true);
     const auto wt_timeout{args.GetIntArg("-p2pwebtransporttimeout", 3000)};
     const auto wt_retry{args.GetIntArg("-p2pwebtransportretryafter", 3600)};
     if (wt_timeout < 1 || wt_timeout > 60000 || wt_retry < 0 ||
