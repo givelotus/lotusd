@@ -23,6 +23,7 @@
 #include <net_websocket_bridge.h>
 #include <net_websocket_sock.h>
 #include <net_websocket_tls.h>
+#include <net_webtransport.h>
 #include <netbase.h>
 #include <node/metrics.h>
 #include <node/ui_interface.h>
@@ -405,6 +406,9 @@ static std::vector<std::string> g_public_prefixes;
 
 //! Whether /chronik is served (-chronik and -chronikpubliconrpcport)
 static bool g_chronik_enabled{false};
+//! Fixed public discovery endpoint; configured before HTTP threads start.
+static bool g_webtransport_info_enabled{false};
+static constexpr std::string_view WT_INFO_PATH{"/p2p/wt/info"};
 
 /** A web server requests are relayed to */
 struct ForwardTarget {
@@ -532,6 +536,11 @@ static bool IsPublicPath(std::string_view uri) {
                        [&](const std::string &prefix) {
                            return URIHasPathPrefix(uri, prefix);
                        });
+}
+
+static bool IsWebTransportInfoPath(std::string_view target) {
+    return g_webtransport_info_enabled &&
+           target.substr(0, target.find('?')) == WT_INFO_PATH;
 }
 
 /** Check if a network address is allowed to access the HTTP server */
@@ -741,15 +750,16 @@ DispatchRequest(BeastRequest &&beast_req, const HTTPConnectionInfo &conn) {
     };
     auto hreq{std::make_unique<HTTPRequest>(std::move(impl))};
 
-    if (conn.public_only) {
-        // Public listeners only serve the WebSocket and Chronik endpoints,
-        // which are handled before dispatch: never RPC, wallet or REST.
+    if (conn.public_only && !IsWebTransportInfoPath(hreq->GetURI())) {
+        // Public listeners serve only explicit public endpoints. WebSocket
+        // and Chronik are handled before dispatch; WT discovery uses a fixed
+        // handler on the bounded worker queue: never RPC, wallet or REST.
         LogDebug(BCLog::HTTP,
                  "Request for %s on a public listener from %s rejected\n",
                  SanitizeString(hreq->GetURI(), SAFE_CHARS_URI).substr(0, 100),
                  hreq->GetPeer().ToStringAddrPort());
         hreq->WriteReply(HTTP_NOT_FOUND);
-    } else if (!ClientAllowed(hreq->GetPeer())) {
+    } else if (!conn.public_only && !ClientAllowed(hreq->GetPeer())) {
         // Early address-based allow check
         LogDebug(BCLog::HTTP,
                  "HTTP request from %s rejected: Client network is not allowed "
@@ -1479,6 +1489,32 @@ static constexpr std::string_view HEALTHZ_PATH{"/healthz"};
 
 static std::string_view TargetPath(std::string_view target) {
     return target.substr(0, target.find('?'));
+}
+
+/** This advertises a WT-P2P endpoint, not generic HTTP/3 RPC support.
+ * Deliberately omit blanket Alt-Svc: the QUIC listener cannot serve the
+ * other resources of this HTTP origin. Discovery responses are not cached,
+ * so certificate rollover never depends on a stale cached hash list. */
+static bool WebTransportInfoResponse(Config &, HTTPRequest *req,
+                                     const std::string &) {
+    if (!IsWebTransportInfoPath(req->GetURI())) {
+        req->WriteReply(HTTP_NOT_FOUND);
+        return false;
+    }
+    if (req->GetRequestMethod() != HTTPRequest::GET &&
+        req->GetRequestMethod() != HTTPRequest::HEAD) {
+        req->WriteHeader("Allow", "GET, HEAD");
+        req->WriteReply(HTTP_BAD_METHOD);
+        return false;
+    }
+    auto info{GetWebTransportInfo(/*public_only=*/true)};
+    req->WriteHeader("Content-Type", "application/json");
+    req->WriteHeader("Cache-Control", "no-store");
+    req->WriteHeader("Access-Control-Allow-Origin", "*");
+    req->WriteReply(info["enabled"].get_bool() ? HTTP_OK
+                                               : HTTP_SERVICE_UNAVAILABLE,
+                    info.write() + "\n");
+    return true;
 }
 
 /** Whether a request (header) is a health check this server answers */
@@ -3378,6 +3414,16 @@ bool InitHTTPServer(Config &config) {
     }
 
     g_public_prefixes.clear();
+    UnregisterHTTPHandler(std::string{WT_INFO_PATH}, false);
+    g_webtransport_info_enabled = false;
+#ifdef ENABLE_WEBTRANSPORT
+    g_webtransport_info_enabled = gArgs.GetBoolArg("-p2pwebtransport", false);
+    if (g_webtransport_info_enabled) {
+        RegisterPublicHTTPPrefix(std::string{WT_INFO_PATH});
+        RegisterHTTPHandler(std::string{WT_INFO_PATH}, false,
+                            WebTransportInfoResponse);
+    }
+#endif
     g_chronik_enabled =
         gArgs.GetBoolArg("-chronik", false) &&
         gArgs.GetBoolArg("-chronikpubliconrpcport",

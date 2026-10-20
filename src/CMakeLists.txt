@@ -809,6 +809,7 @@ if(ENABLE_WEBTRANSPORT)
 	find_package(Ngtcp2 1.25.0 REQUIRED COMPONENTS ngtcp2 crypto_ossl)
 	target_sources(server PRIVATE
 		net_quic/node_webtransport.cpp
+		net_quic/quic_certificate.cpp
 		net_quic/quic_connection.cpp
 		net_quic/quic_engine.cpp
 		net_quic/quic_peer_sock.cpp

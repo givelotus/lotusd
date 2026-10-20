@@ -1364,6 +1364,12 @@ void SetupServerArgs(NodeContext &node) {
                   P2P_WEBTRANSPORT_PATH),
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg(
+        "-p2pwebtransportbrowsercert",
+        "Use overlapping ten-day EC P-256 certificates for browser "
+        "serverCertificateHashes on the H3 WebTransport listener only; "
+        "reuse the existing TLS key (default: 0)",
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
         "-p2pwebtransporttoken=<token>",
         "Only accept WebTransport sessions whose URL carries ?t=<token> "
         "(1-256 of A-Z a-z 0-9 . _ ~ -); dial such a peer with "

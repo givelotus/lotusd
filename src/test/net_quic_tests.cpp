@@ -4,8 +4,9 @@
 
 // Built only with -DENABLE_WEBTRANSPORT=ON.
 
-#include <net_quic/quic_engine.h>
 #include <crypto/common.h>
+#include <net_quic/quic_certificate.h>
+#include <net_quic/quic_engine.h>
 #include <net_quic/webtransport_wire.h>
 
 #include <netaddress.h>
@@ -15,6 +16,7 @@
 #include <tls_util.h>
 #include <util/fs.h>
 #include <util/strencodings.h>
+#include <util/time.h>
 
 #include <test/util/setup_common.h>
 
@@ -220,6 +222,88 @@ std::vector<uint8_t> RandomPayload(size_t n) {
 } // namespace
 
 BOOST_FIXTURE_TEST_SUITE(net_quic_tests, QuicTestSetup)
+
+BOOST_AUTO_TEST_CASE(browser_certificate_overlap_and_key_stability) {
+    int64_t now{GetTime<std::chrono::seconds>().count()};
+    const auto original_key{tls::ReadFile(key)};
+    const auto original_cert{tls::ReadFile(cert)};
+    const auto browser_cert{m_path_root / "node_wt_cert.pem"};
+    std::string error;
+    QuicCertificate ca{cert, key, false};
+    BOOST_REQUIRE_MESSAGE(ca.Refresh(error), error);
+    auto browser{std::make_unique<QuicCertificate>(browser_cert, key, true,
+                                                   [&now] { return now; })};
+    BOOST_REQUIRE_MESSAGE(browser->Refresh(error), error);
+    const auto first{browser->Snapshot()};
+    BOOST_REQUIRE_EQUAL(first.hashes.size(), 2U);
+    BOOST_CHECK(first.hashes[0] != first.hashes[1]);
+    BOOST_CHECK_EQUAL(first.spki, ca.Snapshot().spki);
+    // Restart recovers both advertised hashes without regenerating either.
+    browser = std::make_unique<QuicCertificate>(browser_cert, key, true,
+                                                [&now] { return now; });
+    BOOST_REQUIRE_MESSAGE(browser->Refresh(error), error);
+    BOOST_CHECK(browser->Snapshot().hashes == first.hashes);
+    now += 6 * 86400;
+    BOOST_REQUIRE_MESSAGE(browser->Refresh(error), error);
+    const auto rotated{browser->Snapshot()};
+    BOOST_REQUIRE_EQUAL(rotated.hashes.size(), 2U);
+    BOOST_CHECK_EQUAL(rotated.hashes[0], first.hashes[1]);
+    BOOST_CHECK(rotated.hashes[1] != first.hashes[0]);
+    BOOST_CHECK_EQUAL(rotated.spki, first.spki);
+    now += 100 * 86400; // Recovery after a long offline period.
+    BOOST_REQUIRE_MESSAGE(browser->Refresh(error), error);
+    BOOST_CHECK(browser->Snapshot().hashes[0] != rotated.hashes[0]);
+    BOOST_CHECK_EQUAL(browser->Snapshot().spki, first.spki);
+    BOOST_CHECK(tls::ReadFile(key) == original_key);
+    BOOST_CHECK(tls::ReadFile(cert) == original_cert);
+}
+
+BOOST_AUTO_TEST_CASE(browser_certificate_failure_keeps_published_hash) {
+    const auto directory{m_path_root / "browser-failure"};
+    fs::create_directories(directory / "node_wt_cert_next.pem");
+    QuicCertificate browser{directory / "node_wt_cert.pem", key, true};
+    std::string error;
+    BOOST_CHECK(!browser.Refresh(error));
+    const auto published{browser.Snapshot()};
+    BOOST_REQUIRE_EQUAL(published.hashes.size(), 1U);
+    const auto pem{tls::ReadFile(directory / "node_wt_cert.pem")};
+    BOOST_REQUIRE(pem);
+    BIO *bio{BIO_new_mem_buf(pem->data(), int(pem->size()))};
+    X509 *x{PEM_read_bio_X509(bio, nullptr, nullptr, nullptr)};
+    BIO_free(bio);
+    BOOST_REQUIRE(x);
+    BOOST_CHECK_EQUAL(published.hashes[0], tls::CertSha256Hex(x));
+    X509_free(x);
+    BOOST_REQUIRE(fs::remove(directory / "node_wt_cert_next.pem"));
+    BOOST_REQUIRE_MESSAGE(browser.Refresh(error), error);
+    BOOST_CHECK_EQUAL(browser.Snapshot().hashes.size(), 2U);
+    BOOST_CHECK_EQUAL(browser.Snapshot().hashes[0], published.hashes[0]);
+}
+
+BOOST_AUTO_TEST_CASE(
+    browser_certificate_rejects_other_curve_without_replacing_key) {
+    EVP_PKEY *other{EVP_PKEY_Q_keygen(nullptr, nullptr, "EC", "secp384r1")};
+    BOOST_REQUIRE(other);
+    BIO *bio{BIO_new(BIO_s_mem())};
+    BOOST_REQUIRE(bio);
+    BOOST_REQUIRE_EQUAL(PEM_write_bio_PrivateKey(bio, other, nullptr, nullptr,
+                                                 0, nullptr, nullptr),
+                        1);
+    char *data{nullptr};
+    const long size{BIO_get_mem_data(bio, &data)};
+    const std::string pem{data, size_t(size)};
+    BIO_free(bio);
+    EVP_PKEY_free(other);
+    const auto unsupported{m_path_root / "unsupported_key.pem"};
+    BOOST_REQUIRE(tls::ReplaceFile(unsupported, pem));
+    QuicCertificate browser{m_path_root / "node_wt_cert.pem", unsupported,
+                            true};
+    std::string error;
+    BOOST_CHECK(!browser.Refresh(error));
+    BOOST_CHECK(error.find("EC P-256") != std::string::npos);
+    BOOST_CHECK_EQUAL(*tls::ReadFile(unsupported), pem);
+    BOOST_CHECK(browser.Snapshot().hashes.empty());
+}
 
 BOOST_AUTO_TEST_CASE(admission_ip_groups_and_handshake_slots) {
     using D = QuicAdmission::Decision;

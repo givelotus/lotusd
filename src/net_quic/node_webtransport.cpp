@@ -9,7 +9,9 @@
 #include <httpserver.h>
 #include <logging.h>
 #include <net.h>
+#include <net_quic/quic_certificate.h>
 #include <net_quic/quic_engine.h>
+#include <net_quic/webtransport_wire.h>
 #include <net_webtransport.h>
 #include <netbase.h>
 #include <random.h>
@@ -22,7 +24,7 @@
 #include <memory>
 
 namespace {
-std::unique_ptr<QuicEngine> g_engine;
+std::shared_ptr<QuicEngine> g_engine;
 
 /** The certificate for QUIC: -tlscert/-tlskey, else the node's datadir
  * certificate (as the HTTP server uses), created if missing */
@@ -93,6 +95,20 @@ bool StartNodeWebTransport(const ArgsManager &args, CConnman &connman,
     if (!CertificateFiles(args, cert, key, error)) {
         return false;
     }
+    const bool browser{args.GetBoolArg("-p2pwebtransportbrowsercert", false)};
+    if (browser) cert = args.GetDataDirNet() / "node_wt_cert.pem";
+    auto certificate{std::make_shared<QuicCertificate>(cert, key, browser)};
+    std::string certificate_error;
+    if (!certificate->Refresh(certificate_error)) {
+        error = Untranslated(certificate_error);
+        return false;
+    }
+    opts.certificate_generation = [certificate] {
+        std::string why;
+        if (!certificate->Refresh(why))
+            LogPrintf("WebTransport certificate refresh failed: %s\n", why);
+        return certificate->Snapshot().generation;
+    };
     opts.cert_file = cert;
     opts.key_file = key;
     opts.application = QuicApplication::WEBTRANSPORT;
@@ -243,10 +259,59 @@ bool StartNodeWebTransport(const ArgsManager &args, CConnman &connman,
             }
             return engine->Dial(target, u, timeout, interrupt, error);
         });
+    // A copied provider keeps the engine/certificate state alive through an
+    // in-flight RPC or HTTP request during shutdown. Bind addresses and policy
+    // are immutable snapshots; only atomic statistics are read from the engine.
+    SetWebTransportInfoProvider([engine = g_engine, certificate,
+                                 binds = g_engine->BoundAddresses(),
+                                 path = opts.wt_path, origins = opts.wt_origins,
+                                 browser](bool public_only) {
+        std::string why;
+        if (!certificate->Refresh(why))
+            LogPrintf("WebTransport discovery certificate refresh failed: %s\n",
+                      why);
+        const auto cert_info{certificate->Snapshot()};
+        UniValue result{UniValue::VOBJ};
+        result.pushKV("enabled", true);
+        result.pushKV("browsercert", browser);
+        result.pushKV("h3_service", "webtransport-p2p");
+        UniValue addresses{UniValue::VARR}, protocols{UniValue::VARR},
+            hashes{UniValue::VARR}, origin_list{UniValue::VARR},
+            drafts{UniValue::VARR};
+        for (const auto &address : binds)
+            addresses.push_back(address.ToStringAddrPort());
+        protocols.push_back(P2P_WT_PROTOCOL_V1);
+        for (const auto &hash : cert_info.hashes)
+            hashes.push_back(hash);
+        for (const auto &origin : origins)
+            origin_list.push_back(origin);
+        for (const auto codepoint :
+             {wt::SETTINGS_ENABLE_WEBTRANSPORT_D02,
+              wt::SETTINGS_WT_MAX_SESSIONS_D07,
+              wt::SETTINGS_WT_MAX_SESSIONS_D13, wt::SETTINGS_WT_ENABLED})
+            drafts.push_back(codepoint);
+        result.pushKV("binds", addresses);
+        result.pushKV("path", path);
+        result.pushKV("protocols", protocols);
+        result.pushKV("cert_sha256", hashes);
+        result.pushKV("spki", cert_info.spki);
+        result.pushKV("origins", origin_list);
+        result.pushKV("draft_codepoints", drafts);
+        if (!public_only) {
+            const auto stats{engine->Stats()};
+            UniValue connections{UniValue::VOBJ};
+            connections.pushKV("inbound", stats.inbound);
+            connections.pushKV("outbound", stats.outbound);
+            connections.pushKV("handshaking", stats.handshaking);
+            result.pushKV("connections", connections);
+        }
+        return result;
+    });
     return true;
 }
 
 void InterruptNodeWebTransport() {
+    SetWebTransportInfoProvider(nullptr);
     SetP2PWebTransportAcceptor(nullptr);
     SetWebTransportDialer(nullptr);
 }

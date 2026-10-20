@@ -10,6 +10,7 @@
 #include <openssl/ssl.h>
 
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -85,14 +86,15 @@ struct SelfSigned {
  * Generate a self-signed certificate (CA:FALSE) with the given subject CN,
  * DNS and IP subject alternative names and validity, for a new EC P-256 key
  * or, if `key_pem` is set, for that existing key (renewals keep the public
- * key, and with it any SPKI pins).
+ * key, and with it any SPKI pins). An explicit valid_from (Unix seconds)
+ * creates a certificate valid for exactly validity seconds from that time;
+ * otherwise retain the normal one-hour backdate and system-time expiry.
  */
-std::optional<SelfSigned>
-GenerateSelfSigned(const std::string &common_name,
-                   const std::vector<std::string> &dns_names,
-                   const std::vector<std::string> &ip_addresses,
-                   std::chrono::seconds validity,
-                   const std::string &key_pem = {});
+std::optional<SelfSigned> GenerateSelfSigned(
+    const std::string &common_name, const std::vector<std::string> &dns_names,
+    const std::vector<std::string> &ip_addresses, std::chrono::seconds validity,
+    const std::string &key_pem = {},
+    std::optional<int64_t> valid_from = std::nullopt);
 
 /** Write a key (mode 0600) and certificate as PEM files */
 bool WritePemFiles(const SelfSigned &pem, const fs::path &cert_path,
