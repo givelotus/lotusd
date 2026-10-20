@@ -19,7 +19,10 @@ void ScheduleBatchPriority() {
     const static sched_param param{};
     const int rc = pthread_setschedparam(pthread_self(), SCHED_BATCH, &param);
     if (rc != 0) {
-        LogPrintf("Failed to pthread_setschedparam: %s\n", SysErrorString(rc));
+        LogInfoEvent(BCLog::ALL, "batch_thread_scheduler_failed",
+                     "Failed to pthread_setschedparam: {error}")
+            .Field(BCLog::LogField::Error, SysErrorString(rc))
+            .Field(BCLog::LogField::ErrorCode, rc);
     }
 #endif
 }
