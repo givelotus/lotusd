@@ -72,3 +72,24 @@ This release includes the following features and fixes:
   PROXY v2 SSL TLV).
 - `-onlynet=wss` (WebSocket over TLS) applies to manual connections
   (`-addnode`, `-connect`) too, and allows no unencrypted `ws://` dials.
+
+Nucleation transaction relay
+----------------------------
+
+Transaction relay no longer delays announcements randomly. Every peer is
+sent announcements on one fixed tick (`-txrelaytick`, default 10 ms). A
+relayed transaction is announced to a fan-out of peers,
+clamp(max(min, ceil(pct x relay peers)), min, max) (`-txrelayfanoutmin` 8,
+`-txrelayfanoutpct` 0.25, `-txrelayfanoutmax` 32); a transaction this node
+originated (wallet, RPC) goes to every peer at the next tick. Peers that
+negotiate it (`sendinvshort`) receive 8-byte short ids (`invshort`,
+`-txrelayshortids`) and reconcile recently admitted transactions every
+`-txreconinterval` (250 ms) over a `-txreconwindow` (30 s); other peers keep
+receiving ordinary `inv` messages. Unsolicited bodies to high-bandwidth
+peers now need `-txrelaypushhb=1`. Announcements per peer are capped by
+`-txrelayratemax` (250,000 per second).
+
+Privacy: relay timing no longer hides which node a transaction entered the
+network at, and a node's own transactions go to all of its peers at once.
+Wallets that care should submit each transaction to several independent
+nodes (`sendrawtransaction` on each).
