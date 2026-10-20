@@ -21,8 +21,9 @@ serve it records:
   SHA256);
 - **bytes on the wire**: WebSocket frame bytes the node sent
   (`getnettotals`), or TCP bytes with `--transport=tcp`;
-- with `-metrics`, the change of the `fullnode_p2p_compress_once_*` and
-  `fullnode_p2p_websocket_independent_*` metrics where they exist.
+- with `-metrics`, the change of the `fullnode_p2p_compress_once_*`,
+  `fullnode_p2p_websocket_independent_*` and `fullnode_p2p_block_message_cache_*`
+  metrics where they exist.
 
 The peers (`peers.py`) are asyncio connections in several client processes
 (`--workers`, default 8). They decode what they receive as real peers would
