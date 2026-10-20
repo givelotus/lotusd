@@ -1356,20 +1356,11 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             ]
             assert_equal(len(gen_addresses), 4)
             for i in range(8):
-                if i % len(gen_addresses) == 3:
-                    # The MiniWallet's V2 coins need version 7 coinbases.
-                    self.generatetodescriptor(
-                        cache_node,
-                        25 if i != 7 else 24,
-                        "raw(4e)",
-                        coinbase_version=7,
-                    )
-                else:
-                    self.generatetoaddress(
-                        cache_node,
-                        nblocks=25,
-                        address=gen_addresses[i % len(gen_addresses)],
-                    )
+                self.generatetoaddress(
+                    cache_node,
+                    nblocks=25 if i != 7 else 24,
+                    address=gen_addresses[i % len(gen_addresses)],
+                )
 
             assert_equal(cache_node.getblockchaininfo()["blocks"], 199)
 
