@@ -95,7 +95,7 @@ bool DecodeCanonicalCoinBytes(const uint8_t *data, size_t len, Coin &out,
     std::vector<uint8_t> buf(data, data + len);
     size_t offset = 36;
     uint64_t out_len = 0;
-    if (!ReadCompactSize(buf, offset, MAX_OUTPUT_BYTES, out_len) ||
+    if (!ReadCompactSize(buf, offset, MAX_COIN_OUTPUT_BYTES, out_len) ||
         buf.size() - offset < out_len ||
         buf.size() - (offset + static_cast<size_t>(out_len)) != COIN_METADATA_BYTES) {
         error = "invalid coin output framing";
@@ -103,7 +103,7 @@ bool DecodeCanonicalCoinBytes(const uint8_t *data, size_t len, Coin &out,
     }
     std::vector<uint8_t> output_bytes(buf.begin() + offset,
                                       buf.begin() + offset + static_cast<size_t>(out_len));
-    if (!DecodeOutput(output_bytes, out.output, error)) {
+    if (!DecodeCoinOutput(output_bytes, out.output, error)) {
         return false;
     }
     offset += static_cast<size_t>(out_len);
