@@ -79,7 +79,7 @@ TransactionCosts AuthenticatedTransactionCostsResolved(const Transaction &tx,
             Require(coin_record.outpoint == Outpoint{input.prev_txid, input.prev_index},
                     "cost resolved outpoint mismatch");
             std::vector<uint8_t> output, coin;
-            Require(EncodeOutput(coin_record.output, output, error) &&
+            Require(EncodeCoinOutput(coin_record.output, output, error) &&
                         EncodeCoin(coin_record, coin),
                     "cost resolved encoding");
             total += Int(coin.size()) * p.resolve_byte;

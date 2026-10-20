@@ -388,12 +388,12 @@ Coin ParseCoin(BytesView bytes) {
         Require(size >= (width == 2 ? 253 : width == 4 ? 65536ULL : 4294967296ULL),
                 "noncanonical coin length");
     }
-    Require(size <= MAX_OUTPUT_BYTES && size <= bytes.size() - r.at, "coin output size");
+    Require(size <= MAX_COIN_OUTPUT_BYTES && size <= bytes.size() - r.at, "coin output size");
     std::vector<uint8_t> output(reinterpret_cast<const uint8_t *>(bytes.data() + r.at),
                                 reinterpret_cast<const uint8_t *>(bytes.data() + r.at + size));
     r.at += size;
     std::string error;
-    Require(DecodeOutput(output, coin.output, error), "coin output");
+    Require(DecodeCoinOutput(output, coin.output, error), "coin output");
     coin.creation_height = r.Int();
     coin.creation_parent_mtp = r.Int();
     const auto flag = r.Int(1);
