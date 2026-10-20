@@ -38,6 +38,13 @@ adapters retain the full raw WSS host/path payload instead of silently
 shortening it to an unrelated endpoint. If the complete value exceeds the
 record, it is omitted and `fields_truncated` is set; record size is unchanged.
 
+`BCLog::LogChar{byte}` snapshots an existing single diagnostic byte, such as
+an ASCII database-key prefix, into a STRING field. Its message and structured
+value retain the original `%c` byte representation, including JSON escaping;
+it does not transcode arbitrary bytes into Unicode. The reviewed converter
+requires the unchanged old argument directly inside a `LogChar` field snapshot
+and rejects character widths, wide characters and integer substitutions.
+
 `BCLog::LogHex{bytes}` accepts a byte span and snapshots it before `Field()`
 returns. The caller may immediately mutate or release its buffer. Lowercase
 hex conversion happens on the consumer; both the message and structured field

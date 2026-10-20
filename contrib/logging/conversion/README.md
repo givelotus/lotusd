@@ -26,6 +26,12 @@ The converter accepts this format only when the old `%s` argument is an exact
 `fs::quoted(...)` AST call; a plain string may not silently gain quoting. The
 consumer accepts copied or static string fields only, not custom adapters.
 
+For reviewed `%c` byte diagnostics, `BCLog::LogChar` copies the unchanged byte
+into a STRING field. The converter requires that exact original argument as a
+direct Field adapter; raw integers, rewritten bytes, width/length modifiers
+and indirect adapters fail closed. This preserves existing ASCII database-key
+prefixes rather than defining Unicode code-point formatting.
+
 The checked-in JSON rules are reviewed semantic mappings, not inferred schemas.
 They specify exact input ASTs, expected counts, event expressions, and review
 notes. Whitespace may differ in input; argument tokens may not. Missing,
