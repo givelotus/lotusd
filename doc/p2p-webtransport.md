@@ -321,3 +321,38 @@ mode, the untrusted control rejects and the profile-trusted control passes.
 This does not establish stock publicly trusted CA or reverse-proxy acceptance.
 Raw development NetLogs have unfinished JSON envelopes after browser SIGTERM;
 complete event records and the browser's final result are preserved separately.
+
+## Linux UDP batching (W10)
+
+Linux uses nonblocking `recvmmsg`/`sendmmsg` batches of at most 64 datagrams.
+One receive-buffer set is reused by the engine thread across its sockets.
+Other platforms retain individual `recvmsg`/`sendmsg` calls; unavailable Linux
+batch syscalls fall back to those calls too. Destination-address ancillary
+data is kept so wildcard listeners reply from the address the peer used.
+Outgoing packets use ngtcp2's generated path, including path-validation
+traffic and standard NAT port rebinding, rather than the original tuple.
+This does not perform rendezvous discovery or coordinated hole punching.
+
+`-p2pwebtransportgso=0` disables UDP segmentation offload. When requested,
+Linux probes `UDP_SEGMENT`; ngtcp2 may aggregate up to ten naturally full
+packets with a final shorter packet, within its send quantum. No forced or
+random padding is added. Unsupported offload falls back to the original
+individual datagram boundaries and disables offload on that socket. UDP GRO
+is not enabled: each receive result remains one wire datagram. A nonblocking
+send's unsent suffix uses normal QUIC loss recovery, as the earlier sendmsg
+path did. Existing engine packet/byte counters count constructed send attempts,
+not an acknowledgement or a capture of successful wire transmission.
+
+The portable tests check segmentation fallback, one-megabyte on/off stream
+transfers and a same-IP port rebinding. A separate Linux-only test checks a
+one-megabyte UDP transfer and logs the runtime offload capability before/after;
+fallback success is not evidence that GSO executed. Linux/Guix runtime/build,
+CPU measurements and wire packetization comparisons remain separate gates.
+Cross-IP migration also needs shared admission/permission transfer review;
+peer permissions currently refer to the address accepted at session setup.
+
+Focused macOS W10 checks pass: combined daemon/unit build, 31 selected cases
+(13,366 assertions), existing basic and limits functionals. Payloads match
+with the GSO option on/off on this host's portable fallback; the Linux-only
+case is not compiled here. These results do not validate Linux batching,
+actual GSO execution, Guix or the CPU gate.
