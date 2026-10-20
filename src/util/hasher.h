@@ -12,10 +12,16 @@
 #include <script/standard.h>
 #include <uint256.h>
 
+#include <array>
+#include <cstdint>
+
 class SaltedUint256Hasher {
 private:
     /** Salt */
     const uint64_t k0, k1;
+
+    explicit SaltedUint256Hasher(std::array<uint64_t, 2> salt)
+        : k0{salt[0]}, k1{salt[1]} {}
 
 public:
     SaltedUint256Hasher();
@@ -44,6 +50,9 @@ class SaltedOutpointHasher {
 private:
     /** Salt */
     const uint64_t k0, k1;
+
+    explicit SaltedOutpointHasher(std::array<uint64_t, 2> salt)
+        : k0{salt[0]}, k1{salt[1]} {}
 
 public:
     SaltedOutpointHasher(bool deterministic = false);
@@ -105,6 +114,9 @@ class SaltedSipHasher {
 private:
     /** Salt */
     const uint64_t m_k0, m_k1;
+
+    explicit SaltedSipHasher(std::array<uint64_t, 2> salt)
+        : m_k0{salt[0]}, m_k1{salt[1]} {}
 
 public:
     SaltedSipHasher();
