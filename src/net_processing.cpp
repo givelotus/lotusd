@@ -5277,9 +5277,10 @@ void PeerManagerImpl::UpdatePeerStateForReceivedHeaders(
             // the minimum chain work, even if a peer has a chain past our tip,
             // as an anti-DoS measure.
             if (pfrom.IsOutboundOrBlockRelayConn()) {
-                LogPrintf("Disconnecting outbound peer %d -- headers "
-                          "chain has insufficient work\n",
-                          pfrom.GetId());
+                LogInfoEvent(
+                    BCLog::ALL, "peer_headers_insufficient_work",
+                    "Disconnecting outbound peer {peer_id} -- headers chain has insufficient work")
+                    .Field(BCLog::LogField::PeerId, pfrom.GetId());
                 pfrom.fDisconnect = true;
             }
         }
@@ -6648,8 +6649,10 @@ void PeerManagerImpl::ProcessMessage(
         }
         // Disconnect if we connected to ourself
         if (pfrom.IsInboundConn() && !m_connman.CheckIncomingNonce(nNonce)) {
-            LogPrintf("connected to self at %s, disconnecting\n",
-                      pfrom.addr.ToStringAddrPort());
+            LogInfoEvent(BCLog::ALL, "peer_self_connection_detected",
+                         "connected to self at {addr}, disconnecting")
+                .Field(BCLog::LogField::Addr, pfrom.addr.ToStringAddrPort())
+                .Field(BCLog::LogField::PeerId, pfrom.GetId());
             pfrom.fDisconnect = true;
             return;
         }
@@ -6812,14 +6815,21 @@ void PeerManagerImpl::ProcessMessage(
         }
 
         if (!pfrom.IsInboundConn()) {
-            LogPrintf("New outbound peer connected: version: %d, blocks=%d, "
-                      "peer=%d%s (%s)\n",
-                      pfrom.nVersion.load(), peer->m_starting_height,
-                      pfrom.GetId(),
-                      (fLogIPs ? strprintf(", peeraddr=%s",
-                                           pfrom.addr.ToStringAddrPort())
-                               : ""),
-                      pfrom.ConnectionTypeAsString());
+            LogInfoEvent(
+                BCLog::ALL, "peer_outbound_connected",
+                "New outbound peer connected: version: {version}, blocks={height}, peer={peer_id}{peer_address_suffix} ({conn_type})")
+                .Field(BCLog::LogField::Version, pfrom.nVersion.load())
+                .Field(BCLog::LogField::Height, peer->m_starting_height.load())
+                .Field(BCLog::LogField::PeerId, pfrom.GetId())
+                .Field(BCLog::LogField::PeerAddressSuffix,
+                       (fLogIPs ? strprintf(", peeraddr=%s",
+                                            pfrom.addr.ToStringAddrPort())
+                                : ""))
+                .Field(BCLog::LogField::ConnType,
+                       pfrom.ConnectionTypeAsString())
+                .Field(
+                    BCLog::LogField::Addr,
+                    (fLogIPs ? pfrom.addr.ToStringAddrPort() : std::string{}));
         }
 
         if (pfrom.GetCommonVersion() >= SHORT_IDS_BLOCKS_VERSION) {
@@ -8514,12 +8524,20 @@ void PeerManagerImpl::ProcessMessage(
             alwaysPrint &= (voteItemTypeStr != "contender");
 
             if (alwaysPrint) {
-                LogPrintf("Avalanche %s %s %s\n", voteOutcome, voteItemTypeStr,
-                          voteItemId.ToString());
+                LogInfoEvent(
+                    BCLog::ALL, "avalanche_vote_updated",
+                    "Avalanche {vote_outcome} {vote_item_type} {vote_item_id}")
+                    .Field(BCLog::LogField::VoteOutcome, voteOutcome)
+                    .Field(BCLog::LogField::VoteItemType, voteItemTypeStr)
+                    .Field(BCLog::LogField::VoteItemId, voteItemId);
             } else {
                 // Only print these messages if -debug=avalanche is set
-                LogDebug(BCLog::AVALANCHE, "Avalanche %s %s %s\n", voteOutcome,
-                         voteItemTypeStr, voteItemId.ToString());
+                LogEvent(
+                    BCLog::AVALANCHE, "avalanche_vote_updated",
+                    "Avalanche {vote_outcome} {vote_item_type} {vote_item_id}")
+                    .Field(BCLog::LogField::VoteOutcome, voteOutcome)
+                    .Field(BCLog::LogField::VoteItemType, voteItemTypeStr)
+                    .Field(BCLog::LogField::VoteItemId, voteItemId);
             }
         };
 
@@ -8645,8 +8663,12 @@ void PeerManagerImpl::ProcessMessage(
                         BlockValidationState state;
                         m_chainman.ActiveChainstate().ParkBlock(state, pindex);
                         if (!state.IsValid()) {
-                            LogPrintf("ERROR: Database error: %s\n",
-                                      state.GetRejectReason());
+                            LogInfoEvent(
+                                BCLog::ALL,
+                                "avalanche_block_parking_database_failed",
+                                "ERROR: Database error: {error}")
+                                .Field(BCLog::LogField::Error,
+                                       state.GetRejectReason());
                             return;
                         }
                     } break;
@@ -8654,8 +8676,12 @@ void PeerManagerImpl::ProcessMessage(
                         BlockValidationState state;
                         m_chainman.ActiveChainstate().ParkBlock(state, pindex);
                         if (!state.IsValid()) {
-                            LogPrintf("ERROR: Database error: %s\n",
-                                      state.GetRejectReason());
+                            LogInfoEvent(
+                                BCLog::ALL,
+                                "avalanche_block_parking_database_failed",
+                                "ERROR: Database error: {error}")
+                                .Field(BCLog::LogField::Error,
+                                       state.GetRejectReason());
                             return;
                         }
 
@@ -9103,7 +9129,9 @@ void PeerManagerImpl::ProcessMessage(
             BlockValidationState state;
             if (!m_chainman.ActiveChainstate().ActivateBestChain(
                     state, /*pblock=*/nullptr, m_avalanche)) {
-                LogPrintf("failed to activate chain (%s)\n", state.ToString());
+                LogInfoEvent(BCLog::ALL, "avalanche_chain_activation_failed",
+                             "failed to activate chain ({error})")
+                    .Field(BCLog::LogField::Error, state.ToString());
             }
         }
 
@@ -9747,15 +9775,19 @@ bool PeerManagerImpl::MaybeDiscourageAndDisconnect(CNode &pnode, Peer &peer) {
     if (pnode.HasPermission(NetPermissionFlags::NoBan)) {
         // We never disconnect or discourage peers for bad behavior if they have
         // NetPermissionFlags::NoBan permission
-        LogPrintf("Warning: not punishing noban peer %d!\n", peer.m_id);
+        LogInfoEvent(BCLog::ALL, "peer_noban_punishment_skipped",
+                     "Warning: not punishing noban peer {peer_id}!")
+            .Field(BCLog::LogField::PeerId, peer.m_id);
         CountDiscouragement(node::DiscourageOutcome::EXEMPT_NOBAN);
         return false;
     }
 
     if (pnode.IsManualConn()) {
         // We never disconnect or discourage manual peers for bad behavior
-        LogPrintf("Warning: not punishing manually connected peer %d!\n",
-                  peer.m_id);
+        LogInfoEvent(
+            BCLog::ALL, "peer_manual_punishment_skipped",
+            "Warning: not punishing manually connected peer {peer_id}!")
+            .Field(BCLog::LogField::PeerId, peer.m_id);
         CountDiscouragement(node::DiscourageOutcome::EXEMPT_MANUAL);
         return false;
     }
@@ -10377,9 +10409,11 @@ void PeerManagerImpl::CheckForStaleTipAndEvictPeers() {
         if (!m_chainman.m_blockman.LoadingBlocks() &&
             m_connman.GetNetworkActive() && m_connman.GetUseAddrmanOutgoing() &&
             TipMayBeStale()) {
-            LogPrintf("Potential stale tip detected, will try using extra "
-                      "outbound peer (last tip update: %d seconds ago)\n",
-                      count_seconds(now - m_last_tip_update.load()));
+            LogInfoEvent(
+                BCLog::ALL, "chain_tip_stale_extra_peer_requested",
+                "Potential stale tip detected, will try using extra outbound peer (last tip update: {tip_age_seconds} seconds ago)")
+                .Field(BCLog::LogField::TipAgeSeconds,
+                       count_seconds(now - m_last_tip_update.load()));
             m_connman.SetTryNewOutboundPeer(true);
         } else if (m_connman.GetTryNewOutboundPeer()) {
             m_connman.SetTryNewOutboundPeer(false);
@@ -11282,8 +11316,10 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
             // move. During normal steady state, the download window should be
             // much larger than the to-be-downloaded set of blocks, so
             // disconnection should only happen during initial block download.
-            LogPrintf("Peer=%d is stalling block download, disconnecting\n",
-                      pto->GetId());
+            LogInfoEvent(
+                BCLog::ALL, "peer_block_download_stalled",
+                "Peer={peer_id} is stalling block download, disconnecting")
+                .Field(BCLog::LogField::PeerId, pto->GetId());
             pto->fDisconnect = true;
             // Increase timeout for the next peer so that we don't disconnect
             // multiple peers if our own bandwidth is insufficient.
@@ -11344,15 +11380,17 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                     // stalling; we have bigger problems if we can't get any
                     // outbound peers.
                     if (!pto->HasPermission(NetPermissionFlags::NoBan)) {
-                        LogPrintf("Timeout downloading headers from peer=%d, "
-                                  "disconnecting\n",
-                                  pto->GetId());
+                        LogInfoEvent(
+                            BCLog::ALL, "peer_headers_download_timed_out",
+                            "Timeout downloading headers from peer={peer_id}, disconnecting")
+                            .Field(BCLog::LogField::PeerId, pto->GetId());
                         pto->fDisconnect = true;
                         return true;
                     } else {
-                        LogPrintf("Timeout downloading headers from noban "
-                                  "peer=%d, not disconnecting\n",
-                                  pto->GetId());
+                        LogInfoEvent(
+                            BCLog::ALL, "peer_noban_headers_download_timed_out",
+                            "Timeout downloading headers from noban peer={peer_id}, not disconnecting")
+                            .Field(BCLog::LogField::PeerId, pto->GetId());
                         // Reset the headers sync state so that we have a chance
                         // to try downloading from a different peer. Note: this
                         // will also result in at least one more getheaders
