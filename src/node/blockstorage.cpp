@@ -276,8 +276,11 @@ bool BlockManager::LoadBlockIndex(
         // persisted to disk, we must bootstrap the value for assumedvalid
         // chainstates from the hardcoded assumeutxo chainparams.
         base->m_chain_tx_count = au_data.m_chain_tx_count;
-        LogPrintf("[snapshot] set m_chain_tx_count=%lu for %s\n",
-                  au_data.m_chain_tx_count, snapshot_blockhash->ToString());
+        LogInfoEvent(
+            BCLog::ALL, "snapshot_chain_tx_count_restored",
+            "[snapshot] set m_chain_tx_count={chain_tx_count} for {block_hash}")
+            .Field(BCLog::LogField::ChainTxCount, au_data.m_chain_tx_count)
+            .Field(BCLog::LogField::BlockHash, *snapshot_blockhash);
     } else {
         // If this isn't called with a snapshot blockhash, make sure the cached
         // snapshot height is null. This is relevant during snapshot
@@ -377,12 +380,33 @@ bool BlockManager::LoadBlockIndexDB(
     // Load block file info
     m_block_tree_db->ReadLastBlockFile(max_blockfile_num);
     m_blockfile_info.resize(max_blockfile_num + 1);
-    LogPrintf("%s: last block file = %i\n", __func__, max_blockfile_num);
+    LogInfoEvent(BCLog::ALL, "block_file_last_number",
+                 "{source_function}: last block file = {file_number}")
+        .Field(BCLog::LogField::SourceFunction, __func__)
+        .Field(BCLog::LogField::FileNumber, max_blockfile_num);
     for (int nFile = 0; nFile <= max_blockfile_num; nFile++) {
         m_block_tree_db->ReadBlockFileInfo(nFile, m_blockfile_info[nFile]);
     }
-    LogPrintf("%s: last block file info: %s\n", __func__,
-              m_blockfile_info[max_blockfile_num].ToString());
+    LogInfoEvent(BCLog::ALL, "block_file_last_info",
+                 "{source_function}: last block file info: {block_file_info}")
+        .Field(BCLog::LogField::SourceFunction, __func__)
+        .Field(BCLog::LogField::BlockFileInfo,
+               m_blockfile_info[max_blockfile_num].ToString())
+        .Field(BCLog::LogField::FileNumber, max_blockfile_num)
+        .Field(BCLog::LogField::FileBlocks,
+               m_blockfile_info[max_blockfile_num].nBlocks)
+        .Field(BCLog::LogField::BlockFileBytes,
+               m_blockfile_info[max_blockfile_num].nSize)
+        .Field(BCLog::LogField::UndoFileBytes,
+               m_blockfile_info[max_blockfile_num].nUndoSize)
+        .Field(BCLog::LogField::FileFirstHeight,
+               m_blockfile_info[max_blockfile_num].nHeightFirst)
+        .Field(BCLog::LogField::FileLastHeight,
+               m_blockfile_info[max_blockfile_num].nHeightLast)
+        .Field(BCLog::LogField::FileFirstTimeSeconds,
+               m_blockfile_info[max_blockfile_num].nTimeFirst)
+        .Field(BCLog::LogField::FileLastTimeSeconds,
+               m_blockfile_info[max_blockfile_num].nTimeLast);
     for (int nFile = max_blockfile_num + 1; true; nFile++) {
         CBlockFileInfo info;
         if (m_block_tree_db->ReadBlockFileInfo(nFile, info)) {
@@ -1191,7 +1215,9 @@ void ImportBlocks(ChainstateManager &chainman,
                 chainman.LoadExternalBlockFile(
                     file, &pos, &blocks_with_unknown_parent, avalanche);
                 if (chainman.m_interrupt) {
-                    LogPrintf("Interrupt requested. Exit %s\n", __func__);
+                    LogInfoEvent(BCLog::ALL, "block_file_import_interrupted",
+                                 "Interrupt requested. Exit {source_function}")
+                        .Field(BCLog::LogField::SourceFunction, __func__);
                     return;
                 }
                 nFile++;
@@ -1211,18 +1237,22 @@ void ImportBlocks(ChainstateManager &chainman,
         for (const fs::path &path : vImportFiles) {
             AutoFile file{fsbridge::fopen(path, "rb")};
             if (!file.IsNull()) {
-                LogPrintf("Importing blocks file %s...\n",
-                          fs::PathToString(path));
+                LogInfoEvent(BCLog::ALL, "block_file_import_started",
+                             "Importing blocks file {path}...")
+                    .Field(BCLog::LogField::Path, fs::PathToString(path));
                 chainman.LoadExternalBlockFile(
                     file, /*dbp=*/nullptr,
                     /*blocks_with_unknown_parent=*/nullptr, avalanche);
                 if (chainman.m_interrupt) {
-                    LogPrintf("Interrupt requested. Exit %s\n", __func__);
+                    LogInfoEvent(BCLog::ALL, "block_file_import_interrupted",
+                                 "Interrupt requested. Exit {source_function}")
+                        .Field(BCLog::LogField::SourceFunction, __func__);
                     return;
                 }
             } else {
-                LogPrintf("Warning: Could not open blocks file %s\n",
-                          fs::PathToString(path));
+                LogInfoEvent(BCLog::ALL, "block_file_import_open_failed",
+                             "Warning: Could not open blocks file {path}")
+                    .Field(BCLog::LogField::Path, fs::PathToString(path));
             }
         }
 
@@ -1238,14 +1268,17 @@ void ImportBlocks(ChainstateManager &chainman,
             CBlockIndex *pblockindex =
                 chainman.m_blockman.LookupBlockIndex(hash);
             if (pblockindex && !pblockindex->nStatus.isValid()) {
-                LogPrintf("Reconsidering checkpointed block %s ...\n",
-                          hash.GetHex());
+                LogInfoEvent(
+                    BCLog::ALL, "checkpoint_block_reconsidering",
+                    "Reconsidering checkpointed block {block_hash} ...")
+                    .Field(BCLog::LogField::BlockHash, hash);
                 chainman.ActiveChainstate().ResetBlockFailureFlags(pblockindex);
             }
 
             if (pblockindex && pblockindex->nStatus.isOnParkedChain()) {
-                LogPrintf("Unparking checkpointed block %s ...\n",
-                          hash.GetHex());
+                LogInfoEvent(BCLog::ALL, "checkpoint_block_unparking",
+                             "Unparking checkpointed block {block_hash} ...")
+                    .Field(BCLog::LogField::BlockHash, hash);
                 chainman.ActiveChainstate().UnparkBlockAndChildren(pblockindex);
             }
         }
