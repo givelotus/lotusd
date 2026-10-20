@@ -33,9 +33,12 @@ UPGRADE_HEADERS = {
 PEER_IP = "1.2.3.4"
 NODE_IP_SEEN = "5.6.7.8"
 DOMAIN = "node0.example.com"
-# The test framework's configuration has bind=127.0.0.1 (a plain P2P
-# listener) and connect=0 (which turns -listen off unless -bind is set).
-WS_ONLY = ["-p2prawlisten=0", "-nobind", "-listen=1"]
+# WebSocket only. The test framework's configuration has bind=127.0.0.1,
+# which is now a P2P port listener for WebSocket.
+WS_ONLY = ["-p2prawlisten=0"]
+# No transport: then -bind is refused. Without it, connect=0 in the test
+# framework's configuration turns -listen off unless it is set.
+NO_TRANSPORT = ["-p2prawlisten=0", "-p2pwslisten=0", "-nobind", "-listen=1"]
 
 
 class P2PListenOptionsTest(BitcoinTestFramework):
@@ -153,20 +156,40 @@ class P2PListenOptionsTest(BitcoinTestFramework):
         self.wait_until(lambda: len(self.peers(0)) == 0)
 
     def test_websocket_only(self):
-        self.log.info("-p2prawlisten=0: no plain P2P listening socket")
+        self.log.info("-p2prawlisten=0: raw P2P peers are refused")
         self.restart_node(0, WS_ONLY)
         node0, node1 = self.nodes
-        assert not self.plain_p2p_port_open(0)
+        # The P2P port is bound for WebSocket, but closes raw P2P.
+        assert self.plain_p2p_port_open(0)
+        with node0.assert_debug_log(["raw P2P is not accepted"], timeout=10):
+            raw = node0.add_p2p_connection(
+                P2PInterface(), wait_for_connection=False, wait_for_verack=False
+            )
+        raw.wait_until(lambda: not raw.is_connected, check_connected=False)
+        assert "version" not in raw.last_message
+        node0.disconnect_p2ps()
         assert_equal(node0.getnetworkinfo()["localaddresses"], [])
 
-        self.log.info("... but a WebSocket peer connects and syncs a block")
+        self.log.info("... but WebSocket peers connect and sync a block")
         node1.addnode(f"ws://127.0.0.1:{rpc_port(0)}/p2p/ws", "onetry")
-        self.wait_until(lambda: len(self.peers(0, "ws")) == 1)
-        assert_equal(len(self.peers(0)), 1)
-        assert self.peers(0, "ws")[0]["inbound"]
+        node1.addnode(f"wss://127.0.0.1:{p2p_port(0)}/p2p/ws", "onetry")
+        self.wait_until(lambda: len(self.peers(0)) == 2)
+        assert_equal(sorted(p["transport"] for p in self.peers(0)), ["ws", "wss"])
+        assert all(p["inbound"] for p in self.peers(0))
         self.generate(node1, 1)
         assert_equal(node0.getbestblockhash(), node1.getbestblockhash())
         self.disconnect_all()
+
+        self.log.info("Neither transport: no listening socket at all")
+        self.stop_node(0)
+        self.start_node(0, NO_TRANSPORT)
+        assert not self.plain_p2p_port_open(0)
+        self.stop_node(
+            0,
+            expected_stderr="Warning: -p2prawlisten=0 and -p2pwslisten=0: no "
+            "inbound P2P connections will be accepted, as with -listen=0",
+        )
+        self.start_node(0)
 
     def test_no_plain_self_advertisement(self):
         self.log.info(
@@ -241,20 +264,27 @@ class P2PListenOptionsTest(BitcoinTestFramework):
             assert_equal(self.upgrade_status(0) != 404, served)
         self.stop_node(0)
 
-        self.log.info("Options needing a plain P2P listener are refused")
+        self.log.info("Options needing raw P2P are refused")
         for args, needle in [
-            ([f"-bind=127.0.0.1:{p2p_port(0)}"], "-bind and -whitebind"),
-            ([f"-whitebind=noban@127.0.0.1:{p2p_port(0)}"], "-bind and -whitebind"),
-            (["-externalip=1.2.3.4"], "-externalip advertises"),
-            (["-listenonion=1"], "-listenonion creates"),
+            (WS_ONLY + [f"-bind=127.0.0.1:{p2p_port(0) + 1}=onion"], "=onion"),
+            (WS_ONLY + ["-externalip=1.2.3.4"], "-externalip advertises"),
+            (WS_ONLY + ["-listenonion=1"], "-listenonion creates"),
+            (
+                NO_TRANSPORT + [f"-bind=127.0.0.1:{p2p_port(0)}"],
+                "-bind and -whitebind",
+            ),
+            (
+                NO_TRANSPORT + [f"-whitebind=noban@127.0.0.1:{p2p_port(0)}"],
+                "-bind and -whitebind",
+            ),
         ]:
             node.assert_start_raises_init_error(
-                WS_ONLY + args, needle, match=ErrorMatch.PARTIAL_REGEX
+                args, needle, match=ErrorMatch.PARTIAL_REGEX
             )
 
         self.log.info("No transport at all: allowed, with a warning")
         with node.assert_debug_log(["no inbound P2P connections will be accepted"]):
-            self.start_node(0, WS_ONLY + ["-p2pwslisten=0"])
+            self.start_node(0, NO_TRANSPORT)
         assert not self.plain_p2p_port_open(0)
         assert_equal(self.upgrade_status(0), 404)
         self.stop_node(

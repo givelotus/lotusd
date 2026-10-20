@@ -109,6 +109,18 @@ using P2PWebSocketAcceptor = std::function<void(
     const CAddress &addr_bind, std::shared_ptr<WebSocketTransportInfo> info)>;
 
 /**
+ * Serve a connection accepted on the P2P port that starts like HTTP or TLS
+ * (nothing read yet): the P2P WebSocket endpoint only, with TLS detected as
+ * on -publicbind; anything else gets 404 or the -publicfallback site, never
+ * RPC, REST, wallet, Chronik or health checks. It must reach the WebSocket
+ * upgrade within -p2pporthandshaketimeout, and at most MAX_P2P_PORT_PENDING
+ * such connections (MAX_P2P_PORT_PENDING_PER_ADDR from one address) wait
+ * at once; others are closed. Takes ownership of the socket. Thread-safe.
+ */
+void HandOffP2PPortConnection(std::unique_ptr<Sock> &&sock,
+                              const CService &peer, const CService &local);
+
+/**
  * Set (or clear, with nullptr) the receiver of /p2p/ws peers. While unset,
  * /p2p/ws upgrades are answered with 503. Thread-safe.
  */

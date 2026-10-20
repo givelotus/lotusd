@@ -356,9 +356,17 @@ CheckP2PListenArgs(const ArgsManager &args,
     if (plain) {
         return std::nullopt;
     }
-    if (!args.GetArgs("-bind").empty() || !args.GetArgs("-whitebind").empty()) {
-        return _("-bind and -whitebind open plain P2P listeners, so they "
-                 "cannot be used with -p2prawlisten=0");
+    for (const std::string &bind : args.GetArgs("-bind")) {
+        if (bind.ends_with("=onion")) {
+            return _("-bind=...=onion is the target of a Tor onion service, "
+                     "which carries raw P2P, so it cannot be used with "
+                     "-p2prawlisten=0");
+        }
+    }
+    if (!ws && (!args.GetArgs("-bind").empty() ||
+                !args.GetArgs("-whitebind").empty())) {
+        return _("-bind and -whitebind open P2P port listeners, which would "
+                 "accept nothing with -p2prawlisten=0 and -p2pwslisten=0");
     }
     if (!args.GetArgs("-externalip").empty()) {
         return _("-externalip advertises an address for plain P2P, so it "
@@ -380,6 +388,10 @@ CheckP2PListenArgs(const ArgsManager &args,
         warnings.push_back(
             _("-p2prawlisten=0 and -p2pwslisten=0: no inbound P2P "
               "connections will be accepted, as with -listen=0"));
+    } else if (!args.GetBoolArg("-server", false)) {
+        warnings.push_back(
+            _("-p2prawlisten=0 without -server: WebSocket peers need the "
+              "HTTP server, so no inbound P2P connections will be accepted"));
     }
     return std::nullopt;
 }
@@ -1114,7 +1126,7 @@ std::pair<size_t, bool> CConnman::SocketSendData(CNode &node) const {
  *   to forge.  In order to partition a node the attacker must be
  *   simultaneously better at all of them than honest peers.
  */
-bool CConnman::AttemptToEvictConnection() {
+std::optional<NodeId> CConnman::SelectEvictionCandidate() {
     std::vector<NodeEvictionCandidate> vEvictionCandidates;
     {
         LOCK(m_nodes_mutex);
@@ -1146,8 +1158,11 @@ bool CConnman::AttemptToEvictConnection() {
             vEvictionCandidates.push_back(candidate);
         }
     }
-    const std::optional<NodeId> node_id_to_evict =
-        SelectNodeToEvict(std::move(vEvictionCandidates));
+    return SelectNodeToEvict(std::move(vEvictionCandidates));
+}
+
+bool CConnman::AttemptToEvictConnection() {
+    const std::optional<NodeId> node_id_to_evict{SelectEvictionCandidate()};
     if (!node_id_to_evict) {
         return false;
     }
@@ -1190,8 +1205,168 @@ void CConnman::AcceptConnection(const ListenSocket &hListenSocket) {
     NetPermissionFlags permission_flags = NetPermissionFlags::None;
     hListenSocket.AddSocketPermissionFlags(permission_flags);
 
+    if (m_p2p_port_websocket && !g_listen_plain_p2p) {
+        // WebSocket only: no raw P2P peer to keep compatible, so no node
+        // until a WebSocket upgrade. The HTTP server reads nothing before
+        // classifying the first bytes, and closes raw P2P. The checks that
+        // need no data come first, so a banned peer or a full node does no
+        // HTTP/TLS work.
+        if (MayAcceptInbound(addr, permission_flags)) {
+            m_p2p_port_websocket(std::move(sock), addr, addr_bind);
+        }
+        return;
+    }
+    // With WebSocket on the P2P port, the node is created as for any raw
+    // P2P peer (same checks, timeouts and eviction, silent ones included),
+    // and is classified on its first bytes before anything is read
+    // (ClassifyP2PPortNode).
     CreateNodeFromAcceptedSocket(std::move(sock), permission_flags, addr_bind,
-                                 addr);
+                                 addr, /*websocket_info=*/nullptr,
+                                 /*classify=*/bool{m_p2p_port_websocket});
+}
+
+bool CConnman::MayAcceptInbound(const CAddress &addr,
+                                NetPermissionFlags permission_flags) {
+    AddWhitelistPermissionFlags(permission_flags, addr,
+                                vWhitelistedRangeIncoming);
+    if (!fNetworkActive) {
+        LogDebug(BCLog::NET,
+                 "connection from %s dropped: not accepting new connections\n",
+                 addr.ToStringAddrPort());
+        return false;
+    }
+    const bool noban{
+        NetPermissions::HasFlag(permission_flags, NetPermissionFlags::NoBan)};
+    if (!noban && m_banman && m_banman->IsBanned(addr)) {
+        LogDebug(BCLog::NET, "connection from %s dropped (banned)\n",
+                 addr.ToStringAddrPort());
+        return false;
+    }
+    const int max_inbound{nMaxConnections - m_max_outbound};
+    int inbound{0};
+    {
+        LOCK(m_nodes_mutex);
+        for (const CNode *node : m_nodes) {
+            inbound += node->IsInboundConn();
+        }
+    }
+    if (!noban && inbound + 1 >= max_inbound && m_banman &&
+        m_banman->IsDiscouraged(addr)) {
+        LogDebug(BCLog::NET, "connection from %s dropped (discouraged)\n",
+                 addr.ToStringAddrPort());
+        return false;
+    }
+    // Eviction itself is left to the node's creation, after the upgrade.
+    if (inbound >= max_inbound && !SelectEvictionCandidate()) {
+        LogDebug(BCLog::NET, "failed to find an eviction candidate - "
+                             "connection dropped (full)\n");
+        return false;
+    }
+    return true;
+}
+
+P2PPortProtocol
+ClassifyP2PPortBytes(Span<const uint8_t> first,
+                     const CMessageHeader::MessageMagic &magic) {
+    static constexpr uint8_t TLS_HANDSHAKE[]{0x16, 0x03};
+    static constexpr uint8_t HTTP_GET[]{'G', 'E', 'T', ' '};
+    const auto starts{[&](Span<const uint8_t> prefix) {
+        const size_t n{std::min(first.size(), prefix.size())};
+        return std::equal(first.begin(), first.begin() + n, prefix.begin());
+    }};
+    if (first.empty()) {
+        return P2PPortProtocol::UNDECIDED;
+    }
+    const bool is_magic{starts(magic)};
+    const bool is_tls{starts(TLS_HANDSHAKE)};
+    const bool is_http{starts(HTTP_GET)};
+    if (is_magic && (first.size() >= magic.size() || (!is_tls && !is_http))) {
+        return P2PPortProtocol::PLAIN;
+    }
+    if (!is_magic && ((is_tls && first.size() >= sizeof(TLS_HANDSHAKE)) ||
+                      (is_http && first.size() >= sizeof(HTTP_GET)))) {
+        return P2PPortProtocol::WEBSOCKET;
+    }
+    if (is_magic || is_tls || is_http) {
+        return P2PPortProtocol::UNDECIDED;
+    }
+    // Neither: plain P2P, which rejects it as before.
+    return P2PPortProtocol::PLAIN;
+}
+
+bool CConnman::ClassifyP2PPortNode(CNode &node,
+                                   const Sock::EventsPerSock &events_per_sock) {
+    bool readable{node.m_p2p_port_partial};
+    {
+        LOCK(node.m_sock_mutex);
+        if (!node.m_sock) {
+            return true;
+        }
+        if (const auto it{events_per_sock.find(node.m_sock)};
+            it != events_per_sock.end() &&
+            (it->second.occurred & (Sock::RECV | Sock::ERR))) {
+            readable = true;
+        }
+    }
+    P2PPortProtocol protocol{P2PPortProtocol::UNDECIDED};
+    if (readable) {
+        uint8_t first[4];
+        const ssize_t n{WITH_LOCK(
+            node.m_sock_mutex,
+            return node.m_sock ? node.m_sock->Recv(first, sizeof(first),
+                                                   MSG_PEEK | MSG_DONTWAIT)
+                               : -1)};
+        if (n <= 0) {
+            // Closed or failed: the ordinary receive path deals with it.
+            node.m_p2p_port_unclassified = false;
+            node.m_p2p_port_partial = false;
+            return true;
+        }
+        protocol = ClassifyP2PPortBytes(Span<const uint8_t>{first, size_t(n)},
+                                        config->GetChainParams().NetMagic());
+        // Peeked again on each loop rather than waited for: its socket
+        // stays readable.
+        node.m_p2p_port_partial = protocol == P2PPortProtocol::UNDECIDED;
+    }
+    if (protocol == P2PPortProtocol::UNDECIDED) {
+        if (std::chrono::steady_clock::now() < node.m_p2p_port_deadline) {
+            return false;
+        }
+        // Silent, or a few bytes that are neither: what a raw P2P listener
+        // would have got.
+        protocol = P2PPortProtocol::PLAIN;
+    }
+    node.m_p2p_port_unclassified = false;
+    node.m_p2p_port_partial = false;
+    if (protocol == P2PPortProtocol::PLAIN) {
+        if (g_listen_plain_p2p) {
+            return true;
+        }
+        LogDebug(BCLog::NET,
+                 "connection from %s dropped: raw P2P is not accepted "
+                 "(-p2prawlisten=0) peer=%d\n",
+                 node.addr.ToStringAddrPort(), node.GetId());
+        node.CloseSocketDisconnect();
+        return false;
+    }
+    // HTTP or TLS: the socket, nothing read from it, goes to the HTTP
+    // server. This node never spoke P2P and is dropped.
+    std::unique_ptr<Sock> sock;
+    {
+        LOCK(node.m_sock_mutex);
+        if (!node.m_sock) {
+            return false;
+        }
+        sock = std::make_unique<Sock>(std::move(*node.m_sock));
+        node.m_sock.reset();
+    }
+    node.fDisconnect = true;
+    LogDebug(BCLog::NET,
+             "connection from %s on the P2P port is HTTP/TLS: handed to the "
+             "WebSocket endpoint (peer=%d dropped)\n",
+             node.addr.ToStringAddrPort(), node.GetId());
+    m_p2p_port_websocket(std::move(sock), node.addr, node.addrBind);
+    return false;
 }
 
 uint64_t GetP2PWebSocketMessageSizeLimit() {
@@ -1484,6 +1659,16 @@ void CConnman::AcceptWebSocketPeer(
     std::unique_ptr<Sock> &&sock, const CAddress &addr,
     const CAddress &addr_bind, std::shared_ptr<WebSocketTransportInfo> info) {
     NetPermissionFlags flags{NetPermissionFlags::None};
+    // On the P2P port: the permissions of the listener reached (-whitebind),
+    // matched by the address reached (any address of an any-address bind).
+    for (const ListenSocket &listen : vhListenSocket) {
+        if (listen.addr.GetPort() == addr_bind.GetPort() &&
+            (listen.addr.IsBindAny() ||
+             static_cast<const CNetAddr &>(listen.addr) ==
+                 static_cast<const CNetAddr &>(addr_bind))) {
+            listen.AddSocketPermissionFlags(flags);
+        }
+    }
     bool known{false};
     if (info && !info->peer_spki.empty()) {
         for (const auto &key : vWhitelistedKeys) {
@@ -1510,7 +1695,7 @@ void CConnman::AcceptWebSocketPeer(
 void CConnman::CreateNodeFromAcceptedSocket(
     std::unique_ptr<Sock> &&sock, NetPermissionFlags permission_flags,
     const CAddress &addr_bind, const CAddress &addr,
-    std::shared_ptr<WebSocketTransportInfo> websocket_info) {
+    std::shared_ptr<WebSocketTransportInfo> websocket_info, bool classify) {
     int nInbound = 0;
     int nMaxInbound = nMaxConnections - m_max_outbound;
 
@@ -1602,6 +1787,11 @@ void CConnman::CreateNodeFromAcceptedSocket(
             .websocket_info = std::move(websocket_info),
         });
     pnode->AddRef();
+    if (classify) {
+        pnode->m_p2p_port_deadline =
+            std::chrono::steady_clock::now() + m_p2p_port_handshake_timeout;
+        pnode->m_p2p_port_unclassified = true;
+    }
     for (auto interface : m_msgproc) {
         interface->InitializeNode(*config, *pnode, GetLocalServices());
     }
@@ -1820,7 +2010,9 @@ Sock::EventsPerSock CConnman::GenerateWaitSockets(Span<CNode *const> nodes) {
         // Stop receiving if the peer is paused, or if we have enough inflight
         // data to process already in wich case we limit to outbounds and up to
         // 3 inbounds.
-        bool select_recv = !pnode->fPauseRecv &&
+        // A P2P port connection that sent part of its first bytes is peeked
+        // again on each loop (ClassifyP2PPortNode), not waited for.
+        bool select_recv = !pnode->fPauseRecv && !pnode->m_p2p_port_partial &&
                            (!inflight_throttle || !pnode->IsInboundConn() ||
                             inbound_candidates <= 3);
         bool select_send =
@@ -1911,6 +2103,13 @@ void CConnman::SocketHandlerConnected(
         // Always account for the node inflight bytes, even if the socket is
         // paused.
         nTotalInflightBytes += pnode->nInflightBytes;
+
+        // A connection on a P2P port shared with WebSocket: see what it
+        // speaks before reading from it.
+        if (pnode->m_p2p_port_unclassified &&
+            !ClassifyP2PPortNode(*pnode, events_per_sock)) {
+            continue;
+        }
 
         //
         // Receive
@@ -3043,7 +3242,7 @@ bool CConnman::BindListenPort(const CService &addrBind, bilingual_str &strError,
         return false;
     }
 
-    vhListenSocket.emplace_back(std::move(sock), permissions);
+    vhListenSocket.emplace_back(std::move(sock), permissions, addrBind);
     return true;
 }
 
@@ -3150,8 +3349,10 @@ bool CConnman::InitBinds(const Options &options) {
 bool CConnman::Start(CScheduler &scheduler, const Options &connOptions) {
     Init(connOptions);
 
-    // With -p2prawlisten=0 there is no plain P2P listening socket at all.
-    if (fListen && g_listen_plain_p2p && !InitBinds(connOptions)) {
+    // The P2P port listens for plain P2P and, with a WebSocket handler, for
+    // WebSocket. With neither there is no listening socket at all.
+    if (fListen && (g_listen_plain_p2p || m_p2p_port_websocket) &&
+        !InitBinds(connOptions)) {
         if (m_client_interface) {
             m_client_interface->ThreadSafeMessageBox(
                 _("Failed to listen on any port. Use -listen=0 if you want "
