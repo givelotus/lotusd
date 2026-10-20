@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "batch": "chainstate-invariant-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/validation.cpp",
+      "rules": [
+        {
+          "id": "disabled_chainstate_advance_refused_0",
+          "old": "LogPrintf(\"m_disabled is set - this chainstate should not be in \"\n                  \"operation. Please report this as a bug. %s\\n\",\n                  PACKAGE_BUGREPORT)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"disabled_chainstate_advance_refused\", \"m_disabled is set - this chainstate should not be in operation. Please report this as a bug. {bug_report_url}\").Field(BCLog::LogField::BugReportURL, PACKAGE_BUGREPORT)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "m_disabled is set - this chainstate should not be in operation. Please report this as a bug. %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "PACKAGE_BUGREPORT"
+            ]
+          },
+          "review_note": "Preserve Info and exact bug-report text, signed block height, actual/expected uint64 chain transaction counts and public report URL. Do not change Assume predicates, resets, metadata repair, locks, disabled-chainstate early return or consensus. No newly forced invariant violations."
+        },
+        {
+          "id": "block_chain_tx_count_unexpected_1",
+          "old": "LogPrintf(\"Internal bug detected: block %d has unexpected \"\n                  \"m_chain_tx_count %lu that should be %lu. Please report \"\n                  \"this issue here: %s\\n\",\n                  pindexNew->nHeight, pindexNew->m_chain_tx_count,\n                  prev_tx_sum(*pindexNew), PACKAGE_BUGREPORT)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_chain_tx_count_unexpected\", \"Internal bug detected: block {height} has unexpected m_chain_tx_count {chain_tx_count} that should be {expected_chain_tx_count}. Please report this issue here: {bug_report_url}\").Field(BCLog::LogField::Height, pindexNew->nHeight).Field(BCLog::LogField::ChainTxCount, pindexNew->m_chain_tx_count).Field(BCLog::LogField::ExpectedChainTxCount, prev_tx_sum(*pindexNew)).Field(BCLog::LogField::BugReportURL, PACKAGE_BUGREPORT)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Internal bug detected: block %d has unexpected m_chain_tx_count %lu that should be %lu. Please report this issue here: %s\n",
+            "specifiers": [
+              "%d",
+              "%lu",
+              "%lu",
+              "%s"
+            ],
+            "arguments": [
+              "pindexNew->nHeight",
+              "pindexNew->m_chain_tx_count",
+              "prev_tx_sum(*pindexNew)",
+              "PACKAGE_BUGREPORT"
+            ]
+          },
+          "review_note": "Preserve Info and exact bug-report text, signed block height, actual/expected uint64 chain transaction counts and public report URL. Do not change Assume predicates, resets, metadata repair, locks, disabled-chainstate early return or consensus. No newly forced invariant violations."
+        },
+        {
+          "id": "block_chain_tx_count_unexpected_2",
+          "old": "LogPrintf(\"Internal bug detected: block %d has unexpected \"\n                          \"m_chain_tx_count %lu that should be %lu. Please \"\n                          \"report this issue here: %s\\n\",\n                          pindex->nHeight, pindex->m_chain_tx_count,\n                          prev_tx_sum(*pindex), PACKAGE_BUGREPORT)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_chain_tx_count_unexpected\", \"Internal bug detected: block {height} has unexpected m_chain_tx_count {chain_tx_count} that should be {expected_chain_tx_count}. Please report this issue here: {bug_report_url}\").Field(BCLog::LogField::Height, pindex->nHeight).Field(BCLog::LogField::ChainTxCount, pindex->m_chain_tx_count).Field(BCLog::LogField::ExpectedChainTxCount, prev_tx_sum(*pindex)).Field(BCLog::LogField::BugReportURL, PACKAGE_BUGREPORT)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Internal bug detected: block %d has unexpected m_chain_tx_count %lu that should be %lu. Please report this issue here: %s\n",
+            "specifiers": [
+              "%d",
+              "%lu",
+              "%lu",
+              "%s"
+            ],
+            "arguments": [
+              "pindex->nHeight",
+              "pindex->m_chain_tx_count",
+              "prev_tx_sum(*pindex)",
+              "PACKAGE_BUGREPORT"
+            ]
+          },
+          "review_note": "Preserve Info and exact bug-report text, signed block height, actual/expected uint64 chain transaction counts and public report URL. Do not change Assume predicates, resets, metadata repair, locks, disabled-chainstate early return or consensus. No newly forced invariant violations."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Expected cumulative transaction count is unsigned; report URL is public string metadata.",
+          "old": "    X(CoinsTipCacheBudgetMiB, coins_tip_cache_budget_mib, FLOAT, \"\", \"\")\n",
+          "new": "    X(CoinsTipCacheBudgetMiB, coins_tip_cache_budget_mib, FLOAT, \"\", \"\") \\\n    X(BugReportURL, bug_report_url, STRING, \"\", \"\") \\\n    X(ExpectedChainTxCount, expected_chain_tx_count, UINT, \"\", \"\")\n"
+        }
+      ]
+    }
+  ]
+}
