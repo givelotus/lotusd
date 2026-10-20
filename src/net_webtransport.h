@@ -38,6 +38,8 @@ static const char *const P2P_WEBTRANSPORT_PATH = "/p2p/wt";
 static const char *const P2P_WT_PROTOCOL_V1 = "p2p-v1";
 //! Port of a wt:// URL without one
 static constexpr uint16_t DEFAULT_WEBTRANSPORT_URL_PORT = 443;
+//! How long an outbound WebTransport dial may take (QUIC, HTTP/3, CONNECT)
+static constexpr std::chrono::milliseconds WEBTRANSPORT_DIAL_TIMEOUT{10000};
 
 /**
  * The bidirectional WebTransport stream a P2P message travels on. The
