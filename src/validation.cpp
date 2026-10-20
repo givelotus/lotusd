@@ -6527,6 +6527,10 @@ bool ChainstateManager::ProcessNewBlock(
         // CheckBlock() call as well.
         LOCK(cs_main);
 
+        // Usually already started when the block arrived (net_processing);
+        // this covers the other sources (RPC, -loadblock). Deduplicated.
+        PrefetchBlockCoinsLocked(block);
+
         // Skipping AcceptBlock() for CheckBlock() failures means that we will
         // never mark a block as invalid if CheckBlock() fails.  This is
         // protective against consensus failure if there are any unknown form
@@ -8810,7 +8814,42 @@ ChainstateManager::ChainstateManager(
       m_interrupt{interrupt}, m_options{Flatten(std::move(options))},
       m_blockman{interrupt, std::move(blockman_options)},
       m_validation_cache{m_options.script_execution_cache_bytes,
-                         m_options.signature_cache_bytes} {}
+                         m_options.signature_cache_bytes},
+      m_block_prefetcher{std::make_unique<node::BlockPrefetcher>(
+          node::BlockPrefetcher::Options{
+              .threads = size_t(std::clamp(m_options.block_prefetch_threads, 0,
+                                           node::MAX_BLOCK_PREFETCH_THREADS)),
+          })} {}
+
+void ChainstateManager::PrefetchBlockCoins(
+    const std::shared_ptr<const CBlock> &block) {
+    if (!m_block_prefetcher->Enabled() || !block ||
+        block->vtx.size() < m_block_prefetcher->GetOptions().min_txs) {
+        return;
+    }
+    LOCK(::cs_main);
+    PrefetchBlockCoinsLocked(block);
+}
+
+void ChainstateManager::PrefetchBlockCoinsLocked(
+    const std::shared_ptr<const CBlock> &block) {
+    AssertLockHeld(::cs_main);
+    if (!m_block_prefetcher->Enabled() || !block ||
+        block->vtx.size() < m_block_prefetcher->GetOptions().min_txs) {
+        return;
+    }
+    // Reading coins costs disk I/O: only for blocks whose header has real
+    // proof of work (which also makes a junk block expensive to send).
+    if (!CheckProofOfWork(block->GetHash(), block->nBits, GetConsensus())) {
+        return;
+    }
+    Chainstate *chainstate{m_active_chainstate};
+    if (!chainstate || !chainstate->HasCoinsViews()) {
+        return;
+    }
+    m_block_prefetcher->Start(block,
+                              chainstate->CoinsDB().GetBackgroundHandle());
+}
 
 bool ChainstateManager::DetectSnapshotChainstate(CTxMemPool *mempool) {
     assert(!m_snapshot_chainstate);

@@ -29,6 +29,7 @@
 #include <kernel/chainstatemanager_opts.h>
 #include <kernel/cs_main.h>
 #include <lotus_v2/fast_sync.h>
+#include <node/blockprefetch.h>
 #include <node/blockstorage.h>
 #include <policy/packages.h>
 #include <script/script_error.h>
@@ -1732,6 +1733,22 @@ public:
      * was first received via this call.
      * @returns     If the block was processed, independently of block validity
      */
+    /**
+     * Start reading the UTXO database pages of the coins this block spends
+     * on background threads (see node::BlockPrefetcher), if the block is
+     * large enough and its header has valid proof of work. Never affects
+     * validation; costs a brief cs_main lock to find the coins database.
+     * Called as soon as a block is received, and again (deduplicated) by
+     * ProcessNewBlock.
+     */
+    void PrefetchBlockCoins(const std::shared_ptr<const CBlock> &block)
+        EXCLUSIVE_LOCKS_REQUIRED(!::cs_main);
+    //! As PrefetchBlockCoins, with cs_main already held by the caller.
+    void PrefetchBlockCoinsLocked(const std::shared_ptr<const CBlock> &block)
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+    //! The background prefetcher (for tests and statistics).
+    node::BlockPrefetcher &GetBlockPrefetcher() { return *m_block_prefetcher; }
+
     bool ProcessNewBlock(const std::shared_ptr<const CBlock> &block,
                          bool force_processing, bool min_pow_checked,
                          bool *new_block,
@@ -1879,6 +1896,10 @@ public:
     /** Load the recent block headers reception time from a file. */
     bool LoadRecentHeadersTime(const fs::path &filePath)
         EXCLUSIVE_LOCKS_REQUIRED(GetMutex());
+
+private:
+    //! Declared last, so destroyed (its threads joined) first.
+    std::unique_ptr<node::BlockPrefetcher> m_block_prefetcher;
 };
 
 /** Deployment* info via ChainstateManager */
