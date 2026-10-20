@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "batch": "shutdown-token-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/shutdown.cpp",
+      "rules": [
+        {
+          "id": "shutdown_token_send_failed",
+          "old": "LogPrintf(\"Sending shutdown token failed\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"shutdown_token_send_failed\", \"Sending shutdown token failed\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Sending shutdown token failed\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve existing Info, exact static failure text, exception catches, assertion and interrupt-token semantics. No failure injection; rare error paths remain explicitly unforced."
+        },
+        {
+          "id": "shutdown_token_read_failed",
+          "old": "LogPrintf(\"Reading shutdown token failed\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"shutdown_token_read_failed\", \"Reading shutdown token failed\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Reading shutdown token failed\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve existing Info, exact static failure text, exception catches, assertion and interrupt-token semantics. No failure injection; rare error paths remain explicitly unforced."
+        }
+      ]
+    }
+  ]
+}
