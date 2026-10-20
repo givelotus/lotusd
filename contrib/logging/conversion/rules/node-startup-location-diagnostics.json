@@ -1,0 +1,109 @@
+{
+  "schema": 1,
+  "batch": "node-startup-location-diagnostics",
+  "tier": "shared",
+  "explicit_remaining": "Version/chain branding call in this file remains deferred pending current identity source owner.",
+  "files": [
+    {
+      "path": "src/init/common.cpp",
+      "rules": [
+        {
+          "id": "node_startup_time",
+          "old": "LogPrintf(\"Startup time: %s\\n\", FormatISO8601DateTime(GetTime()))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"node_startup_time\", \"Startup time: {startup_time}\").Field(BCLog::LogField::StartupTime, FormatISO8601DateTime(GetTime()))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Startup time: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "FormatISO8601DateTime(GetTime())"
+            ]
+          },
+          "review_note": "Preserve startup ordering, existing no-timestamp guard, filesystem/config branches and Info severity. StartupTime is existing rendered UTC wall-clock text, not asserted process spawn time, duration or extra clock reading. Existing producer ISO/filesystem conversion remains explicit. Software-version branding call is intentionally excluded pending identity-owner integration."
+        },
+        {
+          "id": "node_default_data_directory",
+          "old": "LogPrintf(\"Default data directory %s\\n\",\n              fs::PathToString(GetDefaultDataDir()))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"node_default_data_directory\", \"Default data directory {path}\").Field(BCLog::LogField::Path, fs::PathToString(GetDefaultDataDir()))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Default data directory %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(GetDefaultDataDir())"
+            ]
+          },
+          "review_note": "Preserve startup ordering, existing no-timestamp guard, filesystem/config branches and Info severity. StartupTime is existing rendered UTC wall-clock text, not asserted process spawn time, duration or extra clock reading. Existing producer ISO/filesystem conversion remains explicit. Software-version branding call is intentionally excluded pending identity-owner integration."
+        },
+        {
+          "id": "node_active_data_directory",
+          "old": "LogPrintf(\"Using data directory %s\\n\",\n              fs::PathToString(gArgs.GetDataDirNet()))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"node_active_data_directory\", \"Using data directory {path}\").Field(BCLog::LogField::Path, fs::PathToString(gArgs.GetDataDirNet()))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Using data directory %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(gArgs.GetDataDirNet())"
+            ]
+          },
+          "review_note": "Preserve startup ordering, existing no-timestamp guard, filesystem/config branches and Info severity. StartupTime is existing rendered UTC wall-clock text, not asserted process spawn time, duration or extra clock reading. Existing producer ISO/filesystem conversion remains explicit. Software-version branding call is intentionally excluded pending identity-owner integration."
+        },
+        {
+          "id": "node_config_file_loaded",
+          "old": "LogPrintf(\"Config file: %s\\n\", fs::PathToString(config_file_path))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"node_config_file_loaded\", \"Config file: {path}\").Field(BCLog::LogField::Path, fs::PathToString(config_file_path))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Config file: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(config_file_path)"
+            ]
+          },
+          "review_note": "Preserve startup ordering, existing no-timestamp guard, filesystem/config branches and Info severity. StartupTime is existing rendered UTC wall-clock text, not asserted process spawn time, duration or extra clock reading. Existing producer ISO/filesystem conversion remains explicit. Software-version branding call is intentionally excluded pending identity-owner integration."
+        },
+        {
+          "id": "node_config_file_missing_skipped",
+          "old": "LogPrintf(\"Config file: %s (not found, skipping)\\n\",\n                  fs::PathToString(config_file_path))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"node_config_file_missing_skipped\", \"Config file: {path} (not found, skipping)\").Field(BCLog::LogField::Path, fs::PathToString(config_file_path))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Config file: %s (not found, skipping)\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "fs::PathToString(config_file_path)"
+            ]
+          },
+          "review_note": "Preserve startup ordering, existing no-timestamp guard, filesystem/config branches and Info severity. StartupTime is existing rendered UTC wall-clock text, not asserted process spawn time, duration or extra clock reading. Existing producer ISO/filesystem conversion remains explicit. Software-version branding call is intentionally excluded pending identity-owner integration."
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Existing rendered startup wall-clock text; no mistaken process.start_time standard mapping.",
+          "old": "    X(Directory, directory, STRING, \"\", \"\")\n\nnamespace BCLog {",
+          "new": "    X(Directory, directory, STRING, \"\", \"\") \\\n    X(StartupTime, startup_time, STRING, \"\", \"\")\n\nnamespace BCLog {"
+        }
+      ]
+    }
+  ]
+}
