@@ -418,6 +418,7 @@ static const std::map<std::string, BCLog::LogFlags, std::less<>>
         {"netdebug", BCLog::NETDEBUG},
         {"txpackages", BCLog::TXPACKAGES},
         {"txrelay", BCLog::TXRELAY},
+        {"webtransport", BCLog::WEBTRANSPORT},
         {"1", BCLog::ALL},
         {"all", BCLog::ALL},
 };
