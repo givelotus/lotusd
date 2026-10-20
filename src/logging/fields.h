@@ -95,7 +95,10 @@
     X(ChainstateRole, chainstate_role, STRING, "", "") \
     X(VerificationDepth, verification_depth, INT, "", "") \
     X(VerificationLevel, verification_level, INT, "", "") \
-    X(ProgressPercent, progress_percent, INT, "", "")
+    X(ProgressPercent, progress_percent, INT, "", "") \
+    X(TriggerOption, trigger_option, STRING, "", "") \
+    X(ConfigOption, config_option, STRING, "", "") \
+    X(ConfigEnabled, config_enabled, BOOL, "", "")
 
 namespace BCLog {
 
