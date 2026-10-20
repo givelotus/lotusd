@@ -38,6 +38,13 @@ using SslPtr = std::unique_ptr<SSL, SslDeleter>;
  */
 SslCtxPtr NewContext(bool server);
 
+/**
+ * Let a server session select ALPN h2 (HTTP/2), preferred over http/1.1,
+ * when the client offers it. Off by default: only call this for a
+ * connection that will be served with HTTP/2 if it is selected.
+ */
+void AllowServerAlpnH2(SSL *ssl);
+
 /** Load a PEM certificate chain and private key into `ctx` */
 bool UseCertificatePem(SSL_CTX *ctx, const std::string &cert_chain_pem,
                        const std::string &key_pem);
