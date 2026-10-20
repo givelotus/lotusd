@@ -390,6 +390,28 @@ struct FastSyncSwarmStatus {
 };
 
 /**
+ * Nucleation relay's view of its short-id epochs (implemented by the peer
+ * manager over txrelay::TxRelayIndex). For a LIVE_MEMPOOL context_id that
+ * names a relay epoch and is keyed with that epoch's key, the handler
+ * resolves short ids through the relay index instead of scanning the
+ * mempool, and rate limits the messages separately from reconciliation:
+ * relay requests arrive every tick.
+ */
+class TxRelayEpochProvider {
+public:
+    virtual ~TxRelayEpochProvider() = default;
+    /** The SipHash key of the relay epoch named context_id, if indexed */
+    virtual std::optional<std::pair<uint64_t, uint64_t>>
+    RelayEpochKey(const uint256 &context_id) const = 0;
+    /** Short ids are truncated to this mask (all ones except in tests) */
+    virtual uint64_t RelayShortIdMask() const = 0;
+    /** The mempool transactions with these short ids in this epoch */
+    virtual std::vector<CTransactionRef>
+    ResolveRelayShortIds(const uint256 &context_id,
+                         const std::vector<uint64_t> &short_ids) const = 0;
+};
+
+/**
  * Constructor-injected handler for Lotus V2 / Tachyon P2P protocol messages:
  * - SealedHeader ("sealedheader") fast-path O(1) block reconstruction and
  *   automatic getdata fallback.
@@ -404,6 +426,11 @@ struct FastSyncSwarmStatus {
 class V2PeerProtocolHandler {
 public:
     static constexpr size_t MAX_SYNC_MESSAGES_PER_WINDOW = 32;
+    /**
+     * getshorttx/shorttx exchanged for relay-epoch short-id announcements
+     * (one per peer per relay tick at most each way, plus slack)
+     */
+    static constexpr size_t MAX_RELAY_MESSAGES_PER_WINDOW = 1000;
     static constexpr size_t MAX_SHARD_MESSAGES_PER_WINDOW = 512;
     static constexpr std::chrono::milliseconds RATE_LIMIT_WINDOW{1000};
     static constexpr size_t MAX_MINEDHEADER_COINBASE_BYTES = 10000;
@@ -417,6 +444,19 @@ public:
 
     void SetAvalancheProcessor(avalanche::Processor *avalanche)
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    /** Set once, before any message is handled */
+    void SetTxRelayEpochProvider(const TxRelayEpochProvider *provider) {
+        m_relay_epochs = provider;
+    }
+    /** Whether (scope, context_id, k0, k1) is a relay epoch and its key */
+    bool IsRelayEpoch(ReconScope scope, const uint256 &context_id, uint64_t k0,
+                      uint64_t k1) const;
+    /**
+     * Short id of txid for a request or summary in (scope, context_id),
+     * truncated as relay epochs require
+     */
+    uint64_t ScopedShortId(ReconScope scope, const uint256 &context_id,
+                           uint64_t k0, uint64_t k1, const TxId &txid) const;
     void SetSnapSyncEnabled(std::optional<bool> enabled)
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
     void SetReverseSyncEnabled(std::optional<bool> enabled)
@@ -673,6 +713,9 @@ public:
     bool CheckPeerShardRateLimit(NodeId peer_id,
                                  std::chrono::microseconds time_received)
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    bool CheckPeerRelayRateLimit(NodeId peer_id,
+                                 std::chrono::microseconds time_received)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     V2ProtocolHandlerStats GetStats() const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
     std::optional<CInv> GetLastFallbackInv() const
@@ -745,6 +788,7 @@ private:
     CTxMemPool &m_mempool;
     CConnman &m_connman;
     PeerManager &m_peerman;
+    const TxRelayEpochProvider *m_relay_epochs{nullptr};
 
     mutable Mutex m_mutex;
     avalanche::Processor *m_avalanche GUARDED_BY(m_mutex){nullptr};
@@ -815,6 +859,8 @@ private:
         m_peer_shorttx_windows GUARDED_BY(m_mutex);
     std::unordered_map<NodeId, PeerRateState>
         m_peer_shard_windows GUARDED_BY(m_mutex);
+    std::unordered_map<NodeId, PeerRateState>
+        m_peer_relay_windows GUARDED_BY(m_mutex);
     std::unordered_map<NodeId, std::chrono::microseconds>
         m_peer_window_start GUARDED_BY(m_mutex);
     std::unordered_map<NodeId, size_t>

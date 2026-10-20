@@ -145,6 +145,7 @@ public:
     virtual void RequestedData(NodeId peer, const uint256 &invid,
                                std::chrono::microseconds expiry) = 0;
     virtual void ReceivedResponse(NodeId peer, const uint256 &invid) = 0;
+    virtual bool IsRequested(NodeId peer, const uint256 &invid) const = 0;
     virtual size_t CountInFlight(NodeId peer) const = 0;
     virtual size_t CountCandidates(NodeId peer) const = 0;
     virtual size_t Count(NodeId peer) const = 0;
@@ -288,6 +289,13 @@ public:
      */
     void ReceivedResponse(NodeId peer, const InvId &invid) {
         m_impl->ReceivedResponse(peer, invid);
+    }
+
+    /** Whether this exact peer currently owes a requested inventory body.
+     * Read-only O(log(Size())); does not advance time or consume the request.
+     */
+    bool IsRequested(NodeId peer, const InvId &invid) const {
+        return m_impl->IsRequested(peer, invid);
     }
 
     // The operations below inspect the data structure.
