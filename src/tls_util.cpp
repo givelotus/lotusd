@@ -276,12 +276,10 @@ EVP_PKEY *ReadPrivateKey(const std::string &pem) {
 }
 } // namespace
 
-std::optional<SelfSigned>
-GenerateSelfSigned(const std::string &common_name,
-                   const std::vector<std::string> &dns_names,
-                   const std::vector<std::string> &ip_addresses,
-                   std::chrono::seconds validity,
-                   const std::string &key_pem) {
+std::optional<SelfSigned> GenerateSelfSigned(
+    const std::string &common_name, const std::vector<std::string> &dns_names,
+    const std::vector<std::string> &ip_addresses, std::chrono::seconds validity,
+    const std::string &key_pem, std::optional<int64_t> valid_from) {
     std::unique_ptr<EVP_PKEY, EVPPKeyDeleter> key{
         key_pem.empty() ? NewP256Key() : ReadPrivateKey(key_pem)};
     if (!key) {
@@ -292,11 +290,14 @@ GenerateSelfSigned(const std::string &common_name,
     std::unique_ptr<BIGNUM, BNDeleter> serial{BN_new()};
     if (!cert || !serial || X509_set_version(cert.get(), 2) != 1 ||
         BN_rand(serial.get(), 127, BN_RAND_TOP_ANY, BN_RAND_BOTTOM_ANY) != 1 ||
-        !BN_to_ASN1_INTEGER(serial.get(),
-                            X509_get_serialNumber(cert.get())) ||
-        !X509_gmtime_adj(X509_getm_notBefore(cert.get()), -3600) ||
-        !X509_gmtime_adj(X509_getm_notAfter(cert.get()),
-                         static_cast<long>(validity.count())) ||
+        !BN_to_ASN1_INTEGER(serial.get(), X509_get_serialNumber(cert.get())) ||
+        !(valid_from
+              ? ASN1_TIME_set(X509_getm_notBefore(cert.get()), *valid_from)
+              : X509_gmtime_adj(X509_getm_notBefore(cert.get()), -3600)) ||
+        !(valid_from ? ASN1_TIME_set(X509_getm_notAfter(cert.get()),
+                                     *valid_from + validity.count())
+                     : X509_gmtime_adj(X509_getm_notAfter(cert.get()),
+                                       static_cast<long>(validity.count()))) ||
         X509_set_pubkey(cert.get(), key.get()) != 1) {
         return std::nullopt;
     }
