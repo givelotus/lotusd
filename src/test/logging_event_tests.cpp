@@ -197,9 +197,60 @@ BOOST_AUTO_TEST_CASE(float_message_precision_preserves_raw_fields) {
         .Field(LogField::ElapsedMs, 1.25);
     BOOST_CHECK_EQUAL(Json()["message"].get_str(),
                       "{elapsed_ms:.19f}/{elapsed_ms:08.2f}/{elapsed_ms:.2x}");
-    LogInfoEvent(BCLog::ALL, "invalid_float_type", "{count:.2f}")
-        .Field(LogField::Count, 1);
-    BOOST_CHECK_EQUAL(Json()["message"].get_str(), "{count:.2f}");
+    LogInfoEvent(BCLog::ALL, "invalid_float_type", "{config_enabled:.2f}")
+        .Field(LogField::ConfigEnabled, true);
+    BOOST_CHECK_EQUAL(Json()["message"].get_str(), "{config_enabled:.2f}");
+}
+
+BOOST_AUTO_TEST_CASE(integer_decimal_and_float_formats_keep_exact_fields) {
+    Format(BCLog::LogFormat::JSON);
+    for (const uint64_t value :
+         {uint64_t{0}, uint64_t{1}, std::numeric_limits<uint64_t>::max()}) {
+        LogInfoEventNoRateLimit(
+            BCLog::ALL, "integer_float_format_fixture",
+            "{count:.0f}/{count:.2f}/{count:g}/{count:.18g}/{count:05u}/{count:20u}")
+            .Field(LogField::Count, value);
+        const auto row{Json()};
+        BOOST_CHECK_EQUAL(row["message"].get_str(),
+                          strprintf("%.0f/%.2f/%g/%.18g/%05u/%20u", value,
+                                    value, value, value, value, value));
+        BOOST_CHECK(row["count"].isNum());
+        BOOST_CHECK_EQUAL(row["count"].getValStr(), std::to_string(value));
+        BOOST_CHECK(row["fields_truncated"].isNull());
+    }
+    for (const int64_t value :
+         {std::numeric_limits<int64_t>::min(), int64_t{-1}, int64_t{0},
+          int64_t{1}, std::numeric_limits<int64_t>::max()}) {
+        LogInfoEventNoRateLimit(
+            BCLog::ALL, "signed_integer_format_fixture",
+            "{version:.2f}/{version:g}/{version:05d}/{version:20d}")
+            .Field(LogField::Version, value);
+        const auto row{Json()};
+        BOOST_CHECK_EQUAL(
+            row["message"].get_str(),
+            strprintf("%.2f/%g/%05d/%20d", value, value, value, value));
+        BOOST_CHECK(row["version"].isNum());
+        BOOST_CHECK_EQUAL(row["version"].getInt<int64_t>(), value);
+        BOOST_CHECK(row["fields_truncated"].isNull());
+    }
+    for (const char *invalid :
+         {"{count:021u}", "{count:00u}", "{count:+5u}", "{count:5.2u}",
+          "{count:.19f}", "{count:.2e}"}) {
+        const BCLog::LogEventSite site{"integer_format_invalid", invalid,
+                                       BCLog::ALL, BCLog::Level::Info};
+        BCLog::EventBuilder{site, nullptr}.Field(LogField::Count, uint64_t{1});
+        BOOST_CHECK_EQUAL(Json()["message"].get_str(), invalid);
+    }
+    LogInfoEventNoRateLimit(BCLog::ALL, "signed_unsigned_format_invalid",
+                            "{version:05u}")
+        .Field(LogField::Version, -1);
+    BOOST_CHECK_EQUAL(Json()["message"].get_str(), "{version:05u}");
+    Format(BCLog::LogFormat::TEXT);
+    LogInfoEventNoRateLimit(BCLog::ALL, "integer_format_text_fixture",
+                            "size={count:.2f} file={count:05u}")
+        .Field(LogField::Count, uint64_t{123});
+    BOOST_CHECK_EQUAL(Lines().at(0), strprintf("size=%.2f file=%05u",
+                                               uint64_t{123}, uint64_t{123}));
 }
 
 BOOST_AUTO_TEST_CASE(filesystem_quoted_message_preserves_raw_snapshot) {

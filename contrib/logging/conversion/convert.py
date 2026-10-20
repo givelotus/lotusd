@@ -6,15 +6,17 @@ is an explicitly reviewed old call/new expression pair. The token fingerprint
 includes every argument and format token, so changed inputs fail closed. Use
 --apply only after reviewing the dry-run inventory and diff.
 """
+
 import argparse
-from collections import Counter
 import difflib
 import hashlib
 import importlib.metadata
 import json
-from pathlib import Path
 import re
 import sys
+from collections import Counter
+from pathlib import Path
+
 from ast_grep_py import SgRoot
 
 ENGINE = "0.51.0"
@@ -65,8 +67,11 @@ def calls(source, names):
 
 
 def args(node):
-    return [child for child in node.field("arguments").named_children()
-            if child.kind() != "comment"]
+    return [
+        child
+        for child in node.field("arguments").named_children()
+        if child.kind() != "comment"
+    ]
 
 
 def literal(node):
@@ -83,7 +88,7 @@ def literal(node):
     while index < len(raw):
         if raw[index] == "\\" and index + 1 < len(raw):
             following = raw[index + 1]
-            normalized.append("'" if following == "'" else raw[index:index + 2])
+            normalized.append("'" if following == "'" else raw[index : index + 2])
             index += 2
         else:
             normalized.append(raw[index])
@@ -112,9 +117,13 @@ def format_parts(message):
 def describe(node):
     name = node.field("function").text()
     index = (
-        3 if name == "LogPrintLevel_" else 2
+        3
+        if name == "LogPrintLevel_"
+        else 2
         if name == "LogPrintLevel"
-        else 1 if name in {"LogPrint", "LogDebug", "LogTrace"} else 0
+        else 1
+        if name in {"LogPrint", "LogDebug", "LogTrace"}
+        else 0
     )
     values = args(node)
     if index >= len(values):
@@ -143,19 +152,25 @@ def outer_event(node):
 
 def validate_mapping(old, event):
     description = describe(old)
+
     # Decimal integer length modifiers preserve decimal text. Explicit float
     # precision uses the separately tested consumer rendering contract.
     def rendering(spec, value=None):
         if spec == "%s":
-            if (value is not None and value.kind() == "call_expression"
-                    and value.field("function").text() == "fs::quoted"
-                    and len(args(value)) == 1):
+            if (
+                value is not None
+                and value.kind() == "call_expression"
+                and value.field("function").text() == "fs::quoted"
+                and len(args(value)) == 1
+            ):
                 return "fsq"
             return None
         if spec == "%c":
             return None  # Exact LogChar snapshot contract checked below.
         if re.fullmatch(r"%(?:ll|l|z|t|j)?[diu]", spec):
             return None
+        if re.fullmatch(r"%0?(?:[1-9]|1[0-9]|20)[du]", spec):
+            return spec[1:]
         if re.fullmatch(r"%(?:0(?:[1-9]|1[0-6]))?x", spec):
             return spec[1:]
         if re.fullmatch(r"%(?:\.(?:[0-9]|1[0-8]))?[fg]", spec):
@@ -167,12 +182,14 @@ def validate_mapping(old, event):
     oldargs, newargs = args(old), args(event)
     # %c must snapshot its original argument directly in a STRING Field via
     # LogChar. An integer field or a rewritten byte must not silently replace it.
-    source_values = oldargs[len(oldargs) - len(description["arguments"]):]
+    source_values = oldargs[len(oldargs) - len(description["arguments"]) :]
     required_chars = Counter()
     for spec, value in zip(description["specifiers"], source_values):
         if spec == "%c":
             expected = parse("auto snapshot = BCLog::LogChar{" + value.text() + "};")
-            required_chars[fingerprint(expected.find(kind="compound_literal_expression"))] += 1
+            required_chars[
+                fingerprint(expected.find(kind="compound_literal_expression"))
+            ] += 1
     actual_chars = Counter()
     for value in outer_event(event).find_all(kind="compound_literal_expression"):
         type_node = value.field("type")
@@ -180,11 +197,23 @@ def validate_mapping(old, event):
             continue
         arguments = value.parent()
         call = arguments.parent() if arguments else None
-        function = call.field("function") if call and call.kind() == "call_expression" else None
-        field = function.field("field") if function and function.kind() == "field_expression" else None
-        if (arguments.kind() != "argument_list" or field is None
-                or field.text() != "Field" or len(args(call)) != 2
-                or args(call)[1].text() != value.text()):
+        function = (
+            call.field("function")
+            if call and call.kind() == "call_expression"
+            else None
+        )
+        field = (
+            function.field("field")
+            if function and function.kind() == "field_expression"
+            else None
+        )
+        if (
+            arguments.kind() != "argument_list"
+            or field is None
+            or field.text() != "Field"
+            or len(args(call)) != 2
+            or args(call)[1].text() != value.text()
+        ):
             raise ValueError("character snapshot must be a direct Field argument")
         actual_chars[fingerprint(value)] += 1
     if required_chars != actual_chars:
@@ -192,7 +221,8 @@ def validate_mapping(old, event):
     macro = description["macro"]
     category = (
         oldargs[0].text()
-        if macro in {"LogDebug", "LogTrace", "LogPrint", "LogPrintLevel", "LogPrintLevel_"}
+        if macro
+        in {"LogDebug", "LogTrace", "LogPrint", "LogPrintLevel", "LogPrintLevel_"}
         else "BCLog::ALL"
     )
     expected = {
