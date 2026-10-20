@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "batch": "header-time-persistence",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/validation.cpp",
+      "rules": [
+        {
+          "id": "header_times_dump_index_missing",
+          "old": "LogPrintf(\"Missing block index, stopping the headers time \"\n                          \"dumping after %d blocks.\\n\",\n                          i)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"header_times_dump_index_missing\", \"Missing block index, stopping the headers time dumping after {count} blocks.\").Field(BCLog::LogField::Count, i)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Missing block index, stopping the headers time dumping after %d blocks.\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "i"
+            ]
+          },
+          "review_note": "Preserve Info, exact punctuation, original UINT64 header counters, raw block hash and existing filesystem/error text. File version/serialization, lookup/update loop, atomic rename/commit and optional persistence behavior unchanged. Only an explicit opt-in owned-file functional control is proposed; no consensus or headers-download policy changes."
+        },
+        {
+          "id": "header_times_dump_failed",
+          "old": "LogPrintf(\"Failed to dump the headers time: %s.\\n\", e.what())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"header_times_dump_failed\", \"Failed to dump the headers time: {error}.\").Field(BCLog::LogField::Error, e.what())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Failed to dump the headers time: %s.\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "e.what()"
+            ]
+          },
+          "review_note": "Preserve Info, exact punctuation, original UINT64 header counters, raw block hash and existing filesystem/error text. File version/serialization, lookup/update loop, atomic rename/commit and optional persistence behavior unchanged. Only an explicit opt-in owned-file functional control is proposed; no consensus or headers-download policy changes."
+        },
+        {
+          "id": "header_times_dumped",
+          "old": "LogPrintf(\"Successfully dumped the last %d headers time to %s.\\n\",\n              numHeaders, PathToString(filePath))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"header_times_dumped\", \"Successfully dumped the last {count} headers time to {path}.\").Field(BCLog::LogField::Count, numHeaders).Field(BCLog::LogField::Path, PathToString(filePath))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Successfully dumped the last %d headers time to %s.\n",
+            "specifiers": [
+              "%d",
+              "%s"
+            ],
+            "arguments": [
+              "numHeaders",
+              "PathToString(filePath)"
+            ]
+          },
+          "review_note": "Preserve Info, exact punctuation, original UINT64 header counters, raw block hash and existing filesystem/error text. File version/serialization, lookup/update loop, atomic rename/commit and optional persistence behavior unchanged. Only an explicit opt-in owned-file functional control is proposed; no consensus or headers-download policy changes."
+        },
+        {
+          "id": "header_times_load_index_missing",
+          "old": "LogPrintf(\"Missing index for block %s, stopping the headers \"\n                          \"time loading after %d blocks.\\n\",\n                          blockHash.ToString(), i)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"header_times_load_index_missing\", \"Missing index for block {block_hash}, stopping the headers time loading after {count} blocks.\").Field(BCLog::LogField::BlockHash, blockHash).Field(BCLog::LogField::Count, i)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Missing index for block %s, stopping the headers time loading after %d blocks.\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "blockHash.ToString()",
+              "i"
+            ]
+          },
+          "review_note": "Preserve Info, exact punctuation, original UINT64 header counters, raw block hash and existing filesystem/error text. File version/serialization, lookup/update loop, atomic rename/commit and optional persistence behavior unchanged. Only an explicit opt-in owned-file functional control is proposed; no consensus or headers-download policy changes."
+        },
+        {
+          "id": "header_times_load_failed",
+          "old": "LogPrintf(\"Failed to read the headers time file data on disk: %s.\\n\",\n                  e.what())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"header_times_load_failed\", \"Failed to read the headers time file data on disk: {error}.\").Field(BCLog::LogField::Error, e.what())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Failed to read the headers time file data on disk: %s.\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "e.what()"
+            ]
+          },
+          "review_note": "Preserve Info, exact punctuation, original UINT64 header counters, raw block hash and existing filesystem/error text. File version/serialization, lookup/update loop, atomic rename/commit and optional persistence behavior unchanged. Only an explicit opt-in owned-file functional control is proposed; no consensus or headers-download policy changes."
+        }
+      ]
+    }
+  ]
+}
