@@ -20,6 +20,28 @@ namespace lotus::v2 {
 
 namespace {
 
+/**
+ * Reserve room for `extra` more elements while keeping amortized growth.
+ * reserve(size() + extra) on every batch defeats the container's geometric
+ * growth: each call reallocates (vector) or rehashes (unordered_map) the
+ * whole container, so a stream of small batches costs O(n) per batch.
+ */
+template <typename Vec>
+void ReserveAmortized(Vec &v, size_t extra) {
+    const size_t needed = v.size() + extra;
+    if (needed > v.capacity()) {
+        v.reserve(std::max(needed, v.capacity() * 2));
+    }
+}
+
+template <typename Map>
+void ReserveBucketsAmortized(Map &m, size_t extra) {
+    const size_t needed = m.size() + extra;
+    if (needed > static_cast<size_t>(m.bucket_count() * m.max_load_factor())) {
+        m.reserve(std::max(needed, m.size() * 2));
+    }
+}
+
 constexpr uint64_t OverlayEffectiveCost(uint64_t linear_cost) noexcept {
     const auto sq = static_cast<unsigned __int128>(linear_cost) * linear_cost;
     return linear_cost + static_cast<uint64_t>(sq >> 16);
@@ -1039,7 +1061,7 @@ uint32_t TxOverlayArena::InsertBatchParallel(
     for (unsigned s = 0; s < 16; ++s) {
         total_new_nodes += local_nodes[s].size();
     }
-    nodes_.reserve(nodes_.size() + total_new_nodes);
+    ReserveAmortized(nodes_, total_new_nodes);
 
     for (unsigned s = 0; s < 16; ++s) {
         if (local_nodes[s].empty()) {
@@ -1696,7 +1718,7 @@ void UtxoOverlayArena::BatchUpdateParallel(
     for (unsigned s = 0; s < 16; ++s) {
         total_new_nodes += local_nodes[s].size();
     }
-    nodes_.reserve(nodes_.size() + total_new_nodes);
+    ReserveAmortized(nodes_, total_new_nodes);
 
     for (unsigned s = 0; s < 16; ++s) {
         if (local_nodes[s].empty()) {
@@ -1977,8 +1999,8 @@ size_t MempoolOverlayLayer::AddTransactionBatch(
                    : 0;
     }
 
-    created_coins_.reserve(created_coins_.size() + entries.size() * 2);
-    spent_outpoints_.reserve(spent_outpoints_.size() + entries.size() * 2);
+    ReserveBucketsAmortized(created_coins_, entries.size() * 2);
+    ReserveBucketsAmortized(spent_outpoints_, entries.size() * 2);
 
     std::vector<std::pair<Hash, Hash>> tx_leaves;
     tx_leaves.reserve(entries.size());
