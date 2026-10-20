@@ -2266,25 +2266,34 @@ void InitParameterInteraction(ArgsManager &args) {
     // The wallet UI is served by the RPC server.
     if (args.GetBoolArg("-gui", walletpwa::DEFAULT_GUI)) {
         if (args.SoftSetBoolArg("-server", true)) {
-            LogPrintf("%s: parameter interaction: -gui=1 -> setting "
-                      "-server=1\n",
-                      __func__);
+            LogInfoEvent(BCLog::ALL, "config_parameter_interaction",
+                     "{source_function}: parameter interaction: -gui=1 -> setting -server=1")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic("-gui"))
+            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic("-server"))
+            .Field(BCLog::LogField::ConfigEnabled, true);
         }
     }
     // when specifying an explicit binding address, you want to listen on it
     // even when -connect or -proxy is specified.
     if (args.IsArgSet("-bind")) {
         if (args.SoftSetBoolArg("-listen", true)) {
-            LogPrintf(
-                "%s: parameter interaction: -bind set -> setting -listen=1\n",
-                __func__);
+            LogInfoEvent(BCLog::ALL, "config_parameter_interaction",
+                     "{source_function}: parameter interaction: -bind set -> setting -listen=1")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic("-bind"))
+            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic("-listen"))
+            .Field(BCLog::LogField::ConfigEnabled, true);
         }
     }
     if (args.IsArgSet("-whitebind")) {
         if (args.SoftSetBoolArg("-listen", true)) {
-            LogPrintf("%s: parameter interaction: -whitebind set -> setting "
-                      "-listen=1\n",
-                      __func__);
+            LogInfoEvent(BCLog::ALL, "config_parameter_interaction",
+                     "{source_function}: parameter interaction: -whitebind set -> setting -listen=1")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic("-whitebind"))
+            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic("-listen"))
+            .Field(BCLog::LogField::ConfigEnabled, true);
         }
     }
 
@@ -2292,14 +2301,20 @@ void InitParameterInteraction(ArgsManager &args) {
         // when only connecting to trusted nodes, do not seed via DNS, or listen
         // by default.
         if (args.SoftSetBoolArg("-dnsseed", false)) {
-            LogPrintf("%s: parameter interaction: -connect set -> setting "
-                      "-dnsseed=0\n",
-                      __func__);
+            LogInfoEvent(BCLog::ALL, "config_parameter_interaction",
+                     "{source_function}: parameter interaction: -connect set -> setting -dnsseed=0")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic("-connect"))
+            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic("-dnsseed"))
+            .Field(BCLog::LogField::ConfigEnabled, false);
         }
         if (args.SoftSetBoolArg("-listen", false)) {
-            LogPrintf("%s: parameter interaction: -connect set -> setting "
-                      "-listen=0\n",
-                      __func__);
+            LogInfoEvent(BCLog::ALL, "config_parameter_interaction",
+                     "{source_function}: parameter interaction: -connect set -> setting -listen=0")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic("-connect"))
+            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic("-listen"))
+            .Field(BCLog::LogField::ConfigEnabled, false);
         }
     }
 
@@ -2307,23 +2322,32 @@ void InitParameterInteraction(ArgsManager &args) {
         // to protect privacy, do not listen by default if a default proxy
         // server is specified.
         if (args.SoftSetBoolArg("-listen", false)) {
-            LogPrintf(
-                "%s: parameter interaction: -proxy set -> setting -listen=0\n",
-                __func__);
+            LogInfoEvent(BCLog::ALL, "config_parameter_interaction",
+                     "{source_function}: parameter interaction: -proxy set -> setting -listen=0")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic("-proxy"))
+            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic("-listen"))
+            .Field(BCLog::LogField::ConfigEnabled, false);
         }
         // to protect privacy, do not map ports when a proxy is set. The user
         // may still specify -listen=1 to listen locally, so don't rely on this
         // happening through -listen below.
         if (args.SoftSetBoolArg("-natpmp", false)) {
-            LogPrintf(
-                "%s: parameter interaction: -proxy set -> setting -natpmp=0\n",
-                __func__);
+            LogInfoEvent(BCLog::ALL, "config_parameter_interaction",
+                     "{source_function}: parameter interaction: -proxy set -> setting -natpmp=0")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic("-proxy"))
+            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic("-natpmp"))
+            .Field(BCLog::LogField::ConfigEnabled, false);
         }
         // to protect privacy, do not discover addresses by default
         if (args.SoftSetBoolArg("-discover", false)) {
-            LogPrintf("%s: parameter interaction: -proxy set -> setting "
-                      "-discover=0\n",
-                      __func__);
+            LogInfoEvent(BCLog::ALL, "config_parameter_interaction",
+                     "{source_function}: parameter interaction: -proxy set -> setting -discover=0")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic("-proxy"))
+            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic("-discover"))
+            .Field(BCLog::LogField::ConfigEnabled, false);
         }
     }
 
@@ -2331,19 +2355,28 @@ void InitParameterInteraction(ArgsManager &args) {
         // do not map ports or try to retrieve public IP when not listening
         // (pointless)
         if (args.SoftSetBoolArg("-natpmp", false)) {
-            LogPrintf(
-                "%s: parameter interaction: -listen=0 -> setting -natpmp=0\n",
-                __func__);
+            LogInfoEvent(BCLog::ALL, "config_parameter_interaction",
+                     "{source_function}: parameter interaction: -listen=0 -> setting -natpmp=0")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic("-listen"))
+            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic("-natpmp"))
+            .Field(BCLog::LogField::ConfigEnabled, false);
         }
         if (args.SoftSetBoolArg("-discover", false)) {
-            LogPrintf(
-                "%s: parameter interaction: -listen=0 -> setting -discover=0\n",
-                __func__);
+            LogInfoEvent(BCLog::ALL, "config_parameter_interaction",
+                     "{source_function}: parameter interaction: -listen=0 -> setting -discover=0")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic("-listen"))
+            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic("-discover"))
+            .Field(BCLog::LogField::ConfigEnabled, false);
         }
         if (args.SoftSetBoolArg("-listenonion", false)) {
-            LogPrintf("%s: parameter interaction: -listen=0 -> setting "
-                      "-listenonion=0\n",
-                      __func__);
+            LogInfoEvent(BCLog::ALL, "config_parameter_interaction",
+                     "{source_function}: parameter interaction: -listen=0 -> setting -listenonion=0")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic("-listen"))
+            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic("-listenonion"))
+            .Field(BCLog::LogField::ConfigEnabled, false);
         }
         if (args.SoftSetBoolArg("-i2pacceptincoming", false)) {
             LogPrintf("%s: parameter interaction: -listen=0 -> setting "
@@ -2369,18 +2402,24 @@ void InitParameterInteraction(ArgsManager &args) {
     if (args.IsArgSet("-externalip")) {
         // if an explicit public IP is specified, do not try to find others
         if (args.SoftSetBoolArg("-discover", false)) {
-            LogPrintf("%s: parameter interaction: -externalip set -> setting "
-                      "-discover=0\n",
-                      __func__);
+            LogInfoEvent(BCLog::ALL, "config_parameter_interaction",
+                     "{source_function}: parameter interaction: -externalip set -> setting -discover=0")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic("-externalip"))
+            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic("-discover"))
+            .Field(BCLog::LogField::ConfigEnabled, false);
         }
     }
 
     // disable whitelistrelay in blocksonly mode
     if (args.GetBoolArg("-blocksonly", DEFAULT_BLOCKSONLY)) {
         if (args.SoftSetBoolArg("-whitelistrelay", false)) {
-            LogPrintf("%s: parameter interaction: -blocksonly=1 -> setting "
-                      "-whitelistrelay=0\n",
-                      __func__);
+            LogInfoEvent(BCLog::ALL, "config_parameter_interaction",
+                     "{source_function}: parameter interaction: -blocksonly=1 -> setting -whitelistrelay=0")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic("-blocksonly"))
+            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic("-whitelistrelay"))
+            .Field(BCLog::LogField::ConfigEnabled, false);
         }
     }
 
@@ -2388,9 +2427,12 @@ void InitParameterInteraction(ArgsManager &args) {
     // them in the first place.
     if (args.GetBoolArg("-whitelistforcerelay", DEFAULT_WHITELISTFORCERELAY)) {
         if (args.SoftSetBoolArg("-whitelistrelay", true)) {
-            LogPrintf("%s: parameter interaction: -whitelistforcerelay=1 -> "
-                      "setting -whitelistrelay=1\n",
-                      __func__);
+            LogInfoEvent(BCLog::ALL, "config_parameter_interaction",
+                     "{source_function}: parameter interaction: -whitelistforcerelay=1 -> setting -whitelistrelay=1")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::TriggerOption, BCLog::LogStatic("-whitelistforcerelay"))
+            .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic("-whitelistrelay"))
+            .Field(BCLog::LogField::ConfigEnabled, true);
         }
     }
 
