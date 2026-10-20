@@ -534,8 +534,9 @@ CNode *CConnman::ConnectNode(CAddress addrConnect, const char *pszDest,
     }
     // Only an explicitly advertised endpoint opts into automatic UDP.
     // Explicit wt:// URLs above remain WT-only, independent of this policy.
-    if (pszDest == nullptr && (addrConnect.nServices & NODE_WEBTRANSPORT) &&
-        m_wt_dial_policy != WebTransportDialPolicy::OFF &&
+    if (pszDest == nullptr &&
+        ShouldTryWebTransport(addrConnect.nServices, m_wt_dial_policy,
+                              m_wt_bulk) &&
         GetWebTransportDialer()) {
         if (IsLocal(addrConnect) ||
             FindNode(static_cast<CService>(addrConnect)) ||
