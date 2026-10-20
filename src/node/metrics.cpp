@@ -57,6 +57,26 @@ namespace metric_labels {
             "rpc", "wallet", "rest", "chronik", "health", "metrics", "other"};
         return labels;
     }
+    const std::vector<std::string> &AvalancheItemTypes() {
+        static const std::vector<std::string> labels{
+            "proof",       "block", "contender",
+            "transaction", "batch", "state_anchor"};
+        return labels;
+    }
+    const std::vector<std::string> &AvalancheItemOutcomes() {
+        static const std::vector<std::string> labels{"finalized", "invalidated",
+                                                     "stale"};
+        return labels;
+    }
+    const std::vector<std::string> &AvalancheVotes() {
+        static const std::vector<std::string> labels{"yes", "no", "neutral"};
+        return labels;
+    }
+    const std::vector<std::string> &AvalancheProofPools() {
+        static const std::vector<std::string> labels{"valid", "conflicting",
+                                                     "immature", "dangling"};
+        return labels;
+    }
     const std::vector<std::string> &HTTPCodeClasses() {
         static const std::vector<std::string> labels{"1xx", "2xx", "3xx",
                                                      "4xx", "5xx", "other"};
@@ -80,6 +100,10 @@ namespace {
         0.00001, 0.000025, 0.00005, 0.0001, 0.00025, 0.0005,
         0.001,   0.0025,   0.005,   0.01,   0.025,   0.05,
         0.1,     0.25,     0.5,     1,      2.5,     10};
+    //! Seconds; Avalanche finalization, from a few poll rounds (~100 ms on
+    //! a fast quorum) to stalled items (minutes)
+    const std::vector<double> FINALIZATION_BUCKETS{
+        0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5, 7.5, 10, 15, 30, 60, 120, 300, 600};
     //! Seconds; HTTP and RPC requests (long polls can take minutes)
     const std::vector<double> REQUEST_BUCKETS{
         0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1,
@@ -283,6 +307,51 @@ NodeMetrics::NodeMetrics(std::vector<std::string> rpc_methods)
           "unknown).",
           std::vector<LabelDim>{{"version", {FormatVersion(CLIENT_VERSION)}},
                                 {"commit", {FormatBuildCommit()}}})},
+      avalanche_quorum_established{Add<Gauge>(
+          registry, MetricName("avalanche_quorum_established"),
+          "1 once the Avalanche quorum is established (latched, as long as "
+          "at least 8 nodes are connected), else 0.")},
+      avalanche_quorum_nodes{
+          Add<Gauge>(registry, MetricName("avalanche_quorum_nodes"),
+                     "Avalanche nodes (connected peers with a proof) counted "
+                     "for the quorum.")},
+      avalanche_quorum_score{Add<Gauge>(
+          registry, MetricName("avalanche_quorum_score"),
+          "Stake score of the Avalanche peers known (total) and of those "
+          "with a connected node (connected).",
+          std::vector<LabelDim>{{"scope", {"total", "connected"}}})},
+      avalanche_proofs{Add<Gauge>(
+          registry, MetricName("avalanche_proofs"),
+          "Avalanche proofs in the proof pools, by pool.",
+          std::vector<LabelDim>{{"pool", L::AvalancheProofPools()}})},
+      avalanche_polls_sent{
+          Add<Counter>(registry, MetricName("avalanche_polls_sent_total"),
+                       "Avalanche polls sent to peers.")},
+      avalanche_poll_items_sent{
+          Add<Counter>(registry, MetricName("avalanche_poll_items_sent_total"),
+                       "Items asked for in the Avalanche polls sent.")},
+      avalanche_polls_received{Add<Counter>(
+          registry, MetricName("avalanche_polls_received_total"),
+          "Avalanche polls received from peers: answered, or ignored because "
+          "the peer's cooldown had not elapsed.",
+          std::vector<LabelDim>{{"outcome", {"answered", "ignored"}}})},
+      avalanche_votes_received{Add<Counter>(
+          registry, MetricName("avalanche_votes_received_total"),
+          "Votes in the responses to our Avalanche polls, by vote: yes, no "
+          "(e.g. invalid, parked) or neutral (e.g. unknown, missing).",
+          std::vector<LabelDim>{{"vote", L::AvalancheVotes()}})},
+      avalanche_items{Add<Counter>(
+          registry, MetricName("avalanche_items_total"),
+          "Items whose Avalanche vote ended, by item type and outcome "
+          "(finalized, invalidated, or dropped as stale).",
+          std::vector<LabelDim>{{"type", L::AvalancheItemTypes()},
+                                {"outcome", L::AvalancheItemOutcomes()}})},
+      avalanche_finalization_seconds{Add<EventHistogram>(
+          registry, MetricName("avalanche_finalization_seconds"),
+          "Time from an item's registration for polling to its finalization, "
+          "by item type.",
+          FINALIZATION_BUCKETS, /*divisor=*/1e9,
+          std::vector<LabelDim>{{"type", L::AvalancheItemTypes()}})},
       m_rpc_methods{SortedWithOther(std::move(rpc_methods))} {
     build_info.Set(1);
     registry.Add(std::make_unique<metrics::FunctionCounter>(
