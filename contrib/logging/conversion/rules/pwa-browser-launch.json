@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "batch": "pwa-browser-launch",
+  "review_note": "Reviewed:all4 PWA launch LogPrintf consumers, existing Name key only; token-bearing URL output remains terminal-only and untouched. Native validation remains a separate pending gate.",
+  "files": [
+    {
+      "path": "src/walletpwa/launch.cpp",
+      "rules": [
+        {
+          "id": "wallet_ui_browser_open_failed",
+          "old": "LogPrintf(\"Could not open a browser for the wallet UI; open the URL \"\n                  \"above or run `getwalletpwaurl`\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_ui_browser_open_failed\", \"Could not open a browser for the wallet UI; open the URL above or run `getwalletpwaurl`\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Could not open a browser for the wallet UI; open the URL above or run `getwalletpwaurl`\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve current Info severity, ALL category, exact readable text, Windows/POSIX/no-desktop branches and browser process behavior. Name is the existing launcher program (open or xdg-open), not a URL/user/wallet. Never add the login URL or token to the logger; terminal-only token-bearing stdout remains untouched and outside this conversion. No GUI launch performed during preparation."
+        },
+        {
+          "id": "wallet_ui_desktop_session_unavailable",
+          "old": "LogPrintf(\"No desktop session; open the URL above or run \"\n                  \"`getwalletpwaurl`\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_ui_desktop_session_unavailable\", \"No desktop session; open the URL above or run `getwalletpwaurl`\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "No desktop session; open the URL above or run `getwalletpwaurl`\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve current Info severity, ALL category, exact readable text, Windows/POSIX/no-desktop branches and browser process behavior. Name is the existing launcher program (open or xdg-open), not a URL/user/wallet. Never add the login URL or token to the logger; terminal-only token-bearing stdout remains untouched and outside this conversion. No GUI launch performed during preparation."
+        },
+        {
+          "id": "wallet_ui_browser_launcher_failed",
+          "old": "LogPrintf(\"Could not start %s to open the wallet UI; open the URL \"\n                  \"above or run `getwalletpwaurl`\\n\",\n                  opener)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_ui_browser_launcher_failed\", \"Could not start {name} to open the wallet UI; open the URL above or run `getwalletpwaurl`\")\n        .Field(BCLog::LogField::Name, opener)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Could not start %s to open the wallet UI; open the URL above or run `getwalletpwaurl`\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "opener"
+            ]
+          },
+          "review_note": "Preserve current Info severity, ALL category, exact readable text, Windows/POSIX/no-desktop branches and browser process behavior. Name is the existing launcher program (open or xdg-open), not a URL/user/wallet. Never add the login URL or token to the logger; terminal-only token-bearing stdout remains untouched and outside this conversion. No GUI launch performed during preparation."
+        },
+        {
+          "id": "wallet_ui_browser_open_started",
+          "old": "LogPrintf(\"Opening the wallet UI in the default browser\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_ui_browser_open_started\", \"Opening the wallet UI in the default browser\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Opening the wallet UI in the default browser\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve current Info severity, ALL category, exact readable text, Windows/POSIX/no-desktop branches and browser process behavior. Name is the existing launcher program (open or xdg-open), not a URL/user/wallet. Never add the login URL or token to the logger; terminal-only token-bearing stdout remains untouched and outside this conversion. No GUI launch performed during preparation."
+        }
+      ]
+    }
+  ]
+}
