@@ -38,6 +38,7 @@
 #include <node/blockstorage.h>
 #include <node/metrics.h>
 #include <node/miner.h>
+#include <node/txadmission.h>
 #include <policy/fees.h>
 #include <policy/policy.h>
 #include <policy/settings.h>
@@ -53,6 +54,7 @@
 #include <txorphanage.h>
 #include <util/check.h>
 #include <util/strencodings.h>
+#include <util/thread.h>
 #include <util/trace.h>
 #include <validation.h>
 
@@ -80,6 +82,10 @@
  * unconditionally be relayed.
  */
 static constexpr auto UNCONDITIONAL_RELAY_DELAY = 2min;
+/** Most transactions the admission thread takes into one staged batch. */
+static constexpr size_t TX_ADMISSION_MAX_BATCH{256};
+/** How long the idle admission thread waits before checking for shutdown. */
+static constexpr auto TX_ADMISSION_IDLE_WAIT{100ms};
 /**
  * Headers download timeout.
  * Timeout = base + per_header * (expected number of headers)
@@ -717,6 +723,34 @@ struct Peer {
     bool m_prefers_headers GUARDED_BY(NetEventsInterface::g_msgproc_mutex){
         false};
 
+    /**
+     * Parallel admission: this peer's transactions queued for, or in, the
+     * admission thread whose verdicts have not been handled yet. While
+     * nonzero, the peer's other messages wait (m_tx_admission_held_msg), so
+     * they are handled after its transactions, as with serial admission.
+     */
+    size_t m_tx_admission_pending
+        GUARDED_BY(NetEventsInterface::g_msgproc_mutex){0};
+    /** A non-transaction message read while transactions were pending. */
+    std::optional<CNetMessage>
+        m_tx_admission_held_msg GUARDED_BY(NetEventsInterface::g_msgproc_mutex);
+    // Declared before held bodies so destruction releases the bodies first.
+    /** Compact-response reservations follow held bodies through disconnect. */
+    std::vector<node::TxAdmissionRetainedBudget::Reservation>
+        m_tx_admission_held_budgets GUARDED_BY(NetEventsInterface::g_msgproc_mutex);
+
+    /**
+     * Transactions that could not be queued yet, in arrival order: an
+     * earlier copy is still in admission (handled after that copy's verdict,
+     * as a serial node would), or the admission queue was full.
+     */
+    std::deque<CTransactionRef>
+        m_tx_admission_held_txs GUARDED_BY(NetEventsInterface::g_msgproc_mutex);
+
+    /** A coalesced decode failure, handled after its decoded prefix. */
+    std::exception_ptr m_tx_admission_exception
+        GUARDED_BY(NetEventsInterface::g_msgproc_mutex);
+
     explicit Peer(NodeId id, ServiceFlags our_services, bool fRelayProofs)
         : m_id(id), m_our_services{our_services},
           m_proof_relay(fRelayProofs ? std::make_unique<ProofRelay>()
@@ -912,7 +946,8 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
                                  !m_most_recent_block_mutex, !cs_proofrequest,
-                                 !m_headers_presync_mutex, g_msgproc_mutex);
+                                 !m_headers_presync_mutex,
+                                 !m_tx_admission_done_mutex, g_msgproc_mutex);
     bool SendMessages(const Config &config, CNode *pto) override
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
@@ -930,6 +965,12 @@ public:
 
     /** Implement PeerManager */
     void StartScheduledTasks(CScheduler &scheduler) override;
+    void StopTxAdmission() override
+        EXCLUSIVE_LOCKS_REQUIRED(!m_tx_admission_done_mutex, !g_msgproc_mutex);
+    ~PeerManagerImpl() override
+        EXCLUSIVE_LOCKS_REQUIRED(!m_tx_admission_done_mutex, !g_msgproc_mutex) {
+        StopTxAdmission();
+    }
     void CheckForStaleTipAndEvictPeers() override;
     std::optional<std::string>
     FetchBlock(const Config &config, NodeId peer_id,
@@ -1119,6 +1160,75 @@ private:
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
                                  g_msgproc_mutex);
+
+    /**
+     * Parallel admission (-parallelmempool).
+     *
+     * The message thread does what serial handling of a TX message does
+     * before mempool admission (PrepareTxAdmission) and queues the
+     * transaction; the admission thread admits batches with
+     * AcceptToMemoryPoolStaged (scripts verified outside cs_main); the
+     * message thread then handles each verdict exactly as serial handling
+     * does after admission (FinishTxAdmission), in commit order.
+     *
+     * Ordering: a peer's other messages wait until its pending transactions
+     * have verdicts; a transaction whose earlier copy is still in admission
+     * waits for that copy's verdict. Memory: the queue is bounded per peer
+     * and in total; a peer is not read from while it has no room.
+     */
+    struct TxAdmissionSender {
+        //! Keeps the CNode alive (not deleted) until the verdict is handled.
+        CNode &node;
+        const PeerRef peer;
+        TxAdmissionSender(CNode &n, PeerRef p)
+            : node{*n.AddRef()}, peer{std::move(p)} {}
+        ~TxAdmissionSender() { node.Release(); }
+        TxAdmissionSender(const TxAdmissionSender &) = delete;
+        TxAdmissionSender &operator=(const TxAdmissionSender &) = delete;
+    };
+    struct TxAdmissionDone {
+        enum class Kind {
+            //! Admitted (or rejected) by the admission thread.
+            RESULT,
+            //! Already had it at commit time: handle the message again now.
+            REPLAY,
+            //! Not admitted: its sender was disconnecting.
+            DROPPED,
+        };
+        Kind kind;
+        std::shared_ptr<TxAdmissionSender> sender;
+        CTransactionRef tx;
+        std::optional<MempoolAcceptResult> result;
+    };
+
+    std::unique_ptr<node::TxAdmissionQueue> m_tx_admission_queue;
+    node::TxAdmissionRetainedBudget m_tx_admission_retained_budget{64U << 20};
+    std::thread m_tx_admission_thread;
+    std::atomic<bool> m_tx_admission_running{false};
+    Mutex m_tx_admission_done_mutex;
+    /** Verdicts in commit order, for the message thread. */
+    std::deque<TxAdmissionDone>
+        m_tx_admission_done GUARDED_BY(m_tx_admission_done_mutex);
+    /** Transactions queued for or in admission, by txid. */
+    std::set<TxId> m_tx_admission_inflight GUARDED_BY(g_msgproc_mutex);
+
+    void ThreadTxAdmission()
+        EXCLUSIVE_LOCKS_REQUIRED(!m_tx_admission_done_mutex,
+                                 !m_recent_confirmed_transactions_mutex);
+    /**
+     * Prepare and queue a received transaction. Returns false if it has to
+     * wait (earlier copy in admission, or no room); the caller holds it.
+     */
+    bool QueueTxForAdmission(CNode &pfrom, const PeerRef &peer,
+                             const CTransactionRef &ptx, bool count_full)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
+                                 !m_recent_confirmed_transactions_mutex,
+                                 g_msgproc_mutex, cs_main);
+    /** Handle verdicts from the admission thread. Returns whether any. */
+    bool ProcessTxAdmissionDone()
+        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
+                                 !m_recent_confirmed_transactions_mutex,
+                                 !m_tx_admission_done_mutex, g_msgproc_mutex);
     /**
      * The part of handling a received transaction that comes before mempool
      * admission: request bookkeeping, and the already-have handling (force
@@ -3178,6 +3288,160 @@ PeerManagerImpl::PeerManagerImpl(CConnman &connman, AddrMan &addrman,
       m_block_messages{opts.block_message_cache_bytes} {
     m_v2_protocol_handler.SetAvalancheProcessor(m_avalanche);
     m_v2_protocol_handler.SetTxRelayEpochProvider(this);
+    if (m_opts.parallel_admission) {
+        m_tx_admission_queue = std::make_unique<node::TxAdmissionQueue>(
+            node::TxAdmissionQueue::Limits{});
+        m_tx_admission_running = true;
+        m_tx_admission_thread = std::thread(&util::TraceThread, "txadmit",
+                                            [this] { ThreadTxAdmission(); });
+    }
+}
+
+void PeerManagerImpl::StopTxAdmission() {
+    if (!m_tx_admission_queue) {
+        return;
+    }
+    {
+        // Fence producers before draining their CNode references. A message
+        // turn that already observed "running" must finish queueing before
+        // we stop; subsequent turns select the serial path.
+        LOCK(g_msgproc_mutex);
+        m_tx_admission_running = false;
+    }
+    m_tx_admission_queue->Interrupt();
+    if (m_tx_admission_thread.joinable()) {
+        m_tx_admission_thread.join();
+    }
+    // Release the CNode references of everything not handled yet, before
+    // CConnman deletes its nodes. The message thread falls back to serial
+    // handling from here on.
+    m_tx_admission_queue->TakeAll();
+    LOCK(m_tx_admission_done_mutex);
+    m_tx_admission_done.clear();
+}
+
+void PeerManagerImpl::ThreadTxAdmission() {
+    const size_t threads =
+        m_opts.parallel_admission_threads > 0
+            ? size_t(m_opts.parallel_admission_threads)
+            : size_t(std::max(1U, std::thread::hardware_concurrency()));
+    StagedAdmissionOptions options;
+    options.script_threads = threads;
+    // Serial handling checks "already have" right before admitting; repeat
+    // that check at the commit point (the transaction may have arrived by
+    // another route since it was queued).
+    options.skip_at_commit =
+        [this](const CTransactionRef &tx) EXCLUSIVE_LOCKS_REQUIRED(
+            ::cs_main, !m_recent_confirmed_transactions_mutex) {
+            AssertLockHeld(::cs_main);
+            return AlreadyHaveTx(tx->GetId(), /*include_reconsiderable=*/true);
+        };
+    while (m_tx_admission_running) {
+        std::vector<node::TxAdmissionItem> items =
+            m_tx_admission_queue->TakeBatch(TX_ADMISSION_MAX_BATCH,
+                                            TX_ADMISSION_IDLE_WAIT);
+        if (items.empty()) {
+            continue;
+        }
+        std::vector<CTransactionRef> txs;
+        std::vector<size_t> admitted_index(items.size(), SIZE_MAX);
+        for (size_t i = 0; i < items.size(); ++i) {
+            const auto *sender =
+                static_cast<const TxAdmissionSender *>(items[i].owner.get());
+            // Like the unread messages of a disconnecting peer.
+            if (!sender->node.fDisconnect) {
+                admitted_index[i] = txs.size();
+                txs.push_back(items[i].tx);
+            }
+        }
+        std::vector<std::optional<MempoolAcceptResult>> results;
+        if (!txs.empty()) {
+            results = AcceptToMemoryPoolStaged(m_chainman, txs, options);
+        }
+        {
+            LOCK(m_tx_admission_done_mutex);
+            for (size_t i = 0; i < items.size(); ++i) {
+                TxAdmissionDone done{
+                    TxAdmissionDone::Kind::DROPPED,
+                    std::static_pointer_cast<TxAdmissionSender>(
+                        std::move(items[i].owner)),
+                    std::move(items[i].tx), std::nullopt};
+                if (admitted_index[i] != SIZE_MAX) {
+                    auto &result = results[admitted_index[i]];
+                    if (result) {
+                        done.kind = TxAdmissionDone::Kind::RESULT;
+                        done.result.emplace(std::move(*result));
+                    } else {
+                        done.kind = TxAdmissionDone::Kind::REPLAY;
+                    }
+                }
+                m_tx_admission_done.push_back(std::move(done));
+            }
+        }
+        m_connman.WakeMessageHandler();
+    }
+}
+
+bool PeerManagerImpl::QueueTxForAdmission(CNode &pfrom, const PeerRef &peer,
+                                          const CTransactionRef &ptx,
+                                          bool count_full) {
+    AssertLockHeld(g_msgproc_mutex);
+    AssertLockHeld(cs_main);
+    const TxId &txid = ptx->GetId();
+    if (m_tx_admission_inflight.count(txid)) {
+        return false;
+    }
+    if (!m_tx_admission_queue->HasRoom(pfrom.GetId(), ptx->GetTotalSize(),
+                                       count_full)) {
+        return false;
+    }
+    if (!PrepareTxAdmission(pfrom, ptx)) {
+        return true;
+    }
+    m_tx_admission_inflight.insert(txid);
+    ++peer->m_tx_admission_pending;
+    // g_msgproc_mutex serializes every producer; only the consumer can
+    // change queue capacity after HasRoom, and it can only free space.
+    const bool pushed = m_tx_admission_queue->Push(node::TxAdmissionItem{
+        pfrom.GetId(), ptx, SteadyClock::now(),
+        std::make_shared<TxAdmissionSender>(pfrom, peer)});
+    Assert(pushed);
+    return true;
+}
+
+bool PeerManagerImpl::ProcessTxAdmissionDone() {
+    AssertLockHeld(g_msgproc_mutex);
+    std::deque<TxAdmissionDone> done;
+    {
+        LOCK(m_tx_admission_done_mutex);
+        done.swap(m_tx_admission_done);
+    }
+    if (done.empty()) {
+        return false;
+    }
+    LOCK(cs_main);
+    for (TxAdmissionDone &d : done) {
+        CNode &node = d.sender->node;
+        Peer &peer = *d.sender->peer;
+        switch (d.kind) {
+            case TxAdmissionDone::Kind::RESULT:
+                FinishTxAdmission(node, peer, d.tx, *d.result);
+                break;
+            case TxAdmissionDone::Kind::REPLAY:
+                if (PrepareTxAdmission(node, d.tx)) {
+                    const MempoolAcceptResult result =
+                        m_chainman.ProcessTransaction(d.tx);
+                    FinishTxAdmission(node, peer, d.tx, result);
+                }
+                break;
+            case TxAdmissionDone::Kind::DROPPED:
+                break;
+        }
+        m_tx_admission_inflight.erase(d.tx->GetId());
+        Assume(peer.m_tx_admission_pending > 0);
+        --peer.m_tx_admission_pending;
+    }
+    return true;
 }
 
 void PeerManagerImpl::StartScheduledTasks(CScheduler &scheduler) {
@@ -3819,8 +4083,45 @@ void PeerManagerImpl::ProcessShortTxResponse(
         m_chainman.IsInitialBlockDownload()) {
         return;
     }
-    // Exactly as if each had come in a tx message: orphan handling, 1p1c
-    // packages, reject caches and relay all apply.
+    // The handler already checked response bounds and request eligibility.
+    // Use the same bounded admission/verdict path as ordinary TX messages.
+    constexpr size_t retained_limit = 64U << 20;
+    size_t retained_bytes{0};
+    for (const auto &tx : txs) {
+        if (!tx) continue;
+        const size_t bytes = tx->GetTotalSize();
+        if (bytes > retained_limit - retained_bytes) {
+            retained_bytes = retained_limit + 1;
+            break;
+        }
+        retained_bytes += bytes;
+    }
+    auto reservation = m_tx_admission_running.load()
+        ? m_tx_admission_retained_budget.TryReserve(retained_bytes)
+        : std::nullopt;
+    // Reserve before queueing anything. If the extra retention budget is full,
+    // process this already-decoded response serially, retaining no extra FIFO.
+    if (reservation) {
+        peer->m_tx_admission_held_budgets.push_back(std::move(*reservation));
+        for (const auto &tx : txs) {
+            if (tx) AddKnownTx(*peer, tx->GetId());
+        }
+        LOCK(cs_main);
+        for (const auto &tx : txs) {
+            if (!tx) continue;
+            if (!peer->m_tx_admission_held_txs.empty() ||
+                !QueueTxForAdmission(node, peer, tx, /*count_full=*/true)) {
+                peer->m_tx_admission_held_txs.push_back(tx);
+            }
+        }
+        // The primary queue accounts queued bodies. Keep the conservative
+        // whole-response reservation until all additional held bodies drain.
+        if (peer->m_tx_admission_held_txs.empty()) {
+            peer->m_tx_admission_held_budgets.clear();
+        }
+        return;
+    }
+    // Serial control: orphan handling, 1p1c, reject caches and relay apply.
     for (const auto &tx : txs) {
         ProcessSingleTx(node, *peer, tx);
     }
@@ -5480,6 +5781,7 @@ void PeerManagerImpl::ProcessTxBatch(
     if (ptxs.empty()) {
         return;
     }
+
     if (ptxs.size() == 1) {
         ProcessSingleTx(pfrom, peer, ptxs[0]);
         return;
@@ -9460,6 +9762,12 @@ bool PeerManagerImpl::ProcessMessages(const Config &config, CNode *pfrom,
         }
     }
 
+    // Verdicts from the admission thread come first: serially they would
+    // have been handled before anything that follows.
+    const bool parallel_admission = m_tx_admission_running.load();
+    const bool admission_progress =
+        parallel_admission && ProcessTxAdmissionDone();
+
     const bool processed_orphan = ProcessOrphanTx(config, *peer);
 
     if (pfrom->fDisconnect) {
@@ -9481,17 +9789,78 @@ bool PeerManagerImpl::ProcessMessages(const Config &config, CNode *pfrom,
 
     // Don't bother if send buffer is too full to respond anyway
     if (pfrom->fPauseSend) {
-        return false;
+        return admission_progress;
     }
 
-    auto poll_result{pfrom->PollMessage()};
+    std::optional<std::pair<CNetMessage, bool>> poll_result;
+    if (parallel_admission) {
+        // Transactions waiting for an earlier copy's verdict or for room in
+        // the admission queue go first, in order.
+        if (!peer->m_tx_admission_held_txs.empty()) {
+            LOCK(cs_main);
+            while (!peer->m_tx_admission_held_txs.empty() &&
+                   QueueTxForAdmission(*pfrom, peer,
+                                       peer->m_tx_admission_held_txs.front(),
+                                       /*count_full=*/false)) {
+                peer->m_tx_admission_held_txs.pop_front();
+            }
+            if (peer->m_tx_admission_held_txs.empty()) {
+                peer->m_tx_admission_held_budgets.clear();
+            }
+            return peer->m_tx_admission_held_txs.empty() || admission_progress;
+        }
+        if (peer->m_tx_admission_exception) {
+            if (peer->m_tx_admission_pending > 0) {
+                return admission_progress;
+            }
+            const auto failure = std::exchange(peer->m_tx_admission_exception,
+                                               std::exception_ptr{});
+            // Serial coalescing processes its decoded prefix before reporting
+            // malformed data. Punishing earlier could disconnect the sender
+            // and discard already decoded, valid transactions in admission.
+            try {
+                std::rethrow_exception(failure);
+            } catch (const std::ios_base::failure &e) {
+                Misbehaving(*peer, "malformed coalesced TX message");
+                LogDebug(BCLog::NET, "coalesced TX exception: %s\n", e.what());
+            } catch (const std::exception &e) {
+                LogDebug(BCLog::NET, "coalesced TX exception: %s\n", e.what());
+            } catch (...) {
+                LogDebug(BCLog::NET, "coalesced TX unknown exception\n");
+            }
+            return true;
+        }
+        // Then a message that arrived after this peer's pending
+        // transactions, once they all have verdicts.
+        if (peer->m_tx_admission_held_msg) {
+            if (peer->m_tx_admission_pending > 0) {
+                return admission_progress;
+            }
+            poll_result.emplace(std::move(*peer->m_tx_admission_held_msg),
+                                /*more=*/true);
+            peer->m_tx_admission_held_msg.reset();
+        }
+    }
+    if (!poll_result) {
+        poll_result = pfrom->PollMessage();
+    }
     if (!poll_result) {
         // No message to process
-        return false;
+        return admission_progress;
     }
 
     CNetMessage &msg{poll_result->first};
-    bool fMoreWork = poll_result->second;
+    bool fMoreWork = poll_result->second || admission_progress;
+
+    const bool admit_in_parallel =
+        parallel_admission && msg.m_type == NetMsgType::TX &&
+        !RejectIncomingTxs(*pfrom) && !m_chainman.IsInitialBlockDownload();
+    if (parallel_admission && !admit_in_parallel &&
+        peer->m_tx_admission_pending > 0) {
+        // Keep this peer's message order: handle it after the verdicts.
+        peer->m_tx_admission_held_msg.emplace(std::move(msg));
+        return admission_progress;
+    }
 
     TRACE6(net, inbound_message, pfrom->GetId(), pfrom->m_addr_name.c_str(),
            pfrom->ConnectionTypeAsString().c_str(), msg.m_type.c_str(),
@@ -9514,9 +9883,73 @@ bool PeerManagerImpl::ProcessMessages(const Config &config, CNode *pfrom,
             ++m_metrics_message_count % METRICS_P2P_TIMING_SAMPLE == 0) {
             timed = SteadyClock::now();
         }
-        if (msg.m_type == NetMsgType::TX && fMoreWork &&
-            !RejectIncomingTxs(*pfrom) &&
-            !m_chainman.IsInitialBlockDownload()) {
+        if (admit_in_parallel) {
+            // Read this and directly following TX messages, then queue them
+            // for the admission thread in order. A non-TX message ends the
+            // run and waits for their verdicts.
+            static constexpr size_t MAX_COALESCED_TX_MESSAGES = 256;
+            std::vector<CTransactionRef> received;
+            CTransactionRef first_tx;
+            msg.m_recv >> first_tx;
+            received.push_back(std::move(first_tx));
+            std::exception_ptr malformed;
+            while (fMoreWork && received.size() < MAX_COALESCED_TX_MESSAGES &&
+                   !interruptMsgProc && !pfrom->fDisconnect &&
+                   !pfrom->fPauseSend) {
+                auto next_poll = pfrom->PollMessage();
+                if (!next_poll) {
+                    fMoreWork = false;
+                    break;
+                }
+                CNetMessage &next_msg = next_poll->first;
+                fMoreWork = next_poll->second;
+
+                TRACE6(net, inbound_message, pfrom->GetId(),
+                       pfrom->m_addr_name.c_str(),
+                       pfrom->ConnectionTypeAsString().c_str(),
+                       next_msg.m_type.c_str(), next_msg.m_recv.size(),
+                       next_msg.m_recv.data());
+
+                if (m_opts.capture_messages) {
+                    CaptureMessage(pfrom->addr, next_msg.m_type,
+                                   MakeUCharSpan(next_msg.m_recv),
+                                   /*is_incoming=*/true);
+                }
+
+                if (next_msg.m_type != NetMsgType::TX) {
+                    peer->m_tx_admission_held_msg.emplace(std::move(next_msg));
+                    break;
+                }
+                CTransactionRef ptx;
+                try {
+                    next_msg.m_recv >> ptx;
+                } catch (...) {
+                    // Queue the decoded prefix, then report as below.
+                    malformed = std::current_exception();
+                    break;
+                }
+                received.push_back(std::move(ptx));
+            }
+            for (const auto &ptx : received) {
+                AddKnownTx(*peer, ptx->GetId());
+            }
+            {
+                LOCK(cs_main);
+                for (auto &ptx : received) {
+                    if (!peer->m_tx_admission_held_txs.empty() ||
+                        !QueueTxForAdmission(*pfrom, peer, ptx,
+                                             /*count_full=*/true)) {
+                        peer->m_tx_admission_held_txs.push_back(std::move(ptx));
+                    }
+                }
+            }
+            if (malformed) {
+                peer->m_tx_admission_exception = malformed;
+                fMoreWork = true;
+            }
+        } else if (msg.m_type == NetMsgType::TX && fMoreWork &&
+                   !RejectIncomingTxs(*pfrom) &&
+                   !m_chainman.IsInitialBlockDownload()) {
             // Coalesce contiguous NetMsgType::TX messages queued from this peer
             // into a single ProcessTxBatch call to avoid per-TX cs_main lock
             // bounce and per-TX validation overhead during solicited TX bursts.

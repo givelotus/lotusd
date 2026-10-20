@@ -63,6 +63,7 @@
 #include <node/metrics_collectors.h>
 #include <node/miner.h>
 #include <node/peerman_args.h>
+#include <node/txadmission.h>
 #include <node/ui_interface.h>
 #include <policy/block/rtt.h>
 #include <policy/policy.h>
@@ -315,6 +316,11 @@ void Shutdown(NodeContext &node) {
     if (node.peerman && node.validation_signals) {
         node.validation_signals->UnregisterValidationInterface(
             node.peerman.get());
+    }
+    // The admission thread holds CNode references; release them before the
+    // network deletes its nodes.
+    if (node.peerman) {
+        node.peerman->StopTxAdmission();
     }
     if (node.connman) {
         node.connman->Stop();
@@ -765,6 +771,22 @@ void SetupServerArgs(NodeContext &node) {
                              "memory (default: %u)",
                              DEFAULT_MAX_ORPHAN_TRANSACTIONS),
                    ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg(
+        "-parallelmempool",
+        strprintf("Admit transactions received from peers on a separate "
+                  "thread, verifying their scripts on several threads "
+                  "without holding the chain lock; 0 admits them on the "
+                  "message handler thread (default: %u)",
+                  node::DEFAULT_PARALLEL_MEMPOOL),
+        ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg(
+        "-parallelmempoolthreads=<n>",
+        strprintf("Threads verifying transaction scripts for -parallelmempool, "
+                  "including the admission thread (0 = one per core, up to "
+                  "%d; default: %d)",
+                  node::MAX_PARALLEL_MEMPOOL_THREADS,
+                  node::DEFAULT_PARALLEL_MEMPOOL_THREADS),
+        ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-mempoolexpiry=<n>",
                    strprintf("Do not keep transactions in the mempool longer "
                              "than <n> hours (default: %u)",
