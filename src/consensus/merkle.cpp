@@ -148,6 +148,6 @@ uint256 BlockMerkleRootParallel(const CBlock &block, bool *mutated,
         chunk <<= 1;
     }
     return ComputeMerkleRootChunked(
-        n, [&](size_t i) -> uint256 { return block.vtx[i]->GetId(); },
-        mutated, chunk, run);
+        n, [&](size_t i) -> uint256 { return block.vtx[i]->GetId(); }, mutated,
+        chunk, run);
 }
