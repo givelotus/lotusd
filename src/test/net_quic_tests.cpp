@@ -5,11 +5,13 @@
 // Built only with -DENABLE_WEBTRANSPORT=ON.
 
 #include <net_quic/quic_engine.h>
+#include <crypto/common.h>
 #include <net_quic/webtransport_wire.h>
 
 #include <netaddress.h>
 #include <random.h>
 #include <tls_util.h>
+#include <tinyformat.h>
 #include <util/fs.h>
 #include <util/strencodings.h>
 
@@ -21,10 +23,15 @@
 #include <openssl/sha.h>
 #include <openssl/x509.h>
 
+#include <algorithm>
 #include <arpa/inet.h>
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <future>
+#include <fstream>
+#include <cstdlib>
+#include <mutex>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -592,6 +599,172 @@ BOOST_AUTO_TEST_CASE(webtransport_token_and_no_acceptor) {
     r = client->WebTransportProbeForTest(raw->BoundAddresses().at(0),
                                          WtProbeOptions{}, 5s);
     BOOST_CHECK(!r || r->status == 0);
+}
+
+// An application message may race ahead of the lower priority class stream
+// prefixes. It must survive until the server creates its node socket.
+BOOST_AUTO_TEST_CASE(webtransport_p2p_socket_roundtrip) {
+    std::promise<std::unique_ptr<Sock>> accepted;
+    auto inbound{accepted.get_future()};
+    struct ClearAcceptor {
+        ~ClearAcceptor() { SetP2PWebTransportAcceptor(nullptr); }
+    } clear_acceptor;
+    SetP2PWebTransportAcceptor(
+        [&accepted](std::unique_ptr<Sock> &&sock, const CAddress &,
+                     const CAddress &, std::shared_ptr<QuicTransportInfo>) {
+            accepted.set_value(std::move(sock));
+        });
+    auto options{ServerOptions()};
+    options.application = QuicApplication::WEBTRANSPORT;
+    auto server{StartEngine(options)};
+    auto client{StartEngine(QuicEngineOptions{})};
+    const CService addr{server->BoundAddresses().at(0)};
+    const auto url{ParseWebTransportURL("wt://" + addr.ToStringAddrPort())};
+    BOOST_REQUIRE(url);
+    CThreadInterrupt interrupt;
+    WebTransportDialError error;
+    auto dialed{client->Dial(addr, *url, 10s, interrupt, error)};
+    BOOST_REQUIRE(dialed);
+    std::vector<uint8_t> message(CMessageHeader::HEADER_SIZE, 0);
+    std::memcpy(message.data() + CMessageHeader::MESSAGE_START_SIZE,
+                "version", 7);
+    WriteLE32(message.data() + CMessageHeader::MESSAGE_SIZE_OFFSET, 0);
+    BOOST_REQUIRE_EQUAL(dialed->sock->Send(message.data(), message.size(), 0),
+                         message.size());
+    BOOST_REQUIRE(inbound.wait_for(10s) == std::future_status::ready);
+    auto sock{inbound.get()};
+    std::vector<uint8_t> received(message.size());
+    size_t offset{0};
+    const auto deadline{std::chrono::steady_clock::now() + 10s};
+    while (offset < received.size() &&
+           std::chrono::steady_clock::now() < deadline) {
+        const auto n{sock->Recv(received.data() + offset,
+                                 received.size() - offset, 0)};
+        if (n > 0) {
+            offset += static_cast<size_t>(n);
+        } else {
+            std::this_thread::sleep_for(5ms);
+        }
+    }
+    BOOST_REQUIRE_EQUAL(offset, message.size());
+    BOOST_CHECK(received == message);
+}
+
+BOOST_AUTO_TEST_CASE(webtransport_handshake_observer) {
+    std::mutex mutex;
+    std::vector<QuicHandshakeObservation> observations;
+    const auto observer{[&](QuicHandshakeObservation observation) {
+        const std::lock_guard<std::mutex> lock{mutex};
+        observations.push_back(std::move(observation));
+    }};
+    auto server_options{ServerOptions()};
+    server_options.application = QuicApplication::WEBTRANSPORT;
+    server_options.wt_echo = true;
+    server_options.handshake_observer = observer;
+    auto server{StartEngine(server_options)};
+    QuicEngineOptions client_options;
+    client_options.handshake_observer = observer;
+    auto client{StartEngine(client_options)};
+    const auto addr{server->BoundAddresses().at(0)};
+    // Match the browser baseline's real localhost SNI and actual node dial
+    // path, rather than comparing a no-SNI raw-QUIC echo probe to a browser.
+    const auto url{ParseWebTransportURL(
+        strprintf("wt://localhost:%u/p2p/wt#cert=%s", addr.GetPort(),
+                  HexStr(cert_sha256)))};
+    BOOST_REQUIRE(url);
+    CThreadInterrupt interrupt;
+    WebTransportDialError error;
+    auto dialed{client->Dial(addr, *url, 10s, interrupt, error)};
+    BOOST_REQUIRE(dialed);
+    BOOST_CHECK(dialed->info->pinned);
+    dialed->sock.reset();
+    auto wrong{*url};
+    (*wrong.cert_sha256)[0] ^= 1;
+    BOOST_CHECK(!client->Dial(addr, wrong, 10s, interrupt, error));
+    client->Stop();
+    server->Stop();
+    // Stop() joins both producers before inspecting their callback copies.
+    BOOST_CHECK(std::any_of(observations.begin(), observations.end(),
+                            [](const auto &o) {
+                                return !o.server && o.outbound &&
+                                       !o.handshake.empty() && o.handshake[0] == 1;
+                            }));
+    BOOST_CHECK(std::any_of(observations.begin(), observations.end(),
+                            [](const auto &o) {
+                                return o.server && o.outbound &&
+                                       !o.handshake.empty() && o.handshake[0] == 2 &&
+                                       o.tls_version == TLS1_3_VERSION;
+                            }));
+    const char *directory{std::getenv("WT_HANDSHAKE_ARTIFACT_DIR")};
+    size_t index{0};
+    for (const auto &o : observations) {
+        BOOST_CHECK_LE(o.handshake.size(), 64 * 1024);
+        BOOST_CHECK_EQUAL(o.truncated, o.original_size > o.handshake.size());
+        if (directory) {
+            const fs::path out{directory};
+            fs::create_directories(out);
+            const auto name{strprintf("%02u-%s-%s-type%u.bin", index,
+                                      o.server ? "server" : "client",
+                                      o.outbound ? "out" : "in", o.handshake[0])};
+            BOOST_REQUIRE(!fs::exists(out / name));
+            std::ofstream file(out / name, std::ios::binary);
+            file.write(reinterpret_cast<const char *>(o.handshake.data()),
+                        static_cast<std::streamsize>(o.handshake.size()));
+            BOOST_REQUIRE(file.good());
+        }
+        ++index;
+    }
+}
+
+// Explicit capture harness, inert during ordinary unit runs. Each browser
+// uses its own invocation/directory/profile and caller-assigned UDP port.
+BOOST_AUTO_TEST_CASE(webtransport_browser_capture_server) {
+    const char *directory{std::getenv("WT_BROWSER_CAPTURE_DIR")};
+    const char *port_text{std::getenv("WT_BROWSER_CAPTURE_PORT")};
+    if (!directory || !port_text) {
+        BOOST_TEST_MESSAGE("Browser capture requires explicit directory and port");
+        return;
+    }
+    const auto port{ToIntegral<uint16_t>(port_text)};
+    BOOST_REQUIRE(port && *port != 0);
+    const fs::path out{directory};
+    BOOST_REQUIRE(!fs::exists(out));
+    fs::create_directories(out);
+    std::vector<QuicHandshakeObservation> captured;
+    auto options{ServerOptions()};
+    options.binds = {Loopback(*port)};
+    options.application = QuicApplication::WEBTRANSPORT;
+    options.wt_echo = true; // Handshake capture, no CConnman/relay claim.
+    options.handshake_observer = [&](QuicHandshakeObservation o) {
+        // Keep test disk IO off the engine thread during the capture.
+        captured.push_back(std::move(o));
+    };
+    auto server{StartEngine(options)};
+    {
+        // Readiness is communicated only after bind/TLS initialization.
+        std::ofstream info(out / "server.json");
+        info << "{\"url\":\"https://localhost:" << *port
+             << "/p2p/wt\",\"cert_sha256\":\"" << HexStr(cert_sha256)
+             << "\",\"capture_seconds\":30}\n";
+        BOOST_REQUIRE(info.good());
+    }
+    std::this_thread::sleep_for(30s);
+    server->Stop(); // Joins all callback copies before inspecting them.
+    size_t index{0};
+    size_t client_hellos{0};
+    for (const auto &o : captured) {
+        const auto name{strprintf("%02u-%s-type%u.bin", index++,
+                                  o.outbound ? "out" : "in", o.handshake[0])};
+        if (!o.outbound && o.handshake[0] == 1) {
+            ++client_hellos;
+        }
+        BOOST_REQUIRE(!o.truncated);
+        std::ofstream file(out / name, std::ios::binary);
+        file.write(reinterpret_cast<const char *>(o.handshake.data()),
+                    static_cast<std::streamsize>(o.handshake.size()));
+        BOOST_REQUIRE(file.good());
+    }
+    BOOST_CHECK_GT(client_hellos, 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

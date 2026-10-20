@@ -172,8 +172,65 @@ static RPCHelpMan getpeerinfo() {
                      "Type of connection: \n" +
                          Join(CONNECTION_TYPE_DOC, ",\n") + "."},
                     {RPCResult::Type::STR, "transport",
-                     "How the P2P stream is carried: tcp, ws (WebSocket) "
-                     "or wss (WebSocket over TLS)"},
+                     "How the P2P stream is carried: tcp, ws (WebSocket), "
+                     "wss (WebSocket over TLS) or webtransport (HTTP/3 over "
+                     "QUIC)"},
+                    {RPCResult::Type::OBJ,
+                     "webtransport",
+                     /*optional=*/true,
+                     "WebTransport details, for webtransport peers",
+                     {
+                         {RPCResult::Type::STR, "protocol",
+                          "Negotiated wt-protocol (P2P framing), e.g. p2p-v1"},
+                         {RPCResult::Type::STR_HEX, "draft",
+                          "Newest WebTransport SETTINGS codepoint the peer "
+                          "announced (2c7cf000: draft-15/16, 2b603742: "
+                          "draft-02 browsers)"},
+                         {RPCResult::Type::STR, "origin", /*optional=*/true,
+                          "Origin of a browser peer"},
+                         {RPCResult::Type::NUM, "rtt",
+                          "Smoothed QUIC round-trip time (seconds)"},
+                         {RPCResult::Type::NUM, "min_rtt",
+                          "Minimum QUIC round-trip time (seconds)"},
+                         {RPCResult::Type::NUM, "cwnd",
+                          "Congestion window (bytes)"},
+                         {RPCResult::Type::NUM, "lost_pkts",
+                          "QUIC packets declared lost"},
+                         {RPCResult::Type::NUM, "udp_bytes_sent",
+                          "QUIC bytes sent, UDP payloads"},
+                         {RPCResult::Type::NUM, "udp_bytes_recv",
+                          "QUIC bytes received, UDP payloads"},
+                         {RPCResult::Type::NUM, "splits",
+                          "Messages split into one message per stream class"},
+                         {RPCResult::Type::OBJ_DYN, "classes",
+                          "Per stream class (control, avalanche, "
+                          "tx_announce, tx_body, block)",
+                          {{RPCResult::Type::OBJ,
+                            "class",
+                            "",
+                            {
+                                {RPCResult::Type::NUM, "msg_bytes_sent",
+                                 "P2P message bytes sent"},
+                                {RPCResult::Type::NUM, "msg_bytes_recv",
+                                 "P2P message bytes received"},
+                                {RPCResult::Type::NUM, "stream_bytes_sent",
+                                 "Stream bytes sent (framed, compressed)"},
+                                {RPCResult::Type::NUM, "stream_bytes_recv",
+                                 "Stream bytes received (framed, "
+                                 "compressed)"},
+                            }}}},
+                         {RPCResult::Type::STR_HEX, "peer_cert_fingerprint",
+                          /*optional=*/true,
+                          "SHA-256 of the peer's TLS certificate, if any"},
+                         {RPCResult::Type::STR, "peer_spki", /*optional=*/true,
+                          "base64url SHA-256 of the peer's TLS public key, "
+                          "usable as a pin (wt://...#spki=)"},
+                         {RPCResult::Type::STR, "alpn", /*optional=*/true,
+                          "TLS ALPN protocol agreed with the peer"},
+                         {RPCResult::Type::BOOL, "pinned",
+                          "Whether the peer's key matched a pin (outbound) "
+                          "or -p2pwebsocketpeer entry (inbound)"},
+                     }},
                     {RPCResult::Type::OBJ,
                      "websocket",
                      /*optional=*/true,
@@ -403,6 +460,46 @@ static RPCHelpMan getpeerinfo() {
                     }
                     wsobj.pushKV("pinned", ws->pinned);
                     obj.pushKV("websocket", std::move(wsobj));
+                } else if (const auto &wt = stats.m_quic_info) {
+                    obj.pushKV("transport", "webtransport");
+                    UniValue wtobj(UniValue::VOBJ);
+                    wtobj.pushKV("protocol", wt->protocol);
+                    wtobj.pushKV("draft", strprintf("%x", wt->draft));
+                    if (!wt->origin.empty()) {
+                        wtobj.pushKV("origin", wt->origin);
+                    }
+                    wtobj.pushKV("rtt", wt->rtt_us.load() / 1e6);
+                    wtobj.pushKV("min_rtt", wt->min_rtt_us.load() / 1e6);
+                    wtobj.pushKV("cwnd", wt->cwnd.load());
+                    wtobj.pushKV("lost_pkts", wt->lost_pkts.load());
+                    wtobj.pushKV("udp_bytes_sent", wt->udp_bytes_sent.load());
+                    wtobj.pushKV("udp_bytes_recv", wt->udp_bytes_recv.load());
+                    wtobj.pushKV("splits", wt->splits.load());
+                    UniValue classes(UniValue::VOBJ);
+                    for (const StreamClass c : ALL_STREAM_CLASSES) {
+                        const size_t i{StreamClassIndex(c)};
+                        UniValue cls(UniValue::VOBJ);
+                        cls.pushKV("msg_bytes_sent", wt->msg_bytes_sent[i].load());
+                        cls.pushKV("msg_bytes_recv", wt->msg_bytes_recv[i].load());
+                        cls.pushKV("stream_bytes_sent",
+                                   wt->stream_bytes_sent[i].load());
+                        cls.pushKV("stream_bytes_recv",
+                                   wt->stream_bytes_recv[i].load());
+                        classes.pushKV(StreamClassName(c), std::move(cls));
+                    }
+                    wtobj.pushKV("classes", std::move(classes));
+                    if (!wt->peer_cert_fingerprint_hex.empty()) {
+                        wtobj.pushKV("peer_cert_fingerprint",
+                                     wt->peer_cert_fingerprint_hex);
+                    }
+                    if (!wt->peer_spki.empty()) {
+                        wtobj.pushKV("peer_spki", wt->peer_spki);
+                    }
+                    if (!wt->alpn.empty()) {
+                        wtobj.pushKV("alpn", wt->alpn);
+                    }
+                    wtobj.pushKV("pinned", wt->pinned);
+                    obj.pushKV("webtransport", std::move(wtobj));
                 } else {
                     obj.pushKV("transport", "tcp");
                 }

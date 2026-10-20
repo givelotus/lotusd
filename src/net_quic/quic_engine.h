@@ -5,12 +5,14 @@
 #ifndef BITCOIN_NET_QUIC_QUIC_ENGINE_H
 #define BITCOIN_NET_QUIC_QUIC_ENGINE_H
 
+#include <net_webtransport.h>
 #include <netaddress.h>
 #include <util/fs.h>
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -43,6 +45,18 @@ enum class QuicApplication {
     ECHO_FOR_TEST,
 };
 
+/** Opt-in test observation of public TLS handshake messages, never secrets. */
+struct QuicHandshakeObservation {
+    bool outbound{false};
+    bool server{false};
+    uint16_t tls_version{0};
+    size_t original_size{0};
+    bool truncated{false};
+    std::vector<uint8_t> handshake;
+};
+using QuicHandshakeObserver =
+    std::function<void(QuicHandshakeObservation observation)>;
+
 struct QuicEngineOptions {
     //! UDP addresses to accept connections on (none: outbound only)
     std::vector<CService> binds;
@@ -74,6 +88,16 @@ struct QuicEngineOptions {
     //! Tests and browser interop: echo WebTransport streams and datagrams
     //! instead of running P2P sessions
     bool wt_echo{false};
+    //! Ask inbound peers for a TLS client certificate (accepting any), so
+    //! -p2pwebsocketpeer keys can grant permissions
+    bool request_client_cert{false};
+    //! Compress P2P messages on the class streams (zstd + dictionary)
+    bool compress{true};
+    //! Tests only: called on the engine thread. Empty installs no TLS
+    //! callback. No CLI/secret logging; bounded to 256 messages / 8 MiB
+    //! per engine, at most 64 KiB per copy. Caller-owned captures must
+    //! remain valid until Stop() has joined the engine thread.
+    QuicHandshakeObserver handshake_observer;
 };
 
 /** Tests: an extended CONNECT made by WebTransportProbeForTest() */
@@ -147,6 +171,16 @@ public:
     EchoForTest(const CService &target, const std::vector<uint8_t> &payload,
                 std::chrono::milliseconds timeout,
                 const std::optional<std::vector<uint8_t>> &cert_sha256 = {});
+
+    /**
+     * Open an outbound P2P session (see WebTransportDialer): blocks until
+     * the class streams are open, the dial fails, `timeout` passes or
+     * `interrupt` fires.
+     */
+    std::optional<WebTransportDialResult>
+    Dial(const CService &target, const ParsedWebTransportURL &url,
+         std::chrono::milliseconds timeout, CThreadInterrupt &interrupt,
+         WebTransportDialError &error);
 
     /**
      * Tests: QUIC + HTTP/3 + extended CONNECT to `target`; on a 200 open

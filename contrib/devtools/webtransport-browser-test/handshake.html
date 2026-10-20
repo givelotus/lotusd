@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebTransport authenticated handshake capture</title>
+<pre id="result">connecting</pre>
+<script>
+// Capture baseline only: no echo stream or P2P framing is exercised.
+const query = new URLSearchParams(location.search);
+const url = query.get("url");
+const hash = query.get("hash");
+const result = {url, userAgent: navigator.userAgent, ok: false};
+(async () => {
+  let transport;
+  try {
+    if (!url) throw new Error("missing url");
+    const options = {protocols: ["p2p-v1"]};
+    if (hash) {
+      if (!/^[0-9a-f]{64}$/i.test(hash)) throw new Error("invalid certificate hash");
+      const bytes = new Uint8Array(hash.match(/../g).map(x => parseInt(x, 16)));
+      options.serverCertificateHashes = [{algorithm: "sha-256", value: bytes}];
+    }
+    transport = new WebTransport(url, options);
+    await Promise.race([transport.ready, new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("handshake timeout")), 15000))]);
+    result.ok = true;
+    result.protocol = transport.protocol || null;
+  } catch (error) {
+    result.error = String(error);
+  } finally {
+    if (transport) {
+      transport.close({closeCode: 0, reason: "capture complete"});
+      try {
+        await Promise.race([transport.closed, new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("close timeout")), 3000))]);
+        result.closed_cleanly = true;
+      } catch (error) {
+        result.close_error = String(error);
+        result.ok = false;
+      }
+    }
+    document.getElementById("result").textContent = JSON.stringify(result);
+    document.title = result.ok ? "WT HANDSHAKE PASS" : "WT HANDSHAKE FAIL";
+    await fetch("/result?" + encodeURIComponent(JSON.stringify(result)));
+  }
+})();
+</script>

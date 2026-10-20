@@ -811,6 +811,7 @@ if(ENABLE_WEBTRANSPORT)
 		net_quic/node_webtransport.cpp
 		net_quic/quic_connection.cpp
 		net_quic/quic_engine.cpp
+		net_quic/quic_peer_sock.cpp
 		net_quic/udp_socket.cpp
 		net_quic/version_check.cpp
 		net_quic/webtransport_h3.cpp
