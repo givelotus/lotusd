@@ -70,6 +70,11 @@ struct ChainstateManagerOpts {
     //! If set, store and load the last few block headers reception time to
     //! speed up RTT bootstraping
     bool store_recent_headers_time{DEFAULT_STORE_RECENT_HEADERS_TIME};
+
+    //! Threads prefetching the coins of arriving blocks in the background
+    //! (node/blockprefetch.h). Zero disables the background prefetch.
+    //! Default: node::DEFAULT_BLOCK_PREFETCH_THREADS (node/blockprefetch.h).
+    int block_prefetch_threads{4};
 };
 
 } // namespace kernel
