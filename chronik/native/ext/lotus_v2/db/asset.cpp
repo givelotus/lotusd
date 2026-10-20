@@ -55,16 +55,15 @@ std::vector<AssetEvent> DeriveAssetEvents(const AssetTxView &view) {
     // token -> (spent, output, explicit burn)
     std::map<Hash32, std::tuple<U128, U128, U128>> totals;
     std::set<OutPoint> spent;
-    for (const ResolvedCreation &coin : view.resolved_spends) {
-        if (!spent.insert(coin.outpoint).second || coin.output.IsBurn()) {
+    for (const SpentCoin &coin : view.resolved_spends) {
+        if (!spent.insert(coin.outpoint).second || coin.IsBurn()) {
             ThrowInvalid("duplicate or burned asset spend");
         }
-        if (coin.output.Validate()) {
+        if (!coin.Valid()) {
             ThrowInvalid("asset spend output");
         }
-        if (coin.output.HasToken()) {
-            AssetAddUnits(std::get<0>(totals[coin.output.token_id]),
-                          coin.output.value);
+        if (coin.HasToken()) {
+            AssetAddUnits(std::get<0>(totals[coin.token_id]), coin.value);
         }
     }
     for (const Output &output : view.outputs) {

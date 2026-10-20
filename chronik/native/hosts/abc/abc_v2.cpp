@@ -119,6 +119,80 @@ ffi::Binding GetV2Binding() {
     };
 }
 
+ffi::NativeTx ConvertV2NativeTx(const CTransaction &ctx, bool coinbase,
+                                uint32_t n, uint32_t file_num,
+                                uint32_t data_pos) {
+    lotus::v2::Transaction v2tx = ctx.ToV2Transaction();
+    if (coinbase) {
+        NormalizeCoinbase(v2tx);
+    } else {
+        NormalizeInputs(v2tx);
+    }
+
+    std::vector<uint8_t> tx_wire;
+    std::string err;
+    if (!lotus::v2::EncodeTransaction(v2tx, lotus::v2::DefaultTxProfile,
+                                      tx_wire, err)) {
+        throw std::runtime_error("V2 EncodeTransaction failed: " + err);
+    }
+    std::vector<uint8_t> fact_wire;
+    std::vector<lotus::v2::ChronikFullInput> fact_inputs;
+    if (!lotus::v2::MakeChronikExplorerFacts(
+            v2tx, lotus::v2::DefaultTxProfile,
+            std::span<const uint8_t>(tx_wire.data(), tx_wire.size()),
+            fact_wire, fact_inputs, err)) {
+        throw std::runtime_error("MakeChronikExplorerFacts failed: " + err);
+    }
+
+    ffi::NativeTx tx;
+    tx.txid = HashArray(ctx.GetId());
+    tx.txhash = HashArray(ctx.GetHash());
+    tx.index = n;
+    tx.file_num = file_num;
+    tx.data_pos = data_pos;
+    tx.full_inputs.reserve(fact_inputs.size());
+    for (size_t i = 0; i < fact_inputs.size(); ++i) {
+        const auto &fi = fact_inputs[i];
+        if (fi.flags == 1) {
+            tx.inputs.push_back(ffi::Input{
+                .txid = fi.prev_txid,
+                .out_idx = fi.prev_index,
+                .input_index = static_cast<uint32_t>(i),
+            });
+        }
+        ffi::NativeFullInput full;
+        full.prev_txid = fi.prev_txid;
+        full.prev_index = fi.prev_index;
+        full.sequence = fi.sequence;
+        full.flags = fi.flags;
+        full.path_index = fi.path_index;
+        full.has_coinbase_data = fi.has_coinbase_data;
+        full.coinbase_data = Range(fi.coinbase_data);
+        full.witnesses.reserve(fi.witnesses.size());
+        for (const auto &w : fi.witnesses) {
+            full.witnesses.push_back(ffi::NativeWitness{
+                .script = Range(w.script),
+                .siblings_table = Range(w.siblings_table),
+                .siblings_count = w.siblings_count,
+                .arguments_table = Range(w.arguments_table),
+                .arguments_count = w.arguments_count,
+            });
+        }
+        tx.full_inputs.push_back(std::move(full));
+    }
+    tx.outputs.reserve(v2tx.outputs.size());
+    for (const auto &output : v2tx.outputs) {
+        std::vector<uint8_t> out_wire;
+        if (!lotus::v2::EncodeOutput(output, out_wire, err)) {
+            throw std::runtime_error("V2 EncodeOutput failed: " + err);
+        }
+        tx.outputs.push_back(ffi::NativeOutput{.wire = std::move(out_wire)});
+    }
+    tx.wire = std::move(fact_wire);
+    tx.lock = v2tx.lock;
+    return tx;
+}
+
 ffi::NativeBlock ConvertV2NativeBlock(const CBlock &block,
                                       const CBlockIndex &bindex) {
     if (bindex.nHeight < 0) {
@@ -151,76 +225,23 @@ ffi::NativeBlock ConvertV2NativeBlock(const CBlock &block,
                                                 decltype(out.header_wire)>);
     out.header_wire = header_wire;
 
+    uint32_t file_num = 0;
+    uint32_t block_data_pos = 0;
+    {
+        LOCK(::cs_main);
+        file_num = uint32_t(bindex.nFile);
+        block_data_pos = bindex.nDataPos;
+    }
+    // Same offsets as the core Chronik index: the header and the
+    // transaction count precede the first transaction.
+    size_t data_pos = block_data_pos + ::GetSerializeSize(CBlockHeader()) +
+                      GetSizeOfCompactSize(block.vtx.size());
     out.transactions.reserve(block.vtx.size());
     for (size_t n = 0; n < block.vtx.size(); ++n) {
         const CTransaction &ctx = *block.vtx[n];
-        lotus::v2::Transaction v2tx = ctx.ToV2Transaction();
-        if (n == 0) {
-            NormalizeCoinbase(v2tx);
-        } else {
-            NormalizeInputs(v2tx);
-        }
-
-        std::vector<uint8_t> tx_wire;
-        std::string err;
-        if (!lotus::v2::EncodeTransaction(v2tx, lotus::v2::DefaultTxProfile,
-                                          tx_wire, err)) {
-            throw std::runtime_error("V2 EncodeTransaction failed: " + err);
-        }
-        std::vector<uint8_t> fact_wire;
-        std::vector<lotus::v2::ChronikFullInput> fact_inputs;
-        if (!lotus::v2::MakeChronikExplorerFacts(
-                v2tx, lotus::v2::DefaultTxProfile,
-                std::span<const uint8_t>(tx_wire.data(), tx_wire.size()),
-                fact_wire, fact_inputs, err)) {
-            throw std::runtime_error("MakeChronikExplorerFacts failed: " + err);
-        }
-
-        ffi::NativeTx tx;
-        tx.txid = HashArray(ctx.GetId());
-        tx.txhash = HashArray(ctx.GetHash());
-        tx.index = static_cast<uint32_t>(n);
-        tx.full_inputs.reserve(fact_inputs.size());
-        for (size_t i = 0; i < fact_inputs.size(); ++i) {
-            const auto &fi = fact_inputs[i];
-            if (fi.flags == 1) {
-                tx.inputs.push_back(ffi::Input{
-                    .txid = fi.prev_txid,
-                    .out_idx = fi.prev_index,
-                    .input_index = static_cast<uint32_t>(i),
-                });
-            }
-            ffi::NativeFullInput full;
-            full.prev_txid = fi.prev_txid;
-            full.prev_index = fi.prev_index;
-            full.sequence = fi.sequence;
-            full.flags = fi.flags;
-            full.path_index = fi.path_index;
-            full.has_coinbase_data = fi.has_coinbase_data;
-            full.coinbase_data = Range(fi.coinbase_data);
-            full.witnesses.reserve(fi.witnesses.size());
-            for (const auto &w : fi.witnesses) {
-                full.witnesses.push_back(ffi::NativeWitness{
-                    .script = Range(w.script),
-                    .siblings_table = Range(w.siblings_table),
-                    .siblings_count = w.siblings_count,
-                    .arguments_table = Range(w.arguments_table),
-                    .arguments_count = w.arguments_count,
-                });
-            }
-            tx.full_inputs.push_back(std::move(full));
-        }
-        tx.outputs.reserve(v2tx.outputs.size());
-        for (const auto &output : v2tx.outputs) {
-            std::vector<uint8_t> out_wire;
-            if (!lotus::v2::EncodeOutput(output, out_wire, err)) {
-                throw std::runtime_error("V2 EncodeOutput failed: " + err);
-            }
-            tx.outputs.push_back(ffi::NativeOutput{.wire = std::move(out_wire)});
-        }
-        tx.wire = std::move(fact_wire);
-        tx.lock = v2tx.lock;
-        out.transactions.push_back(std::move(tx));
+        out.transactions.push_back(ConvertV2NativeTx(
+            ctx, n == 0, uint32_t(n), file_num, uint32_t(data_pos)));
+        data_pos += ::GetSerializeSize(ctx);
     }
     return out;
 }
@@ -258,6 +279,35 @@ namespace {
         };
     }
 
+    /**
+     * Reads indexed transactions from the node's block files and converts
+     * them exactly as at connect (the index stores only positions).
+     */
+    class AbcTxSource final : public lotus_v2::TxSource {
+    public:
+        explicit AbcTxSource(const node::NodeContext &node) : m_node(node) {}
+        lotus_v2::NodeTx LoadTx(const lotus_v2::TxPos &pos,
+                                const lotus_v2::TxId &txid,
+                                bool coinbase) const override {
+            CMutableTransaction mtx;
+            if (!m_node.chainman->m_blockman.ReadTxFromDisk(
+                    mtx, FlatFilePos(int(pos.file_num), pos.data_pos))) {
+                throw std::runtime_error("Reading tx data from disk failed");
+            }
+            const CTransaction tx(std::move(mtx));
+            if (HashArray(tx.GetId()) != txid.hash.b) {
+                throw std::runtime_error(
+                    "transaction identity at block-file position");
+            }
+            return lotus_v2::NodeTx::From(lotus_v2::ConvertNativeTx(
+                ConvertV2NativeTx(tx, coinbase, 0, pos.file_num, pos.data_pos),
+                lotus_v2::Anchor{}));
+        }
+
+    private:
+        const node::NodeContext &m_node;
+    };
+
 } // namespace
 
 AbcV2ServiceExtension::AbcV2ServiceExtension(const node::NodeContext &node,
@@ -289,14 +339,20 @@ void AbcV2ServiceExtension::Open(const std::filesystem::path &indexes_dir,
     auto sha256 = [this](ByteView data, uint8_t out[32]) {
         m_host.Sha256(data, out);
     };
+    // An index of another schema version is refused with a reindex message;
+    // any other open failure rebuilds the index from scratch.
+    const auto source = std::make_shared<AbcTxSource>(m_node);
     try {
         SetService(lotus_v2::V2Service::Open(path.string(), binding, fresh,
-                                             V2Limits(), sha256));
+                                             V2Limits(), sha256, source));
+    } catch (const lotus_v2::V2SchemaError &e) {
+        throw ChronikError(std::string("V2Service open failed: ") + e.what());
     } catch (const std::exception &) {
         std::filesystem::remove_all(path, ec);
         try {
             SetService(lotus_v2::V2Service::Open(path.string(), binding,
-                                                 true, V2Limits(), sha256));
+                                                 true, V2Limits(), sha256,
+                                                 source));
         } catch (const std::exception &e) {
             throw ChronikError(std::string("V2Service open failed: ") +
                                e.what());
