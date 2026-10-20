@@ -9,10 +9,23 @@ from test_framework.blocktools import (
     GENESIS_CB_TXID,
     TIME_GENESIS_BLOCK,
 )
-from test_framework.chronik.client import pb
+from test_framework.messages import _lotus_v2_encode_output, lotus_v2_branch_leaf
+
+GENESIS_NATIVE_OUTPUT = _lotus_v2_encode_output(
+    (
+        0,
+        5000000000,
+        bytes(32),
+        [lotus_v2_branch_leaf(bytes(GENESIS_CB_SCRIPT_PUBKEY))],
+        [[0]],
+    )
+)
 
 
 def genesis_cb_tx():
+    # Framework setup adds the profile-specific generated protobuf module path.
+    from test_framework.chronik.client import pb
+
     return pb.Tx(
         txid=bytes.fromhex(GENESIS_CB_TXID)[::-1],
         version=7,
@@ -26,7 +39,7 @@ def genesis_cb_tx():
         outputs=[
             pb.TxOutput(
                 sats=5000000000,
-                output_script=bytes(GENESIS_CB_SCRIPT_PUBKEY),
+                output_script=GENESIS_NATIVE_OUTPUT,
             )
         ],
         lock_time=0,
@@ -36,6 +49,6 @@ def genesis_cb_tx():
             timestamp=TIME_GENESIS_BLOCK,
         ),
         time_first_seen=0,
-        size=204,
+        size=182,
         is_coinbase=True,
     )
