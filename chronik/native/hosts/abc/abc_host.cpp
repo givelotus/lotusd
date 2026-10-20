@@ -8,6 +8,7 @@
 #include <hosts/abc/abc_host.h>
 
 #include <chronik/native/tx/legacy_tx.h>
+#include <ext/lotus_v2/types.h>
 
 #include <blockindex.h>
 #include <chain.h>
@@ -112,9 +113,9 @@ constexpr bool kV2Outputs = requires(const TxOutT &o) { o.vBranches; };
 /**
  * Script of an output as Chronik indexes it. A Lotus V2 native output (empty
  * or one-byte scriptPubKey with branches) becomes the synthetic native output
- * frame `flags || value LE8 || [token_id] || branches || paths`, byte for
- * byte as the Rust bridge's BridgeTxOutputScript builds it, so the script
- * group keys and responses match Rust.
+ * frame `flags || value LE8 || [token_id] || [state_root] || branches ||
+ * paths`, byte for byte as the Rust bridge's BridgeTxOutputScript builds it,
+ * so the script group keys and responses match Rust.
  */
 template <typename TxOutT> Bytes OutputScript(const TxOutT &output) {
     if constexpr (requires {
@@ -124,7 +125,7 @@ template <typename TxOutT> Bytes OutputScript(const TxOutT &output) {
                       output.vPaths;
                   }) {
         if (output.scriptPubKey.size() <= 1 && !output.vBranches.empty()) {
-            uint8_t flags = output.nFlags & 0x03;
+            uint8_t flags = output.nFlags & 0x07;
             const bool has_token =
                 !output.tokenId.IsNull() || (flags & 1) != 0;
             if (has_token) {
@@ -141,6 +142,15 @@ template <typename TxOutT> Bytes OutputScript(const TxOutT &output) {
             if (has_token) {
                 out.insert(out.end(), output.tokenId.begin(),
                            output.tokenId.end());
+            }
+            if constexpr (requires { output.stateRoot; }) {
+                if (flags & 0x04) {
+                    out.insert(out.end(), output.stateRoot.begin(),
+                               output.stateRoot.end());
+                }
+            } else {
+                flags &= 0x03;
+                out[0] = flags;
             }
             out.push_back(static_cast<uint8_t>(output.vBranches.size()));
             for (const auto &branch : output.vBranches) {
@@ -199,6 +209,32 @@ template <typename TxInT> bool IsMintInput(const TxInT &input) {
         return input.nFlags == 3;
     }
     return false;
+}
+
+/**
+ * The state root of a Lotus V2 HAS_STATE output, or empty: the Rust
+ * make_tx_proto's v2_state_root, which decodes the indexed script as a
+ * canonical V2 output frame (or `0x6a || frame`, see
+ * decode_v2_output_script).
+ */
+Bytes V2StateRoot(ByteView script) {
+    std::optional<lotus_v2::Output> out = lotus_v2::Output::Decode(script);
+    if (!out && script.size() >= 44 && script[0] == 0x6a) {
+        out = lotus_v2::Output::Decode(script.subspan(1));
+    }
+    if (!out || !out->HasState()) {
+        return {};
+    }
+    return Bytes(out->state_root.b.begin(), out->state_root.b.end());
+}
+
+/** Fill the V2 state roots of a transaction's own outputs. */
+void FillV2StateRoots(Tx &tx) {
+    if constexpr (kV2Outputs<CTxOut>) {
+        for (TxOutput &output : tx.outputs) {
+            output.state_root = V2StateRoot(output.script);
+        }
+    }
 }
 
 TxOutput ConvertOutput(const CTxOut &output) {
@@ -262,6 +298,7 @@ Tx ConvertTx(bool is_coinbase, const CTransaction &tx,
     for (const CTxOut &output : tx.vout) {
         out.outputs.push_back(ConvertOutput(output));
     }
+    FillV2StateRoots(out);
     out.locktime = tx.nLockTime;
     if constexpr (kV2Outputs<CTxOut>) {
         // Lotus V2: the Rust Chronik reports the size of the legacy-shaped
@@ -603,6 +640,7 @@ DecodedTx AbcHost::DecodeRawTx(std::span<const uint8_t> raw) const {
                                   CScript(o.script.begin(), o.script.end()));
         }
         out.tx.txid = ToHash(CTransaction(mtx).GetId());
+        FillV2StateRoots(out.tx);
     } else {
         // The txid is that of the decoded fields.
         const Bytes ser = SerializeLegacyTx(out.tx);
