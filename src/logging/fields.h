@@ -192,7 +192,8 @@
     X(InflightLimitBytes, inflight_limit_bytes, UINT, "", "") \
     X(WaitSeconds, wait_seconds, INT, "", "") \
     X(NetworkActive, network_active, BOOL, "", "") \
-    X(WaitMilliseconds, wait_milliseconds, INT, "", "")
+    X(WaitMilliseconds, wait_milliseconds, INT, "", "") \
+    X(SocketDescriptor, socket_descriptor, UINT, "", "")
 
 namespace BCLog {
 
