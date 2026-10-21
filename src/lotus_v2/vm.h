@@ -181,6 +181,12 @@ public:
     PrepareChecked(const Transaction &, const TxProfile &, const ChainId &,
                    const ResolvedCoins &, const VmCostProfile &, std::string &,
                    const IdentityDigests *precomputed_identities = nullptr);
+    // Consume an already-owned projection without copying its witness trees.
+    // The prepared context still owns all bytes for every borrowed invocation.
+    SigningPreparationStatus
+    PrepareChecked(Transaction &&, const TxProfile &, const ChainId &,
+                   const ResolvedCoins &, const VmCostProfile &, std::string &,
+                   const IdentityDigests *precomputed_identities = nullptr);
     bool Prepare(const Transaction &, const TxProfile &, const ChainId &,
                  const ResolvedCoins &, const VmCostProfile &, std::string &);
     // Borrowed contexts are valid until this object is prepared again or
@@ -203,6 +209,9 @@ public:
             &context.chain_id == &chain_ && &context.resolved == &coins_;
     }
 private:
+    SigningPreparationStatus PrepareStoredChecked(
+        const TxProfile &, const ChainId &, const ResolvedCoins &,
+        const VmCostProfile &, std::string &, const IdentityDigests *);
     Transaction tx_;
     TxProfile profile_{};
     ChainId chain_{};
