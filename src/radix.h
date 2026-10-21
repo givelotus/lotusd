@@ -75,6 +75,28 @@ public:
         RCULock::synchronize();
     }
 
+    /**
+     * Explicit contract for copying a stable source tree. The caller must
+     * own/pin the source and guarantee that no source mutation is in flight.
+     * Published immutable sources satisfy this intrinsically. A mutable
+     * source also qualifies while its exclusive writer lock is held through
+     * root sharing; later writes then follow the normal CoW path. Merely
+     * accessing a mutable tree through const is insufficient.
+     *
+     * Unlike the generic copy, no grace period is needed to wait for writers
+     * that entered an unshared source node before its root was shared. There
+     * cannot be such a writer for an immutable published source. Mutating the
+     * resulting tree still follows the normal copy-on-write path.
+     */
+    struct ImmutableSnapshotTag {};
+
+    RadixTree(const RadixTree &src, ImmutableSnapshotTag) : RadixTree() {
+        RCULock lock;
+        RadixElement e = src.root.load();
+        e.incrementRefCount();
+        root = e;
+    }
+
     RadixTree &operator=(const RadixTree &rhs) {
         {
             RCULock lock;
