@@ -2197,7 +2197,34 @@ void PreparedTransactionOwnership() {
 #ifdef LOTUS_V2_VM_TEST_INSTRUMENTATION
     const auto before = VmPreparationWorkCounts();
 #endif
+    CHECK(!prepared.MatchesIdentityAndCoins(Hash{}, chain, coins));
     CHECK(prepared.Prepare(tx, tp, chain, coins, cost, error));
+    const auto txhash = prepared.Signing().Identities().txhash;
+    // Independently allocated wrappers may share preparation only when every
+    // authenticated coin field and the transaction/chain identity agree.
+    const ResolvedCoins independent_coins = coins;
+    CHECK(independent_coins.data() != coins.data());
+    CHECK(prepared.MatchesIdentityAndCoins(txhash, chain, independent_coins));
+    auto other_hash = txhash;
+    other_hash[0] ^= 1;
+    CHECK(!prepared.MatchesIdentityAndCoins(other_hash, chain, coins));
+    auto other_chain = chain;
+    other_chain[0] ^= 1;
+    CHECK(!prepared.MatchesIdentityAndCoins(txhash, other_chain, coins));
+    for (size_t field = 0; field < 8; ++field) {
+        auto changed = coins;
+        switch (field) {
+        case 0: ++changed[0]->value; break;
+        case 1: changed[0]->flags ^= OUTPUT_FLAG_IS_BURN; break;
+        case 2: changed[0]->token_id[0] ^= 1; break;
+        case 3: changed[0]->state_root[0] ^= 1; break;
+        case 4: changed[0]->branches[0][0] ^= 1; break;
+        case 5: changed[0]->paths[0][0] ^= 1; break;
+        case 6: changed[0]->legacy_script = VmBytes{0x51}; break;
+        case 7: changed[0].reset(); break;
+        }
+        CHECK(!prepared.MatchesIdentityAndCoins(txhash, chain, changed));
+    }
     CHECK(prepared.MaxFieldBound(0xe7) > PROFILE.max_element_bytes);
     const auto original_context = VmExecutionContext{tx, tp, chain, coins, 0, 0, std::nullopt};
     const auto original = EvaluateVmCharged(Hex("4e"), {}, PROFILE, cost, 0, 0, &original_context);
