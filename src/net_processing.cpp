@@ -6,6 +6,7 @@
 #include <net/txrelay_index.h>
 #include <net/v2_protocol_handler.h>
 #include <net_processing.h>
+#include <node/snapshot.h>
 
 #include <addrman.h>
 #include <avalanche/compactproofs.h>
@@ -3991,15 +3992,49 @@ PeerManagerImpl::RelayReconSet(const uint256 &context_id) const {
     // still on their way to the peer by announcement, and would only be
     // differences that cost bucket drill-down.
     const auto now{GetTime<std::chrono::microseconds>()};
-    const auto txids{m_txrelay_index.AdmittedSince(
-        now - std::chrono::microseconds{m_opts.txrecon_window},
-        now - 2 * std::chrono::microseconds{m_opts.txrecon_interval})};
+    const auto since = now - std::chrono::microseconds{m_opts.txrecon_window};
+    const auto until =
+        now - 2 * std::chrono::microseconds{m_opts.txrecon_interval};
+    const auto candidates = m_txrelay_index.PinAdmittedSince(since, until);
+    const auto snapshot = node::GetGlobalSnapshotPublisher().Load();
     std::vector<CTransactionRef> txs;
-    txs.reserve(txids.size());
+    txs.reserve(lotus::v2::net::V2PeerProtocolHandler::MAX_SCOPED_TXS);
+    if (snapshot && snapshot->mempool_valid &&
+        snapshot->mempool_ptr == &m_mempool && snapshot->entry_tree) {
+        // Candidate radix order is the same numeric TxId order used by
+        // NormalizeCtorTxList. Resolve membership against one pinned live
+        // view, outside both index and mempool mutexes, and cap only AFTER
+        // checking eligibility. Stale index callbacks cannot hide a later
+        // valid candidate by consuming an early slot in the limit.
+        candidates->forEachLeaf([&](const auto &candidate) {
+            const auto entry = snapshot->entry_tree->getWithinReadSection(
+                Uint256RadixKey(candidate->txid));
+            if (entry && entry->entry.tx && !entry->entry.tx->IsNull() &&
+                !entry->entry.tx->IsCoinBase()) {
+                txs.push_back(entry->entry.tx);
+            }
+            return txs.size() <
+                   lotus::v2::net::V2PeerProtocolHandler::MAX_SCOPED_TXS;
+        });
+        return txs;
+    }
+    // Initialization/test fallback: preserve the original live-pool check
+    // when no published entry tree exists. Normal node operation uses the
+    // immutable views above.
+    std::vector<TxId> ids;
+    candidates->forEachLeaf([&](const auto &candidate) {
+        ids.push_back(candidate->txid);
+        return true;
+    });
     LOCK(m_mempool.cs);
-    for (const TxId &txid : txids) {
-        if (auto tx{m_mempool.get(txid)}) {
-            txs.push_back(std::move(tx));
+    for (const auto &txid : ids) {
+        if (auto tx = m_mempool.get(txid)) {
+            if (!tx->IsNull() && !tx->IsCoinBase()) {
+                txs.push_back(std::move(tx));
+                if (txs.size() ==
+                    lotus::v2::net::V2PeerProtocolHandler::MAX_SCOPED_TXS)
+                    break;
+            }
         }
     }
     return txs;
