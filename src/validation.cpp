@@ -4395,7 +4395,6 @@ CScriptCheck::CheckInput(lotus::v2::DeferredRecords &records) {
             const CTransaction *tx_ptr{nullptr};
             TxHash tx_hash{};
             std::weak_ptr<const V2ResolvedCoins> resolved_wp;
-            lotus::v2::Transaction v2tx;
             lotus::v2::PreparedVmTransaction prepared_vm;
             lotus::v2::SigningPreparationStatus status{
                 lotus::v2::SigningPreparationStatus::InvalidWitness};
@@ -4405,7 +4404,6 @@ CScriptCheck::CheckInput(lotus::v2::DeferredRecords &records) {
         lotus::v2::ResolvedCoins fallback_resolved;
         const lotus::v2::Transaction *v2tx_ptr = nullptr;
         lotus::v2::PreparedVmTransaction *prepared_vm_ptr = nullptr;
-        lotus::v2::Transaction local_v2tx;
         lotus::v2::PreparedVmTransaction local_prepared_vm;
 
         auto extract_known_v2_ids = [&](lotus::v2::IdentityDigests &ids) {
@@ -4422,12 +4420,11 @@ CScriptCheck::CheckInput(lotus::v2::DeferredRecords &records) {
                 tl_cache.tx_ptr = ptxTo;
                 tl_cache.tx_hash = ptxTo->GetHash();
                 tl_cache.resolved_wp = m_resolved_coins;
-                tl_cache.v2tx = ptxTo->ToV2Transaction();
                 lotus::v2::IdentityDigests precomputed_ids{};
                 extract_known_v2_ids(precomputed_ids);
                 std::string prep_err;
                 tl_cache.status = tl_cache.prepared_vm.PrepareChecked(
-                    tl_cache.v2tx, lotus::v2::DefaultTxProfile,
+                    ptxTo->ToV2Transaction(), lotus::v2::DefaultTxProfile,
                     GetActiveV2ChainId(), *m_resolved_coins, kDefaultVmCost,
                     prep_err, &precomputed_ids);
             }
@@ -4435,11 +4432,10 @@ CScriptCheck::CheckInput(lotus::v2::DeferredRecords &records) {
                 return std::make_pair(ScriptError::EVAL_FALSE,
                                       make_debug_str());
             }
-            v2tx_ptr = &tl_cache.v2tx;
+            v2tx_ptr = &tl_cache.prepared_vm.Invocation(0, 0).tx;
             prepared_vm_ptr = &tl_cache.prepared_vm;
         } else {
-            local_v2tx = ptxTo->ToV2Transaction();
-            fallback_resolved.resize(local_v2tx.inputs.size());
+            fallback_resolved.resize(ptxTo->vin.size());
             if (ptxTo->vin[nIn].nFlags == 1 && nIn < fallback_resolved.size()) {
                 fallback_resolved[nIn] = m_tx_out.ToV2Output();
             }
@@ -4447,14 +4443,14 @@ CScriptCheck::CheckInput(lotus::v2::DeferredRecords &records) {
             extract_known_v2_ids(precomputed_ids);
             std::string prep_err;
             if (local_prepared_vm.PrepareChecked(
-                    local_v2tx, lotus::v2::DefaultTxProfile,
+                    ptxTo->ToV2Transaction(), lotus::v2::DefaultTxProfile,
                     GetActiveV2ChainId(), fallback_resolved, kDefaultVmCost,
                     prep_err, &precomputed_ids) !=
                 lotus::v2::SigningPreparationStatus::Ready) {
                 return std::make_pair(ScriptError::EVAL_FALSE,
                                       make_debug_str());
             }
-            v2tx_ptr = &local_v2tx;
+            v2tx_ptr = &local_prepared_vm.Invocation(0, 0).tx;
             prepared_vm_ptr = &local_prepared_vm;
         }
 
