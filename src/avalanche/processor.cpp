@@ -1974,8 +1974,9 @@ void Processor::updatedBlockTip() {
 }
 
 void Processor::transactionAddedToMempool(const CTransactionRef &tx) {
-    if (isPreconsensusActivated(
-            WITH_LOCK(cs_main, return chainman.ActiveTip()))) {
+    // Activation depends on the configured gate and finalized tip, not the
+    // active chain tip. Do not serialize notifications behind chain validation.
+    if (isPreconsensusActivated(nullptr)) {
         addToReconcile(tx);
     }
 }
