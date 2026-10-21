@@ -8,14 +8,15 @@
 #include <consensus/amount.h>
 #include <consensus/params.h>
 #include <feerate.h>
-#include <lotus_v2/tagged_hash.h>
 #include <flatfile.h>
+#include <lotus_v2/tagged_hash.h>
 #include <primitives/block.h>
 #include <primitives/blockhash.h>
 #include <primitives/transaction.h>
 #include <radix.h>
-#include <uint256radixkey.h>
+#include <support/allocators/chunked_slab.h>
 #include <uint256.h>
+#include <uint256radixkey.h>
 #include <util/hasher.h>
 
 #include <algorithm>
@@ -97,11 +98,27 @@ struct ActiveChainSnapshot {
     }
 };
 
+// Use 1024-slot chunks rather than the transaction allocator's larger default.
+// Slab refills may still allocate, and chunks are retained for process
+// lifetime; steady-state snapshot churn reuses slots, including cross-thread
+// RCU frees.
+template <typename T>
+using SnapshotAllocator = GlobalConcurrentSlabAllocator<T, 1024>;
+
 /** An immutable value. Updating an entry creates a new value; readers never
  * retain mutable CTxMemPoolEntry objects. The existing ABC radix tree supplies
  * copy-on-write paths and RCU lifetime management. */
-struct ImmutableMempoolEntry {
+struct ImmutableMempoolEntry final {
     const MempoolEntrySnapshot entry;
+    static void *operator new(std::size_t size) {
+        assert(size == sizeof(ImmutableMempoolEntry));
+        return SnapshotAllocator<ImmutableMempoolEntry>{}.allocate(1);
+    }
+    static void operator delete(void *ptr) noexcept {
+        SnapshotAllocator<ImmutableMempoolEntry>{}.deallocate(
+            static_cast<ImmutableMempoolEntry *>(ptr), 1);
+    }
+
     explicit ImmutableMempoolEntry(MempoolEntrySnapshot value)
         : entry(std::move(value)) {}
     IMPLEMENT_RCU_REFCOUNT(uint32_t);
@@ -111,7 +128,9 @@ struct SnapshotEntryAdapter {
         return value.entry.txid;
     }
 };
-using MempoolSnapshotTree = RadixTree<ImmutableMempoolEntry, SnapshotEntryAdapter>;
+using MempoolSnapshotTree =
+    RadixTree<ImmutableMempoolEntry, SnapshotEntryAdapter,
+              SnapshotAllocator<std::byte>>;
 
 struct MiningTemplateSnapshot {
     MiningTemplateSnapshot() = default;
@@ -131,7 +150,8 @@ struct MiningTemplateSnapshot {
     std::vector<Amount> tx_fees;
     std::vector<int64_t> tx_sigchecks;
     mutable std::vector<std::string> tx_hex;
-    std::shared_ptr<std::mutex> tx_hex_mutex{std::make_shared<std::mutex>()};
+    std::shared_ptr<std::mutex> tx_hex_mutex{
+        std::allocate_shared<std::mutex>(SnapshotAllocator<std::mutex>{})};
     mutable lotus::v2::Hash subtree_a_root{};
     mutable std::vector<lotus::v2::Hash> coinbase_merkle_branch;
     mutable bool roots_ready{false};
@@ -225,7 +245,7 @@ struct ChainAndMempoolSnapshot {
     mutable std::vector<COutPoint> mempool_spent_outpoints;
     mutable bool mempool_vectors_ready{false};
     std::shared_ptr<std::mutex> mempool_vectors_mutex{
-        std::make_shared<std::mutex>()};
+        std::allocate_shared<std::mutex>(SnapshotAllocator<std::mutex>{})};
 
     std::shared_ptr<MiningTemplateCache> mining{std::make_shared<MiningTemplateCache>()};
     bool overlay_all_fit_candidate{false};
