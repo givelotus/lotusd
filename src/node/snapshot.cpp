@@ -18,6 +18,7 @@
 #include <consensus/validation.h>
 #include <crypto/sha256.h>
 #include <lotus_v2/mempool_overlay.h>
+#include <lotus_v2/fee_hysteresis.h>
 #include <node/blockstorage.h>
 #include <policy/policy.h>
 #include <pow/pow.h>
@@ -158,6 +159,16 @@ void PopulateMempoolScalarsLocked(ChainAndMempoolSnapshot &snap,
     snap.transactions_updated = mempool.GetTransactionsUpdated();
     snap.mempool_sequence = mempool.GetSequence();
 
+    const int64_t now_ms =
+        TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
+    if (mempool.fee_policy_worker) {
+        mempool.fee_policy_worker->RecordBacklog(snap.mempool_bytes, now_ms);
+    } else {
+        // Standalone/test pools without a node-owned worker retain synchronous
+        // policy semantics.
+        lotus::v2::GetGlobalFeeHysteresisController().RecordMempoolBacklog(
+            snap.mempool_bytes, now_ms);
+    }
 }
 
 MempoolEntrySnapshot MakeMempoolEntrySnapshot(const CTxMemPoolEntry &e,

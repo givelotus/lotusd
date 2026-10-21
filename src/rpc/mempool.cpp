@@ -102,8 +102,6 @@ static RPCHelpMan sendrawtransaction() {
                 TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
             const auto &fee_ctrl =
                 lotus::v2::GetGlobalFeeHysteresisController();
-            const lotus::v2::FeeRateInfo fee_info =
-                fee_ctrl.GetFeeRateInfo(now_ms);
             const TransactionError err = BroadcastTransaction(
                 node, tx, err_string, max_raw_tx_fee, /*relay*/ true,
                 /*wait_callback*/ true, /*rpc_fee_hysteresis=*/true);
@@ -113,6 +111,7 @@ static RPCHelpMan sendrawtransaction() {
                          std::string::npos ||
                      err_string.find("mempool min fee not met") !=
                          std::string::npos)) {
+                    const auto fee_info = fee_ctrl.GetFeeRateInfo(now_ms);
                     const uint64_t tx_cu =
                         static_cast<uint64_t>(std::max<int64_t>(0, virtual_size));
                     const lotus::v2::FeeCheckResult fee_eval =
