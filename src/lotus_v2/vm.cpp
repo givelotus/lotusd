@@ -2027,8 +2027,12 @@ namespace {
                             if (op == 0xbb) Push(Number(1));
                             break;
                         }
-                        const auto verified = VerifyBip340Signature(
-                            key, signature, message, mint);
+                        const auto *verifier = context->signature_verifier;
+                        const auto verified = verifier && verifier->verify_bip340
+                            ? verifier->verify_bip340(verifier->opaque, key,
+                                                     signature, message, mint)
+                            : VerifyBip340Signature(key, signature, message,
+                                                    mint);
                         if (verified == SignatureStatus::InvalidEncoding ||
                             verified == SignatureStatus::InvalidPublicKey)
                             throw VmFailure("CHECKSIG wire encoding");
