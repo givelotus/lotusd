@@ -7,8 +7,11 @@
 
 #include <primitives/blockhash.h>
 #include <primitives/txid.h>
+#include <radix.h>
+#include <support/allocators/chunked_slab.h>
 #include <sync.h>
 #include <uint256.h>
+#include <uint256radixkey.h>
 #include <util/hasher.h>
 
 #include <atomic>
@@ -137,6 +140,43 @@ public:
     std::vector<TxId> AdmittedSince(Clock since,
                                     Clock until = Clock::max()) const
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    /** Numerically ordered immutable candidate view. No transaction refs or
+     * mempool lock are held by this index. Pinning retains a coherent index
+     * membership view while callers check a separately pinned mempool view.
+     */
+    struct WindowEntry {
+        const TxId txid;
+        explicit WindowEntry(const TxId &id) : txid(id) {}
+        static void *operator new(std::size_t) {
+            return GlobalConcurrentSlabAllocator<WindowEntry, 1024>{}.allocate(
+                1);
+        }
+        static void operator delete(void *p) noexcept {
+            GlobalConcurrentSlabAllocator<WindowEntry, 1024>{}.deallocate(
+                static_cast<WindowEntry *>(p), 1);
+        }
+        IMPLEMENT_RCU_REFCOUNT(uint32_t);
+    };
+    struct WindowEntryAdapter {
+        // Return the numeric key by value. PassthroughAdapter returns auto&&,
+        // which would dangle if forwarded from a temporary key conversion.
+        Uint256RadixKey getId(const WindowEntry &entry) const {
+            return entry.txid;
+        }
+    };
+    using WindowTree =
+        RadixTree<WindowEntry, WindowEntryAdapter,
+                  GlobalConcurrentSlabAllocator<std::byte, 1024>>;
+    /**
+     * Pin the exact AdmittedSince set in numeric txid order. Monotonically
+     * advancing windows update only newly eligible/expired occurrences;
+     * queries do not rescan/sort the entire resident window. Nonmonotonic
+     * queries rebuild, and out-of-order admissions use the legacy scan.
+     */
+    std::shared_ptr<const WindowTree> PinAdmittedSince(Clock since,
+                                                       Clock until) const
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
     /** Forget window entries older than `before` */
     void PruneWindow(Clock before) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
@@ -176,6 +216,21 @@ private:
     std::unique_ptr<Epoch> m_previous GUARDED_BY(m_mutex);
     //! (admission time, txid), in admission order
     std::deque<std::pair<Clock, TxId>> m_window GUARDED_BY(m_mutex);
+    // Numeric cursors survive deque growth; pruning advances its origin.
+    uint64_t m_window_origin GUARDED_BY(m_mutex){0};
+    size_t m_window_inversions GUARDED_BY(m_mutex){0};
+    mutable bool m_query_valid GUARDED_BY(m_mutex){false};
+    mutable Clock m_query_since GUARDED_BY(m_mutex){};
+    mutable Clock m_query_until GUARDED_BY(m_mutex){};
+    mutable uint64_t m_query_lower GUARDED_BY(m_mutex){0};
+    mutable uint64_t m_query_upper GUARDED_BY(m_mutex){0};
+    mutable std::unordered_map<TxId, size_t, SaltedTxIdHasher>
+        m_query_counts GUARDED_BY(m_mutex);
+    mutable WindowTree m_query_tree GUARDED_BY(m_mutex);
+    void AddQueryOccurrence(const TxId &txid) const
+        EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
+    void RemoveQueryOccurrence(const TxId &txid) const
+        EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
     mutable std::atomic<uint64_t> m_collisions{0};
 };
 
