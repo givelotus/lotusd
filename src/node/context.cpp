@@ -3,6 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <node/context.h>
+#include <lotus_v2/fee_hysteresis.h>
 
 #include <addrman.h>
 #include <avalanche/processor.h>

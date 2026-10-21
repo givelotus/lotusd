@@ -62,6 +62,9 @@ class Chainstate;
 class ChainstateManager;
 class ValidationSignals;
 class Config;
+namespace lotus::v2 {
+class FeePolicyWorker;
+} // namespace lotus::v2
 
 namespace Consensus {
 struct Params;
@@ -279,6 +282,10 @@ private:
     std::unique_ptr<TxConflicting> m_conflicting GUARDED_BY(cs_conflicting);
 
 public:
+    // Installed before producer threads start; cleared after they stop. Owned
+    // by NodeContext and outlives this pool (including partial init teardown).
+    lotus::v2::FeePolicyWorker *fee_policy_worker{nullptr};
+
     // public only for testing
     static const int ROLLING_FEE_HALFLIFE = 60 * 60 * 12;
 

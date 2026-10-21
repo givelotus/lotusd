@@ -40,6 +40,7 @@
 #include <interfaces/chain.h>
 #include <interfaces/node.h>
 #include <kernel/caches.h>
+#include <lotus_v2/fee_hysteresis.h>
 #include <mapport.h>
 #include <mempool_args.h>
 #include <net.h>
@@ -409,6 +410,9 @@ void Shutdown(NodeContext &node) {
     }
     node.kernel.reset();
     node.mempool.reset();
+    // Producers have stopped and pool teardown completed; drain the
+    // final local policy samples before joining its node-owned worker.
+    node.fee_policy.reset();
     node.chainman.reset();
     node.validation_signals.reset();
     node.scheduler.reset();
@@ -2852,8 +2856,15 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
     const bool do_reindex_chainstate{
         args.GetBoolArg("-reindex-chainstate", false)};
 
+    node.fee_policy = std::make_unique<lotus::v2::FeePolicyWorker>(
+        lotus::v2::GetGlobalFeeHysteresisController());
+    node.fee_policy->Start();
+
     for (bool fLoaded = false; !fLoaded && !ShutdownRequested();) {
         node.mempool = std::make_unique<CTxMemPool>(config, mempool_opts);
+        node.mempool->fee_policy_worker = node.fee_policy.get();
+        node.fee_policy->RecordBacklog(
+            0, TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now()));
 
         node.chainman = std::make_unique<ChainstateManager>(
             node.kernel->interrupt, chainman_opts, blockman_opts);
