@@ -15,6 +15,9 @@
 #include <boost/test/unit_test.hpp>
 
 #include <limits>
+#include <chrono>
+#include <future>
+#include <thread>
 #include <type_traits>
 
 BOOST_FIXTURE_TEST_SUITE(radix_tests, BasicTestingSetup)
@@ -395,6 +398,75 @@ BOOST_AUTO_TEST_CASE(test_cow) {
     BOOST_CHECK(copyTree.get(91));
     BOOST_CHECK(copyTree.get(92));
     BOOST_CHECK(copyTree.get(93));
+}
+
+BOOST_AUTO_TEST_CASE(immutable_clone_keeps_generic_writer_barrier) {
+    using E = TestElementInt<uint64_t>;
+    using Tree = RadixTree<E>;
+    Tree builder;
+    BOOST_REQUIRE(builder.insert(RCUPtr<E>::make(42)));
+    auto published = std::make_unique<const Tree>(std::move(builder));
+    std::promise<void> generic_started, tagged_started;
+    std::promise<void> generic_complete, tagged_complete;
+    auto generic_ready = generic_complete.get_future();
+    auto tagged_ready = tagged_complete.get_future();
+    std::thread generic_worker, tagged_worker;
+    std::future_status generic_status, tagged_status;
+    {
+        RCULock held_reader;
+        generic_worker = std::thread([&] {
+            generic_started.set_value();
+            Tree copy(*published);
+            generic_complete.set_value();
+        });
+        tagged_worker = std::thread([&] {
+            tagged_started.set_value();
+            Tree copy(*published, Tree::ImmutableSnapshotTag{});
+            // Signal before copy destruction or RCU thread-local teardown:
+            // thread exit may itself need the held reader's grace period.
+            tagged_complete.set_value();
+        });
+        generic_started.get_future().wait();
+        tagged_started.get_future().wait();
+        generic_status = generic_ready.wait_for(std::chrono::milliseconds(100));
+        tagged_status = tagged_ready.wait_for(std::chrono::seconds(1));
+    }
+    // Release the reader unconditionally before joining or any fatal assertion.
+    generic_worker.join();
+    tagged_worker.join();
+    BOOST_CHECK(generic_status == std::future_status::timeout);
+    BOOST_CHECK(tagged_status == std::future_status::ready);
+    BOOST_CHECK(published->get(42));
+}
+
+BOOST_AUTO_TEST_CASE(immutable_snapshot_cow) {
+    using E = TestElementInt<uint64_t>;
+    using Tree = RadixTree<E>;
+    Tree builder;
+    for (uint64_t key = 0; key < 256; ++key) {
+        BOOST_REQUIRE(builder.insert(RCUPtr<E>::make(key)));
+    }
+    // Transfer the only mutable builder into an immutable published owner.
+    auto published = std::make_unique<const Tree>(std::move(builder));
+    Tree first(*published, Tree::ImmutableSnapshotTag{});
+    Tree second(*published, Tree::ImmutableSnapshotTag{});
+    for (uint64_t key = 0; key < 128; ++key) {
+        BOOST_REQUIRE(first.remove(key));
+        BOOST_REQUIRE(second.insert(RCUPtr<E>::make(key + 256)));
+    }
+    for (uint64_t key = 0; key < 256; ++key) {
+        BOOST_CHECK(published->get(key));
+        BOOST_CHECK_EQUAL(bool(first.get(key)), key >= 128);
+        BOOST_CHECK(second.get(key));
+        BOOST_CHECK(!published->get(key + 256));
+    }
+    // Descendant snapshots independently retain shared nodes after the
+    // original publication is released.
+    published.reset();
+    for (uint64_t key = 0; key < 128; ++key) {
+        BOOST_CHECK(second.get(key + 256));
+        BOOST_CHECK(!first.get(key + 256));
+    }
 }
 
 BOOST_AUTO_TEST_CASE(test_move) {

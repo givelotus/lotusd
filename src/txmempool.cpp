@@ -243,6 +243,7 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason) {
     const CTransaction &tx = (*it)->GetTx();
     const TxId &txid = tx.GetId();
     m_overlay_warm.store(false, std::memory_order_relaxed);
+    ++m_snapshot_reset_seq;
     MarkSnapshotEntryChanged(txid);
 
     if (m_snapshot_defer_depth > 0) {
@@ -431,6 +432,7 @@ void CTxMemPool::removeForFinalizedBlock(
 void CTxMemPool::_clear() {
     m_snapshot_changed_entries.clear();
     m_snapshot_needs_reset = true;
+    ++m_snapshot_reset_seq;
     m_pending_overlay_adds.clear();
     m_pending_overlay_removes.clear();
     m_merklix_overlay.Clear();
@@ -980,6 +982,7 @@ void CTxMemPool::PrioritiseTransaction(const TxId &txid,
                 e->UpdateModifiedFee(nFeeDelta);
             });
             ++nTransactionsUpdated;
+            ++m_snapshot_reset_seq;
             MarkSnapshotEntryChanged(txid);
         }
         node::PublishMempoolSnapshot(*this);
@@ -1001,6 +1004,7 @@ void CTxMemPool::ApplyDelta(const TxId &txid, Amount &nFeeDelta) const {
 void CTxMemPool::ClearPrioritisation(const TxId &txid) {
     AssertLockHeld(cs);
     if (mapDeltas.erase(txid) > 0) {
+        ++m_snapshot_reset_seq;
         MarkSnapshotEntryChanged(txid);
         node::PublishMempoolSnapshot(*this);
     }
@@ -1140,7 +1144,7 @@ CTxMemPool::ScopedSnapshotDefer::~ScopedSnapshotDefer() {
     AssertLockHeld(m_pool.cs);
     assert(m_pool.m_snapshot_defer_depth > 0);
     if (--m_pool.m_snapshot_defer_depth == 0) {
-        if (m_pool.m_snapshot_dirty) {
+        if (m_pool.m_snapshot_dirty && m_flush_on_exit) {
             m_pool.m_snapshot_dirty = false;
             node::PublishMempoolSnapshot(m_pool);
         }
