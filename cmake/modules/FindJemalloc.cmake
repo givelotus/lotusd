@@ -20,7 +20,12 @@
 #   Jemalloc::jemalloc
 
 find_package(PkgConfig)
-pkg_check_modules(PC_Jemalloc QUIET libjemalloc)
+pkg_check_modules(PC_Jemalloc QUIET jemalloc)
+if(NOT PC_Jemalloc_FOUND)
+	pkg_check_modules(PC_Jemalloc QUIET libjemalloc)
+endif()
+
+option(Jemalloc_USE_STATIC_LIBS "Prefer a static jemalloc archive" ON)
 
 include(BrewHelper)
 find_brew_prefix(_Jemalloc_BREW_HINT jemalloc)
@@ -64,17 +69,41 @@ if(Jemalloc_INCLUDE_DIR)
 	set(THREADS_PREFER_PTHREAD_FLAG ON)
 	find_package(Threads REQUIRED)
 
+	# Prefer the PIC archive for shared-library consumers as well as executables.
+	# A system installation without static archives can still use the shared library.
+	set(_Jemalloc_LIBRARY_SUFFIXES ${CMAKE_FIND_LIBRARY_SUFFIXES})
+	set(_Jemalloc_LIBRARY_NAMES jemalloc)
+	if(Jemalloc_USE_STATIC_LIBS)
+		list(PREPEND CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+		list(PREPEND _Jemalloc_LIBRARY_NAMES jemalloc_pic)
+		list(REMOVE_DUPLICATES CMAKE_FIND_LIBRARY_SUFFIXES)
+	endif()
+
 	find_component(Jemalloc jemalloc
-		NAMES jemalloc_pic jemalloc
+		NAMES ${_Jemalloc_LIBRARY_NAMES}
 		HINTS "${_Jemalloc_BREW_HINT}"
 		INCLUDE_DIRS ${Jemalloc_INCLUDE_DIRS}
 		PATHS ${PC_Jemalloc_LIBRARY_DIRS}
 		INTERFACE_LINK_LIBRARIES "$<$<NOT:$<PLATFORM_ID:Windows>>:m>" Threads::Threads
 	)
 
+	set(CMAKE_FIND_LIBRARY_SUFFIXES ${_Jemalloc_LIBRARY_SUFFIXES})
+
 	# jemalloc might be built with or without libdl support. Check if the link
 	# succeeds without -ldl, and add the flag otherwise.
 	if(TARGET Jemalloc::jemalloc)
+		if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND Jemalloc_jemalloc_LIBRARY MATCHES "\\.a$")
+			# The archive's otherwise-unreferenced zone constructor must run so
+			# allocations crossing dylib/libc++ boundaries use the same allocator.
+			# Merely resolving malloc from the archive leaves libSystem's default
+			# zone active and can crash when the other allocator frees a pointer.
+			set_property(TARGET Jemalloc::jemalloc APPEND PROPERTY
+				INTERFACE_LINK_OPTIONS "LINKER:-force_load,${Jemalloc_jemalloc_LIBRARY}")
+			# Whole-archive linking also retains the C++ new/delete overrides.
+			set_property(TARGET Jemalloc::jemalloc APPEND PROPERTY
+				INTERFACE_LINK_LIBRARIES c++)
+		endif()
+
 		try_compile(_Jemalloc_BUILD_WITHOUT_DL
 			${CMAKE_BINARY_DIR}
 			"${CMAKE_SOURCE_DIR}/cmake/utils/CheckJemallocBuilds.c"
@@ -109,7 +138,7 @@ endif()
 
 include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(Jemalloc
-	REQUIRED_VARS Jemalloc_INCLUDE_DIR
+	REQUIRED_VARS Jemalloc_INCLUDE_DIR Jemalloc_jemalloc_LIBRARY
 	VERSION_VAR Jemalloc_VERSION
 	REASON_FAILURE_MESSAGE "this is an optional dependency that can be disabled by passing -DUSE_JEMALLOC=OFF to the cmake command line"
 	HANDLE_COMPONENTS
