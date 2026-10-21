@@ -17,6 +17,7 @@
 #include <atomic>
 #include <cstddef>
 #include <shared_mutex>
+#include <span>
 #include <vector>
 
 class CPubKey;
@@ -64,6 +65,14 @@ public:
     void ComputeEntry(uint256 &entry, const uint256 &hash,
                       const std::vector<uint8_t> &vchSig,
                       const CPubKey &pubkey) const;
+
+    // Native BIP340 has a separate domain and binds the complete wire signature,
+    // x-only key, derived message and mint encoding rules. No script verdict.
+    void ComputeBip340Entry(uint256 &entry,
+                            const std::array<uint8_t, 32> &message,
+                            std::span<const uint8_t> signature,
+                            std::span<const uint8_t> public_key,
+                            bool mint) const;
 
     bool Get(const uint256 &entry, const bool erase);
 
