@@ -78,6 +78,16 @@ bool AddVmAssetTotal(VmAssetTotalsMap &totals, const Output &output,
 bool ComputeVmAssetTotals(const Transaction &tx, const ResolvedCoins &resolved,
                           VmAssetTotalsMap &totals, std::string &error);
 
+// Optional host-owned crypto verification, valid only during a synchronous VM
+// invocation. Never retained by PreparedVmTransaction. A host may memoize only
+// the exact signature/key/message operation; VM/context checks still run.
+struct VmSignatureVerifier {
+    void *opaque = nullptr;
+    SignatureStatus (*verify_bip340)(void *, std::span<const uint8_t>,
+                                    std::span<const uint8_t>, const Hash &,
+                                    bool) = nullptr;
+};
+
 struct VmExecutionContext {
     const Transaction &tx;
     const TxProfile &tx_profile;
@@ -94,6 +104,7 @@ struct VmExecutionContext {
     // it is never stored in a PreparedVmTransaction, which is cached and
     // reused across runs.
     DeferredRecords *effects = nullptr;
+    const VmSignatureVerifier *signature_verifier = nullptr;
 };
 
 struct VmOpcodeCost {

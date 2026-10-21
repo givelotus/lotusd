@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <future>
+#include <optional>
 #include <policy/policy.h>
 #include <script/scriptcache.h>
 #include <script/sighashtype.h>
@@ -23,6 +24,7 @@
 #include <test/lcg.h>
 #include <test/sigutil.h>
 #include <test/util/setup_common.h>
+#include <test/util/metrics.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -418,12 +420,148 @@ BOOST_FIXTURE_TEST_CASE(native_bip340_execution_cache,
                                      &good_still_cached));
     BOOST_CHECK(good_still_cached.empty());
 
-    // This covers BIP340 VM execution caching, not an individual-signature
-    // cache: the native VM does not use the legacy SignatureCache path.
+    // Whole-VM execution caching is distinct from the individual native
+    // signature cache exercised below.
     const auto accepted = m_node.chainman->ProcessTransaction(MakeTransactionRef(good_mtx));
     BOOST_REQUIRE_MESSAGE(
         accepted.m_result_type == MempoolAcceptResult::ResultType::VALID,
         accepted.m_state.ToString());
+}
+
+BOOST_FIXTURE_TEST_CASE(native_bip340_signature_cache,
+                        NativeValidationCacheSetup) {
+    using namespace lotus::v2;
+    const auto good_mtx = NativeSpend({{m_coinbase_txns[0], 0}}, {COIN});
+    const CTransaction good(good_mtx);
+    const auto &signature = good.vin[0].vWitnesses[0].arguments[0];
+    const std::span<const uint8_t> key(good.vin[0].vWitnesses[0].script.data() + 1, 32);
+    const PrecomputedTransactionData data(good);
+    LOCK(cs_main);
+    auto &view = m_node.chainman->ActiveChainstate().CoinsTip();
+    const auto &coin = view.AccessCoin(good.vin[0].prevout);
+    BOOST_REQUIRE(!coin.IsSpent());
+    ResolvedCoins resolved{coin.GetTxOut().ToV2Output()};
+    PreparedSigningContext prepared;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(PrepareSigningContext(
+        good.ToV2Transaction(), DefaultTxProfile, GetActiveV2ChainId(),
+        resolved, prepared, error), error);
+    lotus::v2::Hash message{};
+    BOOST_REQUIRE_MESSAGE(SigningMessage(prepared, 0, 0, 0, std::nullopt,
+                                         message, error), error);
+    ValidationCache cache(1 << 20, 1 << 20);
+    uint256 entry;
+    cache.m_signature_cache.ComputeBip340Entry(entry, message, signature,
+                                               key, false);
+    BOOST_CHECK(!cache.m_signature_cache.Get(entry, false));
+    ScopedNodeMetrics metrics;
+    const uint32_t consensus_flags =
+        SCRIPT_VERIFY_P2SH | SCRIPT_ENABLE_SIGHASH_FORKID;
+    const uint32_t policy_flags = consensus_flags | SCRIPT_VERIFY_NULLFAIL;
+    int sigchecks;
+    TxValidationState state;
+    const auto cold_misses = metrics.m.validation_cache_lookups.Value(1);
+    // No whole-script cache: both flag sets really execute the VM.
+    BOOST_REQUIRE(CheckInputScripts(good, state, view, policy_flags, true,
+                                     false, data, cache, sigchecks, nullptr));
+    BOOST_CHECK_EQUAL(metrics.m.validation_cache_lookups.Value(1), cold_misses + 1);
+    BOOST_CHECK(cache.m_signature_cache.Get(entry, false));
+    const auto warm_hits = metrics.m.validation_cache_lookups.Value(0);
+    BOOST_REQUIRE(CheckInputScripts(good, state, view, consensus_flags, true,
+                                     false, data, cache, sigchecks, nullptr));
+    BOOST_CHECK_EQUAL(metrics.m.validation_cache_lookups.Value(0), warm_hits + 1);
+
+    // A valid cached signature is not a verdict for another coin context.
+    CCoinsViewCache changed_view(&view);
+    auto changed_output = coin.GetTxOut();
+    changed_output.nValue -= SATOSHI;
+    changed_output.scriptPubKey = CTxOut::V2ScriptPubKey(changed_output.ToV2Output());
+    changed_view.AddCoin(good.vin[0].prevout,
+        ::Coin(changed_output, coin.GetHeight(), coin.IsCoinBase(),
+             coin.GetFeePerOutput(), coin.GetExpirationHeight()), true);
+    TxValidationState changed_state;
+    BOOST_CHECK(!CheckInputScripts(good, changed_state, changed_view,
+        consensus_flags, true, false, data, cache, sigchecks, nullptr));
+    BOOST_CHECK(changed_state.GetResult() == TxValidationResult::TX_CONSENSUS);
+
+    auto bad_mtx = good_mtx;
+    bad_mtx.vin[0].vWitnesses[0].arguments[0][10] ^= 1;
+    const CTransaction bad(bad_mtx);
+    uint256 bad_entry;
+    cache.m_signature_cache.ComputeBip340Entry(bad_entry, message,
+        bad.vin[0].vWitnesses[0].arguments[0], key, false);
+    BOOST_CHECK(bad_entry != entry);
+    TxValidationState bad_state;
+    const PrecomputedTransactionData bad_data(bad);
+    BOOST_CHECK(!CheckInputScripts(bad, bad_state, view, consensus_flags,
+        true, false, bad_data, cache, sigchecks, nullptr));
+    BOOST_CHECK(!cache.m_signature_cache.Get(bad_entry, false));
+
+    auto encoded_mtx = good_mtx;
+    encoded_mtx.vin[0].vWitnesses[0].arguments[0].push_back(0);
+    const CTransaction encoded(encoded_mtx);
+    TxValidationState encoded_state;
+    const PrecomputedTransactionData encoded_data(encoded);
+    BOOST_CHECK(!CheckInputScripts(encoded, encoded_state, view,
+        consensus_flags, true, false, encoded_data, cache, sigchecks, nullptr));
+
+    auto other_message = message;
+    other_message[0] ^= 1;
+    uint256 other_entry;
+    cache.m_signature_cache.ComputeBip340Entry(other_entry, other_message,
+                                               signature, key, false);
+    BOOST_CHECK(!cache.m_signature_cache.Get(other_entry, false));
+    auto other_key = std::vector<uint8_t>(key.begin(), key.end());
+    other_key[0] ^= 1;
+    cache.m_signature_cache.ComputeBip340Entry(other_entry, message,
+                                               signature, other_key, false);
+    BOOST_CHECK(!cache.m_signature_cache.Get(other_entry, false));
+    cache.m_signature_cache.ComputeBip340Entry(other_entry, message,
+                                               signature, key, true);
+    BOOST_CHECK(!cache.m_signature_cache.Get(other_entry, false));
+    uint256 message256;
+    std::copy(message.begin(), message.end(), message256.begin());
+    cache.m_signature_cache.ComputeEntry(other_entry, message256, signature,
+                                         coinbaseKey.GetPubKey());
+    BOOST_CHECK(other_entry != entry);
+
+    // Non-storing verification may consume cache entries, but a miss must not
+    // populate a new entry. Retain the existing store/erase API semantics.
+    ValidationCache nonstoring(1 << 20, 1 << 20);
+    nonstoring.m_signature_cache.ComputeBip340Entry(other_entry, message,
+                                                   signature, key, false);
+    TxValidationState uncached_state;
+    BOOST_REQUIRE(CheckInputScripts(good, uncached_state, view,
+        consensus_flags, false, false, data, nonstoring, sigchecks, nullptr));
+    BOOST_CHECK(!nonstoring.m_signature_cache.Get(other_entry, false));
+    BOOST_CHECK(cache.m_signature_cache.Get(entry, false));
+
+    // A live coin wrapper does not keep the transaction object alive. The
+    // same address can hold a different immutable transaction on a later run.
+    // Keep the input witness unchanged but alter a signed output: stale VM
+    // preparation would verify the original message and accept it incorrectly.
+    const auto live_resolved =
+        std::make_shared<const CScriptCheck::V2ResolvedCoins>(resolved);
+    std::optional<CTransaction> reused_address;
+    reused_address.emplace(good_mtx);
+    const CTransaction *original_address = &*reused_address;
+    const TxHash original_hash = reused_address->GetHash();
+    auto check_at_address = [&] {
+        CScriptCheck check(coin.GetTxOut(), *reused_address,
+            cache.m_signature_cache, 0, consensus_flags, true,
+            reused_address->GetPrecomputedData(), nullptr, nullptr,
+            live_resolved);
+        return check();
+    };
+    BOOST_REQUIRE(!check_at_address().has_value());
+    auto changed_mtx = good_mtx;
+    changed_mtx.vout[0].nValue -= SATOSHI;
+    changed_mtx.vout[0].scriptPubKey =
+        CTxOut::V2ScriptPubKey(changed_mtx.vout[0].ToV2Output());
+    reused_address.emplace(changed_mtx);
+    BOOST_REQUIRE(&*reused_address == original_address);
+    BOOST_REQUIRE(reused_address->GetHash() != original_hash);
+    BOOST_CHECK(check_at_address().has_value());
 }
 
 BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {

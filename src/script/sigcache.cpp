@@ -108,6 +108,28 @@ void SignatureCache::ComputeEntry(uint256 &entry, const uint256 &hash,
         .Finalize(entry.begin());
 }
 
+void SignatureCache::ComputeBip340Entry(
+    uint256 &entry, const std::array<uint8_t, 32> &message,
+    std::span<const uint8_t> signature,
+    std::span<const uint8_t> public_key, bool mint) const {
+    // A full domain block also separates this preimage from valid legacy
+    // cache entries, whose key/signature encodings are shorter. The existing
+    // per-cache random salt and bounded shared/TLS storage are retained.
+    static constexpr std::array<uint8_t, 64> domain{
+        'L', 'o', 't', 'u', 's', ' ', 'V', '2', ' ', 'B', 'I', 'P', '3', '4', '0'};
+    std::array<uint8_t, 17> framing{};
+    WriteLE64(framing.data(), public_key.size());
+    WriteLE64(framing.data() + 8, signature.size());
+    framing[16] = mint;
+    CSHA256 hasher = m_salted_hasher;
+    hasher.Write(domain.data(), domain.size())
+        .Write(framing.data(), framing.size())
+        .Write(message.data(), message.size())
+        .Write(public_key.data(), public_key.size())
+        .Write(signature.data(), signature.size())
+        .Finalize(entry.begin());
+}
+
 bool SignatureCache::Get(const uint256 &entry, const bool erase) {
     if (!erase && g_tls_sigcache.Contains(this, entry)) {
         node::CountValidationCacheLookup(/*script_execution=*/false, true);
