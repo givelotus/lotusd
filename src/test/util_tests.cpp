@@ -20,6 +20,11 @@
 #include <util/fs_helpers.h>
 #include <util/moneystr.h>
 #include <util/overflow.h>
+#include <util/parallel_range.h>
+
+#include <atomic>
+#include <future>
+#include <stdexcept>
 #include <util/strencodings.h>
 #include <util/string.h>
 #include <util/time.h>
@@ -3288,6 +3293,63 @@ BOOST_AUTO_TEST_CASE(mib_string_literal_test) {
         operator""_MiB(static_cast<unsigned long long>(max_mib) + 1),
         std::overflow_error,
         HasReason("MiB value too large for size_t byte conversion"));
+}
+
+BOOST_AUTO_TEST_CASE(parallel_range_reuses_workers_and_drains_errors) {
+    util::ParallelRangeExecutor executor(2);
+    std::atomic<size_t> visits{0};
+    std::atomic<size_t> new_threads{0};
+    for (size_t pass = 0; pass < 4; ++pass) {
+        executor.Run(64, 8, [&](size_t begin, size_t end) {
+            // A new thread has fresh TLS even when its OS thread ID is reused.
+            thread_local const void *seen = nullptr;
+            if (seen != &executor) {
+                seen = &executor;
+                ++new_threads;
+            }
+            visits += end - begin;
+        });
+    }
+    BOOST_CHECK_EQUAL(visits.load(), 256);
+    BOOST_CHECK_EQUAL(new_threads.load(),
+                      std::min<size_t>(2, std::max<size_t>(1,
+                          std::thread::hardware_concurrency())));
+    BOOST_CHECK_THROW(executor.Run(64, 8, [](size_t begin, size_t) {
+        if (begin != 0) throw std::runtime_error("worker failure");
+        throw std::runtime_error("caller failure");
+    }), std::runtime_error);
+    visits = 0;
+    std::atomic<size_t> bad_nested_ranges{0};
+    executor.Run(65, 8, [&](size_t begin, size_t end) {
+        visits += end - begin;
+        executor.Run(3, 1, [&](size_t nested_begin, size_t nested_end) {
+            if (nested_begin != 0 || nested_end != 3) ++bad_nested_ranges;
+        });
+    });
+    BOOST_CHECK_EQUAL(visits.load(), 65);
+    BOOST_CHECK_EQUAL(bad_nested_ranges.load(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(parallel_range_contended_submission_runs_on_caller) {
+    util::ParallelRangeExecutor executor(2);
+    std::promise<void> started, release;
+    auto released = release.get_future().share();
+    std::thread first([&] {
+        executor.Run(64, 8, [&](size_t begin, size_t) {
+            if (begin == 0) started.set_value();
+            released.wait();
+        });
+    });
+    started.get_future().wait();
+    const auto caller = std::this_thread::get_id();
+    size_t visits = 0;
+    executor.Run(64, 8, [&](size_t begin, size_t end) {
+        BOOST_CHECK(std::this_thread::get_id() == caller);
+        visits += end - begin;
+    });
+    release.set_value();
+    first.join();
+    BOOST_CHECK_EQUAL(visits, 64);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
