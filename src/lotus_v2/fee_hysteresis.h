@@ -5,11 +5,15 @@
 #ifndef LOTUS_V2_FEE_HYSTERESIS_H
 #define LOTUS_V2_FEE_HYSTERESIS_H
 
+#include <atomic>
+#include <boost/lockfree/queue.hpp>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
-#include <mutex>
 #include <map>
+#include <mutex>
 #include <primitives/blockhash.h>
+#include <thread>
 
 class CBlockIndex;
 class Config;
@@ -79,6 +83,8 @@ struct FeeCheckResult {
     uint64_t recommended_sdk_fee_sats = 0;
 };
 
+class FeePolicyWorker;
+
 class FeeHysteresisController {
 public:
     explicit FeeHysteresisController(
@@ -101,7 +107,8 @@ public:
     uint64_t UpdateCongestion(uint64_t active_utilization,
                               uint64_t target_capacity, int64_t now_ms);
     uint64_t RecordConnectedBlock(uint64_t block_size_bytes, int64_t now_ms);
-    /** Publish active ancestry only; callers hold cs_main. Cache misses rebuild deterministically. */
+    /** Publish active ancestry only; callers hold cs_main. Cache misses rebuild
+     * deterministically. */
     void SyncActiveTip(const CBlockIndex *tip, int64_t now_ms);
     void RecordMempoolBacklog(uint64_t mempool_bytes, int64_t now_ms);
     void SetRpcAdmissionRatePerKCu(uint64_t rpc_rate_per_kcu, int64_t now_ms);
@@ -120,6 +127,21 @@ public:
         uint64_t ema_min = DEFAULT_BURN_EMA_MIN) noexcept;
 
 private:
+    friend class FeePolicyWorker;
+    friend struct FeePolicyTestAccess;
+    FeeRateInfo ComputeFeeRateInfo(int64_t now_ms) const;
+    void PublishPolicy(int64_t now_ms);
+    void SetRpcAdmissionRateLocked(uint64_t rate, int64_t now_ms);
+    uint64_t UpdateCongestionLocked(uint64_t utilization, uint64_t capacity,
+                                    int64_t now_ms);
+    void RecordBacklogForGeneration(uint64_t bytes, int64_t now_ms,
+                                    uint64_t generation);
+    std::atomic<uint64_t> policy_generation_{0};
+    std::atomic<uint64_t> published_rpc_rate_{DEFAULT_CONSENSUS_FLOOR_PER_KCU};
+    std::atomic<bool> asynchronous_policy_{false};
+    mutable std::mutex publication_mutex_;
+    FeeRateInfo published_info_;
+
     struct RateSample {
         int64_t timestamp_ms = 0;
         uint64_t rpc_rate_per_kcu = DEFAULT_CONSENSUS_FLOOR_PER_KCU;
@@ -147,9 +169,47 @@ private:
     uint64_t mempool_backlog_bytes_ = 0;
 };
 
+/** Node-owned local admission policy worker. Never owns chain or mempool
+ * objects. Producers enqueue absolute backlog samples without allocation or
+ * waiting for the consumer. On overflow an old queued sample is evicted to
+ * retain the newest absolute total; lost samples cannot accumulate lost
+ * admit/remove deltas. Consensus EMA remains synchronous.
+ */
+class FeePolicyWorker {
+public:
+    explicit FeePolicyWorker(FeeHysteresisController &controller);
+    ~FeePolicyWorker();
+    void Start();
+    void Stop();
+    void RecordBacklog(uint64_t bytes, int64_t now_ms) noexcept;
+    uint64_t DroppedSamples() const noexcept {
+        return dropped_.load(std::memory_order_relaxed);
+    }
+    uint64_t Failures() const noexcept {
+        return failures_.load(std::memory_order_relaxed);
+    }
+
+private:
+    struct Sample {
+        uint64_t bytes;
+        int64_t timestamp_ms;
+        uint64_t generation;
+    };
+    void Run();
+    FeeHysteresisController &controller_;
+    boost::lockfree::queue<Sample, boost::lockfree::capacity<1024>> queue_;
+    std::atomic<uint64_t> dropped_{0};
+    std::atomic<uint64_t> failures_{0};
+    std::atomic<bool> stopping_{false};
+    std::mutex wake_mutex_;
+    std::condition_variable wake_;
+    std::thread thread_;
+};
+
 FeeHysteresisController &GetGlobalFeeHysteresisController();
 
-/** Resource bound for block-bearing messages and raw disk payloads, with 256 KiB headroom. */
+/** Resource bound for block-bearing messages and raw disk payloads, with 256
+ * KiB headroom. */
 uint64_t GetBlockPayloadLimit(const Config &config);
 
 } // namespace lotus::v2
