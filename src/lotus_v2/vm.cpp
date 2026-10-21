@@ -2804,6 +2804,35 @@ SigningPreparationStatus PreparedVmTransaction::PrepareChecked(
     try {
         ready_ = false;
         tx_ = tx;
+        return PrepareStoredChecked(profile, chain, coins, cost, error,
+                                    precomputed_identities);
+    } catch (const std::exception &exception) {
+        ready_ = false;
+        error = exception.what();
+        return SigningPreparationStatus::OperationalError;
+    }
+}
+
+SigningPreparationStatus PreparedVmTransaction::PrepareChecked(
+    Transaction &&tx, const TxProfile &profile, const ChainId &chain,
+    const ResolvedCoins &coins, const VmCostProfile &cost, std::string &error,
+    const IdentityDigests *precomputed_identities) {
+    try {
+        ready_ = false;
+        tx_ = std::move(tx);
+        return PrepareStoredChecked(profile, chain, coins, cost, error,
+                                    precomputed_identities);
+    } catch (const std::exception &exception) {
+        error = exception.what();
+        return SigningPreparationStatus::OperationalError;
+    }
+}
+
+SigningPreparationStatus PreparedVmTransaction::PrepareStoredChecked(
+    const TxProfile &profile, const ChainId &chain, const ResolvedCoins &coins,
+    const VmCostProfile &cost, std::string &error,
+    const IdentityDigests *precomputed_identities) {
+    try {
         profile_ = profile;
         chain_ = chain;
         coins_ = coins;
