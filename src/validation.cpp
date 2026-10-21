@@ -1452,20 +1452,22 @@ MemPoolAccept::AcceptSingleTransaction(const CTransactionRef &ptx,
     if (args.m_limits.rpc_fee_hysteresis) {
         const auto now = TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
         const auto &controller = lotus::v2::GetGlobalFeeHysteresisController();
-        const auto info = controller.GetFeeRateInfo(now);
-        if (info.rpc_admission_feerate_per_kcu > info.consensus_floor_per_kcu) {
-            const auto check = controller.EvaluateTransactionFee(
-                lotus::v2::FeeTier::RpcAdmission, ws.m_vsize,
-                std::max<int64_t>(0, ws.m_base_fees / SATOSHI), now);
-            if (!check.accepted) {
-                ws.m_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY,
-                    "rpc-fee-hysteresis-insufficient",
-                    strprintf("required_fee_sats=%u, required_rate_per_kcu=%u, "
-                              "recommended_sdk_feerate_per_kcu=%u, recommended_sdk_fee_sats=%u",
-                              check.required_fee_sats, check.required_rate_per_kcu,
-                              info.recommended_sdk_feerate_per_kcu, check.recommended_sdk_fee_sats));
-                return MempoolAcceptResult::Failure(ws.m_state);
-            }
+        const uint64_t rate = controller.GetRpcAdmissionRatePerKCu(now);
+        const uint64_t required = lotus::v2::FeeHysteresisController::ComputeFeeForCu(ws.m_vsize, rate);
+        if (rate > controller.GetConsensusFloorPerKCu() &&
+            uint64_t(std::max<int64_t>(0, ws.m_base_fees / SATOSHI)) < required) {
+            // Only rejection diagnostics need the wider coherent policy view.
+            const auto info = controller.GetFeeRateInfo(now);
+            const uint64_t recommended = std::max(required,
+                lotus::v2::FeeHysteresisController::ComputeFeeForCu(
+                    ws.m_vsize, info.recommended_sdk_feerate_per_kcu));
+            ws.m_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY,
+                "rpc-fee-hysteresis-insufficient",
+                strprintf("required_fee_sats=%u, required_rate_per_kcu=%u, "
+                          "recommended_sdk_feerate_per_kcu=%u, recommended_sdk_fee_sats=%u",
+                          required, rate, info.recommended_sdk_feerate_per_kcu,
+                          recommended));
+            return MempoolAcceptResult::Failure(ws.m_state);
         }
     }
 
