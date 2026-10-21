@@ -460,6 +460,16 @@ BOOST_AUTO_TEST_CASE(immutable_snapshot_cow) {
         BOOST_CHECK(second.get(key));
         BOOST_CHECK(!published->get(key + 256));
     }
+    // A join traverses one pinned view and looks up a second view using the
+    // existing read guard, without nesting RCU read sections.
+    const Tree &second_view = second;
+    size_t joined{0};
+    first.forEachLeaf([&](const auto &entry) {
+        BOOST_CHECK(second_view.getWithinReadSection(entry->getId()));
+        ++joined;
+        return true;
+    });
+    BOOST_CHECK_EQUAL(joined, 128U);
     // Descendant snapshots independently retain shared nodes after the
     // original publication is released.
     published.reset();
