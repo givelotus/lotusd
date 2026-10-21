@@ -49,13 +49,9 @@ set(OS_WITH_JEMALLOC_AS_SYSTEM_DEFAULT
 	"FreeBSD"
 	"NetBSD"
 )
-if(NOT CMAKE_SYSTEM_NAME IN_LIST OS_WITH_JEMALLOC_AS_SYSTEM_DEFAULT)
-	set(USE_JEMALLOC_DEFAULT ON)
-endif()
-
-# FIXME: Building against jemalloc causes the software to segfault on OSX.
-# See https://github.com/Bitcoin-ABC/bitcoin-abc/issues/401
-if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin" AND NOT CMAKE_CROSSCOMPILING)
+set(USE_JEMALLOC_DEFAULT ON)
+if(CMAKE_SYSTEM_NAME IN_LIST OS_WITH_JEMALLOC_AS_SYSTEM_DEFAULT)
+	# These systems already provide jemalloc through libc.
 	set(USE_JEMALLOC_DEFAULT OFF)
 endif()
 
@@ -311,7 +307,8 @@ if(USE_JEMALLOC)
 		message(WARNING "Jemalloc is incompatible with the sanitizers and has been disabled.")
 	else()
 		find_package(Jemalloc 3.6.0 REQUIRED)
-		link_libraries(Jemalloc::jemalloc)
+		# Install the allocator into executables, not embeddable shared libraries.
+		link_libraries("$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>:Jemalloc::jemalloc>")
 	endif()
 endif()
 
@@ -454,6 +451,7 @@ target_include_directories(util
 if(CMAKE_CROSSCOMPILING AND USE_JEMALLOC AND CMAKE_CROSSCOMPILING_EMULATOR MATCHES "qemu-.+")
 	message(WARNING "Overriding Jemalloc malloc_message() function for use with QEMU.")
 	target_sources(util PRIVATE jemalloc_message.cpp)
+	target_include_directories(util PRIVATE ${Jemalloc_INCLUDE_DIRS})
 endif()
 
 set(Boost_USE_STATIC_LIBS ON)
