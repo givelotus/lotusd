@@ -131,9 +131,14 @@ void TxRelayIndex::SetEpoch(const EpochKey &key,
                 window.begin(), window.end(),
                 [](const auto &a, const auto &b) { return a.first < b.first; });
             m_window.assign(window.begin(), window.end());
+            m_window_inversions = 0;
         }
         m_previous = std::move(m_current);
         m_current = std::move(epoch);
+        // Epoch membership has changed, and first-epoch construction may have
+        // reordered/backfilled the admission window.
+        m_query_valid = false;
+
     } catch (...) {
         LOCK(m_mutex);
         m_rebuilding = false;
@@ -201,6 +206,13 @@ void TxRelayIndex::Add(const TxId &txid, Clock time) {
         }
         InsertUnlocked(*m_current, txid);
     }
+    if (m_query_valid && m_query_counts.count(txid)) {
+        m_query_tree.insert(RCUPtr<WindowEntry>::make(txid));
+    }
+    if (!m_window.empty() && time < m_window.back().first) {
+        ++m_window_inversions;
+        m_query_valid = false;
+    }
     m_window.emplace_back(time, txid);
 }
 
@@ -225,6 +237,9 @@ void TxRelayIndex::Remove(const TxId &txid) {
     RecordEpochChange(txid, false);
     if (m_current) {
         RemoveFromEpoch(*m_current, txid);
+    }
+    if (m_query_valid) {
+        m_query_tree.remove(Uint256RadixKey(txid));
     }
 }
 
@@ -268,10 +283,93 @@ std::vector<TxId> TxRelayIndex::AdmittedSince(Clock since, Clock until) const {
     return out;
 }
 
+void TxRelayIndex::AddQueryOccurrence(const TxId &txid) const {
+    AssertLockHeld(m_mutex);
+    if (++m_query_counts[txid] == 1 && m_current->short_id_of.count(txid)) {
+        m_query_tree.insert(RCUPtr<WindowEntry>::make(txid));
+    }
+}
+
+void TxRelayIndex::RemoveQueryOccurrence(const TxId &txid) const {
+    AssertLockHeld(m_mutex);
+    auto it = m_query_counts.find(txid);
+    assert(it != m_query_counts.end() && it->second > 0);
+    if (--it->second == 0) {
+        m_query_counts.erase(it);
+        m_query_tree.remove(Uint256RadixKey(txid));
+    }
+}
+
+std::shared_ptr<const TxRelayIndex::WindowTree>
+TxRelayIndex::PinAdmittedSince(Clock since, Clock until) const {
+    LOCK(m_mutex);
+    auto pin = [](const WindowTree &tree) {
+        // m_mutex excludes every candidate-tree writer, including writers
+        // that could have entered an unshared source node. Once its root is
+        // shared, later mutations take the normal CoW path. Readers retain
+        // this immutable clone; generic mutable-source copies keep their
+        // writer-grace barrier.
+        return std::allocate_shared<const WindowTree>(
+            GlobalConcurrentSlabAllocator<WindowTree, 1024>{}, tree,
+            WindowTree::ImmutableSnapshotTag{});
+    };
+    if (!m_current || since >= until) {
+        return std::make_shared<const WindowTree>();
+    }
+    if (m_window_inversions > 0) {
+        // Preserve the original reverse-scan/break semantics if mock time or
+        // a wall-clock jump makes admission times nonmonotonic.
+        WindowTree fallback;
+        for (auto it = m_window.rbegin(); it != m_window.rend(); ++it) {
+            if (it->first < since) break;
+            if (it->first < until && m_current->short_id_of.count(it->second)) {
+                fallback.insert(RCUPtr<WindowEntry>::make(it->second));
+            }
+        }
+        return pin(fallback);
+    }
+    if (!m_query_valid || since < m_query_since || until < m_query_until) {
+        m_query_tree = WindowTree{};
+        m_query_counts.clear();
+        m_query_lower = m_window_origin;
+        m_query_upper = m_window_origin;
+        m_query_valid = true;
+    }
+    const uint64_t end = m_window_origin + m_window.size();
+    while (m_query_upper < end) {
+        const auto &entry = m_window[m_query_upper - m_window_origin];
+        if (entry.first >= until) break;
+        AddQueryOccurrence(entry.second);
+        ++m_query_upper;
+    }
+    while (m_query_lower < m_query_upper) {
+        const auto &entry = m_window[m_query_lower - m_window_origin];
+        if (entry.first >= since) break;
+        RemoveQueryOccurrence(entry.second);
+        ++m_query_lower;
+    }
+    m_query_since = since;
+    m_query_until = until;
+    return pin(m_query_tree);
+}
+
 void TxRelayIndex::PruneWindow(Clock before) {
     LOCK(m_mutex);
     while (!m_window.empty() && m_window.front().first < before) {
+        if (m_query_valid && m_window_origin >= m_query_lower &&
+            m_window_origin < m_query_upper) {
+            RemoveQueryOccurrence(m_window.front().second);
+        }
+        if (m_window.size() > 1 && m_window[0].first > m_window[1].first) {
+            assert(m_window_inversions > 0);
+            --m_window_inversions;
+        }
         m_window.pop_front();
+        ++m_window_origin;
+    }
+    if (m_query_valid) {
+        m_query_lower = std::max(m_query_lower, m_window_origin);
+        m_query_upper = std::max(m_query_upper, m_window_origin);
     }
 }
 

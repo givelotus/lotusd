@@ -8,11 +8,12 @@
 
 #include <config.h>
 #include <common/args.h>
+#include <lotus_v2/commitment.h>
 #include <net.h>
 #include <net/txrelay_index.h>
+#include <node/snapshot.h>
 
 #include <net/v2_protocol_handler.h>
-#include <node/snapshot.h>
 #include <primitives/transaction.h>
 #include <protocol.h>
 #include <script/script.h>
@@ -32,7 +33,10 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <future>
+#include <thread>
 #include <map>
 #include <memory>
 #include <set>
@@ -580,6 +584,179 @@ BOOST_AUTO_TEST_CASE(shortid_index_epochs_and_collisions) {
         total += under.size();
     }
     BOOST_CHECK_EQUAL(total, 50U);
+}
+
+namespace {
+std::vector<TxId>
+PinnedWindowIds(const txrelay::TxRelayIndex::WindowTree &tree) {
+    std::vector<TxId> ids;
+    tree.forEachLeaf([&](const auto &entry) {
+        ids.push_back(entry->txid);
+        return true;
+    });
+    return ids;
+}
+} // namespace
+
+BOOST_AUTO_TEST_CASE(recon_window_pinned_index_matches_scan) {
+    using Index = txrelay::TxRelayIndex;
+    using Clock = Index::Clock;
+    FastRandomContext rng{true};
+    Index index;
+    auto epoch = txrelay::MakeEpochKey(BlockHash{rng.rand256()}, 1);
+    std::vector<TxId> ids;
+    std::set<TxId> active;
+    Index::Snapshot initial;
+    for (int i = 0; i < 6000; ++i) {
+        ids.emplace_back(rng.rand256());
+        active.insert(ids.back());
+        initial.emplace_back(ids.back(), Clock{i});
+    }
+    index.SetEpoch(epoch, [&] { return initial; });
+    auto check = [&](Clock since, Clock until) {
+        auto expected = index.AdmittedSince(since, until);
+        std::sort(expected.begin(), expected.end());
+        const auto pinned = index.PinAdmittedSince(since, until);
+        const auto actual = PinnedWindowIds(*pinned);
+        BOOST_CHECK_EQUAL_COLLECTIONS(actual.begin(), actual.end(),
+                                      expected.begin(), expected.end());
+        return pinned;
+    };
+    const auto old = check(Clock{0}, Clock{6000});
+    const auto old_ids = PinnedWindowIds(*old);
+    Clock now{6000};
+    for (int step = 0; step < 500; ++step) {
+        const auto &id = ids[rng.randrange(ids.size())];
+        if (step % 3 == 0) {
+            index.Remove(id);
+            active.erase(id);
+        } else {
+            index.Add(id, now);
+            active.insert(id);
+        }
+        now += Clock{int64_t(rng.randrange(4))};
+        check(Clock{step / 3}, now - Clock{100});
+        if (step % 37 == 0) {
+            index.PruneWindow(Clock{step / 4});
+            check(Clock{0}, now); // Backwards cutoff rebuild.
+        }
+        if (step % 53 == 0) {
+            epoch = txrelay::MakeEpochKey(BlockHash{rng.rand256()}, step + 2);
+            Index::Snapshot live;
+            for (const auto &txid : active)
+                live.emplace_back(txid, now);
+            index.SetEpoch(epoch, [&] { return live; });
+            check(Clock{0}, now + Clock{1});
+        }
+    }
+    const auto still_old = PinnedWindowIds(*old);
+    BOOST_CHECK_EQUAL_COLLECTIONS(still_old.begin(), still_old.end(),
+                                  old_ids.begin(), old_ids.end());
+    check(now, now);
+    check(now, Clock{0});
+    // Preserve legacy reverse-scan semantics on backwards admission time.
+    index.Add(TxId{rng.rand256()}, Clock{-1});
+    check(Clock{0}, now + Clock{1});
+    index.PruneWindow(now + Clock{10});
+    check(Clock{-10}, now + Clock{10});
+    // After the inverted edge is pruned, normal incremental queries resume.
+    index.Add(TxId{rng.rand256()}, now + Clock{11});
+    check(now, now + Clock{12});
+}
+
+BOOST_AUTO_TEST_CASE(recon_window_cap_follows_live_membership) {
+    using Index = txrelay::TxRelayIndex;
+    using Clock = Index::Clock;
+    FastRandomContext rng{true};
+    Index index;
+    const auto epoch = txrelay::MakeEpochKey(BlockHash{rng.rand256()}, 1);
+    Index::Snapshot initial;
+    for (int i = 0; i < 7000; ++i)
+        initial.emplace_back(TxId{rng.rand256()}, Clock{i});
+    index.SetEpoch(epoch, [&] { return initial; });
+    auto expected = index.AdmittedSince(Clock{0}, Clock{7000});
+    std::sort(expected.begin(), expected.end());
+    // Lagging removal callbacks: low IDs must not consume the cap before
+    // filtering by the current live mempool view.
+    std::set<TxId> live(expected.begin() + 1500, expected.end());
+    expected.erase(expected.begin(), expected.begin() + 1500);
+    expected.resize(4096);
+    const auto pinned = index.PinAdmittedSince(Clock{0}, Clock{7000});
+    // Force real short-id collisions too; pinning must retain every full ID.
+    Index colliding{4};
+    colliding.SetEpoch(epoch, [&] {
+        return Index::Snapshot(initial.begin(), initial.begin() + 50);
+    });
+    auto collision_expected = colliding.AdmittedSince(Clock{0}, Clock{7000});
+    std::sort(collision_expected.begin(), collision_expected.end());
+    const auto collision_actual =
+        PinnedWindowIds(*colliding.PinAdmittedSince(Clock{0}, Clock{7000}));
+    BOOST_CHECK_EQUAL_COLLECTIONS(
+        collision_actual.begin(), collision_actual.end(),
+        collision_expected.begin(), collision_expected.end());
+    node::MempoolSnapshotTree live_builder;
+    for (const auto &id : live) {
+        node::MempoolEntrySnapshot entry{};
+        entry.txid = id;
+        BOOST_REQUIRE(live_builder.insert(
+            RCUPtr<node::ImmutableMempoolEntry>::make(std::move(entry))));
+    }
+    const auto live_view = std::make_shared<const node::MempoolSnapshotTree>(
+        std::move(live_builder));
+    node::MempoolSnapshotTree next_live(
+        *live_view, node::MempoolSnapshotTree::ImmutableSnapshotTag{});
+    std::promise<void> start_writer, first_mutation;
+    auto start = start_writer.get_future();
+    auto mutated = first_mutation.get_future();
+    std::thread writer([&] {
+        start.wait();
+        for (size_t i = 0; i < 64; ++i) {
+            index.Remove(expected[i]);
+            next_live.remove(Uint256RadixKey(expected[i]));
+            if (i == 0) first_mutation.set_value();
+        }
+        // Signal above happens before TLS teardown, which itself can wait
+        // for the reader's RCU section. Join only after traversal completes.
+    });
+    std::vector<TxId> actual;
+    bool started{false};
+    bool mutation_observed{false};
+    pinned->forEachLeaf([&](const auto &candidate) {
+        if (!started) {
+            started = true;
+            start_writer.set_value();
+            mutation_observed =
+                mutated.wait_for(1s) == std::future_status::ready;
+            // A regression must release this guard before joining a writer
+            // that could itself be blocked by an incorrect grace-period wait.
+            if (!mutation_observed) return false;
+        }
+        const auto entry =
+            live_view->getWithinReadSection(Uint256RadixKey(candidate->txid));
+        if (entry) actual.push_back(candidate->txid);
+        return actual.size() < 4096;
+    });
+    if (!started) start_writer.set_value();
+    writer.join();
+    BOOST_CHECK(started);
+    BOOST_CHECK(mutation_observed);
+    BOOST_CHECK_EQUAL_COLLECTIONS(actual.begin(), actual.end(),
+                                  expected.begin(), expected.end());
+    auto roots_and_buckets = [&](const std::vector<TxId> &selected) {
+        std::vector<lotus::v2::TxIdentityPair> pairs;
+        std::array<std::pair<uint32_t, uint64_t>, 16> buckets{};
+        for (const auto &id : selected) {
+            lotus::v2::TxIdentityPair pair{};
+            std::copy(id.begin(), id.end(), pair.tx_id.begin());
+            std::copy(id.begin(), id.end(), pair.tx_hash.begin());
+            pairs.push_back(pair);
+            auto &bucket = buckets[lotus::v2::net::GetMerklixBucketIndex(id)];
+            ++bucket.first;
+            bucket.second ^= index.ShortId(epoch, id);
+        }
+        return std::make_pair(lotus::v2::BuildTxSubtreeA(pairs), buckets);
+    };
+    BOOST_CHECK(roots_and_buckets(actual) == roots_and_buckets(expected));
 }
 
 BOOST_AUTO_TEST_CASE(shortid_epoch_rebuild_preserves_mutations) {
