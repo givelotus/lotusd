@@ -176,6 +176,35 @@ BOOST_AUTO_TEST_CASE(comparison) {
                  "001"));
 }
 
+BOOST_AUTO_TEST_CASE(comparison_word_boundaries) {
+    static_assert(uint256{1} < uint256{2});
+    static_assert(uint256{1} == uint256{1});
+    static_assert(uint256{1} != uint256{2});
+
+    // Exercise every possible first differing byte, including partial words.
+    auto check = []<unsigned int BITS>() {
+        base_blob<BITS> a;
+        base_blob<BITS> b;
+        std::fill(a.begin(), a.end(), 0x80);
+        b = a;
+        for (size_t i = 0; i < a.size(); ++i) {
+            b.begin()[i] = 0x81;
+            // Lower bytes must not override the first differing high byte.
+            std::fill(b.begin(), b.begin() + i, 0);
+            BOOST_CHECK(a < b);
+            BOOST_CHECK(b > a);
+            BOOST_CHECK(a != b);
+            b = a;
+        }
+        BOOST_CHECK_EQUAL(a.Compare(b), 0);
+        BOOST_CHECK(a == b);
+    };
+    check.operator()<8>();
+    check.operator()<40>();
+    check.operator()<160>();
+    check.operator()<256>();
+}
+
 // GetHex SetHexDeprecated FromHex begin() end() size() GetLow64
 // GetSerializeSize, Serialize, Unserialize
 BOOST_AUTO_TEST_CASE(methods) {
