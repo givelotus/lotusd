@@ -34,6 +34,10 @@ namespace avalanche {
 class Processor;
 } // namespace avalanche
 
+namespace lotus::v2 {
+class FeePolicyWorker;
+} // namespace lotus::v2
+
 namespace node {
 class SnapshotPublisher;
 class KernelNotifications;
@@ -54,6 +58,7 @@ struct NodeContext {
     std::unique_ptr<kernel::Context> kernel;
     std::unique_ptr<AddrMan> addrman;
     std::unique_ptr<CConnman> connman;
+    std::unique_ptr<lotus::v2::FeePolicyWorker> fee_policy;
     std::unique_ptr<CTxMemPool> mempool;
     std::unique_ptr<PeerManager> peerman;
     std::unique_ptr<ChainstateManager> chainman;
