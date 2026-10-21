@@ -30,6 +30,8 @@
 #include <boost/mpl/size.hpp>
 #include <boost/test/unit_test.hpp>
 
+#include <chrono>
+#include <future>
 #include <functional>
 #include <limits>
 #include <type_traits>
@@ -108,6 +110,17 @@ namespace {
         }
 
         static void updatedBlockTip(Processor &p) { p.updatedBlockTip(); }
+
+        static void transactionAddedToMempool(Processor &p,
+                                               const CTransactionRef &tx) {
+            p.transactionAddedToMempool(tx);
+        }
+
+        static bool transactionIsRegistered(const Processor &p,
+                                              const CTransactionRef &tx) {
+            auto records = p.voteRecords.getReadView();
+            return records->find(AnyVoteItem(tx)) != records->end();
+        }
 
         static void addProofToRecentfinalized(Processor &p,
                                               const ProofId &proofid) {
@@ -535,6 +548,45 @@ using Uint256VoteItemProviders = boost::mpl::list<StakeContenderProvider>;
 static_assert(boost::mpl::size<VoteItemProviders>::value ==
               boost::mpl::size<NullableVoteItemProviders>::value +
                   boost::mpl::size<Uint256VoteItemProviders>::value);
+
+BOOST_AUTO_TEST_CASE(transaction_notification_does_not_wait_for_chain_lock) {
+    auto &chainman = *m_node.chainman;
+    // This is the existing voting-only TxProvider fixture. Notification tests
+    // exercise poll registration, not chain admission or script validity.
+    TxProvider provider(this);
+    const CTransactionRef tx = provider.buildVoteItem();
+    m_node.validation_signals->SyncWithValidationInterfaceQueue();
+    const auto *tip = WITH_LOCK(cs_main, return chainman.ActiveTip());
+    BOOST_REQUIRE(tip);
+    for (const bool enabled : {false, true}) {
+        setArg("-avalanchepreconsensus", enabled ? "1" : "0");
+        for (const bool finalized : {false, true}) {
+            bilingual_str error;
+            auto processor = Processor::MakeProcessor(
+                *m_node.args, *m_node.chain, m_node.connman.get(), chainman,
+                m_node.mempool.get(), *m_node.scheduler, error);
+            BOOST_REQUIRE_MESSAGE(processor, error.original);
+            AvalancheTest::setFinalizationTip(*processor, finalized ? tip : nullptr);
+            const bool expected = enabled && finalized;
+            BOOST_CHECK_EQUAL(processor->isPreconsensusActivated(nullptr), expected);
+            BOOST_CHECK(!AvalancheTest::transactionIsRegistered(*processor, tx));
+            std::future<void> callback;
+            std::future_status status;
+            {
+                LOCK(cs_main);
+                callback = std::async(std::launch::async, [&] {
+                    AvalancheTest::transactionAddedToMempool(*processor, tx);
+                });
+                // Release the lock before joining even on a failure, so the
+                // old implementation fails this bounded check without hanging.
+                status = callback.wait_for(std::chrono::seconds(2));
+            }
+            callback.get();
+            BOOST_CHECK(status == std::future_status::ready);
+            BOOST_CHECK_EQUAL(AvalancheTest::transactionIsRegistered(*processor, tx), expected);
+        }
+    }
+}
 
 BOOST_AUTO_TEST_CASE(private_batch_polls_require_epoch_capability) {
     auto &processor = *m_node.avalanche;
