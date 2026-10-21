@@ -2236,6 +2236,45 @@ void PreparedTransactionOwnership() {
     CHECK(rejected.invocation.status == VmStatus::OperationalError);
     CHECK(rejected.invocation.error == "prepared transaction ownership mismatch");
 }
+void PreparedTransactionMoveOwnership() {
+    const TxProfile tp{64, 64, 8, 8192, 16, 8192, 64};
+    ChainId chain{};
+    Transaction tx;
+    Input input;
+    input.flags = 1;
+    input.prev_txid.fill(1);
+    input.sequence = UINT32_MAX;
+    input.witnesses.push_back({Hex("4e"), {}, {}});
+    tx.inputs.push_back(std::move(input));
+    Output coin;
+    coin.value = 1000;
+    coin.branches = {BranchLeaf(Hex("4e"))};
+    coin.paths = {{0}};
+    tx.outputs.push_back(coin);
+    ResolvedCoins coins{coin};
+    const auto *inputs = tx.inputs.data();
+    const auto *witnesses = tx.inputs[0].witnesses.data();
+    const auto *script = tx.inputs[0].witnesses[0].script.data();
+    const auto *outputs = tx.outputs.data();
+    PreparedVmTransaction prepared;
+    std::string error;
+    CHECK(prepared.PrepareChecked(std::move(tx), tp, chain, coins,
+                                 IllustrativeCost(), error) ==
+          SigningPreparationStatus::Ready);
+    // Ownership transfers all nested storage, including the witness bytecode.
+    // These are lifetime requirements, rather than a source-conversion check.
+    const auto context = prepared.Invocation(0, 0);
+    CHECK(context.tx.inputs.data() == inputs);
+    CHECK(context.tx.inputs[0].witnesses.data() == witnesses);
+    CHECK(context.tx.inputs[0].witnesses[0].script.data() == script);
+    CHECK(context.tx.outputs.data() == outputs);
+    tx = Transaction{};
+    coins.clear();
+    CHECK(prepared.Owns(context));
+    const auto vm = EvaluateVmCharged(Hex("4e"), {}, PROFILE, prepared.Cost(),
+                                    0, 0, &context);
+    CHECK(vm.invocation.status == VmStatus::Success && vm.charged);
+}
 #ifdef LOTUS_V2_VM_TEST_INSTRUMENTATION
 void TypedCryptoFailures() {
     SetVmCryptoFault(VmCryptoFault::Digest);
@@ -2453,6 +2492,7 @@ int main() {
     AuthenticatedPayment();
     AuthenticatedFieldSizeHints();
     PreparedTransactionOwnership();
+    PreparedTransactionMoveOwnership();
 #ifdef LOTUS_V2_VM_TEST_INSTRUMENTATION
     TypedCryptoFailures();
 #endif
