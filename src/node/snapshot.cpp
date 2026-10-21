@@ -204,11 +204,15 @@ void CaptureMempoolEntriesLocked(ChainAndMempoolSnapshot &snap,
         snap.entry_tree = prev->entry_tree;
         return;
     }
+    // The published tree is immutable: its sole mutable builder is moved
+    // into the snapshot below. Pinning prev keeps it alive while the new
+    // builder shares its root, so no global writer grace period is needed.
     auto tree =
         full ? std::allocate_shared<MempoolSnapshotTree>(
                    SnapshotAllocator<MempoolSnapshotTree>{})
              : std::allocate_shared<MempoolSnapshotTree>(
-                   SnapshotAllocator<MempoolSnapshotTree>{}, *prev->entry_tree);
+                   SnapshotAllocator<MempoolSnapshotTree>{}, *prev->entry_tree,
+                   MempoolSnapshotTree::ImmutableSnapshotTag{});
     auto capture = [&](const CTxMemPoolEntry &entry) EXCLUSIVE_LOCKS_REQUIRED(mempool.cs) {
         tree->insert(RCUPtr<ImmutableMempoolEntry>::make(
             MakeMempoolEntrySnapshot(entry, mempool)));

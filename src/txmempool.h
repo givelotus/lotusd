@@ -677,6 +677,9 @@ public:
     const std::set<TxId> &SnapshotChangedEntries() const EXCLUSIVE_LOCKS_REQUIRED(cs) {
         return m_snapshot_changed_entries;
     }
+    uint64_t GetSnapshotResetSequence() const EXCLUSIVE_LOCKS_REQUIRED(cs) {
+        return m_snapshot_reset_seq;
+    }
     bool HasSnapshotState() const EXCLUSIVE_LOCKS_REQUIRED(cs) { return m_snapshot_initialized; }
     bool SnapshotNeedsReset() const EXCLUSIVE_LOCKS_REQUIRED(cs) { return m_snapshot_needs_reset; }
     void ClearSnapshotChanges() const EXCLUSIVE_LOCKS_REQUIRED(cs) {
@@ -692,9 +695,11 @@ public:
     void ClearSnapshotDirty() const EXCLUSIVE_LOCKS_REQUIRED(cs) { m_snapshot_dirty = false; }
     class ScopedSnapshotDefer {
         const CTxMemPool &m_pool;
+        bool m_flush_on_exit{true};
     public:
         explicit ScopedSnapshotDefer(const CTxMemPool &pool) EXCLUSIVE_LOCKS_REQUIRED(pool.cs)
             : m_pool(pool) { ++m_pool.m_snapshot_defer_depth; }
+        void CancelFlush() noexcept { m_flush_on_exit = false; }
         ~ScopedSnapshotDefer();
         ScopedSnapshotDefer(const ScopedSnapshotDefer &) = delete;
         ScopedSnapshotDefer &operator=(const ScopedSnapshotDefer &) = delete;
@@ -724,6 +729,7 @@ public:
 private:
     mutable lotus::v2::UtxoFastFilter m_utxo_fast_filter;
     mutable std::set<TxId> m_snapshot_changed_entries GUARDED_BY(cs);
+    mutable uint64_t m_snapshot_reset_seq GUARDED_BY(cs){1};
     mutable bool m_snapshot_initialized GUARDED_BY(cs){false};
     mutable bool m_snapshot_needs_reset GUARDED_BY(cs){true};
     mutable unsigned int m_snapshot_defer_depth GUARDED_BY(cs){0};
