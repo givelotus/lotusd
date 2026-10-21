@@ -302,8 +302,11 @@ BOOST_AUTO_TEST_CASE(deferred_records_bypass_script_cache) {
             TxValidationState state;
             TxSigCheckLimiter limiter;
             int sigchecks = 0;
+            // Different policy/consensus flags may share preparation, never
+            // their execution verdict or the deferred records of a run.
+            const uint32_t flags = round == 0 ? 0 : SCRIPT_VERIFY_NULLFAIL;
             BOOST_CHECK(CheckInputScripts(
-                *tx, state, view, /*flags=*/0, /*sigCacheStore=*/false,
+                *tx, state, view, flags, /*sigCacheStore=*/false,
                 /*scriptCacheStore=*/true, tx->GetPrecomputedData(), cache,
                 sigchecks, limiter, nullptr, nullptr));
         }
