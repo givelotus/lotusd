@@ -4335,6 +4335,39 @@ CScriptCheck::CheckInput(lotus::v2::DeferredRecords &records) {
             prepared_vm_ptr = &local_prepared_vm;
         }
 
+        struct NativeSignatureCacheContext {
+            SignatureCache &cache;
+            bool store;
+        } signature_cache_context{*m_signature_cache, cacheStore};
+        [[maybe_unused]] const lotus::v2::VmSignatureVerifier signature_verifier{
+            &signature_cache_context,
+            [](void *opaque, std::span<const uint8_t> key,
+               std::span<const uint8_t> signature,
+               const lotus::v2::Hash &message, bool mint) {
+                using lotus::v2::SignatureStatus;
+                // Preserve precise encoding failures before consulting a cache.
+                if (key.size() != 32 ||
+                    !(signature.size() == 64 ||
+                      (signature.size() == 65 && !mint &&
+                       (signature[64] == 1 || signature[64] == 2)))) {
+                    return lotus::v2::VerifyBip340Signature(
+                        key, signature, message, mint);
+                }
+                auto &context = *static_cast<NativeSignatureCacheContext *>(opaque);
+                uint256 entry;
+                context.cache.ComputeBip340Entry(entry, message, signature,
+                                                 key, mint);
+                if (context.cache.Get(entry, !context.store)) {
+                    return SignatureStatus::Valid;
+                }
+                const auto status = lotus::v2::VerifyBip340Signature(
+                    key, signature, message, mint);
+                if (status == SignatureStatus::Valid && context.store) {
+                    context.cache.Set(entry);
+                }
+                return status;
+            }};
+
         const lotus::v2::Transaction &v2tx = *v2tx_ptr;
         lotus::v2::PreparedVmTransaction &prepared_vm = *prepared_vm_ptr;
         const lotus::v2::ResolvedCoins &resolved =
@@ -4364,6 +4397,7 @@ CScriptCheck::CheckInput(lotus::v2::DeferredRecords &records) {
                 const auto &w = ptxTo->vin[nIn].vWitnesses[j];
                 auto ctx = prepared_vm.Invocation(nIn, j, {}, m_sig_collector);
                 ctx.effects = &records;
+                ctx.signature_verifier = &signature_verifier;
                 const lotus::v2::VmChargedResult vm_res =
                     lotus::v2::EvaluateVmCharged(
                         w.script, w.arguments, kDefaultVmProfile,
@@ -4409,6 +4443,7 @@ CScriptCheck::CheckInput(lotus::v2::DeferredRecords &records) {
         const auto &w = ptxTo->vin[nIn].vWitnesses[0];
         auto ctx = prepared_vm.Invocation(nIn, 0, delta, m_sig_collector);
         ctx.effects = &records;
+        ctx.signature_verifier = &signature_verifier;
         const lotus::v2::VmChargedResult vm_res =
             lotus::v2::EvaluateVmCharged(
                 w.script, w.arguments, kDefaultVmProfile, prepared_vm.Cost(),
