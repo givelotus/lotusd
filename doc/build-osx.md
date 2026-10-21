@@ -94,3 +94,12 @@ Notes
 -----
 
 * Building with downloaded Qt binaries is not officially supported. See the notes in [#7714](https://github.com/bitcoin/bitcoin/issues/7714)
+
+### Memory allocator
+
+Jemalloc is enabled by default, including native macOS builds. CMake prefers
+`libjemalloc_pic.a` or `libjemalloc.a` when installed; macOS system libraries
+remain dynamically linked. Set `-DJemalloc_USE_STATIC_LIBS=OFF` to prefer the
+platform's normal library search order, or `-DUSE_JEMALLOC=OFF` to use the
+system allocator. Sanitizer builds use the system allocator automatically.
+The depends build already provides pinned, static-only jemalloc archives.
