@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <arith_uint256.h>
 #include <config.h>
 #include <consensus/amount.h>
 #include <consensus/tx_check.h>
@@ -36,6 +37,53 @@
 #include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(snapshot_rcu_tests, TestChain100Setup)
+
+// Published copies must survive writer churn and may be retired by readers.
+BOOST_AUTO_TEST_CASE(entry_tree_copy_and_cross_thread_retirement) {
+    auto published = std::allocate_shared<node::MempoolSnapshotTree>(
+        node::SnapshotAllocator<node::MempoolSnapshotTree>{});
+    constexpr uint64_t count = 4096;
+    for (uint64_t i = 0; i < count; ++i) {
+        node::MempoolEntrySnapshot entry;
+        entry.txid = TxId{ArithToUint256(arith_uint256(i))};
+        entry.entry_id = i;
+        BOOST_REQUIRE(published->insert(
+            RCUPtr<node::ImmutableMempoolEntry>::make(std::move(entry))));
+    }
+    auto writer = *published;
+    for (uint64_t i = 0; i < count; i += 2) {
+        BOOST_REQUIRE(
+            writer.remove(Uint256RadixKey(ArithToUint256(arith_uint256(i)))));
+    }
+    for (uint64_t i = 0; i < count; ++i) {
+        const auto old =
+            published->get(Uint256RadixKey(ArithToUint256(arith_uint256(i))));
+        BOOST_REQUIRE(old);
+        BOOST_CHECK_EQUAL(old->entry.entry_id, i);
+        BOOST_CHECK_EQUAL(
+            bool(writer.get(Uint256RadixKey(ArithToUint256(arith_uint256(i))))),
+            i % 2 != 0);
+    }
+    std::atomic<uint64_t> reader_count{0};
+    std::thread reader(
+        [snapshot = std::move(published), &reader_count]() mutable {
+            snapshot->forEachLeaf([&](const auto &) {
+                ++reader_count;
+                return true;
+            });
+            snapshot.reset();
+            RCULock::synchronize();
+        });
+    reader.join();
+    BOOST_CHECK_EQUAL(reader_count.load(), count);
+    // The writer's shared subtrees remain valid after reader reclamation.
+    uint64_t remaining = 0;
+    writer.forEachLeaf([&](const auto &) {
+        ++remaining;
+        return true;
+    });
+    BOOST_CHECK_EQUAL(remaining, count / 2);
+}
 
 BOOST_AUTO_TEST_CASE(snapshot_publication_concurrent_coherent_scalars) {
     node::SnapshotPublisher publisher;
