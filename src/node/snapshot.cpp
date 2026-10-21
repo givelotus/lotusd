@@ -204,8 +204,11 @@ void CaptureMempoolEntriesLocked(ChainAndMempoolSnapshot &snap,
         snap.entry_tree = prev->entry_tree;
         return;
     }
-    auto tree = full ? std::make_shared<MempoolSnapshotTree>()
-                     : std::make_shared<MempoolSnapshotTree>(*prev->entry_tree);
+    auto tree =
+        full ? std::allocate_shared<MempoolSnapshotTree>(
+                   SnapshotAllocator<MempoolSnapshotTree>{})
+             : std::allocate_shared<MempoolSnapshotTree>(
+                   SnapshotAllocator<MempoolSnapshotTree>{}, *prev->entry_tree);
     auto capture = [&](const CTxMemPoolEntry &entry) EXCLUSIVE_LOCKS_REQUIRED(mempool.cs) {
         tree->insert(RCUPtr<ImmutableMempoolEntry>::make(
             MakeMempoolEntrySnapshot(entry, mempool)));
@@ -225,7 +228,8 @@ void CaptureMempoolEntriesLocked(ChainAndMempoolSnapshot &snap,
 
 std::shared_ptr<ChainAndMempoolSnapshot>
 CloneChainStateOnly(const ChainAndMempoolSnapshot *prev) {
-    auto next = std::make_shared<ChainAndMempoolSnapshot>();
+    auto next = std::allocate_shared<ChainAndMempoolSnapshot>(
+        SnapshotAllocator<ChainAndMempoolSnapshot>{});
     if (!prev) {
         return next;
     }
@@ -570,7 +574,7 @@ SnapshotPublisher::FindMiningTemplate(uint64_t template_id,
 }
 
 SnapshotPublisher::SnapshotPublisher()
-    : m_current(std::make_shared<const ChainAndMempoolSnapshot>()) {}
+    : m_current(std::allocate_shared<const ChainAndMempoolSnapshot>(SnapshotAllocator<ChainAndMempoolSnapshot>{})) {}
 
 void SnapshotPublisher::Publish(std::shared_ptr<const ChainAndMempoolSnapshot> next) {
     if (!next) return;
@@ -686,13 +690,14 @@ void PublishChainTipSnapshot(ChainstateManager &chainman,
             static_cast<size_t>(tip_height) &&
         prev->active_chain->by_height.back().hash ==
             tip->pprev->GetBlockHash()) {
-        active_chain_snap =
-            std::make_shared<ActiveChainSnapshot>(*prev->active_chain);
+        active_chain_snap = std::allocate_shared<ActiveChainSnapshot>(
+            SnapshotAllocator<ActiveChainSnapshot>{}, *prev->active_chain);
         BlockHeaderSnapshot tip_hdr = MakeBlockHeaderSnapshot(*tip);
         active_chain_snap->height_by_hash.emplace(tip_hdr.hash, tip_height);
         active_chain_snap->by_height.push_back(std::move(tip_hdr));
     } else {
-        active_chain_snap = std::make_shared<ActiveChainSnapshot>();
+        active_chain_snap = std::allocate_shared<ActiveChainSnapshot>(
+            SnapshotAllocator<ActiveChainSnapshot>{});
         if (tip_height >= 0) {
             active_chain_snap->by_height.reserve(
                 static_cast<size_t>(tip_height) + 1);
@@ -767,7 +772,7 @@ void PublishMempoolSnapshot(const CTxMemPool &mempool)
     auto prev = publisher.Load();
     auto next = mempool.HasSnapshotState() && prev && prev->mempool_ptr == &mempool
                     ? CloneChainStateOnly(prev.get())
-                    : std::make_shared<ChainAndMempoolSnapshot>();
+                    : std::allocate_shared<ChainAndMempoolSnapshot>(SnapshotAllocator<ChainAndMempoolSnapshot>{});
 
     PopulateMempoolScalarsLocked(*next, mempool);
     next->mempool_vectors_ready = false;

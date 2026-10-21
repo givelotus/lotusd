@@ -9,6 +9,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <type_traits>
@@ -35,7 +36,8 @@ template <typename T> struct PassthroughAdapter {
  * to speed before destroying anything. It is therefore crucial that the lock be
  * taken before reading anything in the tree.
  */
-template <typename T, typename Adapter = PassthroughAdapter<T>>
+template <typename T, typename Adapter = PassthroughAdapter<T>,
+          typename NodeAllocator = std::allocator<std::byte>>
 struct RadixTree : private Adapter {
 private:
     static const int BITS = 4;
@@ -352,6 +354,28 @@ private:
         };
 
     public:
+        // Nodes can outlive the tree that created them and be reclaimed on a
+        // reader thread. The allocator must therefore be stateless/equal and
+        // permit allocation and deallocation on different threads.
+        static void *operator new(std::size_t size) {
+            assert(size == sizeof(RadixNode));
+            // Instantiate the rebound allocator only in the function body,
+            // where RadixNode is complete (slabs need its size/alignment).
+            using Allocator = typename std::allocator_traits<
+                NodeAllocator>::template rebind_alloc<RadixNode>;
+            static_assert(
+                std::allocator_traits<Allocator>::is_always_equal::value);
+            Allocator allocator;
+            return std::allocator_traits<Allocator>::allocate(allocator, 1);
+        }
+        static void operator delete(void *ptr) noexcept {
+            using Allocator = typename std::allocator_traits<
+                NodeAllocator>::template rebind_alloc<RadixNode>;
+            Allocator allocator;
+            std::allocator_traits<Allocator>::deallocate(
+                allocator, static_cast<RadixNode *>(ptr), 1);
+        }
+
         RadixNode(uint32_t level, const KeyType &key, RadixElement e)
             : non_atomic_children_DO_NOT_USE() {
             get(level, key)->store(e);
