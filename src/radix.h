@@ -139,9 +139,17 @@ public:
      * Returns the value if found, nullptr if not.
      */
     RCUPtr<T> get(const KeyType &key) {
-        uint32_t level = TOP_LEVEL;
-
         RCULock lock;
+        return getWithinReadSection(key);
+    }
+
+    /** Lookup while the caller already owns an RCU read section. This is
+     * useful when joining two pinned immutable trees during traversal; RCU
+     * read sections themselves must not be nested.
+     */
+    RCUPtr<T> getWithinReadSection(const KeyType &key) {
+        assert(RCULock::isLocked());
+        uint32_t level = TOP_LEVEL;
         RadixElement e = root.load();
 
         // Find a leaf.
@@ -161,6 +169,12 @@ public:
 
     RCUPtr<const T> get(const KeyType &key) const {
         T const *ptr = const_cast<RadixTree *>(this)->get(key).release();
+        return RCUPtr<const T>::acquire(ptr);
+    }
+
+    RCUPtr<const T> getWithinReadSection(const KeyType &key) const {
+        T const *ptr =
+            const_cast<RadixTree *>(this)->getWithinReadSection(key).release();
         return RCUPtr<const T>::acquire(ptr);
     }
 
