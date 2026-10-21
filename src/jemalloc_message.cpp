@@ -2,7 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <jemalloc/jemalloc.h>
+#include <jemalloc.h>
 
 /**
  * Using the signature of jemalloc's malloc_message(), drop the string entirely.
