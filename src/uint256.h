@@ -19,6 +19,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 /** Template base class for fixed-sized opaque blobs. */
 template <unsigned int BITS> class base_blob {
@@ -49,9 +50,23 @@ public:
     constexpr void SetNull() { std::fill(m_data.begin(), m_data.end(), 0); }
 
     constexpr int Compare(const base_blob &other) const {
-        for (size_t i = 0; i < WIDTH; i++) {
-            uint8_t a = m_data[WIDTH - 1 - i];
-            uint8_t b = other.m_data[WIDTH - 1 - i];
+        size_t i = WIDTH;
+        if (!std::is_constant_evaluated()) {
+            // The highest little-endian word determines numeric ordering.
+            // ReadLE64 uses memcpy, so byte-aligned blobs remain safe to read.
+            while (i >= sizeof(uint64_t)) {
+                i -= sizeof(uint64_t);
+                const uint64_t a = ReadLE64(m_data.data() + i);
+                const uint64_t b = ReadLE64(other.m_data.data() + i);
+                if (a != b) {
+                    return a < b ? -1 : 1;
+                }
+            }
+        }
+        while (i > 0) {
+            --i;
+            uint8_t a = m_data[i];
+            uint8_t b = other.m_data[i];
             if (a > b) {
                 return 1;
             }
@@ -64,10 +79,10 @@ public:
     }
 
     friend constexpr bool operator==(const base_blob &a, const base_blob &b) {
-        return a.Compare(b) == 0;
+        return a.m_data == b.m_data;
     }
     friend constexpr bool operator!=(const base_blob &a, const base_blob &b) {
-        return a.Compare(b) != 0;
+        return !(a == b);
     }
     friend constexpr bool operator<(const base_blob &a, const base_blob &b) {
         return a.Compare(b) < 0;
