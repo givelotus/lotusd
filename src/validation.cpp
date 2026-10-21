@@ -4271,6 +4271,7 @@ CScriptCheck::CheckInput(lotus::v2::DeferredRecords &records) {
         struct CachedPreparedVm {
             const CTransaction *tx_ptr{nullptr};
             TxHash tx_hash{};
+            lotus::v2::ChainId chain{};
             std::weak_ptr<const V2ResolvedCoins> resolved_wp;
             lotus::v2::PreparedVmTransaction prepared_vm;
             lotus::v2::SigningPreparationStatus status{
@@ -4291,19 +4292,34 @@ CScriptCheck::CheckInput(lotus::v2::DeferredRecords &records) {
         };
 
         if (m_resolved_coins) {
+            const auto &chain = GetActiveV2ChainId();
             if (tl_cache.tx_ptr != ptxTo ||
                 tl_cache.tx_hash != ptxTo->GetHash() ||
+                tl_cache.chain != chain ||
                 tl_cache.resolved_wp.lock() != m_resolved_coins) {
-                tl_cache.tx_ptr = ptxTo;
-                tl_cache.tx_hash = ptxTo->GetHash();
-                tl_cache.resolved_wp = m_resolved_coins;
                 lotus::v2::IdentityDigests precomputed_ids{};
                 extract_known_v2_ids(precomputed_ids);
-                std::string prep_err;
-                tl_cache.status = tl_cache.prepared_vm.PrepareChecked(
-                    ptxTo->ToV2Transaction(), lotus::v2::DefaultTxProfile,
-                    GetActiveV2ChainId(), *m_resolved_coins, kDefaultVmCost,
-                    prep_err, &precomputed_ids);
+                // Policy and consensus checks have different execution flags,
+                // but prepare the same immutable transaction/coin snapshot.
+                // A new wrapper alone must not force another whole-tx prepare.
+                // Compare every coin field; never trust tx-pointer reuse or a
+                // transaction ID alone to bind the spent-output context.
+                const bool reusable = tl_cache.tx_ptr == ptxTo &&
+                    tl_cache.status ==
+                        lotus::v2::SigningPreparationStatus::Ready &&
+                    tl_cache.prepared_vm.MatchesIdentityAndCoins(
+                        precomputed_ids.txhash, chain, *m_resolved_coins);
+                tl_cache.tx_ptr = ptxTo;
+                tl_cache.tx_hash = ptxTo->GetHash();
+                tl_cache.chain = chain;
+                tl_cache.resolved_wp = m_resolved_coins;
+                if (!reusable) {
+                    std::string prep_err;
+                    tl_cache.status = tl_cache.prepared_vm.PrepareChecked(
+                        ptxTo->ToV2Transaction(), lotus::v2::DefaultTxProfile,
+                        chain, *m_resolved_coins, kDefaultVmCost,
+                        prep_err, &precomputed_ids);
+                }
             }
             if (tl_cache.status != lotus::v2::SigningPreparationStatus::Ready) {
                 return std::make_pair(ScriptError::EVAL_FALSE,

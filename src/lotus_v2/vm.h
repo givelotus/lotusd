@@ -204,6 +204,13 @@ public:
     size_t MintCount() const { return mint_count_; }
     const VmAssetTotalsMap &AssetTotals() const { return asset_totals_; }
     const PreparedSigningContext &Signing() const { return signing_; }
+    // Identity/coin binding only, not an execution verdict. Callers must keep
+    // the transaction profile and cost schedule unchanged when reusing it.
+    bool MatchesIdentityAndCoins(const Hash &txhash, const ChainId &chain,
+                                 const ResolvedCoins &coins) const {
+        return ready_ && signing_.Identities().txhash == txhash &&
+               chain_ == chain && coins_ == coins;
+    }
     bool Owns(const VmExecutionContext &context) const {
         return ready_ && &context.tx == &tx_ && &context.tx_profile == &profile_ &&
             &context.chain_id == &chain_ && &context.resolved == &coins_;
