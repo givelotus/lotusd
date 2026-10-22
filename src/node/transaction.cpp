@@ -269,7 +269,8 @@ BroadcastTransaction(const NodeContext &node, const CTransactionRef tx,
         // locks. RPC clients can therefore verify concurrently. The existing
         // critical section below decides every verdict,
         // fee bound, broadcast marker and notification in the same order.
-        precomputed = PrecomputeMempoolAdmission(*node.chainman, tx, limits);
+        precomputed = PrecomputeMempoolAdmission(
+            *node.chainman, tx, limits, node.mempool.get());
     }
 
     RpcAdmissionOutcome outcome;
