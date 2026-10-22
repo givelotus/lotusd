@@ -42,9 +42,6 @@ namespace txrelay {
 enum Feature : uint64_t {
     TXRELAY_INVSHORT = 1 << 0,
     TXRELAY_RECON = 1 << 1,
-    // Accept sealedheader block announcements and unsolicited shorttx bodies.
-    // This is separate from ordinary compact blocks and short-id requests.
-    TXRELAY_HIGH_BANDWIDTH = 1 << 2,
 };
 /** Version of the sendinvshort message we send */
 static constexpr uint32_t SENDINVSHORT_VERSION{1};
