@@ -14,11 +14,14 @@
 #include <net_processing.h>
 #include <node/kernel_notifications.h>
 #include <node/snapshot.h>
+#include <node/transaction.h>
 #include <scheduler.h>
 #include <txmempool.h>
 #include <validation.h>
 
 namespace node {
 NodeContext::NodeContext() : snapshot_publisher(GetGlobalSnapshotPublisherPtr()) {}
-NodeContext::~NodeContext() = default;
+NodeContext::~NodeContext() {
+    rpc_admission.reset();
+}
 } // namespace node
