@@ -336,6 +336,7 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		validationinterface_tests.cpp
 		v2_deferred_block_tests.cpp
 		v2_protocol_handler_tests.cpp
+		full_mempool_reconciliation_tests.cpp
 		blockindex_comparator_tests.cpp
 
 		# RPC Tests

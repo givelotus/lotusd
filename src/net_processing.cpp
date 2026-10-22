@@ -4,6 +4,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <net/txrelay_index.h>
+#include <net/full_mempool_reconciliation.h>
 #include <net/v2_protocol_handler.h>
 #include <net_processing.h>
 #include <node/snapshot.h>
@@ -1566,6 +1567,8 @@ private:
             features |= txrelay::TXRELAY_INVSHORT;
             if (m_opts.txrecon_interval > 0ms) {
                 features |= txrelay::TXRELAY_RECON;
+                if (gArgs.GetBoolArg("-txreconfull", true))
+                    features |= txrelay::TXRELAY_FULL_MEMPOOL;
             }
         }
         const bool disabled_for_test =
@@ -1760,6 +1763,10 @@ private:
         EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex);
 
     lotus::v2::net::V2PeerProtocolHandler m_v2_protocol_handler;
+    lotus::v2::net::fullrecon::Manager m_full_recon;
+    // Earliest useful continuation across peers; consumed by the existing
+    // relay scheduler, rather than adding an unbounded queue of peer timers.
+    std::atomic<int64_t> m_full_recon_wake{std::numeric_limits<int64_t>::max()};
 
     //! Serialized block messages served recently (-blockmessagecache)
     BlockMessageCache m_block_messages;
@@ -2743,6 +2750,7 @@ void PeerManagerImpl::UpdateLastBlockAnnounceTime(NodeId node,
 void PeerManagerImpl::InitializeNode(const Config &config, CNode &node,
                                      ServiceFlags our_services) {
     NodeId nodeid = node.GetId();
+    m_full_recon.RemovePeer(nodeid);
     m_v2_protocol_handler.RemovePeer(nodeid);
     {
         LOCK(cs_main);
@@ -2930,6 +2938,7 @@ scheduleLater:
 
 void PeerManagerImpl::FinalizeNode(const Config &config, const CNode &node) {
     NodeId nodeid = node.GetId();
+    m_full_recon.RemovePeer(nodeid);
     m_v2_protocol_handler.RemovePeer(nodeid);
     {
         LOCK(cs_main);
@@ -3305,6 +3314,7 @@ PeerManagerImpl::PeerManagerImpl(CConnman &connman, AddrMan &addrman,
       m_mempool(pool), m_avalanche(avalanche), m_opts{opts},
       m_txrelay_index{opts.txrelay_shortid_bits},
       m_v2_protocol_handler{m_chainman, m_mempool, m_connman, *this},
+      m_full_recon{m_chainman, m_mempool, m_connman, *this},
       m_block_messages{opts.block_message_cache_bytes} {
     m_v2_protocol_handler.SetTxRelayEpochProvider(this);
     m_v2_protocol_handler.SetServeUtxoShards(
@@ -3524,9 +3534,14 @@ void PeerManagerImpl::ScheduleRelayTick(CScheduler &scheduler) {
     const auto delay{NextRelayTick(now, m_opts.txrelay_tick) - now + 100us};
     scheduler.scheduleFromNow(
         [this, &scheduler] {
-            if (m_txrelay_wake.exchange(false, std::memory_order_relaxed)) {
-                m_connman.WakeMessageHandler();
+            bool wake{m_txrelay_wake.exchange(false, std::memory_order_relaxed)};
+            auto deadline{m_full_recon_wake.load(std::memory_order_relaxed)};
+            if (deadline <= RelayTickNow().count() &&
+                m_full_recon_wake.compare_exchange_strong(
+                    deadline, std::numeric_limits<int64_t>::max(), std::memory_order_relaxed)) {
+                wake = true;
             }
+            if (wake) m_connman.WakeMessageHandler();
             ScheduleRelayTick(scheduler);
         },
         std::chrono::ceil<std::chrono::milliseconds>(delay));
@@ -4065,7 +4080,8 @@ void PeerManagerImpl::MaybeReconcile() {
         LOCK(m_peer_mutex);
         NodeId first{-1};
         for (const auto &[id, peer] : m_peer_map) {
-            if (!(peer->m_txrelay_features & txrelay::TXRELAY_RECON)) {
+            if (!(peer->m_txrelay_features & txrelay::TXRELAY_RECON) ||
+                (peer->m_txrelay_features & txrelay::TXRELAY_FULL_MEMPOOL)) {
                 continue;
             }
             if (first < 0) {
@@ -6951,6 +6967,8 @@ void PeerManagerImpl::ProcessMessage(
         return;
     }
 
+    if (m_full_recon.Handle(pfrom, msg_type, vRecv, time_received)) return;
+
     if (m_v2_protocol_handler.TryHandleMessage(pfrom, msg_type, vRecv,
                                                time_received)) {
         if (msg_type == NetMsgType::MINEDHEADER ||
@@ -7109,6 +7127,8 @@ void PeerManagerImpl::ProcessMessage(
             peer->GetTxRelay() && !pfrom.IsBlockOnlyConn()
                 ? flags & OurTxRelayFeatures()
                 : 0;
+        m_full_recon.SetPeer(pfrom.GetId(),
+            peer->m_txrelay_features & txrelay::TXRELAY_FULL_MEMPOOL);
         // Local opt-in, compact-block negotiation and permissions cannot prove
         // that the remote peer understands our private block/transaction wire.
         m_v2_protocol_handler.SetHighBandwidthShortTxPeer(
@@ -10853,6 +10873,14 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
     // At each relay tick, the first peer to get here moves the relay queue
     // into the chosen peers' inventory, so all peers send at this tick.
     MaybeDrainRelayQueue();
+    if (!m_chainman.IsInitialBlockDownload()) {
+        if (const auto next{m_full_recon.Tick(*pto, RelayTickNow())}) {
+            auto deadline{m_full_recon_wake.load(std::memory_order_relaxed)};
+            while (next->count() < deadline &&
+                   !m_full_recon_wake.compare_exchange_weak(
+                       deadline, next->count(), std::memory_order_relaxed)) {}
+        }
+    }
     MaybeReconcile();
 
     const auto current_time{GetTime<std::chrono::microseconds>()};

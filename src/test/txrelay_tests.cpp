@@ -11,6 +11,7 @@
 #include <lotus_v2/commitment.h>
 #include <net.h>
 #include <net/txrelay_index.h>
+#include <net/full_mempool_reconciliation.h>
 #include <node/snapshot.h>
 
 #include <net/v2_protocol_handler.h>
@@ -82,6 +83,9 @@ struct Sent {
     std::vector<lotus::v2::net::ShortTxRequest> short_requests;
     //! merklixsync summaries
     std::vector<lotus::v2::net::MerklixSyncSummary> summaries;
+    std::vector<lotus::v2::net::fullrecon::Offer> full_offers;
+    std::vector<lotus::v2::net::fullrecon::Request> full_requests;
+    std::vector<lotus::v2::net::fullrecon::Reply> full_replies;
     size_t Total() const {
         return inv_txids.size() + shorttx_txids.size() + short_ids.size();
     }
@@ -155,6 +159,26 @@ struct RelayHarness {
                 bool rejected = false;
                 auto msg = deserializer.GetMessage(0us, rejected);
                 BOOST_CHECK(!rejected);
+                if ((msg.m_type == NetMsgType::MERKLIXSYNC ||
+                     msg.m_type == NetMsgType::GETMERKLIXBUCK ||
+                     msg.m_type == NetMsgType::MERKLIXBUCK) &&
+                    !msg.m_recv.empty() &&
+                    uint8_t(msg.m_recv[0]) == lotus::v2::net::fullrecon::SCOPE) {
+                    if (msg.m_type == NetMsgType::MERKLIXSYNC) {
+                        lotus::v2::net::fullrecon::Offer offer;
+                        msg.m_recv >> offer;
+                        sent.full_offers.push_back(std::move(offer));
+                    } else if (msg.m_type == NetMsgType::GETMERKLIXBUCK) {
+                        lotus::v2::net::fullrecon::Request request;
+                        msg.m_recv >> request;
+                        sent.full_requests.push_back(std::move(request));
+                    } else {
+                        lotus::v2::net::fullrecon::Reply reply;
+                        msg.m_recv >> reply;
+                        sent.full_replies.push_back(std::move(reply));
+                    }
+                    continue;
+                }
                 if (msg.m_type == NetMsgType::INV) {
                     std::vector<CInv> invs;
                     msg.m_recv >> invs;
@@ -1209,4 +1233,343 @@ BOOST_AUTO_TEST_CASE(no_body_push_by_default) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(full_reconciliation_negotiation_preserves_old_peer) {
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    auto &chainman{static_cast<TestChainstateManager &>(*m_node.chainman)};
+    chainman.JumpOutOfIbd();
+    struct Reset { TestChainstateManager &chainman; ~Reset() { chainman.ResetIbd(); } } reset{chainman};
+    MockTick clock{15'000'000ms};
+    RelayHarness h{m_node, PeerManager::Options{}};
+    auto &old_peer{h.AddPeer()}, &new_peer{h.AddPeer()};
+    auto negotiate = [&](CNode &node, uint64_t flags) {
+        DataStream stream;
+        stream << txrelay::SENDINVSHORT_VERSION << flags;
+        std::atomic<bool> interrupt{false};
+        h.peerman->ProcessMessage(h.config, node, NetMsgType::SENDINVSHORT,
+                                  stream, 0us, interrupt);
+    };
+    negotiate(old_peer, txrelay::TXRELAY_INVSHORT | txrelay::TXRELAY_RECON | (uint64_t{1} << 40));
+    negotiate(new_peer, txrelay::TXRELAY_INVSHORT | txrelay::TXRELAY_RECON | txrelay::TXRELAY_FULL_MEMPOOL);
+    const auto sent{h.SendAll()};
+    BOOST_CHECK(sent.at(old_peer.GetId()).full_offers.empty());
+    BOOST_REQUIRE_EQUAL(sent.at(new_peer.GetId()).full_offers.size(), 1U);
+    BOOST_CHECK(sent.at(new_peer.GetId()).summaries.empty());
+    // Unknown high flags are ignored by the old-style parser. No full-mode
+    // wire is sent merely because another peer negotiated the new capability.
+    clock.Set(15'000'250ms);
+    BOOST_CHECK(h.SendAll().at(old_peer.GetId()).full_offers.empty());
+}
+BOOST_AUTO_TEST_CASE(full_reconciliation_owned_page_and_admission_outcome) {
+    using namespace lotus::v2::net::fullrecon;
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    auto &chainman{static_cast<TestChainstateManager &>(*m_node.chainman)};
+    chainman.JumpOutOfIbd();
+    struct Reset { TestChainstateManager &chainman; ~Reset() { chainman.ResetIbd(); } } reset{chainman};
+    MockTick clock{16'000'000ms};
+    RelayHarness h{m_node, PeerManager::Options{}};
+    auto &owner{h.AddPeer()}, &other{h.AddPeer()};
+    h.SendAll();
+    Manager manager{chainman, *m_node.mempool, *h.connman, *h.peerman};
+    manager.SetPeer(owner.GetId(), true);
+    manager.SetPeer(other.GetId(), true);
+    FastRandomContext rng{uint256{0x9a}};
+    const auto body{MakeTx(rng)};
+    Snapshot remote{{body}, 1024 * 1024};
+    Offer offer;
+    offer.header.context = rng.rand256();
+    {
+        LOCK(cs_main);
+        offer.anchor = chainman.ActiveTip()->GetBlockHash();
+    }
+    offer.root = remote.Root();
+    offer.children = remote.Children(Prefix{});
+    DataStream offered;
+    offered << offer;
+    BOOST_CHECK(manager.Handle(owner, NetMsgType::MERKLIXSYNC, offered, 10s));
+    const auto waiting{manager.Tick(owner, 16'000'000ms)};
+    BOOST_REQUIRE(waiting);
+    BOOST_CHECK(*waiting == 16'005'000ms);
+    const auto outgoing{h.Drain(owner)};
+    BOOST_REQUIRE_EQUAL(outgoing.full_requests.size(), 1U);
+    const auto request{outgoing.full_requests.front()};
+    BOOST_CHECK(request.work == Work::PAGE);
+    Reply reply;
+    reply.header = request.header;
+    reply.request = request.request;
+    reply.prefix = request.prefix;
+    reply.work = request.work;
+    reply.bodies = {body};
+    // A genuine page on the wrong connection cannot acquire request ownership.
+    DataStream wrong_peer;
+    wrong_peer << reply;
+    manager.Handle(other, NetMsgType::MERKLIXBUCK, wrong_peer, 11s);
+    BOOST_CHECK_EQUAL(manager.GetStats().verified_bodies, 0U);
+    DataStream wrong_request;
+    ++reply.request;
+    wrong_request << reply;
+    manager.Handle(owner, NetMsgType::MERKLIXBUCK, wrong_request, 12s);
+    BOOST_CHECK_EQUAL(manager.GetStats().verified_bodies, 0U);
+    --reply.request;
+    const auto owned_context{reply.header.context};
+    reply.header.context = rng.rand256();
+    DataStream wrong_context; wrong_context << reply;
+    manager.Handle(owner, NetMsgType::MERKLIXBUCK, wrong_context, 12s);
+    BOOST_CHECK_EQUAL(manager.GetStats().verified_bodies, 0U);
+    reply.header.context = owned_context;
+    const auto owned_prefix{reply.prefix};
+    reply.prefix = Prefix{};
+    // The owned request is a depth-four child; a root page may not retag it.
+    BOOST_REQUIRE(owned_prefix.depth > 0);
+    DataStream wrong_prefix; wrong_prefix << reply;
+    manager.Handle(owner, NetMsgType::MERKLIXBUCK, wrong_prefix, 12s);
+    BOOST_CHECK_EQUAL(manager.GetStats().verified_bodies, 0U);
+    reply.prefix = owned_prefix;
+    reply.bodies = {body, body};
+    DataStream duplicate_identity; duplicate_identity << reply;
+    manager.Handle(owner, NetMsgType::MERKLIXBUCK, duplicate_identity, 12s);
+    BOOST_CHECK_EQUAL(manager.GetStats().verified_bodies, 0U);
+    // Corrupt payload cannot satisfy the owned prefix's complete digest.
+    const auto different{MakeTx(rng)};
+    reply.bodies = {different};
+    DataStream corrupt;
+    corrupt << reply;
+    manager.Handle(owner, NetMsgType::MERKLIXBUCK, corrupt, 13s);
+    BOOST_CHECK_EQUAL(manager.GetStats().verified_bodies, 0U);
+    reply.bodies = {body};
+    DataStream correct;
+    correct << reply;
+    manager.Handle(owner, NetMsgType::MERKLIXBUCK, correct, 14s);
+    BOOST_CHECK_EQUAL(manager.GetStats().verified_bodies, 1U);
+    DataStream duplicate;
+    duplicate << reply;
+    manager.Handle(owner, NetMsgType::MERKLIXBUCK, duplicate, 15s);
+    BOOST_CHECK_EQUAL(manager.GetStats().verified_bodies, 1U);
+    clock.Set(16'000'250ms);
+    const auto continuation{manager.Tick(owner, 16'000'250ms)};
+    BOOST_REQUIRE(continuation);
+    BOOST_CHECK(*continuation == 16'000'250ms);
+    BOOST_CHECK_EQUAL(manager.GetStats().coverage_complete, 1U);
+    const auto completion{h.Drain(owner)};
+    BOOST_CHECK(std::any_of(completion.full_offers.begin(), completion.full_offers.end(),
+        [&](const Offer &out) { return out.control == Control::DONE && out.header.context == offer.header.context; }));
+    clock.Set(16'000'500ms);
+    BOOST_CHECK(!manager.Tick(owner, 16'000'500ms));
+    // Unfunded synthetic body is NOT accepted simply because its membership
+    // proof passed. Coverage and normal admission are separate outcomes.
+    BOOST_CHECK_EQUAL(manager.GetStats().admitted, 0U);
+    BOOST_CHECK(manager.GetStats().unresolved > 0);
+    manager.RemovePeer(owner.GetId());
+    manager.RemovePeer(other.GetId());
+    BOOST_CHECK_EQUAL(manager.GetStats().charged_bytes, 0U);
+}
+BOOST_AUTO_TEST_CASE(full_reconciliation_unknown_context_does_not_capture_pool) {
+    using namespace lotus::v2::net::fullrecon;
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    RelayHarness h{m_node, PeerManager::Options{}};
+    auto &node{h.AddPeer()};
+    h.SendAll();
+    Manager manager{*m_node.chainman, *m_node.mempool, *h.connman, *h.peerman};
+    manager.SetPeer(node.GetId(), true);
+    Request request;
+    request.header.context = uint256::ONE;
+    request.request = 1;
+    request.work = Work::PAGE;
+    DataStream stream;
+    stream << request;
+    BOOST_CHECK(manager.Handle(node, NetMsgType::GETMERKLIXBUCK, stream, 20s));
+    const auto sent{h.Drain(node)};
+    BOOST_REQUIRE_EQUAL(sent.full_replies.size(), 1U);
+    BOOST_CHECK(sent.full_replies.front().status == Status::GONE);
+    BOOST_CHECK_EQUAL(manager.GetStats().captures, 0U);
+    BOOST_CHECK_EQUAL(manager.GetStats().verified_bodies, 0U);
+}
+BOOST_AUTO_TEST_CASE(full_reconciliation_renegotiation_retains_queued_exposure) {
+    using namespace lotus::v2::net::fullrecon;
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    MockTick clock{20'000'000ms};
+    RelayHarness h{m_node, PeerManager::Options{}};
+    auto &node{h.AddPeer()}; h.SendAll();
+    Manager manager{*m_node.chainman, *m_node.mempool, *h.connman, *h.peerman};
+    manager.SetPeer(node.GetId(), true);
+    Request request; request.header.context = uint256::ONE; request.request = 1;
+    DataStream stream; stream << request;
+    manager.Handle(node, NetMsgType::GETMERKLIXBUCK, stream, 80s);
+    const auto queued{manager.GetStats().charged_bytes};
+    BOOST_REQUIRE_GT(queued, 0U);
+    manager.SetPeer(node.GetId(), false);
+    BOOST_CHECK_EQUAL(manager.GetStats().charged_bytes, queued);
+    manager.SetPeer(node.GetId(), true);
+    BOOST_CHECK_EQUAL(manager.GetStats().charged_bytes, queued);
+    manager.SetPeer(node.GetId(), false);
+    const auto replies{h.Drain(node)};
+    BOOST_REQUIRE_EQUAL(replies.full_replies.size(), 1U);
+    // Harness Drain intentionally clears real transport ownership below too.
+    { LOCK(node.cs_vSend); node.nSendSize = 0; }
+    manager.Tick(node, 20'000'250ms);
+    BOOST_CHECK_LT(manager.GetStats().charged_bytes, queued);
+    manager.RemovePeer(node.GetId());
+    BOOST_CHECK_EQUAL(manager.GetStats().charged_bytes, 0U);
+}
+BOOST_AUTO_TEST_CASE(full_reconciliation_equal_digest_false_count_rejected) {
+    using namespace lotus::v2::net::fullrecon;
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    MockTick clock{19'000'000ms};
+    RelayHarness h{m_node, PeerManager::Options{}};
+    auto &node{h.AddPeer()}; h.SendAll();
+    FastRandomContext rng{uint256{0x9e}};
+    const auto body{MakeTx(rng)};
+    AddToMempool(m_node, body);
+    Snapshot snapshot{{body}, 1024 * 1024};
+    Manager manager{*m_node.chainman, *m_node.mempool, *h.connman, *h.peerman};
+    manager.SetPeer(node.GetId(), true);
+    Offer offer; offer.header.context = rng.rand256();
+    { LOCK(cs_main); offer.anchor = m_node.chainman->ActiveTip()->GetBlockHash(); }
+    offer.children = snapshot.Children(Prefix{});
+    for (auto &child : offer.children) if (child.count) child.count = 2;
+    // Children/root remain self-consistent but the leaf digest proves the
+    // pinned local singleton, so a false count may not silently skip its work.
+    offer.root = Fold(offer.children, 0);
+    DataStream stream; stream << offer;
+    manager.Handle(node, NetMsgType::MERKLIXSYNC, stream, 70s);
+    BOOST_CHECK_EQUAL(manager.GetStats().malformed, 1U);
+    BOOST_CHECK_EQUAL(manager.GetStats().coverage_complete, 0U);
+    BOOST_CHECK_EQUAL(manager.GetStats().verified_bodies, 0U);
+}
+BOOST_AUTO_TEST_CASE(full_reconciliation_timeout_retries_owned_work_and_releases) {
+    using namespace lotus::v2::net::fullrecon;
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    MockTick clock{18'000'000ms};
+    RelayHarness h{m_node, PeerManager::Options{}};
+    auto &node{h.AddPeer()};
+    h.SendAll();
+    Manager manager{*m_node.chainman, *m_node.mempool, *h.connman, *h.peerman};
+    manager.SetPeer(node.GetId(), true);
+    FastRandomContext rng{uint256{0x9c}};
+    Snapshot remote{{MakeTx(rng)}, 1024 * 1024};
+    Offer offer;
+    offer.header.context = rng.rand256();
+    { LOCK(cs_main); offer.anchor = m_node.chainman->ActiveTip()->GetBlockHash(); }
+    offer.root = remote.Root(); offer.children = remote.Children(Prefix{});
+    DataStream stream; stream << offer;
+    manager.Handle(node, NetMsgType::MERKLIXSYNC, stream, 60s);
+    uint64_t previous_request{0};
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        const auto now{18'000'000ms + attempt * 5s};
+        clock.Set(now);
+        manager.Tick(node, now);
+        const auto outgoing{h.Drain(node)};
+        BOOST_REQUIRE_EQUAL(outgoing.full_requests.size(), 1U);
+        const auto &request{outgoing.full_requests.front()};
+        BOOST_CHECK(request.header.context == offer.header.context);
+        BOOST_CHECK(request.request > previous_request);
+        previous_request = request.request;
+        // No response is provided: only the real monotonic deadline retries.
+        BOOST_CHECK_EQUAL(manager.GetStats().coverage_complete, 0U);
+    }
+    clock.Set(18'020'000ms);
+    manager.Tick(node, 18'020'000ms);
+    const auto retired{h.Drain(node)};
+    BOOST_CHECK(retired.full_requests.empty());
+    BOOST_CHECK(std::any_of(retired.full_offers.begin(), retired.full_offers.end(),
+        [&](const Offer &out) { return out.control == Control::CANCEL && out.header.context == offer.header.context; }));
+    BOOST_CHECK_EQUAL(manager.GetStats().coverage_complete, 0U);
+    BOOST_CHECK_EQUAL(manager.GetStats().unresolved, 1U);
+    manager.RemovePeer(node.GetId());
+    BOOST_CHECK_EQUAL(manager.GetStats().charged_bytes, 0U);
+}
+BOOST_AUTO_TEST_CASE(full_reconciliation_capture_reuse_old_membership_and_lease) {
+    using namespace lotus::v2::net::fullrecon;
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    auto &chainman{static_cast<TestChainstateManager &>(*m_node.chainman)};
+    chainman.JumpOutOfIbd();
+    struct Reset { TestChainstateManager &chainman; ~Reset() { chainman.ResetIbd(); } } reset{chainman};
+    MockTick clock{17'000'000ms};
+    RelayHarness h{m_node, PeerManager::Options{}};
+    auto &first{h.AddPeer()}, &second{h.AddPeer()}, &third{h.AddPeer()}, &fourth{h.AddPeer()};
+    h.SendAll();
+    Manager manager{chainman, *m_node.mempool, *h.connman, *h.peerman};
+    for (auto *node : {&first, &second, &third, &fourth}) manager.SetPeer(node->GetId(), true);
+    manager.Tick(first, 17'000'000ms);
+    auto initial{h.Drain(first)};
+    BOOST_REQUIRE_EQUAL(initial.full_offers.size(), 1U);
+    BOOST_CHECK_EQUAL(manager.GetStats().captures, 1U);
+    auto done = [&](CNode &node, const Header &header, std::chrono::microseconds time) {
+        Offer ack; ack.header = header; ack.control = Control::DONE;
+        DataStream stream; stream << ack;
+        manager.Handle(node, NetMsgType::MERKLIXSYNC, stream, time);
+    };
+    done(first, initial.full_offers[0].header, 30s);
+    FastRandomContext rng{uint256{0x9b}};
+    std::vector<CTransactionRef> txs;
+    for (int i = 0; i < 10; ++i) {
+        txs.push_back(MakeTx(rng));
+        AddToMempool(m_node, txs.back());
+    }
+    // A changed generation/new connection cannot force another full scan before
+    // the node-wide capture interval. The offered cached generation is explicit.
+    clock.Set(17'001'000ms);
+    manager.Tick(second, 17'001'000ms);
+    auto cached{h.Drain(second)};
+    BOOST_REQUIRE_EQUAL(cached.full_offers.size(), 1U);
+    BOOST_CHECK_EQUAL(cached.full_offers[0].root.count, 0U);
+    BOOST_CHECK_EQUAL(manager.GetStats().captures, 1U);
+    done(second, cached.full_offers[0].header, 31s);
+    clock.Set(17'031'000ms);
+    manager.Tick(third, 17'031'000ms);
+    auto captured{h.Drain(third)};
+    BOOST_REQUIRE_EQUAL(captured.full_offers.size(), 1U);
+    BOOST_CHECK_EQUAL(captured.full_offers[0].root.count, 10U);
+    BOOST_CHECK_EQUAL(manager.GetStats().captures, 2U);
+    {
+        LOCK2(cs_main, m_node.mempool->cs);
+        m_node.mempool->removeRecursive(*txs[0], MemPoolRemovalReason::EXPIRY);
+    }
+    // An ordinary compatible tip extension cannot expire transport ownership.
+    // This unit changes only the active index view; normal validation remains
+    // outside this serving-only check and the fixture tip is restored by RAII.
+    CBlockIndex extension;
+    const BlockHash extension_hash{uint256{0x9d}};
+    CBlockIndex *original_tip;
+    { LOCK(cs_main); original_tip = chainman.ActiveTip(); }
+    extension.pprev = original_tip;
+    extension.nHeight = original_tip->nHeight + 1;
+    extension.phashBlock = &extension_hash;
+    struct RestoreTip {
+        ChainstateManager &chainman; CBlockIndex &tip;
+        ~RestoreTip() { LOCK(cs_main); chainman.ActiveChain().SetTip(tip); }
+    } restore_tip{chainman, *original_tip};
+    { LOCK(cs_main); chainman.ActiveChain().SetTip(extension); }
+    clock.Set(17'032'000ms);
+    manager.Tick(third, 17'032'000ms);
+    BOOST_CHECK(h.Drain(third).full_offers.empty());
+    Request request;
+    request.header = captured.full_offers[0].header;
+    request.request = 1;
+    request.work = Work::PAGE;
+    DataStream stream; stream << request;
+    manager.Handle(third, NetMsgType::GETMERKLIXBUCK, stream, 40s);
+    const auto pinned{h.Drain(third)};
+    BOOST_REQUIRE_EQUAL(pinned.full_replies.size(), 1U);
+    BOOST_CHECK(pinned.full_replies[0].status == Status::OK);
+    BOOST_CHECK_EQUAL(pinned.full_replies[0].bodies.size(), 10U);
+    BOOST_CHECK(Snapshot::PageDigest(Prefix{}, pinned.full_replies[0].bodies) ==
+                captured.full_offers[0].root.digest);
+    clock.Set(17'062'000ms);
+    manager.Tick(fourth, 17'062'000ms);
+    const auto changed{h.Drain(fourth)};
+    BOOST_REQUIRE_EQUAL(changed.full_offers.size(), 1U);
+    BOOST_CHECK_EQUAL(changed.full_offers[0].root.count, 9U);
+    BOOST_CHECK(changed.full_offers[0].root.digest != captured.full_offers[0].root.digest);
+    BOOST_CHECK_EQUAL(manager.GetStats().captures, 3U);
+    clock.Set(17'093'000ms);
+    manager.Tick(third, 17'093'000ms);
+    h.Drain(third);
+    ++request.request;
+    DataStream expired; expired << request;
+    manager.Handle(third, NetMsgType::GETMERKLIXBUCK, expired, 50s);
+    const auto gone{h.Drain(third)};
+    BOOST_REQUIRE_EQUAL(gone.full_replies.size(), 1U);
+    BOOST_CHECK(gone.full_replies[0].status == Status::GONE);
+    BOOST_CHECK_EQUAL(manager.GetStats().captures, 3U);
+}
 BOOST_AUTO_TEST_SUITE_END()
