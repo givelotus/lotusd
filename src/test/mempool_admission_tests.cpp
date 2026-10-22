@@ -3,6 +3,11 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <coins.h>
+#include <node/transaction.h>
+#include <util/task_runner.h>
+#include <validationinterface.h>
+#include <stdexcept>
+#include <utility>
 #include <consensus/validation.h>
 #include <random.h>
 #include <script/standard.h>
@@ -213,6 +218,69 @@ void CheckSameResults(
 } // namespace
 
 BOOST_FIXTURE_TEST_SUITE(mempool_admission_tests, AdmissionSetup)
+
+BOOST_FIXTURE_TEST_CASE(rpc_barrier_survives_throw_after_callback_registration,
+                        TestChain100Setup) {
+    // Use a coin the fixture actually mined, rather than relying on the
+    // separate staged-admission fixture's unasserted funding block.
+    const auto &coinbase = m_coinbase_txns.front();
+    const auto tx = MakeTransactionRef(CreateValidMempoolTransaction(
+        coinbase, /*input_vout=*/0, /*input_height=*/1, coinbaseKey,
+        GetScriptForDestination(PKHash(coinbaseKey.GetPubKey())),
+        coinbase->vout[0].nValue - 10000 * SATOSHI, /*submit=*/false));
+    // Prove that the ordinary authoritative path accepts the fixture before
+    // substituting only its notification-barrier runner.
+    const auto preflight = WITH_LOCK(cs_main,
+        return m_node.chainman->ProcessTransaction(tx, /*test_accept=*/true));
+    BOOST_REQUIRE_MESSAGE(
+        preflight.m_result_type == MempoolAcceptResult::ResultType::VALID,
+        "barrier fixture rejected before injection: " << preflight.m_state.ToString());
+
+    struct ThrowAfterEnqueue final : util::TaskRunnerInterface {
+        std::function<void()> saved;
+        void insert(std::function<void()> task) override {
+            saved = std::move(task);
+            // Mirrors SerialTaskRunner appending before scheduler allocation.
+            throw std::runtime_error("scheduled callback retained");
+        }
+        void flush() override { if (saved) std::exchange(saved, {})(); }
+        size_t size() override { return saved ? 1 : 0; }
+    };
+    struct Restore {
+        node::NodeContext &node;
+        std::unique_ptr<ValidationSignals> original;
+        ~Restore() {
+            node.rpc_admission.reset();
+            node.validation_signals = std::move(original);
+        }
+    } restore{m_node, std::move(m_node.validation_signals)};
+    // The pool retains its original live signals; this substituted queue is
+    // used by BroadcastTransaction's completion barrier only.
+    auto runner = std::make_unique<ThrowAfterEnqueue>();
+    auto *pending = runner.get();
+    m_node.validation_signals = std::make_unique<ValidationSignals>(std::move(runner));
+    m_node.rpc_admission = std::make_unique<node::RpcAdmissionDispatcher>();
+    std::string error;
+    bool injected_exception = false;
+    auto returned = node::TransactionError::OK;
+    try {
+        returned = node::BroadcastTransaction(
+            m_node, tx, error, Amount::zero(), /*relay=*/false,
+            /*wait_callback=*/true, /*rpc_fee_hysteresis=*/false,
+            /*use_rpc_admission_queue=*/true);
+    } catch (const std::runtime_error &exception) {
+        injected_exception = true;
+        BOOST_CHECK_EQUAL(exception.what(), "scheduled callback retained");
+    }
+    BOOST_CHECK_MESSAGE(injected_exception,
+        "barrier not reached; TransactionError=" << int(returned) << ": " << error);
+    BOOST_CHECK(m_node.mempool->exists(tx->GetId()));
+    BOOST_REQUIRE_EQUAL(pending->size(), 1U);
+    // The failed RPC frame has unwound; a delayed consumer still owns a valid
+    // completion state. ASan also catches a regression to stack captures.
+    BOOST_CHECK_NO_THROW(pending->flush());
+    BOOST_CHECK_EQUAL(pending->size(), 0U);
+}
 
 BOOST_AUTO_TEST_CASE(precomputed_checks_give_serial_verdicts) {
     // A valid ECDSA and a valid Schnorr spend, each admitted once with

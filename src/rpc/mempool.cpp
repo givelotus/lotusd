@@ -108,7 +108,8 @@ static RPCHelpMan sendrawtransaction() {
                 lotus::v2::GetGlobalFeeHysteresisController();
             const TransactionError err = BroadcastTransaction(
                 node, tx, err_string, max_raw_tx_fee, /*relay*/ true,
-                /*wait_callback*/ true, /*rpc_fee_hysteresis=*/true);
+                /*wait_callback*/ true, /*rpc_fee_hysteresis=*/true,
+                /*use_rpc_admission_queue=*/true);
             if (err != TransactionError::OK) {
                 if (err == TransactionError::MEMPOOL_REJECTED &&
                     (err_string.find("min relay fee not met") !=

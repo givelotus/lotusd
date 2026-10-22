@@ -19,10 +19,18 @@
 #include <primitives/blockhash.h>
 #include <primitives/txid.h>
 #include <txmempool.h>
+#include <util/threadnames.h>
 #include <validation.h>
 #include <validationinterface.h>
 
+#include <array>
+#include <atomic>
+#include <boost/lockfree/queue.hpp>
+#include <condition_variable>
+#include <exception>
 #include <future>
+#include <mutex>
+#include <thread>
 
 namespace node {
 static TransactionError HandleATMPError(const TxValidationState &state,
@@ -38,38 +46,17 @@ static TransactionError HandleATMPError(const TxValidationState &state,
     }
 }
 
-TransactionError BroadcastTransaction(const NodeContext &node,
-                                      const CTransactionRef tx,
-                                      std::string &err_string,
-                                      const Amount max_tx_fee, bool relay,
-                                      bool wait_callback, bool rpc_fee_hysteresis) {
-    // BroadcastTransaction can be called by either sendrawtransaction RPC or
-    // the wallet. chainman, mempool and peerman are initialized before the RPC
-    // server and wallet are started and reset after the RPC server and wallet
-    // are stopped.
-    assert(node.chainman);
-    assert(node.mempool);
-    assert(node.peerman);
-
-    std::promise<void> promise;
-    TxId txid = tx->GetId();
-    bool callback_set = false;
-    const MempoolAdmissionLimits limits{max_tx_fee, rpc_fee_hysteresis};
-    std::optional<PrecomputedAdmissionChecks> precomputed;
-    if (wait_callback && node.args &&
-        node.args->GetBoolArg("-parallelmempool", DEFAULT_PARALLEL_MEMPOOL)) {
-        // Synchronous callers guarantee they hold no chain/mempool/wallet
-        // locks. RPC clients can therefore verify concurrently. The existing
-        // critical section below decides every verdict,
-        // fee bound, broadcast marker and notification in the same order.
-        precomputed = PrecomputeMempoolAdmission(*node.chainman, tx, limits);
-    }
-
-    {
-        const auto waiting = std::chrono::steady_clock::now();
-        LOCK(cs_main);
-        AdmissionLockTimer timer(waiting);
-
+namespace {
+    RpcAdmissionOutcome
+    AdmitBroadcastLocked(const NodeContext &node, const CTransactionRef &tx,
+                         const MempoolAdmissionLimits &limits, bool relay,
+                         bool wait_callback,
+                         const PrecomputedAdmissionChecks *precomputed,
+                         const std::shared_ptr<std::promise<void>> &promise)
+        EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+        AssertLockHeld(cs_main);
+        RpcAdmissionOutcome outcome;
+        const TxId &txid = tx->GetId();
         // If the transaction is already confirmed in the chain, don't do
         // anything and return early.
         CCoinsViewCache &view = node.chainman->ActiveChainstate().CoinsTip();
@@ -79,23 +66,24 @@ TransactionError BroadcastTransaction(const NodeContext &node,
             // doesn't exist. So if the output does exist, then this transaction
             // exists in the chain.
             if (!existingCoin.IsSpent()) {
-                return TransactionError::ALREADY_IN_CHAIN;
+                return {TransactionError::ALREADY_IN_CHAIN, {}, {}};
             }
         }
 
         if (!node.mempool->exists(txid)) {
             // Transaction is not already in the mempool.
-            // Validate caller fee bounds before insertion in this one ATMP pass.
+            // Validate caller fee bounds before insertion in this one ATMP
+            // pass.
             const MempoolAcceptResult result =
-                node.chainman->ProcessTransaction(
-                    tx, /*test_accept=*/false, limits,
-                    precomputed ? &*precomputed : nullptr);
+                node.chainman->ProcessTransaction(tx, /*test_accept=*/false,
+                                                  limits, precomputed);
             if (result.m_result_type !=
                 MempoolAcceptResult::ResultType::VALID) {
                 if (result.m_state.GetRejectReason() == "max-fee-exceeded") {
-                    return TransactionError::MAX_FEE_EXCEEDED;
+                    return {TransactionError::MAX_FEE_EXCEEDED, {}, {}};
                 }
-                return HandleATMPError(result.m_state, err_string);
+                outcome.result = HandleATMPError(result.m_state, outcome.error);
+                return outcome;
             }
 
             // Transaction was accepted to the mempool.
@@ -116,16 +104,212 @@ TransactionError BroadcastTransaction(const NodeContext &node,
                 // immediately call some wallet RPC, and get a stale result
                 // because callbacks have not yet been processed.
                 node.validation_signals->CallFunctionInValidationInterfaceQueue(
-                    [&promise] { promise.set_value(); });
-                callback_set = true;
+                    [promise] { promise->set_value(); });
+                outcome.notification = promise;
             }
         }
-    } // cs_main
+        return outcome;
+    }
+} // namespace
 
-    if (callback_set) {
+struct RpcAdmissionDispatcher::Impl {
+    // Bounds include queued and executing requests. Larger/full requests keep
+    // the existing direct path: overload never drops an RPC or changes policy.
+    static constexpr size_t MAX_BYTES = 32 << 20;
+    static constexpr size_t MAX_SLICE = 32;
+    static constexpr uint64_t STOPPED = uint64_t{1} << 63;
+    struct Request : std::enable_shared_from_this<Request> {
+        Request(size_t size, std::function<RpcAdmissionOutcome()> fn)
+            : bytes(size), commit(std::move(fn)) {}
+        size_t bytes;
+        std::function<RpcAdmissionOutcome()> commit;
+        std::promise<RpcAdmissionOutcome> completed;
+        std::optional<RpcAdmissionOutcome> outcome;
+        std::exception_ptr error;
+    };
+    boost::lockfree::queue<Request *, boost::lockfree::capacity<256>> queue;
+    std::atomic<size_t> bytes{0};
+    // High bit closes registration; low bits count producer calls through
+    // completion. A registered producer can publish after Stop() begins.
+    std::atomic<uint64_t> producers{0};
+    std::mutex wake_mutex;
+    std::condition_variable wake;
+    std::thread worker;
+
+    Impl() : worker([this] { Run(); }) {}
+    ~Impl() { Stop(); }
+
+    void Notify() {
+        // Publication is lock-free. This short mutex only closes the condition
+        // variable's check/sleep race; no chain/mempool operation owns it.
+        {
+            std::lock_guard<std::mutex> lock(wake_mutex);
+        }
+        wake.notify_one();
+    }
+    void Stop() {
+        producers.fetch_or(STOPPED, std::memory_order_acq_rel);
+        Notify();
+        if (worker.joinable()) worker.join();
+    }
+    std::optional<RpcAdmissionOutcome>
+    Dispatch(size_t nbytes, std::function<RpcAdmissionOutcome()> commit) {
+        AssertLockNotHeld(cs_main);
+        uint64_t observed = producers.load(std::memory_order_acquire);
+        do {
+            if (observed & STOPPED) return std::nullopt;
+        } while (!producers.compare_exchange_weak(observed, observed + 1,
+                                                  std::memory_order_acq_rel));
+        struct Producer {
+            Impl &owner;
+            ~Producer() {
+                owner.producers.fetch_sub(1, std::memory_order_acq_rel);
+                owner.Notify();
+            }
+        } producer{*this};
+        if (nbytes > MAX_BYTES) return std::nullopt;
+        auto request = std::make_shared<Request>(nbytes, std::move(commit));
+        auto completed = request->completed.get_future();
+        size_t used = bytes.load(std::memory_order_relaxed);
+        do {
+            if (used > MAX_BYTES - nbytes) return std::nullopt;
+        } while (!bytes.compare_exchange_weak(used, used + nbytes,
+                                              std::memory_order_relaxed));
+        if (!queue.push(request.get())) {
+            bytes.fetch_sub(nbytes, std::memory_order_relaxed);
+            return std::nullopt;
+        }
+        Notify();
+        // The request owns its inputs. Transfer the typed verdict, error text
+        // and independent notification barrier to the waiting RPC producer.
+        return completed.get();
+    }
+    void Run() {
+        util::ThreadRename("rpcadmit");
+        for (;;) {
+            {
+                std::unique_lock<std::mutex> lock(wake_mutex);
+                wake.wait(lock, [&] {
+                    return !queue.empty() ||
+                           producers.load(std::memory_order_acquire) == STOPPED;
+                });
+            }
+            std::array<std::shared_ptr<Request>, MAX_SLICE> slice{};
+            size_t count = 0;
+            Request *pending = nullptr;
+            while (count < slice.size() && queue.pop(pending)) {
+                slice[count++] = pending->shared_from_this();
+            }
+            if (count == 0) {
+                if (producers.load(std::memory_order_acquire) == STOPPED)
+                    return;
+                continue;
+            }
+            {
+                const auto waiting = SteadyClock::now();
+                LOCK(cs_main);
+                AdmissionLockTimer timer(waiting);
+                for (size_t i = 0; i < count; ++i) {
+                    try {
+                        slice[i]->outcome.emplace(slice[i]->commit());
+                    } catch (...) {
+                        slice[i]->error = std::current_exception();
+                    }
+                }
+            }
+            for (size_t i = 0; i < count; ++i) {
+                const auto &request = slice[i];
+                bytes.fetch_sub(request->bytes, std::memory_order_relaxed);
+                // Retain ownership through set_value/set_exception: the
+                // waiting producer may immediately release its own reference.
+                if (request->error)
+                    request->completed.set_exception(request->error);
+                else
+                    request->completed.set_value(std::move(*request->outcome));
+            }
+        }
+    }
+};
+
+RpcAdmissionDispatcher::RpcAdmissionDispatcher()
+    : m_impl(std::make_unique<Impl>()) {}
+RpcAdmissionDispatcher::~RpcAdmissionDispatcher() = default;
+void RpcAdmissionDispatcher::Stop() {
+    m_impl->Stop();
+}
+std::optional<RpcAdmissionOutcome>
+RpcAdmissionDispatcher::Dispatch(size_t bytes,
+                                 std::function<RpcAdmissionOutcome()> commit) {
+    return m_impl->Dispatch(bytes, std::move(commit));
+}
+
+TransactionError
+BroadcastTransaction(const NodeContext &node, const CTransactionRef tx,
+                     std::string &err_string, const Amount max_tx_fee,
+                     bool relay, bool wait_callback, bool rpc_fee_hysteresis,
+                     bool use_rpc_admission_queue) {
+    // BroadcastTransaction can be called by either sendrawtransaction RPC or
+    // the wallet. chainman, mempool and peerman are initialized before the RPC
+    // server and wallet are started and reset after the RPC server and wallet
+    // are stopped.
+    assert(node.chainman);
+    assert(node.mempool);
+    assert(node.peerman);
+
+    // The queue can retain a barrier even if scheduling it throws. Give the
+    // callback ownership independent of an RPC frame or disconnected client.
+    const auto promise =
+        wait_callback ? std::make_shared<std::promise<void>>() : nullptr;
+    TxId txid = tx->GetId();
+    const MempoolAdmissionLimits limits{max_tx_fee, rpc_fee_hysteresis};
+    std::optional<PrecomputedAdmissionChecks> precomputed;
+    if (wait_callback && node.args &&
+        node.args->GetBoolArg("-parallelmempool", DEFAULT_PARALLEL_MEMPOOL)) {
+        // Synchronous callers guarantee they hold no chain/mempool/wallet
+        // locks. RPC clients can therefore verify concurrently. The existing
+        // critical section below decides every verdict,
+        // fee bound, broadcast marker and notification in the same order.
+        precomputed = PrecomputeMempoolAdmission(*node.chainman, tx, limits);
+    }
+
+    RpcAdmissionOutcome outcome;
+    bool queued = false;
+    // The queued task owns transaction/preparation/limits and its barrier.
+    // Only node is borrowed: AppInit/Shutdown pin its dependencies through
+    // HTTP handler drain and dispatcher destruction.
+    if (use_rpc_admission_queue && wait_callback && node.rpc_admission) {
+        auto completed = node.rpc_admission->Dispatch(
+            tx->GetTotalSize(),
+            [&node, tx, limits, relay, wait_callback, promise,
+             prepared = std::move(precomputed)]()
+                EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+                    return AdmitBroadcastLocked(
+                        node, tx, limits, relay, wait_callback,
+                        prepared ? &*prepared : nullptr, promise);
+                });
+        // A rejected queue reservation consumed only advisory preparation;
+        // direct fallback performs the same authoritative checks without it.
+        precomputed.reset();
+        if (completed) {
+            outcome = std::move(*completed);
+            queued = true;
+        }
+    }
+    if (!queued) {
+        const auto waiting = SteadyClock::now();
+        LOCK(cs_main);
+        AdmissionLockTimer timer(waiting);
+        outcome = AdmitBroadcastLocked(node, tx, limits, relay, wait_callback,
+                                       precomputed ? &*precomputed : nullptr,
+                                       promise);
+    }
+    if (!outcome.error.empty()) err_string = std::move(outcome.error);
+    if (outcome.result != TransactionError::OK) return outcome.result;
+
+    if (outcome.notification) {
         // Wait until Validation Interface clients have been notified of the
         // transaction entering the mempool.
-        promise.get_future().wait();
+        outcome.notification->get_future().wait();
         // Subscribers that deliver on their own worker (the wallet, Chronik)
         // received the event from the main queue; wait for them too.
         node.validation_signals->SyncSecondaryQueues();

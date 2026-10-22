@@ -69,6 +69,7 @@
 #include <node/miner.h>
 #include <node/peerman_args.h>
 #include <node/txadmission.h>
+#include <node/transaction.h>
 #include <node/ui_interface.h>
 #include <policy/block/rtt.h>
 #include <policy/policy.h>
@@ -287,6 +288,8 @@ void Shutdown(NodeContext &node) {
     StopREST();
     StopRPC();
     StopHTTPServer();
+    // HTTP/RPC handlers have drained; no producer still waits on this owner.
+    node.rpc_admission.reset();
     // After the HTTP server: no scrape is in progress. Recording continues
     // harmlessly into the (still allocated) metrics until exit.
     StopHTTPMetrics();
@@ -3701,6 +3704,9 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
                                      node.banman.get(), chainman, *node.mempool,
                                      node.avalanche.get(), peerman_opts);
     validation_signals.RegisterValidationInterface(node.peerman.get());
+    if (args.GetBoolArg("-server", false)) {
+        node.rpc_admission = std::make_unique<node::RpcAdmissionDispatcher>();
+    }
 
     // Encoded addresses using cashaddr instead of base58.
     // We do this by default to avoid confusion with BTC addresses.
