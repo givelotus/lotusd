@@ -128,6 +128,7 @@ CloneChainStateOnly(const ChainAndMempoolSnapshot *prev) {
     next->next_nBits = prev->next_nBits;
     next->next_subsidy = prev->next_subsidy;
     next->consensus_params = prev->consensus_params;
+    next->next_script_flags = prev->next_script_flags;
     next->prev_header_received_time = prev->prev_header_received_time;
     next->active_chain = prev->active_chain;
     next->has_utxo_snapshot = prev->has_utxo_snapshot;
@@ -1158,6 +1159,7 @@ void PublishChainTipSnapshot(ChainstateManager &chainman,
     next->chain_type_string = chainparams.GetChainTypeString();
     next->nBits = tip->nBits;
     next->consensus_params = chainparams.GetConsensus();
+    next->next_script_flags = GetMempoolScriptFlags(active_chainstate);
 
     CBlockHeader dummyHeader;
     dummyHeader.hashPrevBlock = tip->GetBlockHash();

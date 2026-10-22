@@ -507,7 +507,8 @@ struct StagedAdmissionOptions {
  */
 PrecomputedAdmissionChecks PrecomputeMempoolAdmission(
     ChainstateManager &chainman, const CTransactionRef &tx,
-    const MempoolAdmissionLimits &limits) LOCKS_EXCLUDED(cs_main);
+    const MempoolAdmissionLimits &limits,
+    const CTxMemPool *expected_mempool = nullptr) LOCKS_EXCLUDED(cs_main);
 
 /** Where one AcceptToMemoryPoolStaged call spent its time. */
 struct StagedAdmissionStats {

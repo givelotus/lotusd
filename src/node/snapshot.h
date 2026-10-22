@@ -207,6 +207,8 @@ struct ChainAndMempoolSnapshot {
     uint32_t next_nBits{0};
     Amount next_subsidy{Amount::zero()};
     std::optional<Consensus::Params> consensus_params;
+    // Rules captured with the published tip, never inferred from mutable state.
+    std::optional<uint32_t> next_script_flags;
     std::array<int64_t, 18> prev_header_received_time{};
     std::shared_ptr<const ActiveChainSnapshot> active_chain;
     bool has_utxo_snapshot{false};

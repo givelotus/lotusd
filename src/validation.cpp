@@ -29,6 +29,7 @@
 #include <consensus/validation.h>
 #include <hash.h>
 #include <kernel/notifications_interface.h>
+#include <limits>
 #include <logging.h>
 #include <logging/timer.h>
 #include <logging/values.h>
@@ -50,6 +51,7 @@
 #include <primitives/transaction.h>
 #include <lotus_v2/fast_sync.h>
 #include <lotus_v2/fee_hysteresis.h>
+#include <lotus_v2/mempool_overlay.h>
 #include <lotus_v2/tagged_hash.h>
 #include <lotus_v2/vm.h>
 #include <random.h>
@@ -3259,23 +3261,90 @@ void WarmNativeAdmissionSignatures(const CTransaction &tx,
         if (check().has_value()) return;
     }
 }
+/** Advisory tri-state: false requests the existing locked preparation;
+ * true with no coins skips warming; true with coins warms primitives only.
+ * Even a stale snapshot may supply facts: the commit independently resolves
+ * current coins and derives the signature key again. No verdict escapes.
+ */
+bool PrepareNativeCryptoFromSnapshot(
+    ChainstateManager &chainman, const CTransaction &tx,
+    const CTxMemPool *expected_pool, const MempoolAdmissionLimits &limits,
+    std::optional<std::vector<Coin>> &coins, uint32_t &flags) {
+    if (!expected_pool || tx.nV2Lock != 0 ||
+        std::any_of(tx.vin.begin(), tx.vin.end(), [](const CTxIn &in) {
+            return in.nFlags != 1 || in.nSequence != CTxIn::SEQUENCE_FINAL;
+        })) return false;
+    const auto snapshot = node::GetGlobalSnapshotPublisher().Load();
+    if (!snapshot || snapshot->chainman_ptr != &chainman ||
+        snapshot->mempool_ptr != expected_pool || !snapshot->chain_valid ||
+        !snapshot->mempool_valid || !snapshot->has_utxo_snapshot ||
+        !snapshot->entry_tree || !snapshot->consensus_params ||
+        !snapshot->next_script_flags || snapshot->mempool_has_fee_deltas ||
+        snapshot->height < 0 || snapshot->height == std::numeric_limits<int>::max()) {
+        return false;
+    }
+    TxValidationState state;
+    if (!CheckRegularTransaction(tx, state) ||
+        !ContextualCheckTransaction(*snapshot->consensus_params, tx, state,
+                                   snapshot->height + 1, snapshot->mediantime) ||
+        snapshot->entry_tree->get(Uint256RadixKey(tx.GetId()))) return true;
+    std::vector<Coin> resolved;
+    resolved.reserve(tx.vin.size());
+    for (const auto &in : tx.vin) {
+        // This hint can suppress work, never authorize admission. A stale
+        // negative only wastes verification; positives can include collisions.
+        if (expected_pool->IsSpentFast(in.prevout)) return true;
+        const auto parent = snapshot->entry_tree->get(
+            Uint256RadixKey(in.prevout.GetTxId()));
+        if (parent) {
+            if (!parent->entry.tx || in.prevout.GetN() >= parent->entry.tx->vout.size())
+                return false;
+            const auto &out = parent->entry.tx->vout[in.prevout.GetN()];
+            if (out.IsLegacy()) return false;
+            resolved.emplace_back(out, MEMPOOL_HEIGHT, false);
+        } else {
+            lotus::v2::Outpoint outpoint{};
+            std::copy_n(in.prevout.GetTxId().begin(), 32, outpoint.tx_id.begin());
+            outpoint.index = in.prevout.GetN();
+            const auto coin = lotus::v2::SmtFind(snapshot->tip_utxo_root, outpoint);
+            // Missing leaves may mean the publisher lags the authoritative
+            // view. Explicit coverage also distinguishes an empty genesis root.
+            if (!coin || coin->output.legacy_script ||
+                coin->creation_height > uint64_t(std::numeric_limits<int>::max()))
+                return false;
+            resolved.emplace_back(CTxOut::FromV2Output(coin->output),
+                uint32_t(coin->creation_height), coin->coinbase,
+                coin->fee_per_output, coin->expiration_height);
+        }
+    }
+    Amount fee{Amount::zero()};
+    if (!Consensus::CheckTxInputsFromSpentCoins(
+            tx, resolved, state, snapshot->height + 1, fee) ||
+        fee < snapshot->min_relay_tx_fee.GetFee(tx.GetTotalSize()) ||
+        fee < snapshot->mempool_min_fee.GetFee(tx.GetTotalSize()) ||
+        (limits.max_fee > Amount::zero() && fee > limits.max_fee)) return true;
+    flags = *snapshot->next_script_flags | STANDARD_SCRIPT_VERIFY_FLAGS;
+    coins = std::move(resolved);
+    return true;
+}
 } // namespace
 
 PrecomputedAdmissionChecks
 PrecomputeMempoolAdmission(ChainstateManager &chainman,
                            const CTransactionRef &tx,
-                           const MempoolAdmissionLimits &limits) {
+                           const MempoolAdmissionLimits &limits,
+                           const CTxMemPool *expected_mempool) {
     AssertLockNotHeld(cs_main);
     if (tx->nVersion == 7) {
         std::optional<std::vector<Coin>> coins;
         uint32_t flags{0};
-        lotus::v2::ChainId chain_id{};
-        {
+        const auto chain_id = chainman.GetParams().V2ChainId();
+        if (!PrepareNativeCryptoFromSnapshot(
+                chainman, *tx, expected_mempool, limits, coins, flags)) {
             const auto waiting = SteadyClock::now();
             LOCK(cs_main);
             node::AdmissionLockTimer timer(waiting);
             auto &chainstate = chainman.ActiveChainstate();
-            chain_id = chainman.GetParams().V2ChainId();
             if (auto *pool = chainstate.GetMempool()) {
                 std::vector<COutPoint> fetched;
                 flags = GetMempoolScriptFlags(chainstate) |
