@@ -7,6 +7,7 @@
 #include <interfaces/chain.h>
 #include <interfaces/handler.h>
 #include <node/transaction.h>
+#include <node/snapshot.h>
 #include <primitives/block.h>
 #include <scheduler.h>
 #include <script/standard.h>
@@ -28,6 +29,7 @@
 #include <condition_variable>
 #include <deque>
 #include <future>
+#include <stdexcept>
 #include <util/task_runner.h>
 
 BOOST_FIXTURE_TEST_SUITE(validationinterface_tests, ChainTestingSetup)
@@ -36,6 +38,142 @@ struct TestSubscriberNoop final : public CValidationInterface {
     void BlockChecked(const CBlock &, const BlockValidationState &) override {}
 };
 
+// Immediate delivery is a deterministic control for a scheduler callback that
+// wins the race with the snapshot-defer destructor. It demonstrates why a
+// dispatcher must not silently coalesce independent transaction publications.
+BOOST_AUTO_TEST_CASE(
+    admission_notification_observes_per_transaction_publication) {
+    struct Observer final : CValidationInterface {
+        std::vector<size_t> observed;
+        void TransactionAddedToMempool(const CTransactionRef &,
+                                       std::shared_ptr<const std::vector<Coin>>,
+                                       uint64_t, int64_t) override {
+            observed.push_back(
+                node::GetGlobalSnapshotPublisher().Load()->mempool_size);
+        }
+    };
+    ValidationSignals signals(std::make_unique<util::ImmediateTaskRunner>());
+    auto observer = std::make_shared<Observer>();
+    signals.RegisterSharedValidationInterface(observer);
+    auto &pool = *Assert(m_node.mempool);
+    TestMemPoolEntryHelper entry;
+    auto add = [&](uint32_t n) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+        LOCK(pool.cs);
+        CMutableTransaction tx;
+        tx.vin.emplace_back(TxId{}, n);
+        tx.vout.emplace_back(1000 * SATOSHI, CScript() << OP_TRUE);
+        auto ref = MakeTransactionRef(std::move(tx));
+        pool.addUnchecked(entry.FromTx(ref));
+        signals.TransactionAddedToMempool(ref, {}, n);
+    };
+    {
+        LOCK2(cs_main, pool.cs);
+        add(1);
+        BOOST_CHECK_EQUAL(observer->observed.back(), 1U);
+        {
+            CTxMemPool::ScopedSnapshotDefer deferred(pool);
+            add(2);
+            BOOST_CHECK_EQUAL(pool.size(), 2U);
+            BOOST_CHECK_EQUAL(observer->observed.back(), 1U);
+        }
+        BOOST_CHECK_EQUAL(
+            node::GetGlobalSnapshotPublisher().Load()->mempool_size, 2U);
+    }
+    // Production dispatcher callbacks keep each ordinary publication, even
+    // when multiple requests share a chain-lock slice.
+    node::RpcAdmissionDispatcher dispatcher;
+    BOOST_REQUIRE(
+        dispatcher.Dispatch(100, [&]() EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+            add(3);
+            BOOST_CHECK_EQUAL(observer->observed.back(), 3U);
+            return node::RpcAdmissionOutcome{};
+        }));
+    BOOST_REQUIRE(
+        dispatcher.Dispatch(100, [&]() EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+            add(4);
+            BOOST_CHECK_EQUAL(observer->observed.back(), 4U);
+            return node::RpcAdmissionOutcome{};
+        }));
+    dispatcher.Stop();
+    signals.UnregisterAllValidationInterfaces();
+}
+
+BOOST_AUTO_TEST_CASE(rpc_admission_dispatcher_independent_errors_and_shutdown) {
+    node::RpcAdmissionDispatcher dispatcher;
+    std::atomic<unsigned> committed{0};
+    std::vector<std::future<void>> producers;
+    for (unsigned i = 0; i < 64; ++i) {
+        producers.push_back(std::async(std::launch::async, [&, i] {
+            bool failed = false;
+            try {
+                auto outcome = dispatcher.Dispatch(100, [&, i] {
+                    AssertLockHeld(cs_main);
+                    if (i == 17)
+                        throw std::runtime_error("independent request");
+                    committed.fetch_add(1);
+                    return node::RpcAdmissionOutcome{
+                        node::TransactionError::MEMPOOL_REJECTED,
+                        std::to_string(i),
+                        {}};
+                });
+                BOOST_REQUIRE(outcome);
+                BOOST_CHECK(outcome->result ==
+                            node::TransactionError::MEMPOOL_REJECTED);
+                BOOST_CHECK_EQUAL(outcome->error, std::to_string(i));
+            } catch (const std::runtime_error &e) {
+                failed = true;
+                BOOST_CHECK_EQUAL(e.what(), "independent request");
+            }
+            BOOST_CHECK_EQUAL(failed, i == 17);
+        }));
+    }
+    for (auto &producer : producers)
+        producer.get();
+    BOOST_CHECK_EQUAL(committed.load(), 63U);
+    bool oversized_ran = false;
+    BOOST_CHECK(!dispatcher.Dispatch(33 << 20, [&] {
+        oversized_ran = true;
+        return node::RpcAdmissionOutcome{};
+    }));
+    BOOST_CHECK(!oversized_ran);
+    dispatcher.Stop();
+    BOOST_CHECK(!dispatcher.Dispatch(100, [&] {
+        committed.fetch_add(1);
+        return node::RpcAdmissionOutcome{};
+    }));
+    BOOST_CHECK_EQUAL(committed.load(), 63U);
+}
+
+BOOST_AUTO_TEST_CASE(
+    rpc_admission_stop_drains_owned_request_and_byte_pressure) {
+    node::RpcAdmissionDispatcher dispatcher;
+    std::promise<void> entered;
+    std::promise<void> release;
+    auto released = release.get_future();
+    auto producer = std::async(std::launch::async, [&] {
+        return dispatcher.Dispatch(32 << 20, [&] {
+            AssertLockHeld(cs_main);
+            entered.set_value();
+            released.wait();
+            return node::RpcAdmissionOutcome{};
+        });
+    });
+    entered.get_future().wait();
+    bool overflow_ran = false;
+    BOOST_CHECK(!dispatcher.Dispatch(100, [&] {
+        overflow_ran = true;
+        return node::RpcAdmissionOutcome{};
+    }));
+    BOOST_CHECK(!overflow_ran);
+    auto stopped = std::async(std::launch::async, [&] { dispatcher.Stop(); });
+    BOOST_CHECK(stopped.wait_for(std::chrono::milliseconds(20)) ==
+                std::future_status::timeout);
+    release.set_value();
+    BOOST_CHECK(producer.get());
+    stopped.get();
+    BOOST_CHECK(
+        !dispatcher.Dispatch(100, [] { return node::RpcAdmissionOutcome{}; }));
+}
 BOOST_AUTO_TEST_CASE(unregister_validation_interface_race) {
     std::atomic<bool> generate{true};
 
