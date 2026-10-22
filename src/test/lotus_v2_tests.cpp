@@ -26,6 +26,7 @@
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <script/interpreter.h>
+#include <script/sigcache.h>
 #include <script/script.h>
 #include <script/sign.h>
 #include <script/signingprovider.h>
@@ -566,6 +567,127 @@ NativeBenchmarkSpend(const CTransaction &previous, uint32_t index,
         SignBip340Message(secret, message, mode, aux, signature, error), error);
     tx.vin[0].vWitnesses[0].arguments = {std::move(signature)};
     return tx;
+}
+
+BOOST_FIXTURE_TEST_CASE(v2_native_crypto_warmup_keeps_authoritative_context,
+                        TestChain100Setup) {
+    using namespace lotus::v2;
+    const auto program = NativeBenchmarkProgram();
+    Output output;
+    output.value = 1000000;
+    output.branches = {BranchLeaf(program)};
+    output.paths = {{0}};
+    const auto funding = MineV2Coinbase({CTxOut::FromV2Output(output)});
+    auto mutable_tx = NativeBenchmarkSpend(
+        *funding, 0, {funding->vout[0].nValue - 10000 * SATOSHI});
+    const auto tx = MakeTransactionRef(mutable_tx);
+    const auto chain = m_node.chainman->GetParams().V2ChainId();
+    auto &cache = m_node.chainman->m_validation_cache.m_signature_cache;
+    auto message_for = [&](const CTransaction &spend, const CTxOut &coin) {
+        lotus::v2::Hash message{};
+        std::string error;
+        BOOST_REQUIRE_MESSAGE(SigningMessage(
+            spend.ToV2Transaction(), DefaultTxProfile, chain,
+            {coin.ToV2Output()}, 0, 0, 0, std::nullopt, message, error), error);
+        return message;
+    };
+    auto entry_for = [&](const CTransaction &spend, const CTxOut &coin) {
+        uint256 entry;
+        cache.ComputeBip340Entry(
+            entry, message_for(spend, coin),
+            spend.vin[0].vWitnesses[0].arguments[0],
+            std::span<const uint8_t>(program.data() + 1, 32), false);
+        return entry;
+    };
+    auto authoritative = [&](const CTransactionRef &spend) {
+        LOCK(cs_main);
+        return m_node.chainman->ProcessTransaction(spend, /*test_accept=*/true);
+    };
+    const auto entry = entry_for(*tx, funding->vout[0]);
+    BOOST_CHECK(!cache.Get(entry, false));
+    // A runtime chain-parameter constructor can temporarily change this
+    // inherited global. Warmup must use the selected chainman's owned ID.
+    const auto previous_chain = GetActiveV2ChainId();
+    auto other_chain = previous_chain;
+    other_chain[0] ^= 1;
+    struct RestoreChain {
+        ChainId previous;
+        ~RestoreChain() { SetActiveV2ChainId(previous); }
+    } restore_chain{previous_chain};
+    SetActiveV2ChainId(other_chain);
+    const auto preparation = PrecomputeMempoolAdmission(*m_node.chainman, tx, {});
+    SetActiveV2ChainId(previous_chain);
+    BOOST_CHECK(!preparation.standard.ran && !preparation.consensus.ran);
+    BOOST_CHECK(preparation.spent_outputs.empty());
+    bool shared_hit{false};
+    std::thread reader([&] { shared_hit = cache.Get(entry, false); });
+    reader.join();
+    BOOST_CHECK(shared_hit);
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), 0U);
+
+    // TxId excludes witnesses: a different signature must not inherit success.
+    auto bad = mutable_tx;
+    bad.vin[0].vWitnesses[0].arguments[0][10] ^= 1;
+    const auto bad_tx = MakeTransactionRef(std::move(bad));
+    BOOST_REQUIRE(bad_tx->GetId() == tx->GetId());
+    BOOST_REQUIRE(bad_tx->GetHash() != tx->GetHash());
+    const auto bad_entry = entry_for(*bad_tx, funding->vout[0]);
+    PrecomputeMempoolAdmission(*m_node.chainman, bad_tx, {});
+    BOOST_CHECK(!cache.Get(bad_entry, false));
+    BOOST_CHECK(authoritative(bad_tx).m_result_type != MempoolAcceptResult::ResultType::VALID);
+
+    const COutPoint prevout(funding->GetId(), 0);
+    const auto original = WITH_LOCK(cs_main,
+        return m_node.chainman->ActiveChainstate().CoinsTip().GetCoin(prevout));
+    BOOST_REQUIRE(original.has_value());
+    auto replace_coin = [&](const ::Coin &coin) {
+        LOCK(cs_main);
+        auto &coins = m_node.chainman->ActiveChainstate().CoinsTip();
+        BOOST_REQUIRE(coins.SpendCoin(prevout));
+        coins.AddCoin(prevout, ::Coin(coin), false);
+    };
+    // A changed value creates a different signing message. Commit resolves it
+    // again; the old valid primitive entry is not a transaction verdict.
+    auto changed_output = original->GetTxOut().ToV2Output();
+    --changed_output.value;
+    replace_coin(::Coin(CTxOut::FromV2Output(changed_output),
+                      original->GetHeight(), original->IsCoinBase()));
+    BOOST_CHECK(!cache.Get(entry_for(*tx, CTxOut::FromV2Output(changed_output)), false));
+    BOOST_CHECK(authoritative(tx).m_result_type != MempoolAcceptResult::ResultType::VALID);
+    replace_coin(*original);
+    // Metadata does not change the signature message, but maturity still does.
+    const auto height = WITH_LOCK(cs_main, return m_node.chainman->ActiveChain().Height());
+    replace_coin(::Coin(original->GetTxOut(), height, true));
+    BOOST_CHECK(authoritative(tx).m_result_type != MempoolAcceptResult::ResultType::VALID);
+    replace_coin(*original);
+
+    // A mathematically valid signature may precede a failed deferred rule.
+    // Warming that primitive must not authorize the forbidden state output.
+    auto forbidden = mutable_tx;
+    auto state_output = forbidden.vout[0].ToV2Output();
+    state_output.flags |= OUTPUT_FLAG_HAS_STATE;
+    state_output.state_root[0] = 1;
+    forbidden.vout[0] = CTxOut::FromV2Output(state_output);
+    std::array<uint8_t, 32> secret{};
+    secret[31] = 3;
+    std::string sign_error;
+    BOOST_REQUIRE_MESSAGE(SignBip340Message(
+        secret, message_for(CTransaction(forbidden), funding->vout[0]), 0, {},
+        forbidden.vin[0].vWitnesses[0].arguments[0], sign_error), sign_error);
+    const auto forbidden_tx = MakeTransactionRef(std::move(forbidden));
+    PrecomputeMempoolAdmission(*m_node.chainman, forbidden_tx, {});
+    BOOST_CHECK(cache.Get(entry_for(*forbidden_tx, funding->vout[0]), false));
+    BOOST_CHECK(authoritative(forbidden_tx).m_result_type != MempoolAcceptResult::ResultType::VALID);
+
+    // Disconnect the latest block after warming. Current contextual checks
+    // still run at the new tip; this mature unchanged coin remains spendable.
+    CBlockIndex *tip = WITH_LOCK(cs_main, return m_node.chainman->ActiveTip());
+    BlockValidationState state;
+    BOOST_REQUIRE(m_node.chainman->ActiveChainstate().InvalidateBlock(state, tip));
+    const auto final = authoritative(tx);
+    BOOST_REQUIRE_MESSAGE(final.m_result_type == MempoolAcceptResult::ResultType::VALID,
+                          final.m_state.ToString());
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), 0U);
 }
 
 BOOST_FIXTURE_TEST_CASE(v2_kernel_throughput_benchmark, TestChain100Setup) {
