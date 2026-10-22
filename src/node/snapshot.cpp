@@ -934,6 +934,9 @@ void MiningTemplateSnapshot::EnsureRoots() const {
 
     if (has_tip_utxo_snapshot &&
         (tip_utxo_root != nullptr || next_height <= 1)) {
+        // Subtree A is pinned under the mempool lock in O(1) and its lazy
+        // commitment is completed after the lock is released.
+        std::shared_ptr<const lotus::v2::txmerklix::Snapshot> pinned_tx_tree;
         if (mempool_ptr != nullptr) {
             TRY_LOCK(mempool_ptr->cs, lock_mp);
             if (lock_mp && mempool_ptr->GetTransactionsUpdated() == transactions_updated &&
@@ -944,7 +947,7 @@ void MiningTemplateSnapshot::EnsureRoots() const {
                 const auto &overlay =
                     mempool_ptr->GetMerklixOverlay().GetSpeculativeOverlay();
                 if (overlay.GetTxCount() == non_coinbase_txs.size()) {
-                    subtree_a_root = overlay.GetSubtreeARoot();
+                    pinned_tx_tree = overlay.PinTxTree();
                     (void)overlay.GetUtxoRootDigest();
                     v2_base_state = V2TemplateBaseState{};
                     v2_base_state.utxo_arena =
@@ -956,10 +959,13 @@ void MiningTemplateSnapshot::EnsureRoots() const {
                         overlay.GetSumNonCbEffectiveCost();
                     v2_base_state.height = uint64_t(next_height);
                     v2_base_state.parent_mtp = uint64_t(parent_mtp);
-                    roots_ready = true;
-                    return;
                 }
             }
+        }
+        if (pinned_tx_tree) {
+            subtree_a_root = pinned_tx_tree->RootDigest();
+            roots_ready = true;
+            return;
         }
         lotus::v2::Hash parent_id{};
         std::memcpy(parent_id.data(), prev_block_hash.begin(), 32);

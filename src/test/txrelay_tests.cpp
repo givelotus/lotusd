@@ -1283,6 +1283,7 @@ BOOST_AUTO_TEST_CASE(full_reconciliation_owned_page_and_admission_outcome) {
     }
     offer.root = remote.Root();
     offer.children = remote.Children(Prefix{});
+    offer.sketch = remote.Sketch();
     DataStream offered;
     offered << offer;
     BOOST_CHECK(manager.Handle(owner, NetMsgType::MERKLIXSYNC, offered, 10s));
@@ -1429,6 +1430,8 @@ BOOST_AUTO_TEST_CASE(full_reconciliation_equal_digest_false_count_rejected) {
     // Children/root remain self-consistent but the leaf digest proves the
     // pinned local singleton, so a false count may not silently skip its work.
     offer.root = Fold(offer.children, 0);
+    // A well-formed hint for the claimed count; the hint is never authority.
+    offer.sketch.assign(offer.root.count, snapshot.Sketch().front());
     DataStream stream; stream << offer;
     manager.Handle(node, NetMsgType::MERKLIXSYNC, stream, 70s);
     BOOST_CHECK_EQUAL(manager.GetStats().malformed, 1U);
@@ -1450,6 +1453,7 @@ BOOST_AUTO_TEST_CASE(full_reconciliation_timeout_retries_owned_work_and_releases
     offer.header.context = rng.rand256();
     { LOCK(cs_main); offer.anchor = m_node.chainman->ActiveTip()->GetBlockHash(); }
     offer.root = remote.Root(); offer.children = remote.Children(Prefix{});
+    offer.sketch = remote.Sketch();
     DataStream stream; stream << offer;
     manager.Handle(node, NetMsgType::MERKLIXSYNC, stream, 60s);
     uint64_t previous_request{0};
