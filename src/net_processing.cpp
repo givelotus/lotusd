@@ -3365,6 +3365,7 @@ void PeerManagerImpl::ThreadTxAdmission() {
             : size_t(std::max(1U, std::thread::hardware_concurrency()));
     StagedAdmissionOptions options;
     options.script_threads = threads;
+    options.expected_mempool = &m_mempool;
     // Serial handling checks "already have" right before admitting; repeat
     // that check at the commit point (the transaction may have arrived by
     // another route since it was queued).
