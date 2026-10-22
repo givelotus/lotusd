@@ -6,6 +6,8 @@
 #include <primitives/block.h>
 
 #include <consensus/amount.h>
+#include <core_memusage.h>
+#include <limits>
 #include <hash.h>
 #include <lotus_v2/mempool_overlay.h>
 #include <lotus_v2/tagged_hash.h>
@@ -135,6 +137,17 @@ uint256 ComputeV2TxRootFromSubtreeA(const CTransaction &coinbase_tx,
     return out;
 }
 
+namespace {
+//! Retained-body charge for pinned reconciliation views; matches the former
+//! full-mempool snapshot capture charge max(serialized, recursive usage).
+uint32_t OverlayPayloadBytes(const CTransactionRef &ptx) {
+    const size_t bytes = std::max<size_t>(GetSerializeSize(*ptx),
+                                          RecursiveDynamicUsage(ptx));
+    return static_cast<uint32_t>(
+        std::min<size_t>(bytes, std::numeric_limits<uint32_t>::max()));
+}
+} // namespace
+
 bool AddTransactionToOverlay(lotus::v2::MempoolOverlayLayer &overlay,
                              const CTransactionRef &ptx,
                              int64_t fee_sats,
@@ -150,7 +163,8 @@ bool AddTransactionToOverlay(lotus::v2::MempoolOverlayLayer &overlay,
     ExtractOverlayTxData(*ptx, overlay.GetHeight(), overlay.GetParentMtp(),
                          tx_id, tx_hash, linear_cost, spent, created);
     return overlay.AddTransaction(tx_id, tx_hash, linear_cost, spent, created,
-                                  fee_sats, sigchecks, ptx);
+                                  fee_sats, sigchecks, ptx,
+                                  OverlayPayloadBytes(ptx));
 }
 
 bool AddTransactionToOverlay(lotus::v2::MerklixOverlayManager &manager,
@@ -186,6 +200,7 @@ size_t AddTransactionsToOverlayBatch(
                              e.linear_cost, e.spent_outpoints, e.created_coins);
         e.fee_sats = fee_sats;
         e.sigchecks = sigchecks;
+        e.payload_bytes = OverlayPayloadBytes(ptx);
         e.tx_ref = ptx;
     }
 

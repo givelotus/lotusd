@@ -1812,8 +1812,8 @@ void MempoolOverlayLayer::Reset(const Hash &parent_block_id,
     parent_mtp_ = parent_mtp;
     base_mon_state_ = base_mon_state;
 
-    tx_arena_.Reset();
-    tx_root_idx_ = TxOverlayArena::kNullIdx;
+    // Keeps the store: freed slots are reused by the next membership.
+    tx_tree_.Clear();
     utxo_arena_.Reset(std::move(base_utxo_root));
     utxo_arena_dirty_ = false;
     sum_non_cb_effective_cost_ = 0;
@@ -1930,14 +1930,15 @@ bool MempoolOverlayLayer::AddTransaction(
     const std::vector<Coin> &created_coins,
     int64_t fee_sats,
     int64_t sigchecks,
-    std::shared_ptr<const void> tx_ref) {
+    std::shared_ptr<const void> tx_ref,
+    uint32_t payload_bytes) {
     if (active_txs_.find(tx_id) != active_txs_.end()) {
         return false;
     }
 
     const uint64_t eff_cost = OverlayEffectiveCost(linear_cost);
 
-    tx_root_idx_ = tx_arena_.InsertTxLeaf(tx_root_idx_, tx_id, tx_hash);
+    tx_tree_.Insert(tx_id, tx_hash, tx_ref, payload_bytes);
     sum_non_cb_effective_cost_ += eff_cost;
     total_fees_sats_ += fee_sats;
     total_sigchecks_ += sigchecks;
@@ -1977,6 +1978,7 @@ bool MempoolOverlayLayer::AddTransaction(
     entry.effective_cost = eff_cost;
     entry.fee_sats = fee_sats;
     entry.sigchecks = sigchecks;
+    entry.payload_bytes = payload_bytes;
     entry.spent_outpoints = spent_outpoints;
     entry.created_coins = created_coins;
     entry.tx_ref = std::move(tx_ref);
@@ -1987,23 +1989,26 @@ bool MempoolOverlayLayer::AddTransaction(
 
 size_t MempoolOverlayLayer::AddTransactionBatch(
     std::span<OverlayTxEntry> entries) {
+    return AddTransactionBatch(entries, false);
+}
+
+size_t MempoolOverlayLayer::AddTransactionBatch(
+    std::span<OverlayTxEntry> entries, bool tree_already_contains) {
     if (entries.empty()) {
         return 0;
     }
-    if (entries.size() == 1) {
+    if (entries.size() == 1 && !tree_already_contains) {
         auto &e = entries[0];
         return AddTransaction(e.tx_id, e.tx_hash, e.linear_cost,
                               e.spent_outpoints, e.created_coins, e.fee_sats,
-                              e.sigchecks, std::move(e.tx_ref))
+                              e.sigchecks, std::move(e.tx_ref),
+                              e.payload_bytes)
                    ? 1
                    : 0;
     }
 
     ReserveBucketsAmortized(created_coins_, entries.size() * 2);
     ReserveBucketsAmortized(spent_outpoints_, entries.size() * 2);
-
-    std::vector<std::pair<Hash, Hash>> tx_leaves;
-    tx_leaves.reserve(entries.size());
 
     const bool update_utxo_eagerly =
         commit_state_root_in_header_ && !utxo_arena_dirty_;
@@ -2039,13 +2044,18 @@ size_t MempoolOverlayLayer::AddTransactionBatch(
         if (active_txs_.find(entry.tx_id) != active_txs_.end()) {
             continue;
         }
+        // Tree first: an allocation failure leaves the layer unchanged for
+        // this entry.
+        if (!tree_already_contains) {
+            tx_tree_.Insert(entry.tx_id, entry.tx_hash, entry.tx_ref,
+                            entry.payload_bytes);
+        }
         entry.effective_cost = OverlayEffectiveCost(entry.linear_cost);
         sum_non_cb_effective_cost_ += entry.effective_cost;
         total_fees_sats_ += entry.fee_sats;
         total_sigchecks_ += entry.sigchecks;
         total_bytes_ += entry.linear_cost;
         syndrome_.Add(ComputeShortTxId(siphash_k0_, siphash_k1_, entry.tx_id));
-        tx_leaves.emplace_back(entry.tx_id, entry.tx_hash);
 
         for (const auto &op : entry.spent_outpoints) {
             const uint32_t new_ref = ++spent_outpoints_[op];
@@ -2085,11 +2095,13 @@ size_t MempoolOverlayLayer::AddTransactionBatch(
 
     positional_merkle_dirty_ = true;
 
-    if (tx_leaves.size() >= 16) {
-        tx_root_idx_ = tx_arena_.InsertBatchParallel(tx_root_idx_, tx_leaves);
-    } else {
-        for (const auto &[tx_id, tx_hash] : tx_leaves) {
-            tx_root_idx_ = tx_arena_.InsertTxLeaf(tx_root_idx_, tx_id, tx_hash);
+    if (tree_already_contains && tx_tree_.Count() != active_txs_.size()) {
+        // The adopted tree did not describe exactly these entries; rebuild it
+        // from the authoritative entry map rather than publish a wrong root.
+        tx_tree_.Clear();
+        for (const auto &[tx_id, entry] : active_txs_) {
+            tx_tree_.Insert(tx_id, entry.tx_hash, entry.tx_ref,
+                            entry.payload_bytes);
         }
     }
 
@@ -2144,7 +2156,7 @@ bool MempoolOverlayLayer::RemoveTransaction(const Hash &tx_id) {
     }
 
     const OverlayTxEntry &entry = it->second;
-    tx_root_idx_ = tx_arena_.EraseTxLeaf(tx_root_idx_, tx_id);
+    tx_tree_.Erase(tx_id);
     assert(sum_non_cb_effective_cost_ >= entry.effective_cost);
     sum_non_cb_effective_cost_ -= entry.effective_cost;
     total_fees_sats_ -= entry.fee_sats;
@@ -2284,6 +2296,9 @@ void MerklixOverlayManager::ReanchorExistingTxs(
                                            parent_mtp, old_layer.GetLayerId());
             reanchored.SetCommitStateRootInHeader(
                 old_layer.GetCommitStateRootInHeader());
+            // Membership (TxId, TxHash) is unchanged by re-anchoring; share
+            // the frozen tree and its completed digests instead of rebuilding.
+            reanchored.AdoptTxTree(old_layer.GetTxTree());
             std::vector<OverlayTxEntry> batch;
             batch.reserve(old_layer.GetOrderedTxs().size());
             for (auto [tx_id, entry] : old_layer.GetOrderedTxs()) {
@@ -2293,15 +2308,17 @@ void MerklixOverlayManager::ReanchorExistingTxs(
                 }
                 batch.push_back(std::move(entry));
             }
-            reanchored.AddTransactionBatch(batch);
+            reanchored.AddTransactionBatch(batch, true);
             frozen_epochs_.push_back(std::move(reanchored));
         }
     }
 
     auto existing_txs = speculative_layer_.GetOrderedTxs();
+    txmerklix::Tree existing_tree = speculative_layer_.GetTxTree();
     speculative_layer_.Reset(tip_block_id, std::move(base_utxo_root),
                              base_mon_state, next_height, parent_mtp,
                              next_epoch_id_);
+    speculative_layer_.AdoptTxTree(std::move(existing_tree));
 
     std::vector<OverlayTxEntry> batch;
     batch.reserve(existing_txs.size());
@@ -2312,7 +2329,7 @@ void MerklixOverlayManager::ReanchorExistingTxs(
         }
         batch.push_back(std::move(entry));
     }
-    speculative_layer_.AddTransactionBatch(batch);
+    speculative_layer_.AddTransactionBatch(batch, true);
 }
 
 bool MerklixOverlayManager::AddTransaction(
