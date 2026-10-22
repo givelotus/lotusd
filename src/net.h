@@ -479,6 +479,14 @@ public:
      * consisting of the message and a bool that indicates if the processing
      * queue has more entries.
      */
+    /** Copy a bounded, isolated queue head for signature preverification.
+     * Leaves ordering/accounting unchanged. Contiguous bursts use the existing
+     * per-peer batch path instead. No caller retains a reference to queue data.
+     */
+    std::optional<DataStream> CopyIsolatedMessage(const std::string &type,
+                                                 size_t max_bytes)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_msg_process_queue_mutex);
+
     std::optional<std::pair<CNetMessage, bool>> PollMessage()
         EXCLUSIVE_LOCKS_REQUIRED(!m_msg_process_queue_mutex);
 
@@ -810,6 +818,13 @@ public:
     virtual bool ProcessMessages(const Config &config, CNode *pnode,
                                  std::atomic<bool> &interrupt)
         EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex) = 0;
+
+    /** Preverify ready queue heads without dispatching or reordering messages.
+     * Called with a connection snapshot that pins all nodes for this turn.
+     */
+    virtual void PrepareMessageTurn(Span<CNode *const>,
+                                    const std::atomic<bool> &)
+        EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex) {}
 
     /**
      * Send queued protocol messages to a given node.

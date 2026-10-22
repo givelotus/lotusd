@@ -827,6 +827,9 @@ public:
     void FinalizeNode(const Config &config, const CNode &node) override
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, !cs_proofrequest,
                                  !m_headers_presync_mutex);
+    void PrepareMessageTurn(Span<CNode *const> nodes,
+                            const std::atomic<bool> &interrupt) override
+        EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex);
     bool ProcessMessages(const Config &config, CNode *pfrom,
                          std::atomic<bool> &interrupt) override
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
@@ -1040,6 +1043,13 @@ private:
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
                                  g_msgproc_mutex);
+    struct PreverifiedAvaSignature {
+        CPubKey pubkey;
+        uint256 hash;
+        SchnorrSig signature;
+    };
+    std::map<NodeId, PreverifiedAvaSignature> m_preverified_ava_signatures
+        GUARDED_BY(g_msgproc_mutex);
     std::optional<avalanche::Response>
         m_preverified_ava_response GUARDED_BY(g_msgproc_mutex);
     void ProcessAvaResponseBatch(const Config &config, CNode &pfrom, Peer &peer,
@@ -5283,6 +5293,70 @@ void PeerManagerImpl::ProcessBlock(const Config &config, CNode &node,
     }
 }
 
+void PeerManagerImpl::PrepareMessageTurn(
+    Span<CNode *const> nodes, const std::atomic<bool> &interrupt) {
+    AssertLockHeld(g_msgproc_mutex);
+    m_preverified_ava_signatures.clear();
+    if (!m_avalanche || interrupt) return;
+
+    // No timer, queue removal, vote registration, or CNode lifetime extends
+    // beyond this turn. Duplicate parsing is bounded; normal dispatch remains
+    // authoritative for syntax errors, peer attribution and poll validation.
+    constexpr size_t MAX_SIGNATURES = 64;
+    constexpr size_t MAX_MESSAGE_BYTES = 64 * 1024;
+    constexpr size_t MAX_TOTAL_BYTES = 1024 * 1024;
+    std::vector<std::pair<NodeId, PreverifiedAvaSignature>> candidates;
+    candidates.reserve(MAX_SIGNATURES);
+    lotus::v2::BatchSigCollector collector;
+    collector.Reserve(MAX_SIGNATURES);
+    size_t total_bytes = 0;
+    size_t copied_heads = 0;
+    for (CNode *node : nodes) {
+        if (interrupt || copied_heads == MAX_SIGNATURES ||
+            total_bytes == MAX_TOTAL_BYTES) break;
+        if (node->fDisconnect || node->fPauseSend ||
+            !node->fSuccessfullyConnected) continue;
+        std::optional<CPubKey> key;
+        {
+            LOCK(node->cs_avalanche_pubkey);
+            key = node->m_avalanche_pubkey;
+        }
+        if (!key) continue;
+        auto data = node->CopyIsolatedMessage(
+            NetMsgType::AVARESPONSE,
+            std::min(MAX_MESSAGE_BYTES, MAX_TOTAL_BYTES - total_bytes));
+        if (!data) continue;
+        ++copied_heads;
+        total_bytes += data->size();
+        PreverifiedAvaSignature item{*key, {}, {}};
+        try {
+            avalanche::Response response;
+            HashVerifier verifier(*data);
+            verifier >> response;
+            item.hash = verifier.GetHash();
+            *data >> item.signature;
+        } catch (const std::ios_base::failure &) {
+            continue;
+        }
+        if (!collector.AddLegacySchnorr(
+                std::span<const uint8_t>{item.pubkey.data(), item.pubkey.size()},
+                std::span<const uint8_t>{item.signature.data(), item.signature.size()},
+                item.hash.begin())) continue;
+        candidates.emplace_back(node->GetId(), std::move(item));
+    }
+    if (candidates.size() < 2 || interrupt) return;
+    const bool valid = collector.VerifyAll();
+    const auto first_bad = valid ? std::optional<size_t>{}
+                                 : collector.FirstFailingIndex();
+    for (size_t i = 0; i < candidates.size() && !interrupt; ++i) {
+        auto &[id, item] = candidates[i];
+        const bool verified = valid || (first_bad && i < *first_bad) ||
+            ((!first_bad || i > *first_bad) &&
+             item.pubkey.VerifySchnorr(item.hash, item.signature));
+        if (verified) m_preverified_ava_signatures.emplace(id, std::move(item));
+    }
+}
+
 void PeerManagerImpl::ProcessAvaResponseBatch(
     const Config &config, CNode &pfrom, Peer &peer,
     std::vector<CNetMessage> &ava_batch,
@@ -7128,9 +7202,15 @@ void PeerManagerImpl::ProcessMessage(
 
             {
                 LOCK(pfrom.cs_avalanche_pubkey);
+                auto preverified = m_preverified_ava_signatures.extract(pfrom.GetId());
+                const bool preverified_match = !preverified.empty() &&
+                    pfrom.m_avalanche_pubkey &&
+                    preverified.mapped().pubkey == *pfrom.m_avalanche_pubkey &&
+                    preverified.mapped().hash == verifier.GetHash() &&
+                    preverified.mapped().signature == sig;
                 if (!pfrom.m_avalanche_pubkey.has_value() ||
-                    !(*pfrom.m_avalanche_pubkey)
-                         .VerifySchnorr(verifier.GetHash(), sig)) {
+                    (!preverified_match && !(*pfrom.m_avalanche_pubkey)
+                         .VerifySchnorr(verifier.GetHash(), sig))) {
                     Misbehaving(*peer, "invalid-ava-response-signature");
                     return;
                 }

@@ -53,6 +53,7 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <unordered_map>
@@ -2281,6 +2282,10 @@ void CConnman::ThreadMessageHandler() {
             // multiple consecutive connections in the vNodes list.
             const NodesSnapshot snap{*this, /*shuffle=*/true};
 
+            for (auto interface : m_msgproc) {
+                interface->PrepareMessageTurn(snap.Nodes(), flagInterruptMsgProc);
+            }
+
             for (CNode *pnode : snap.Nodes()) {
                 if (pnode->fDisconnect) {
                     continue;
@@ -3133,6 +3138,21 @@ void CNode::MarkReceivedMsgsForProcessing() {
     m_msg_process_queue.splice(m_msg_process_queue.end(), vRecvMsg);
     m_msg_process_queue_size += nSizeAdded;
     pauseRecv(m_msg_process_queue_size > m_recv_flood_size);
+}
+
+std::optional<DataStream> CNode::CopyIsolatedMessage(const std::string &type,
+                                                    size_t max_bytes) {
+    LOCK(m_msg_process_queue_mutex);
+    if (m_msg_process_queue.empty()) return std::nullopt;
+    const auto &first = m_msg_process_queue.front();
+    if (first.m_type != type || first.m_recv.size() > max_bytes) {
+        return std::nullopt;
+    }
+    const auto second = std::next(m_msg_process_queue.begin());
+    if (second != m_msg_process_queue.end() && second->m_type == type) {
+        return std::nullopt;
+    }
+    return DataStream{Span{first.m_recv.data(), first.m_recv.size()}};
 }
 
 std::optional<std::pair<CNetMessage, bool>> CNode::PollMessage() {

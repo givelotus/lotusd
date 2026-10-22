@@ -35,6 +35,7 @@ endforeach()
 
 add_executable(bitcoin-bench
 	addrman.cpp
+	avalanche_signatures.cpp
 	base58.cpp
 	bench.cpp
 	bench_bitcoin.cpp
