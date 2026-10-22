@@ -523,6 +523,18 @@ const lotus::v2::MempoolOverlayLayer &CTxMemPool::FreezeEpochBatch() {
     return frozen;
 }
 
+std::shared_ptr<const lotus::v2::txmerklix::Snapshot>
+CTxMemPool::PinTxMerklixSnapshot() const {
+    AssertLockHeld(cs);
+    FlushPendingOverlayAdds();
+    const auto &spec = m_merklix_overlay.GetSpeculativeOverlay();
+    if (spec.GetTxCount() != mapTx.size() ||
+        spec.GetTxTree().Count() != mapTx.size()) {
+        return nullptr;
+    }
+    return spec.PinTxTree();
+}
+
 void CTxMemPool::SyncMerklixOverlayToTip(const BlockHash &tip_hash,
                                          uint64_t next_height,
                                          uint64_t next_mtp) const {

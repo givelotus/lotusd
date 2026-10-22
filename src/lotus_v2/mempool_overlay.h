@@ -10,6 +10,7 @@
 #include "set_reconciliation.h"
 #include "sparse_state.h"
 #include "tagged_hash.h"
+#include "tx_merklix.h"
 
 #include <array>
 #include <cstddef>
@@ -78,6 +79,11 @@ struct TxOverlayNode {
 /**
  * Persistent path-copying arena for Subtree A (non-coinbase transactions).
  * Produces digests bit-for-bit identical to consensus TransactionRoot Subtree A.
+ *
+ * Legacy reference only: production overlay layers use txmerklix::Tree
+ * (slab-backed, path-compressed, reference-counted, reclaiming). This
+ * append-only arena never reclaims superseded path copies until Reset and is
+ * retained for equivalence tests and A/B microbenchmarks.
  */
 class TxOverlayArena {
 public:
@@ -241,6 +247,8 @@ struct OverlayTxEntry {
     uint64_t effective_cost{0};
     int64_t fee_sats{0};
     int64_t sigchecks{0};
+    //! Conservative retained-body charge used by pinned reconciliation views.
+    uint32_t payload_bytes{0};
     std::vector<Outpoint> spent_outpoints;
     std::vector<Coin> created_coins;
     std::shared_ptr<const void> tx_ref;
@@ -251,7 +259,9 @@ struct OverlayTxEntry {
  *   Layer 0 (Confirmed Chain Tip) -> Layer 1..k (Frozen Epoch Batches) -> Speculative Tip.
  *
  * Maintains:
- *   - Subtree A (non-coinbase TxRoot SMT) via TxOverlayArena
+ *   - Subtree A (non-coinbase TxRoot Merklix) via txmerklix::Tree: lazy
+ *     digests, O(1) structural pins for advertised/hashed snapshots, and an
+ *     incrementally maintained bottom-k MinHash of the same membership
  *   - UTXO State Root SMT via UtxoOverlayArena (with intra-overlay spend elision)
  *   - Additive non-coinbase effective block cost for O(1) MonetaryState transition
  *   - CTOR-sorted active transaction map for O(1) block template emission
@@ -280,20 +290,35 @@ public:
                         const std::vector<Coin> &created_coins,
                         int64_t fee_sats = 0,
                         int64_t sigchecks = 0,
-                        std::shared_ptr<const void> tx_ref = nullptr);
+                        std::shared_ptr<const void> tx_ref = nullptr,
+                        uint32_t payload_bytes = 0);
 
     /**
-     * Coalesced 16-shard parallel batch transaction insertion into the overlay.
-     * Elides intra-batch spent outputs before touching the UTXO SMT arena and
-     * performs a single 16-shard InsertBatchParallel + BatchUpdateParallel.
+     * Coalesced batch transaction insertion into the overlay. Transaction
+     * tree inserts are sequential path-copy/in-place updates without hashing;
+     * the UTXO arena is rebuilt lazily as before.
      */
     size_t AddTransactionBatch(std::span<OverlayTxEntry> entries);
+
+    /**
+     * Re-anchoring support: adopt an existing transaction tree whose
+     * membership exactly equals the entries subsequently re-added with
+     * AddTransactionBatch(entries, tree_already_contains = true).
+     */
+    void AdoptTxTree(txmerklix::Tree tree) { tx_tree_ = std::move(tree); }
+    size_t AddTransactionBatch(std::span<OverlayTxEntry> entries,
+                               bool tree_already_contains);
 
     bool RemoveTransaction(const Hash &tx_id);
 
     bool Contains(const Hash &tx_id) const;
 
-    Hash GetSubtreeARoot() const { return tx_arena_.SubtreeARoot(tx_root_idx_); }
+    /** Lazily completes only dirty digests; caller holds the writer lock. */
+    Hash GetSubtreeARoot() const { return tx_tree_.RootDigest(); }
+    /** O(1) immutable view of the current Subtree A membership + MinHash. */
+    std::shared_ptr<const txmerklix::Snapshot> PinTxTree() const {
+        return tx_tree_.Pin();
+    }
     Hash GetUtxoRootDigest() const {
         EnsureUtxoArenaUpdated();
         return utxo_arena_.RootDigest();
@@ -376,7 +401,7 @@ public:
     std::vector<Outpoint> GetNetErasedOutpoints() const;
     std::vector<Coin> GetNetInsertedCoins() const;
 
-    const TxOverlayArena &GetTxArena() const noexcept { return tx_arena_; }
+    const txmerklix::Tree &GetTxTree() const noexcept { return tx_tree_; }
     const UtxoOverlayArena &GetUtxoArena() const {
         EnsureUtxoArenaUpdated();
         return utxo_arena_;
@@ -393,8 +418,7 @@ private:
     MonetaryState base_mon_state_{};
     bool commit_state_root_in_header_{false};
 
-    TxOverlayArena tx_arena_;
-    uint32_t tx_root_idx_{TxOverlayArena::kNullIdx};
+    txmerklix::Tree tx_tree_;
     mutable UtxoOverlayArena utxo_arena_;
     mutable bool utxo_arena_dirty_{false};
     uint64_t sum_non_cb_effective_cost_{0};
