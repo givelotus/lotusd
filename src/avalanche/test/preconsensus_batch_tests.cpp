@@ -126,6 +126,66 @@ BOOST_FIXTURE_TEST_CASE(avaresponse_burst_preserves_individual_messages,
     }
 }
 
+BOOST_FIXTURE_TEST_CASE(avaresponse_cross_peer_ready_turn,
+                        AvalancheTestingSetup) {
+    std::vector<CNode *> nodes;
+    std::vector<CKey> keys;
+    for (int i = 0; i < 7; ++i) {
+        keys.push_back(CKey::MakeCompressedKey());
+        auto *node = new CNode(950 + i, nullptr, CAddress(), 0, 0, 0,
+                              CAddress(), "", ConnectionType::OUTBOUND_FULL_RELAY,
+                              false);
+        node->SetCommonVersion(PROTOCOL_VERSION);
+        node->m_has_all_wanted_services = true;
+        m_node.peerman->InitializeNode(config, *node, NODE_NETWORK);
+        node->nVersion = PROTOCOL_VERSION;
+        node->fSuccessfullyConnected = true;
+        node->m_avalanche_enabled = true;
+        WITH_LOCK(node->cs_avalanche_pubkey,
+                  node->m_avalanche_pubkey = keys.back().GetPubKey());
+        m_connman->AddTestNode(*node);
+        Response response(i, 0, {});
+        HashWriter hash;
+        hash << response;
+        SchnorrSig signature;
+        BOOST_REQUIRE(keys.back().SignSchnorr(hash.GetHash(), signature));
+        if (i == 1) signature[32] ^= 1;
+        auto message = NetMsg::Make(NetMsgType::AVARESPONSE, response, signature);
+        if (i == 5) message.data.resize(1);
+        BOOST_REQUIRE(m_connman->ReceiveMsgFrom(*node, message));
+        node->fPauseSend = false;
+        nodes.push_back(node);
+    }
+    // Wrong-type and over-budget peeks must leave the head untouched.
+    BOOST_CHECK(!nodes[0]->CopyIsolatedMessage(NetMsgType::PING, 65536));
+    BOOST_CHECK(!nodes[0]->CopyIsolatedMessage(NetMsgType::AVARESPONSE, 1));
+    std::atomic<bool> interrupt{false};
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    m_node.peerman->PrepareMessageTurn(nodes, interrupt);
+    // A pre-pass must not consume votes or dequeue responses.
+    for (auto *node : nodes) {
+        BOOST_CHECK_EQUAL(node->m_avalanche_message_fault_counter, 0);
+    }
+    // Key changes between preverification and ordered consumption invalidate
+    // the token; an earlier valid signature must never authorize a new key.
+    WITH_LOCK(nodes[2]->cs_avalanche_pubkey,
+              nodes[2]->m_avalanche_pubkey = keys[0].GetPubKey());
+    nodes[3]->fDisconnect = true;
+    for (auto *node : nodes) {
+        m_node.peerman->ProcessMessages(config, node, interrupt);
+    }
+    // Valid responses reach registerVotes (unsolicited in this fixture);
+    // invalid signatures, including rotated keys, must not reach it. One bad
+    // peer must not suppress a valid peer before or after it in the batch.
+    BOOST_CHECK_EQUAL(nodes[0]->m_avalanche_message_fault_counter, 1);
+    BOOST_CHECK_EQUAL(nodes[1]->m_avalanche_message_fault_counter, 0);
+    BOOST_CHECK_EQUAL(nodes[2]->m_avalanche_message_fault_counter, 0);
+    BOOST_CHECK_EQUAL(nodes[3]->m_avalanche_message_fault_counter, 0);
+    BOOST_CHECK_EQUAL(nodes[4]->m_avalanche_message_fault_counter, 1);
+    BOOST_CHECK_EQUAL(nodes[5]->m_avalanche_message_fault_counter, 0);
+    BOOST_CHECK_EQUAL(nodes[6]->m_avalanche_message_fault_counter, 1);
+}
+
 BOOST_FIXTURE_TEST_CASE(avalanche_defaults_keep_upstream_unparking,
                         BasicTestingSetup) {
     kernel::Notifications notifications;
