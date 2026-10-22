@@ -68,21 +68,24 @@ Hash TxNodeAtDepth(unsigned depth, const Hash &left, const Hash &right) {
     return TaggedHash(HashDomain::TxRoot, input);
 }
 
-Hash TransactionSubtreeA(const std::vector<const TxIdentityPair *> &entries,
+Hash TransactionSubtreeA(std::span<const TxIdentityPair *> entries,
                          unsigned depth) {
     if (entries.empty()) return EmptyTxRoot();
     if (entries.size() == 1) return TxLeaf(*entries[0]);
     if (depth >= 256) {
         throw std::invalid_argument("duplicate transaction identifier in subtree");
     }
-    std::vector<const TxIdentityPair *> left, right;
-    left.reserve(entries.size());
-    right.reserve(entries.size());
-    for (const TxIdentityPair *entry : entries) {
-        (TxKeyBit(entry->tx_id, depth) ? right : left).push_back(entry);
-    }
+    // The public call owns one pointer array. Descendants reorder disjoint
+    // portions of it; transaction identities themselves are immutable. No
+    // recursive left/right vectors or per-level partition allocations.
+    const auto split = std::partition(entries.begin(), entries.end(),
+        [depth](const TxIdentityPair *entry) {
+            return !TxKeyBit(entry->tx_id, depth);
+        });
+    const auto left = entries.first(static_cast<size_t>(split - entries.begin()));
+    const auto right = entries.subspan(left.size());
     if (depth < 4 && entries.size() >= 64 && !left.empty() && !right.empty()) {
-        auto left_future = std::async(std::launch::async, [&left, depth]() {
+        auto left_future = std::async(std::launch::async, [left, depth]() {
             return TransactionSubtreeA(left, depth + 1);
         });
         const Hash right_hash = TransactionSubtreeA(right, depth + 1);
