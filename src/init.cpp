@@ -673,6 +673,10 @@ void SetupServerArgs(NodeContext &node) {
                   "robin; 0 to disable (default: %d)",
                   count_milliseconds(DEFAULT_TXRECON_INTERVAL)),
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg("-txreconfull", "Negotiate bounded complete-mempool reconciliation (default: 1)",
+                   ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg("-txreconmaxmemory=<MiB>", "Maximum full-reconciliation snapshot, recovery and queue exposure (128..4096 MiB, default: 256)",
+                   ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg(
         "-txreconwindow=<s>",
         strprintf("Reconcile the transactions admitted in the last this many "
