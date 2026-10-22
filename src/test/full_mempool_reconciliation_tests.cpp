@@ -28,24 +28,14 @@ V2Hash Identity(const uint256 &id) {
 }
 }
 namespace lotus::v2::net::fullrecon {
+// Adversarial canonical identities without grinding transaction hashes: a
+// body-less slab tree is pinned and described by the production Snapshot.
 struct SnapshotIdentityFixture {
     static Snapshot Index(const std::vector<TxIdentityPair> &identities) {
-        Snapshot out{{}, 64 * 1024 * 1024};
-        out.m_items.reserve(identities.size());
-        out.m_nodes.reserve(identities.size() * 2);
+        txmerklix::Tree tree;
         for (const auto &identity : identities)
-            out.m_items.push_back({identity.tx_id, identity.tx_hash, {}});
-        auto less = [](const Snapshot::Item &a, const Snapshot::Item &b) {
-            for (unsigned bit = 0; bit < 256; ++bit) {
-                const auto left{(a.id[bit / 8] >> (bit % 8)) & 1};
-                const auto right{(b.id[bit / 8] >> (bit % 8)) & 1};
-                if (left != right) return left < right;
-            }
-            return false;
-        };
-        std::sort(out.m_items.begin(), out.m_items.end(), less);
-        if (!out.m_items.empty()) out.Build(0, out.m_items.size());
-        return out;
+            tree.Insert(identity.tx_id, identity.tx_hash);
+        return Snapshot{tree.Pin(), 256 * 1024 * 1024};
     }
 };
 }

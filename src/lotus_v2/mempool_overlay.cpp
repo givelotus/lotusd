@@ -2372,7 +2372,6 @@ size_t MempoolOverlayLayer::AddTransactionBatch(
     ReserveBucketsAmortized(created_coins_, entries.size() * 2);
     ReserveBucketsAmortized(spent_outpoints_, entries.size() * 2);
 
-
     size_t added_count = 0;
     for (auto &entry : entries) {
         if (active_txs_.find(entry.tx_id) != active_txs_.end()) {
