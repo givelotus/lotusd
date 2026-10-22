@@ -4,6 +4,8 @@
 #define BITCOIN_NET_FULL_MEMPOOL_RECONCILIATION_H
 
 #include <lotus_v2/commitment.h>
+#include <lotus_v2/minhash.h>
+#include <lotus_v2/tx_merklix.h>
 #include <primitives/transaction.h>
 #include <blockencodings.h>
 #include <streams.h>
@@ -11,7 +13,9 @@
 #include <string>
 #include <serialize.h>
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -54,15 +58,21 @@ Hash EmptyDigest();
 Hash LeafDigest(const Hash &id, const Hash &hash);
 Descriptor Fold(const std::array<Descriptor, 16> &children, uint16_t depth);
 
-/** Immutable complete membership captured once; no admission-time cutoff.
- * A compressed binary trie stores only real branch points and leaves. Unary
- * depth tags are folded without allocating nodes, including adversarial long
- * common prefixes. All bodies are shared immutable transaction references.
+/** Immutable complete membership; no admission-time cutoff.
+ * Backed by a pinned slab Merklix version (lotus_v2/tx_merklix.h): only real
+ * branch points and leaves are stored, unary depth tags are folded on demand,
+ * digests are completed lazily and shared with the mempool's own Subtree A
+ * caches. Production captures pin the mempool's working tree in O(1); the
+ * transaction-vector constructor builds a private tree (page verification,
+ * tests and the fallback path). All bodies are shared immutable references.
  */
 class Snapshot {
 public:
     explicit Snapshot(std::vector<CTransactionRef> transactions,
                       size_t maximum_bytes);
+    /** Adopt an O(1) pinned mempool view; throws length_error over budget. */
+    Snapshot(std::shared_ptr<const txmerklix::Snapshot> pinned,
+             size_t maximum_bytes);
     Descriptor Root() const { return At(Prefix{}); }
     Descriptor At(const Prefix &prefix) const;
     std::array<Descriptor, 16> Children(const Prefix &prefix) const;
@@ -72,28 +82,20 @@ public:
     std::optional<std::vector<CTransactionRef>> Page(
         const Prefix &prefix, size_t max_bytes) const;
     size_t ChargedBytes() const { return m_charged_bytes; }
-    size_t Size() const { return m_items.size(); }
+    size_t Size() const { return m_tree->Count(); }
+    /** Bottom-k MinHash of exactly this membership version (hint only). */
+    const std::vector<uint64_t> &Sketch() const { return m_tree->GetSketch().values; }
+    uint64_t Version() const { return m_tree->Version(); }
+    const txmerklix::Snapshot &Tree() const { return *m_tree; }
+    /** Conservative bytes charged per member by structural storage. */
+    static constexpr size_t NODE_BYTES_PER_MEMBER =
+        sizeof(txmerklix::Leaf) + sizeof(txmerklix::Branch);
     /** Authenticate a whole body page at its original canonical prefix depth. */
     static Hash PageDigest(const Prefix &prefix,
                            const std::vector<CTransactionRef> &bodies);
 private:
-    // Narrow test fixture exercises adversarial canonical identities without
-    // grinding transaction hashes; production captures always derive both IDs.
-    friend struct SnapshotIdentityFixture;
-    struct Item { Hash id, hash; CTransactionRef tx; };
-    struct Node {
-        size_t begin, end;
-        uint32_t left{NONE}, right{NONE};
-        uint16_t split{256};
-        Hash digest{}; // Digest at split, before any compressed unary path.
-        static constexpr uint32_t NONE = std::numeric_limits<uint32_t>::max();
-    };
-    std::vector<Item> m_items;
-    std::vector<Node> m_nodes;
+    std::shared_ptr<const txmerklix::Snapshot> m_tree;
     size_t m_charged_bytes{0};
-    uint32_t Build(size_t begin, size_t end);
-    Descriptor NodeAt(uint32_t node, uint16_t depth) const;
-    const Node *Find(const Prefix &prefix, uint32_t *index = nullptr) const;
 };
 
 inline void Require(bool ok) {
@@ -110,12 +112,14 @@ struct EnumByteFormatter {
 enum class Control : uint8_t { OFFER = 0, DONE = 1, CANCEL = 2 };
 enum class Work : uint8_t { EXPAND = 0, PAGE = 1 };
 enum class Status : uint8_t { OK = 0, LIMIT = 1, GONE = 2, BUSY = 3, UNAVAILABLE = 4 };
+//! Version 2 adds the bottom-k MinHash to offers (no released v1 peers).
+inline constexpr uint8_t FRAME_VERSION = 2;
 struct Header {
-    uint8_t scope{SCOPE}, version{1};
+    uint8_t scope{SCOPE}, version{FRAME_VERSION};
     uint256 context{};
     SERIALIZE_METHODS(Header, obj) {
         READWRITE(obj.scope, obj.version);
-        Require(obj.scope == SCOPE && obj.version == 1);
+        Require(obj.scope == SCOPE && obj.version == FRAME_VERSION);
         READWRITE(obj.context);
         Require(!obj.context.IsNull());
     }
@@ -126,6 +130,9 @@ struct Offer {
     uint256 anchor{};
     Descriptor root;
     std::array<Descriptor, 16> children;
+    //! Bottom-k MinHash of the offered membership: a similarity/fetching
+    //! hint. It is NOT authenticated by the root; never trust it for validity.
+    std::vector<uint64_t> sketch;
     SERIALIZE_METHODS(Offer, obj) {
         READWRITE(obj.header, Using<EnumByteFormatter>(obj.control));
         Require(uint8_t(obj.control) <= uint8_t(Control::CANCEL));
@@ -134,6 +141,14 @@ struct Offer {
             for (auto &child : obj.children) READWRITE(child);
             const auto actual{Fold(obj.children, 0)};
             Require(actual.digest == obj.root.digest && actual.count == obj.root.count);
+            uint64_t count{obj.sketch.size()};
+            if constexpr (ser_action.ForRead()) count = ReadCompactSize(s);
+            else WriteCompactSize(s, count);
+            // Shape is checked; values are an unauthenticated hint.
+            Require(count == std::min<uint64_t>(minhash::K, obj.root.count));
+            if constexpr (ser_action.ForRead()) obj.sketch.resize(count);
+            for (auto &value : obj.sketch) READWRITE(value);
+            Require(std::is_sorted(obj.sketch.begin(), obj.sketch.end()));
         }
     }
 };
@@ -181,10 +196,33 @@ size_t PageDecodeExposure(Span<const uint8_t> bytes);
 
 struct Stats {
     uint64_t captures{0}, captured_members{0}, capture_lock_us{0}, capture_lock_wait_us{0}, capture_build_us{0};
+    //! Captures served by an O(1) pinned mempool tree vs the rebuild fallback.
+    uint64_t capture_pins{0}, capture_fallbacks{0};
+    //! Lazy commitment completion for offered roots (outside mempool locks).
+    uint64_t commitment_us{0};
     uint64_t offers{0}, requests{0}, replies{0}, verified_bodies{0}, coverage_complete{0};
     uint64_t admitted{0}, unresolved{0}, malformed{0}, busy{0}, expired{0};
+    //! MinHash hint quality: offers evaluated, summed Jaccard (ppm), summed
+    //! estimated remote-only members, and for completed fetches the summed
+    //! actually recovered members and absolute estimate error.
+    uint64_t sketch_offers{0}, sketch_jaccard_ppm{0}, sketch_estimated_remote_only{0};
+    uint64_t sketch_completed{0}, sketch_actual_recovered{0}, sketch_abs_error{0};
     size_t charged_bytes{0};
 };
+
+/** Process-wide monotonic mirrors of Stats for Prometheus scraping. */
+struct Counters {
+    std::atomic<uint64_t> captures{0}, capture_pins{0}, capture_fallbacks{0};
+    std::atomic<uint64_t> capture_lock_us{0}, capture_build_us{0}, commitment_us{0};
+    std::atomic<uint64_t> offers{0}, coverage_complete{0};
+    std::atomic<uint64_t> sketch_offers{0}, sketch_jaccard_ppm{0};
+    std::atomic<uint64_t> sketch_estimated_remote_only{0};
+    std::atomic<uint64_t> sketch_completed{0}, sketch_actual_recovered{0}, sketch_abs_error{0};
+};
+inline Counters &GlobalCounters() noexcept {
+    static Counters counters;
+    return counters;
+}
 /** Connection-owned derived snapshots only; never primary mempool state. */
 class Manager {
 public:

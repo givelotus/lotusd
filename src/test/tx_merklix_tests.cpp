@@ -6,6 +6,7 @@
 #include <lotus_v2/mempool_overlay.h>
 #include <lotus_v2/minhash.h>
 #include <lotus_v2/tx_merklix.h>
+#include <net/full_mempool_reconciliation.h>
 #include <script/script.h>
 #include <streams.h>
 #include <txmempool.h>
@@ -53,6 +54,21 @@ std::vector<uint64_t> ReferenceSketch(const std::map<V2Hash, V2Hash> &members) {
 std::map<V2Hash, V2Hash> Members(const txm::Snapshot &snapshot) {
     std::map<V2Hash, V2Hash> out;
     snapshot.ForEachLeaf([&](const txm::Leaf &leaf) { out.emplace(leaf.key, leaf.tx_hash); });
+    return out;
+}
+
+CTransactionRef Member(FastRandomContext &rng) {
+    CMutableTransaction tx;
+    tx.nVersion = 2;
+    tx.vin.emplace_back(COutPoint(TxId{rng.rand256()}, 0));
+    tx.vin.front().scriptSig = CScript() << OP_TRUE;
+    tx.vout.emplace_back(10000 * SATOSHI, CScript() << OP_TRUE);
+    return MakeTransactionRef(std::move(tx));
+}
+
+V2Hash Identity(const uint256 &id) {
+    V2Hash out;
+    std::copy(id.begin(), id.end(), out.begin());
     return out;
 }
 
@@ -502,6 +518,119 @@ BOOST_AUTO_TEST_CASE(overlay_layer_freeze_and_reanchor_share_trees) {
     BOOST_CHECK_EQUAL(Counter(txm::Stats().leaf_allocs), leaves0);
     BOOST_CHECK(manager.GetSpeculativeOverlay().GetSubtreeARoot() == Reference(members));
     BOOST_CHECK_EQUAL(manager.GetSpeculativeOverlay().GetTxCount(), members.size());
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_FIXTURE_TEST_SUITE(tx_merklix_mempool_tests, TestingSetup)
+
+BOOST_AUTO_TEST_CASE(mempool_pin_drives_full_reconciliation_snapshots) {
+    FastRandomContext rng{uint256{0x5a}};
+    CTxMemPool &pool = *m_node.mempool;
+    TestMemPoolEntryHelper entry;
+    std::vector<CTransactionRef> txs;
+    std::shared_ptr<const txm::Snapshot> first;
+    std::map<V2Hash, V2Hash> first_members;
+    {
+        LOCK2(cs_main, pool.cs);
+        pool.clear();
+        for (int i = 0; i < 700; ++i) {
+            txs.push_back(Member(rng));
+            pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(txs.back()));
+        }
+        first = pool.PinTxMerklixSnapshot();
+        BOOST_REQUIRE(first);
+        for (const auto &tx : txs) first_members.emplace(Identity(tx->GetId()), Identity(tx->GetHash()));
+        // Remove some members and add others through the ordinary paths.
+        for (int i = 0; i < 100; ++i) {
+            pool.removeRecursive(*txs[i], MemPoolRemovalReason::CONFLICT);
+        }
+        for (int i = 0; i < 50; ++i) {
+            txs.push_back(Member(rng));
+            pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(txs.back()));
+        }
+    }
+    std::map<V2Hash, V2Hash> current;
+    std::shared_ptr<const txm::Snapshot> second;
+    {
+        LOCK2(cs_main, pool.cs);
+        second = pool.PinTxMerklixSnapshot();
+        BOOST_REQUIRE(second);
+        for (const auto &e : pool.mapTx) {
+            current.emplace(Identity(e->GetTx().GetId()), Identity(e->GetTx().GetHash()));
+        }
+        // The mempool's own block-template root shares the same caches.
+        BOOST_CHECK(pool.GetMerklixOverlay().GetSpeculativeOverlay().GetSubtreeARoot() ==
+                    Reference(current));
+    }
+    // Hashing happens outside the mempool lock, on the pinned versions.
+    BOOST_CHECK(first->RootDigest() == Reference(first_members));
+    BOOST_CHECK(second->RootDigest() == Reference(current));
+    BOOST_CHECK(first->GetSketch().values == ReferenceSketch(first_members));
+    BOOST_CHECK(second->GetSketch().values == ReferenceSketch(current));
+    BOOST_CHECK_GT(second->Version(), first->Version());
+
+    // Reconciliation snapshot over the pinned tree: same descriptors, pages
+    // carry the admitted bodies and verify against their prefix digests.
+    using namespace lotus::v2::net;
+    const fullrecon::Snapshot served{first, 256 * 1024 * 1024};
+    std::vector<CTransactionRef> first_txs(txs.begin(), txs.begin() + 700);
+    const fullrecon::Snapshot rebuilt{first_txs, 256 * 1024 * 1024};
+    BOOST_CHECK(served.Root().digest == rebuilt.Root().digest);
+    BOOST_CHECK_EQUAL(served.Root().count, 700U);
+    BOOST_CHECK(served.Sketch() == rebuilt.Sketch());
+    std::vector<fullrecon::Prefix> pending{fullrecon::Prefix{}};
+    std::set<TxId> found;
+    while (!pending.empty()) {
+        const auto prefix = pending.back();
+        pending.pop_back();
+        const auto page = served.Page(prefix, fullrecon::MAX_FRAME_BYTES);
+        if (page) {
+            BOOST_CHECK(fullrecon::Snapshot::PageDigest(prefix, *page) == served.At(prefix).digest);
+            for (const auto &tx : *page) BOOST_CHECK(found.insert(tx->GetId()).second);
+        } else {
+            for (unsigned i = 0; i < 16; ++i) {
+                if (served.At(prefix.Child(i)).count) pending.push_back(prefix.Child(i));
+            }
+        }
+    }
+    BOOST_CHECK_EQUAL(found.size(), 700U);
+
+    // Offer frames carry the sketch and reject malformed sketch shapes.
+    fullrecon::Offer offer;
+    offer.header.context = uint256::ONE;
+    offer.root = served.Root();
+    offer.children = served.Children(fullrecon::Prefix{});
+    offer.sketch = served.Sketch();
+    DataStream stream;
+    stream << offer;
+    fullrecon::Offer decoded;
+    stream >> decoded;
+    BOOST_CHECK(decoded.sketch == offer.sketch);
+    // The encoder refuses a malformed sketch shape outright.
+    auto short_offer = offer;
+    short_offer.sketch.pop_back();
+    DataStream refused;
+    BOOST_CHECK_THROW(refused << short_offer, std::ios_base::failure);
+    // The decoder rejects a wrong count and unsorted values from the wire.
+    DataStream valid;
+    valid << offer;
+    const std::vector<uint8_t> wire(UCharCast(valid.data()), UCharCast(valid.data()) + valid.size());
+    const size_t count_at = wire.size() - 8 * 64 - 1;
+    BOOST_REQUIRE_EQUAL(wire[count_at], 64);
+    auto truncated = wire;
+    truncated[count_at] = 63;
+    truncated.resize(truncated.size() - 8);
+    DataStream bad_count{truncated};
+    BOOST_CHECK_THROW(bad_count >> decoded, std::ios_base::failure);
+    auto unsorted = wire;
+    std::swap_ranges(unsorted.begin() + count_at + 1, unsorted.begin() + count_at + 9,
+                     unsorted.begin() + count_at + 9);
+    DataStream bad_order{unsorted};
+    BOOST_CHECK_THROW(bad_order >> decoded, std::ios_base::failure);
+    // Estimated remote-only members from the hint (first vs current view).
+    const double j = mh::EstimateJaccard(second->GetSketch().values, first->GetSketch().values);
+    BOOST_CHECK(j > 0.5 && j <= 1.0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
