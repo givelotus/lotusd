@@ -10,7 +10,6 @@
 #include "monetary.h"
 #include "output.h"
 #include "sparse_state.h"
-#include "tagged_hash.h"
 #include "tx_merklix.h"
 
 #include <array>

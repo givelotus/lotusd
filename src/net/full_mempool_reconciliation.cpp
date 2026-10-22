@@ -27,12 +27,6 @@ Hash Branch(uint16_t depth, const Hash &left, const Hash &right) {
     std::copy(right.begin(), right.end(), bytes.begin() + 35);
     return TaggedHash(HashDomain::TxRoot, bytes);
 }
-bool Less(const Hash &a, const Hash &b) {
-    for (unsigned i = 0; i < 256; ++i) {
-        if (Bit(a, i) != Bit(b, i)) return !Bit(a, i);
-    }
-    return false;
-}
 Descriptor FoldAt(const std::array<Descriptor, 16> &children,
                   uint16_t depth, unsigned bit, unsigned index) {
     if (bit == 4) return children[index];
@@ -86,29 +80,21 @@ Descriptor Fold(const std::array<Descriptor, 16> &children, uint16_t depth) {
     return FoldAt(children, depth, 0, 0);
 }
 
+namespace {
+constexpr size_t NODE_BYTES{Snapshot::NODE_BYTES_PER_MEMBER};
+} // namespace
+
 Snapshot::Snapshot(std::vector<CTransactionRef> transactions, size_t maximum_bytes) {
-    // Check before reserving. At most two compressed nodes per identity; the
-    // charge also accounts for pinned transaction serialization, not just refs.
-    constexpr size_t per_item{sizeof(Item) + 2 * sizeof(Node) + sizeof(CTransactionRef)};
-    if (transactions.size() > maximum_bytes / per_item ||
-        transactions.size() > (uint64_t{Node::NONE} - 1) / 2)
+    // Check before allocating nodes. Two slab nodes (leaf + branch) bound the
+    // structural cost per identity; the charge also covers pinned bodies.
+    if (transactions.size() > maximum_bytes / (NODE_BYTES + sizeof(CTransactionRef)) ||
+        transactions.size() >= txmerklix::kMaxSlots)
         throw std::length_error("full-recon snapshot byte budget");
-    const size_t input_bytes{memusage::DynamicUsage(transactions)};
-    const size_t item_bytes{memusage::MallocUsage(transactions.size() * sizeof(Item))};
-    const size_t node_bytes{memusage::MallocUsage(transactions.size() * 2 * sizeof(Node))};
-    if (sizeof(Snapshot) > maximum_bytes || input_bytes > maximum_bytes - sizeof(Snapshot) ||
-        item_bytes > maximum_bytes - sizeof(Snapshot) - input_bytes ||
-        node_bytes > maximum_bytes - sizeof(Snapshot) - input_bytes - item_bytes)
-        throw std::length_error("full-recon snapshot preallocation budget");
-    m_items.reserve(transactions.size());
-    m_nodes.reserve(transactions.size() * 2);
-    // Include the by-value construction inventory and actual vector capacities.
-    // Conservatively retain that temporary charge after construction as well.
-    m_charged_bytes = sizeof(Snapshot) + memusage::DynamicUsage(m_items) +
-                      memusage::DynamicUsage(m_nodes) +
-                      memusage::DynamicUsage(transactions);
+    m_charged_bytes = sizeof(Snapshot) + memusage::DynamicUsage(transactions) +
+                      transactions.size() * NODE_BYTES;
     if (m_charged_bytes > maximum_bytes)
         throw std::length_error("full-recon snapshot construction budget");
+    txmerklix::Tree tree;
     for (const auto &tx : transactions) {
         if (!tx || tx->IsNull() || tx->IsCoinBase())
             throw std::invalid_argument("invalid full-recon member");
@@ -117,66 +103,29 @@ Snapshot::Snapshot(std::vector<CTransactionRef> transactions, size_t maximum_byt
         if (bytes > maximum_bytes - m_charged_bytes)
             throw std::length_error("full-recon pinned body byte budget");
         m_charged_bytes += bytes;
-        m_items.push_back({Identity(tx->GetId()), Identity(tx->GetHash()), tx});
-    }
-    std::sort(m_items.begin(), m_items.end(), [](const Item &a, const Item &b) {
-        return Less(a.id, b.id);
-    });
-    for (size_t i = 1; i < m_items.size(); ++i)
-        if (m_items[i - 1].id == m_items[i].id)
+        const auto change{tree.Insert(Identity(tx->GetId()), Identity(tx->GetHash()), tx,
+                                      static_cast<uint32_t>(std::min<size_t>(
+                                          bytes, std::numeric_limits<uint32_t>::max())))};
+        if (change != txmerklix::Tree::Change::Inserted)
             throw std::invalid_argument("duplicate full-recon identity");
-    if (!m_items.empty()) Build(0, m_items.size());
-}
-uint32_t Snapshot::Build(size_t begin, size_t end) {
-    const uint32_t index{static_cast<uint32_t>(m_nodes.size())};
-    m_nodes.push_back(Node{begin, end});
-    if (end - begin == 1) {
-        m_nodes[index].digest = LeafDigest(m_items[begin].id, m_items[begin].hash);
-        return index;
     }
-    unsigned split{0};
-    while (Bit(m_items[begin].id, split) == Bit(m_items[end - 1].id, split)) ++split;
-    const auto middle{std::partition_point(m_items.begin() + begin,
-        m_items.begin() + end, [&](const Item &item) { return !Bit(item.id, split); })};
-    const size_t offset{static_cast<size_t>(middle - m_items.begin())};
-    const uint32_t left{Build(begin, offset)}, right{Build(offset, end)};
-    m_nodes[index].left = left;
-    m_nodes[index].right = right;
-    m_nodes[index].split = split;
-    m_nodes[index].digest = Branch(split, NodeAt(left, split + 1).digest,
-                                         NodeAt(right, split + 1).digest);
-    return index;
+    m_tree = tree.Pin();
 }
-Descriptor Snapshot::NodeAt(uint32_t index, uint16_t depth) const {
-    const auto &node{m_nodes[index]};
-    Descriptor out{node.end - node.begin, node.digest};
-    if (out.count == 1) return out;
-    for (unsigned d = node.split; d > depth; --d) {
-        if (Bit(m_items[node.begin].id, d - 1)) out.digest = Branch(d - 1, EmptyDigest(), out.digest);
-        else out.digest = Branch(d - 1, out.digest, EmptyDigest());
-    }
-    return out;
-}
-const Snapshot::Node *Snapshot::Find(const Prefix &prefix, uint32_t *out) const {
-    if (!prefix.Valid()) throw std::invalid_argument("invalid full-recon prefix");
-    if (m_nodes.empty()) return nullptr;
-    uint32_t index{0};
-    while (true) {
-        const auto &node{m_nodes[index]};
-        const auto &id{m_items[node.begin].id};
-        for (unsigned bit = 0; bit < std::min<unsigned>(prefix.depth, node.split); ++bit)
-            if (Bit(prefix.bytes, bit) != Bit(id, bit)) return nullptr;
-        if (node.end - node.begin == 1 || prefix.depth <= node.split) {
-            if (out) *out = index;
-            return &node;
-        }
-        index = Bit(prefix.bytes, node.split) ? node.right : node.left;
-    }
+Snapshot::Snapshot(std::shared_ptr<const txmerklix::Snapshot> pinned, size_t maximum_bytes)
+    : m_tree{std::move(pinned)} {
+    if (!m_tree) throw std::invalid_argument("missing pinned full-recon tree");
+    const size_t count{m_tree->Count()};
+    if (count > (maximum_bytes - std::min(maximum_bytes, sizeof(Snapshot))) / NODE_BYTES)
+        throw std::length_error("full-recon pinned snapshot budget");
+    m_charged_bytes = sizeof(Snapshot) + count * NODE_BYTES;
+    if (m_tree->PayloadBytes() > maximum_bytes - m_charged_bytes)
+        throw std::length_error("full-recon pinned body byte budget");
+    m_charged_bytes += m_tree->PayloadBytes();
 }
 Descriptor Snapshot::At(const Prefix &prefix) const {
-    uint32_t index{0};
-    if (!Find(prefix, &index)) return {0, EmptyDigest()};
-    return NodeAt(index, prefix.depth);
+    if (!prefix.Valid()) throw std::invalid_argument("invalid full-recon prefix");
+    const auto out{m_tree->At(prefix.bytes, prefix.depth)};
+    return {out.count, out.digest};
 }
 std::array<Descriptor, 16> Snapshot::Children(const Prefix &prefix) const {
     std::array<Descriptor, 16> out;
@@ -185,16 +134,21 @@ std::array<Descriptor, 16> Snapshot::Children(const Prefix &prefix) const {
 }
 std::optional<std::vector<CTransactionRef>> Snapshot::Page(
     const Prefix &prefix, size_t max_bytes) const {
-    const auto *node{Find(prefix)};
+    if (!prefix.Valid()) throw std::invalid_argument("invalid full-recon prefix");
+    const auto leaves{m_tree->Leaves(prefix.bytes, prefix.depth, MAX_PAGE_BODIES)};
+    if (!leaves) return std::nullopt;
     std::vector<CTransactionRef> out;
-    if (!node) return out;
-    if (node->end - node->begin > MAX_PAGE_BODIES) return std::nullopt;
+    out.reserve(leaves->size());
     size_t bytes{0};
-    for (size_t i = node->begin; i < node->end; ++i) {
-        const size_t next{GetSerializeSize(*m_items[i].tx)};
+    for (const auto *leaf : *leaves) {
+        // Production leaves carry the admitted body; a body-less identity
+        // (fixtures only) can be described but never served as a page.
+        if (!leaf->payload) return std::nullopt;
+        auto tx{std::static_pointer_cast<const CTransaction>(leaf->payload)};
+        const size_t next{GetSerializeSize(*tx)};
         if (next > max_bytes - bytes) return std::nullopt;
         bytes += next;
-        out.push_back(m_items[i].tx);
+        out.push_back(std::move(tx));
     }
     return out;
 }
@@ -206,7 +160,7 @@ Hash Snapshot::PageDigest(const Prefix &prefix,
     if (bodies.size() > MAX_PAGE_BODIES)
         throw std::length_error("full-recon page count budget");
     // The transport owns/reserves the already-decoded bodies; this temporary
-    // builds only a <=64-member index and cannot reserve from claimed counts.
+    // builds only a <=64-member tree and cannot reserve from claimed counts.
     Snapshot page{bodies, std::numeric_limits<size_t>::max()};
     return page.At(prefix).digest;
 }
@@ -426,6 +380,8 @@ struct Manager::Impl {
         size_t admission_cursor{0};
         bool admitting{false};
         uint64_t rejected{0};
+        //! MinHash estimate of remote-only members at offer time (hint).
+        double sketch_estimate{-1.0};
     };
     struct Peer {
         bool enabled{false};
@@ -512,27 +468,49 @@ struct Manager::Impl {
                 return nullptr;
             }
         }
-        std::vector<CTransactionRef> transactions;
-        transactions.reserve(count); // never allocate inventory while locked
         std::pair<uint64_t, size_t> generation{};
         uint256 captured_anchor;
         const auto lock_started{Now()};
-        Clock lock_acquired;
+        Clock lock_acquired, copied;
+        std::shared_ptr<const Snapshot> snapshot;
+        std::shared_ptr<const txmerklix::Snapshot> pinned;
+        std::vector<CTransactionRef> transactions;
         {
             LOCK2(cs_main, pool.cs);
             lock_acquired = Now();
-            if (pool.mapTx.size() > transactions.capacity() ||
-                pool.mapTx.size() > available / 512 ||
+            if (pool.mapTx.size() > available / 512 ||
                 pool.DynamicMemoryUsage() > available - pool.mapTx.size() * 512)
                 return nullptr;
             const auto *tip{chainman.ActiveTip()};
             if (!tip) return nullptr;
             captured_anchor = tip->GetBlockHash();
             generation = {pool.GetSnapshotResetSequence(), pool.mapTx.size()};
-            for (const auto &entry : pool.mapTx) transactions.push_back(entry->GetSharedTx());
+            // O(1): one reference on the mempool's working Subtree A tree plus
+            // its MinHash. No body copies and no hashing under the locks. A
+            // null result (overlay membership not equal to mapTx) selects the
+            // legacy complete copy below, rebuilt outside these locks.
+            pinned = pool.PinTxMerklixSnapshot();
+            copied = Now();
         }
-        const auto copied{Now()};
-        auto snapshot{std::make_shared<const Snapshot>(std::move(transactions), available)};
+        if (pinned) {
+            snapshot = std::make_shared<const Snapshot>(std::move(pinned), available);
+            ++stats.capture_pins;
+            GlobalCounters().capture_pins.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            transactions.reserve(count);
+            {
+                LOCK2(cs_main, pool.cs);
+                const auto *tip{chainman.ActiveTip()};
+                if (!tip || tip->GetBlockHash() != captured_anchor ||
+                    pool.mapTx.size() > transactions.capacity())
+                    return nullptr;
+                generation = {pool.GetSnapshotResetSequence(), pool.mapTx.size()};
+                for (const auto &entry : pool.mapTx) transactions.push_back(entry->GetSharedTx());
+            }
+            snapshot = std::make_shared<const Snapshot>(std::move(transactions), available);
+            ++stats.capture_fallbacks;
+            GlobalCounters().capture_fallbacks.fetch_add(1, std::memory_order_relaxed);
+        }
         if (Anchor() != captured_anchor) return nullptr;
         cache = {snapshot, generation, captured_anchor};
         next_capture = now + CAPTURE_SPACING;
@@ -541,6 +519,10 @@ struct Manager::Impl {
         stats.capture_lock_wait_us += (lock_acquired - lock_started).count();
         stats.capture_lock_us += (copied - lock_acquired).count();
         stats.capture_build_us += (Now() - copied).count();
+        auto &counters{GlobalCounters()};
+        counters.captures.fetch_add(1, std::memory_order_relaxed);
+        counters.capture_lock_us.fetch_add((copied - lock_acquired).count(), std::memory_order_relaxed);
+        counters.capture_build_us.fetch_add((Now() - copied).count(), std::memory_order_relaxed);
         LogEvent(BCLog::TXRELAY, "fullrecon_capture", "captured complete mempool count={count} bytes={bytes}")
             .Field(BCLog::LogField::Count, snapshot->Size())
             .Field(BCLog::LogField::Bytes, snapshot->ChargedBytes())
@@ -634,13 +616,21 @@ struct Manager::Impl {
         Offer offer;
         offer.header.context = GetRandHash();
         offer.anchor = cache.anchor;
+        // First commitment request for this pinned version: completes only
+        // the digests dirtied since the mempool tree was last hashed.
+        const auto hash_started{Now()};
         offer.root = snapshot->Root();
         offer.children = snapshot->Children(Prefix{});
+        offer.sketch = snapshot->Sketch();
+        const uint64_t hash_us(std::max<int64_t>(0, (Now() - hash_started).count()));
+        stats.commitment_us += hash_us;
+        GlobalCounters().commitment_us.fetch_add(hash_us, std::memory_order_relaxed);
         // Register ownership only after successful serialization/enqueue.
         if (!Send(node, peer, NetMsgType::MERKLIXSYNC, offer)) return;
         peer.serve.emplace(Serve{offer.header, snapshot, offer.anchor, 0, now, now});
         peer.next_offer = now + CAPTURE_SPACING;
         ++stats.offers;
+        GlobalCounters().offers.fetch_add(1, std::memory_order_relaxed);
     }
     void OnOffer(CNode &node, Peer &peer, Offer offer, Clock now) {
         if (offer.control != Control::OFFER) {
@@ -664,6 +654,18 @@ struct Manager::Impl {
         Fetch fetch;
         fetch.header = offer.header;
         fetch.anchor = offer.anchor;
+        // Similarity hint only: both sketches are unauthenticated summaries.
+        // The authenticated traversal below decides what is fetched.
+        const double jaccard{minhash::EstimateJaccard(local->Sketch(), offer.sketch)};
+        fetch.sketch_estimate = minhash::EstimateOnlyInB(jaccard, local->Size(), offer.root.count);
+        ++stats.sketch_offers;
+        stats.sketch_jaccard_ppm += uint64_t(jaccard * 1e6);
+        stats.sketch_estimated_remote_only += uint64_t(fetch.sketch_estimate + 0.5);
+        auto &counters{GlobalCounters()};
+        counters.sketch_offers.fetch_add(1, std::memory_order_relaxed);
+        counters.sketch_jaccard_ppm.fetch_add(uint64_t(jaccard * 1e6), std::memory_order_relaxed);
+        counters.sketch_estimated_remote_only.fetch_add(uint64_t(fetch.sketch_estimate + 0.5),
+                                                        std::memory_order_relaxed);
         fetch.local = std::move(local);
         fetch.born = fetch.progress = now;
         fetch.deferred.reserve(MAX_DEFERRED_PREFIXES);
@@ -831,6 +833,20 @@ struct Manager::Impl {
         if (!fetch.active) {
             Topological(fetch);
             ++stats.coverage_complete;
+            GlobalCounters().coverage_complete.fetch_add(1, std::memory_order_relaxed);
+            if (fetch.sketch_estimate >= 0) {
+                // Hint quality versus the authenticated recovery result.
+                const uint64_t actual{fetch.recovered.size()};
+                const uint64_t estimate{uint64_t(fetch.sketch_estimate + 0.5)};
+                const uint64_t error{actual > estimate ? actual - estimate : estimate - actual};
+                ++stats.sketch_completed;
+                stats.sketch_actual_recovered += actual;
+                stats.sketch_abs_error += error;
+                auto &counters{GlobalCounters()};
+                counters.sketch_completed.fetch_add(1, std::memory_order_relaxed);
+                counters.sketch_actual_recovered.fetch_add(actual, std::memory_order_relaxed);
+                counters.sketch_abs_error.fetch_add(error, std::memory_order_relaxed);
+            }
             ControlFrame(node, peer, fetch.header, Control::DONE);
             LogEvent(BCLog::TXRELAY, "fullrecon_coverage_complete", "verified remote snapshot peer={peer_id} bodies={count}")
                 .Field(BCLog::LogField::PeerId, node.GetId())
