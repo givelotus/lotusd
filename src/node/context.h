@@ -40,6 +40,7 @@ class FeePolicyWorker;
 
 namespace node {
 class SnapshotPublisher;
+class RpcAdmissionDispatcher;
 class KernelNotifications;
 
 //! NodeContext struct containing references to chain state and connection
@@ -58,6 +59,7 @@ struct NodeContext {
     std::unique_ptr<kernel::Context> kernel;
     std::unique_ptr<AddrMan> addrman;
     std::unique_ptr<CConnman> connman;
+    std::unique_ptr<RpcAdmissionDispatcher> rpc_admission;
     std::unique_ptr<lotus::v2::FeePolicyWorker> fee_policy;
     std::unique_ptr<CTxMemPool> mempool;
     std::unique_ptr<PeerManager> peerman;
