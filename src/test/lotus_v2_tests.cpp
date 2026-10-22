@@ -23,6 +23,8 @@
 #include <lotus_v2/vendor/blake3/blake3.h>
 #include <lotus_v2/vendor/blake3/blake3_impl.h>
 #include <lotus_v2/vm.h>
+#include <future>
+#include <node/snapshot.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <script/interpreter.h>
@@ -688,6 +690,145 @@ BOOST_FIXTURE_TEST_CASE(v2_native_crypto_warmup_keeps_authoritative_context,
     BOOST_REQUIRE_MESSAGE(final.m_result_type == MempoolAcceptResult::ResultType::VALID,
                           final.m_state.ToString());
     BOOST_CHECK_EQUAL(m_node.mempool->size(), 0U);
+}
+
+BOOST_FIXTURE_TEST_CASE(v2_snapshot_crypto_warmup_is_advisory,
+                        TestChain100Setup) {
+    using namespace lotus::v2;
+    Output output;
+    const auto program = NativeBenchmarkProgram();
+    output.value = 1000000;
+    output.branches = {BranchLeaf(program)};
+    output.paths = {{0}};
+    const auto funding = MineV2Coinbase({CTxOut::FromV2Output(output)});
+    auto &publisher = ::node::GetGlobalSnapshotPublisher();
+    WITH_LOCK(cs_main, ::node::PublishChainTipSnapshot(
+        *m_node.chainman, m_node.mempool.get()));
+    const auto original = publisher.Load();
+    BOOST_REQUIRE(original && original->has_utxo_snapshot &&
+                  original->entry_tree && original->next_script_flags);
+    struct RestoreSnapshot {
+        ::node::SnapshotPublisher &publisher;
+        std::shared_ptr<const ::node::ChainAndMempoolSnapshot> snapshot;
+        ~RestoreSnapshot() { publisher.Publish(std::move(snapshot)); }
+    } restore{publisher, original};
+    auto &cache = m_node.chainman->m_validation_cache.m_signature_cache;
+    const auto chain = m_node.chainman->GetParams().V2ChainId();
+    auto entry_for = [&](const CTransaction &tx, const CTxOut &coin) {
+        lotus::v2::Hash message{};
+        std::string error;
+        BOOST_REQUIRE_MESSAGE(SigningMessage(
+            tx.ToV2Transaction(), DefaultTxProfile, chain,
+            {coin.ToV2Output()}, 0, 0, 0, std::nullopt, message, error), error);
+        uint256 entry;
+        cache.ComputeBip340Entry(entry, message,
+            tx.vin[0].vWitnesses[0].arguments[0],
+            std::span<const uint8_t>(program.data() + 1, 32), false);
+        return entry;
+    };
+    auto warm = [&](const CTransactionRef &tx) {
+        const auto result = PrecomputeMempoolAdmission(
+            *m_node.chainman, tx, {}, m_node.mempool.get());
+        BOOST_CHECK(!result.standard.ran && !result.consensus.ran);
+        BOOST_CHECK(result.spent_outputs.empty());
+    };
+    auto tx = MakeTransactionRef(NativeBenchmarkSpend(
+        *funding, 0, {funding->vout[0].nValue - 10000 * SATOSHI}));
+    const auto entry = entry_for(*tx, funding->vout[0]);
+    BOOST_REQUIRE(!cache.Get(entry, false));
+    // A fully published context can finish preparation while a different
+    // thread owns cs_main. Release the lock before joining even on failure.
+    std::future<void> pending;
+    bool ready = false;
+    {
+        LOCK(cs_main);
+        pending = std::async(std::launch::async, [&] { warm(tx); });
+        ready = pending.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+    }
+    pending.get();
+    BOOST_CHECK(ready);
+    BOOST_CHECK(cache.Get(entry, false));
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), 0U);
+
+    // An old view with a different value can only warm its own message. It
+    // neither exports an acceptance verdict nor poisons the valid key.
+    auto changed = std::make_shared<::node::ChainAndMempoolSnapshot>(*original);
+    Outpoint outpoint{};
+    std::copy_n(funding->GetId().begin(), 32, outpoint.tx_id.begin());
+    outpoint.index = 0;
+    const auto old_coin = SmtFind(changed->tip_utxo_root, outpoint);
+    BOOST_REQUIRE(old_coin);
+    auto changed_coin = *old_coin;
+    --changed_coin.output.value;
+    SmtInsert(changed->tip_utxo_root, changed_coin);
+    publisher.Publish(changed);
+    auto tx2 = MakeTransactionRef(NativeBenchmarkSpend(
+        *funding, 0, {funding->vout[0].nValue - 10001 * SATOSHI}));
+    const auto entry2 = entry_for(*tx2, funding->vout[0]);
+    warm(tx2);
+    BOOST_CHECK(!cache.Get(entry2, false));
+    BOOST_CHECK(!cache.Get(entry_for(*tx2,
+        CTxOut::FromV2Output(changed_coin.output)), false));
+    {
+        LOCK(cs_main);
+        const auto result = m_node.chainman->ProcessTransaction(tx2, true);
+        BOOST_CHECK_MESSAGE(result.m_result_type == MempoolAcceptResult::ResultType::VALID,
+                            result.m_state.ToString());
+    }
+    // Missing coverage, missing rules, foreign ownership and a missing leaf
+    // all fall back to ordinary locked preparation, not a missing-input error.
+    for (int scenario = 0; scenario < 4; ++scenario) {
+        auto incomplete = std::make_shared<::node::ChainAndMempoolSnapshot>(*original);
+        if (scenario == 0) incomplete->has_utxo_snapshot = false;
+        if (scenario == 1) incomplete->next_script_flags.reset();
+        if (scenario == 2) incomplete->mempool_ptr = nullptr;
+        if (scenario == 3) incomplete->tip_utxo_root.reset();
+        publisher.Publish(incomplete);
+        auto fallback_tx = MakeTransactionRef(NativeBenchmarkSpend(*funding, 0,
+            {funding->vout[0].nValue - (10002 + scenario) * SATOSHI}));
+        const auto fallback_entry = entry_for(*fallback_tx, funding->vout[0]);
+        BOOST_REQUIRE(!cache.Get(fallback_entry, false));
+        warm(fallback_tx);
+        BOOST_CHECK(cache.Get(fallback_entry, false));
+    }
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), 0U);
+    publisher.Publish(original);
+    auto invalid = NativeBenchmarkSpend(*funding, 0,
+        {funding->vout[0].nValue - 10010 * SATOSHI});
+    invalid.vin[0].vWitnesses[0].arguments[0][10] ^= 1;
+    auto invalid_tx = MakeTransactionRef(std::move(invalid));
+    warm(invalid_tx);
+    BOOST_CHECK(!cache.Get(entry_for(*invalid_tx, funding->vout[0]), false));
+    {
+        LOCK(cs_main);
+        BOOST_CHECK(m_node.chainman->ProcessTransaction(invalid_tx, true).m_result_type !=
+                    MempoolAcceptResult::ResultType::VALID);
+        const auto accepted = m_node.chainman->ProcessTransaction(tx, false);
+        BOOST_REQUIRE_MESSAGE(accepted.m_result_type == MempoolAcceptResult::ResultType::VALID,
+                              accepted.m_state.ToString());
+        ::node::PublishChainTipSnapshot(*m_node.chainman, m_node.mempool.get());
+    }
+    const auto with_parent = publisher.Load();
+    BOOST_REQUIRE(with_parent->entry_tree->get(Uint256RadixKey(tx->GetId())));
+    auto child = MakeTransactionRef(NativeBenchmarkSpend(*tx, 0,
+        {tx->vout[0].nValue - 10000 * SATOSHI}));
+    const auto child_entry = entry_for(*child, tx->vout[0]);
+    warm(child);
+    BOOST_CHECK(cache.Get(child_entry, false));
+    // Pinning an older generation without the new parent is advisory only:
+    // absent leaves fall back and resolve the actual unconfirmed parent.
+    publisher.Publish(original);
+    auto child2 = MakeTransactionRef(NativeBenchmarkSpend(*tx, 0,
+        {tx->vout[0].nValue - 10001 * SATOSHI}));
+    const auto child2_entry = entry_for(*child2, tx->vout[0]);
+    warm(child2);
+    BOOST_CHECK(cache.Get(child2_entry, false));
+    {
+        LOCK(cs_main);
+        const auto result = m_node.chainman->ProcessTransaction(child2, true);
+        BOOST_CHECK_MESSAGE(result.m_result_type == MempoolAcceptResult::ResultType::VALID,
+                            result.m_state.ToString());
+    }
 }
 
 BOOST_FIXTURE_TEST_CASE(v2_kernel_throughput_benchmark, TestChain100Setup) {
