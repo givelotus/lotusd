@@ -788,6 +788,9 @@ private:
     TxSigCheckLimiter *pTxLimitSigChecks;
     CheckInputsLimiter *pBlockLimitSigChecks;
     std::shared_ptr<const V2ResolvedCoins> m_resolved_coins;
+    // Advisory verification captures the selected immutable chain identity;
+    // it must not read a runtime chain-parameter constructor's global override.
+    std::optional<lotus::v2::ChainId> m_v2_chain_id;
     lotus::v2::BatchSigCollector *m_sig_collector{nullptr};
     // Deferred V2 checks of the whole transaction, shared by the checks of
     // all its inputs (null: this input is checked on its own and its
@@ -827,6 +830,8 @@ public:
     CScriptCheck &operator=(CScriptCheck &&) = default;
 
     std::optional<std::pair<ScriptError, std::string>> operator()();
+
+    void SetV2ChainId(const lotus::v2::ChainId &chain) { m_v2_chain_id = chain; }
 
     void SetV2Deferred(std::shared_ptr<V2DeferredTxChecks> deferred) {
         m_v2_deferred = std::move(deferred);
