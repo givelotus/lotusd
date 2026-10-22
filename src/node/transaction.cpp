@@ -302,7 +302,8 @@ void SubmitRpcAdmission(const NodeContext &node, CTransactionRef tx,
     const MempoolAdmissionLimits limits{max_tx_fee, true};
     std::optional<PrecomputedAdmissionChecks> prepared;
     if (node.args && node.args->GetBoolArg("-parallelmempool", DEFAULT_PARALLEL_MEMPOOL)) {
-        prepared = PrecomputeMempoolAdmission(*node.chainman, tx, limits);
+        prepared = PrecomputeMempoolAdmission(
+            *node.chainman, tx, limits, node.mempool.get());
     }
     if (node.rpc_admission && node.rpc_admission->DispatchAsync(
         tx->GetTotalSize(),
@@ -355,7 +356,8 @@ BroadcastTransaction(const NodeContext &node, const CTransactionRef tx,
         // locks. RPC clients can therefore verify concurrently. The existing
         // critical section below decides every verdict,
         // fee bound, broadcast marker and notification in the same order.
-        precomputed = PrecomputeMempoolAdmission(*node.chainman, tx, limits);
+        precomputed = PrecomputeMempoolAdmission(
+            *node.chainman, tx, limits, node.mempool.get());
     }
 
     RpcAdmissionOutcome outcome;
