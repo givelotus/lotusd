@@ -17,7 +17,10 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <cstring>
+#include <future>
+#include <random>
 #include <vector>
 
 namespace {
@@ -239,6 +242,88 @@ BOOST_AUTO_TEST_CASE(positional_merkle_root_and_syndromes) {
     }
     BOOST_CHECK(spec_a.GetSubtreeARoot() == eager_layer.GetSubtreeARoot());
     BOOST_CHECK(spec_a.GetUtxoRootDigest() == eager_layer.GetUtxoRootDigest());
+}
+
+
+BOOST_AUTO_TEST_CASE(transaction_subtree_span_partition_matches_arena) {
+    using namespace lotus::v2;
+    std::mt19937 random(0x718391);
+    for (const size_t count : {size_t{0}, size_t{1}, size_t{2}, size_t{63},
+                              size_t{64}, size_t{65}, size_t{255}, size_t{256},
+                              size_t{1000}}) {
+        for (const bool common_prefix : {false, true}) {
+            std::vector<TxIdentityPair> identities(count);
+            TxOverlayArena arena;
+            auto root = TxOverlayArena::kNullIdx;
+            for (size_t i = 0; i < count; ++i) {
+                auto &identity = identities[i];
+                for (auto &byte : identity.tx_id) byte = uint8_t(random());
+                for (auto &byte : identity.tx_hash) byte = uint8_t(random());
+                // Cover long unary chains, including byte/bit ordering, without
+                // relying on finding particular hashed transaction fixtures.
+                if (common_prefix) {
+                    std::fill_n(identity.tx_id.begin(), 20, uint8_t{0x96});
+                    for (unsigned byte = 0; byte < 8; ++byte) {
+                        identity.tx_id[24 + byte] = uint8_t(uint64_t(i) >> (8 * byte));
+                    }
+                }
+                root = arena.InsertTxLeaf(root, identity.tx_id, identity.tx_hash);
+            }
+            const auto saved = identities;
+            const auto expected = arena.SubtreeARoot(root);
+            BOOST_CHECK(BuildTxSubtreeA(identities) == expected);
+            TxIdentityPair coinbase{};
+            coinbase.tx_id.fill(0xff);
+            coinbase.tx_hash.fill(0x73);
+            std::vector<TxIdentityPair> block{coinbase};
+            block.insert(block.end(), identities.begin(), identities.end());
+            lotus::v2::Hash block_root{};
+            BOOST_CHECK(TransactionRoot(block, block_root));
+            BOOST_CHECK(block_root == CombineCoinbaseAndSubtreeA(coinbase, expected));
+            BOOST_CHECK(std::equal(identities.begin(), identities.end(), saved.begin(),
+                [](const auto &a, const auto &b) {
+                    return a.tx_id == b.tx_id && a.tx_hash == b.tx_hash;
+                }));
+            // Multiple calls borrow the same const identities while each owns
+            // a different pointer array. Their internal partitions must never
+            // race with one another or change the caller's order/data.
+            if (count == 65 || count == 1000) {
+                std::vector<std::future<lotus::v2::Hash>> readers;
+                for (unsigned i = 0; i < 4; ++i) {
+                    readers.push_back(std::async(std::launch::async, [&identities] {
+                        return BuildTxSubtreeA(identities);
+                    }));
+                }
+                for (auto &reader : readers) BOOST_CHECK(reader.get() == expected);
+                BOOST_CHECK(std::equal(identities.begin(), identities.end(), saved.begin(),
+                    [](const auto &a, const auto &b) {
+                        return a.tx_id == b.tx_id && a.tx_hash == b.tx_hash;
+                    }));
+            }
+            std::reverse(identities.begin(), identities.end());
+            BOOST_CHECK(BuildTxSubtreeA(identities) == expected);
+            if (!identities.empty()) {
+                auto duplicate = identities;
+                duplicate.push_back(identities.front());
+                duplicate.back().tx_hash[0] ^= 1;
+                BOOST_CHECK_THROW(BuildTxSubtreeA(duplicate), std::invalid_argument);
+                lotus::v2::Hash unchanged{};
+                unchanged.fill(0xa5);
+                block.push_back(identities.front());
+                BOOST_CHECK(!TransactionRoot(block, unchanged));
+                BOOST_CHECK(unchanged[0] == 0xa5);
+                // Duplicate rejection does not corrupt a later valid call.
+                BOOST_CHECK(BuildTxSubtreeA(identities) == expected);
+            }
+        }
+    }
+    TxIdentityPair left{}, right{};
+    right.tx_id[31] = 0x80; // Two keys split at the last canonical bit.
+    right.tx_hash[0] = 1;
+    TxOverlayArena arena;
+    auto root = arena.InsertTxLeaf(TxOverlayArena::kNullIdx, left.tx_id, left.tx_hash);
+    root = arena.InsertTxLeaf(root, right.tx_id, right.tx_hash);
+    BOOST_CHECK(BuildTxSubtreeA(std::vector{left, right}) == arena.SubtreeARoot(root));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
