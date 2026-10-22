@@ -42,6 +42,8 @@ namespace txrelay {
 enum Feature : uint64_t {
     TXRELAY_INVSHORT = 1 << 0,
     TXRELAY_RECON = 1 << 1,
+    //! Complete immutable full-mempool scope5 framing (not legacy windows).
+    TXRELAY_FULL_MEMPOOL = 1 << 3,
     // Accept sealedheader block announcements and unsolicited shorttx bodies.
     // This is separate from ordinary compact blocks and short-id requests.
     TXRELAY_HIGH_BANDWIDTH = 1 << 2,
