@@ -488,6 +488,9 @@ struct StagedAdmissionOptions {
      * calling thread. 1 verifies on the caller only.
      */
     size_t script_threads{1};
+    /** Node-owned pool, kept alive by the caller through this call. Enables
+     * snapshot-only native warming without acquiring cs_main for identity. */
+    const CTxMemPool *expected_mempool{nullptr};
     /**
      * Called for each transaction, in order, with cs_main held, right before
      * it is admitted. Returning true skips it (no result). Lets a caller
@@ -507,7 +510,8 @@ struct StagedAdmissionOptions {
  */
 PrecomputedAdmissionChecks PrecomputeMempoolAdmission(
     ChainstateManager &chainman, const CTransactionRef &tx,
-    const MempoolAdmissionLimits &limits) LOCKS_EXCLUDED(cs_main);
+    const MempoolAdmissionLimits &limits,
+    const CTxMemPool *expected_mempool = nullptr) LOCKS_EXCLUDED(cs_main);
 
 /** Where one AcceptToMemoryPoolStaged call spent its time. */
 struct StagedAdmissionStats {
