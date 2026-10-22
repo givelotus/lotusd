@@ -10,6 +10,8 @@
 #include <banman.h>
 #include <feerate.h>
 #include <lotus_v2/fee_hysteresis.h>
+#include <lotus_v2/tx_merklix.h>
+#include <net/full_mempool_reconciliation.h>
 #include <net/v2_protocol_handler.h>
 #include <net_processing.h>
 #include <node/context.h>
@@ -20,6 +22,8 @@
 #include <txorphanage.h>
 
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <vector>
 
 namespace node {
@@ -129,6 +133,93 @@ namespace {
             }
         }));
     }
+    /**
+     * Slab Merklix tree and full-mempool reconciliation series. The process
+     * counters live in the subsystems (relaxed atomics); these metrics read
+     * them at scrape time. Registered once per process.
+     */
+    void AddMerklixMetrics(NodeMetrics &m) {
+        static std::once_flag registered;
+        std::call_once(registered, [&m] {
+            auto counter = [&m](const char *name, const char *help, auto fn) {
+                m.registry.Add(std::make_unique<metrics::FunctionCounter>(
+                    MetricName(name), help, fn));
+            };
+            using lotus::v2::txmerklix::Stats;
+            auto u = [](const std::atomic<uint64_t> &a) { return a.load(std::memory_order_relaxed); };
+            counter("txmerklix_leaf_allocations_total", "Slab Merklix leaf nodes allocated.",
+                    [u] { return u(Stats().leaf_allocs); });
+            counter("txmerklix_branch_allocations_total", "Slab Merklix branch nodes allocated (new branch points and path copies).",
+                    [u] { return u(Stats().branch_allocs); });
+            counter("txmerklix_slot_reuses_total", "Slab Merklix allocations served from reclaimed slots.",
+                    [u] { return u(Stats().slot_reuses); });
+            counter("txmerklix_path_copies_total", "Shared Merklix branches copied because a snapshot or tree copy still referenced them.",
+                    [u] { return u(Stats().path_copies); });
+            counter("txmerklix_inplace_updates_total", "Exclusively owned Merklix branches mutated in place.",
+                    [u] { return u(Stats().inplace_updates); });
+            counter("txmerklix_nodes_freed_total", "Merklix nodes reclaimed after their last owner was released.",
+                    [u] { return u(Stats().frees); });
+            counter("txmerklix_node_hashes_total", "Lazy Merklix digest computations (leaves, branches and unary folds).",
+                    [u] { return u(Stats().node_hashes); });
+            counter("txmerklix_hash_races_total", "Concurrent digest computations that lost the cache publication race.",
+                    [u] { return u(Stats().hash_cas_losses); });
+            counter("txmerklix_pins_total", "Immutable Merklix snapshots pinned.",
+                    [u] { return u(Stats().pins); });
+            counter("txmerklix_parallel_completions_total", "Large dirty commitments completed with parallel subtree hashing.",
+                    [u] { return u(Stats().parallel_completions); });
+            counter("txmerklix_sketch_rebuilds_total", "MinHash candidate rebuilds after deletions exhausted the candidate buffer.",
+                    [u] { return u(Stats().sketch_rebuilds); });
+            counter("txmerklix_sketch_rebuild_members_total", "Members scanned by MinHash candidate rebuilds.",
+                    [u] { return u(Stats().sketch_rebuild_members); });
+            using lotus::v2::net::fullrecon::GlobalCounters;
+            counter("fullrecon_captures_total", "Full-mempool reconciliation snapshots captured.",
+                    [u] { return u(GlobalCounters().captures); });
+            counter("fullrecon_capture_pins_total", "Captures served by an O(1) pinned mempool Merklix tree.",
+                    [u] { return u(GlobalCounters().capture_pins); });
+            counter("fullrecon_capture_fallbacks_total", "Captures that rebuilt a tree from copied mempool transactions.",
+                    [u] { return u(GlobalCounters().capture_fallbacks); });
+            counter("fullrecon_capture_lock_microseconds_total", "Time holding cs_main and the mempool lock to capture snapshots.",
+                    [u] { return u(GlobalCounters().capture_lock_us); });
+            counter("fullrecon_capture_build_microseconds_total", "Time constructing captured snapshots after the locks.",
+                    [u] { return u(GlobalCounters().capture_build_us); });
+            counter("fullrecon_commitment_microseconds_total", "Lazy commitment completion for offered roots, outside mempool locks.",
+                    [u] { return u(GlobalCounters().commitment_us); });
+            counter("fullrecon_offers_total", "Full-mempool reconciliation offers sent.",
+                    [u] { return u(GlobalCounters().offers); });
+            counter("fullrecon_coverage_complete_total", "Remote snapshots whose authenticated traversal completed.",
+                    [u] { return u(GlobalCounters().coverage_complete); });
+            counter("fullrecon_sketch_offers_total", "Received offers whose MinHash hint was evaluated.",
+                    [u] { return u(GlobalCounters().sketch_offers); });
+            counter("fullrecon_sketch_jaccard_ppm_total", "Summed estimated Jaccard similarity (parts per million) of evaluated offers.",
+                    [u] { return u(GlobalCounters().sketch_jaccard_ppm); });
+            counter("fullrecon_sketch_estimated_remote_only_total", "Summed MinHash estimates of remote-only members at offer time.",
+                    [u] { return u(GlobalCounters().sketch_estimated_remote_only); });
+            counter("fullrecon_sketch_completed_total", "Completed traversals with a MinHash estimate to compare.",
+                    [u] { return u(GlobalCounters().sketch_completed); });
+            counter("fullrecon_sketch_actual_recovered_total", "Members actually recovered by completed traversals with estimates.",
+                    [u] { return u(GlobalCounters().sketch_actual_recovered); });
+            counter("fullrecon_sketch_abs_error_total", "Summed absolute error between MinHash estimates and recovered members.",
+                    [u] { return u(GlobalCounters().sketch_abs_error); });
+            auto &live_leaves = m.registry.Add(std::make_unique<metrics::Gauge>(
+                MetricName("txmerklix_live_leaves"), "Live slab Merklix leaf nodes (all stores)."));
+            auto &live_branches = m.registry.Add(std::make_unique<metrics::Gauge>(
+                MetricName("txmerklix_live_branches"), "Live slab Merklix branch nodes (all stores)."));
+            auto &retained = m.registry.Add(std::make_unique<metrics::Gauge>(
+                MetricName("txmerklix_retained_slot_bytes"), "Bytes of constructed slab slots retained for reuse or live (all stores)."));
+            auto &stores = m.registry.Add(std::make_unique<metrics::Gauge>(
+                MetricName("txmerklix_stores"), "Live slab Merklix stores."));
+            m.registry.AddCollector([&live_leaves, &live_branches, &retained, &stores] {
+                auto &s = Stats();
+                live_leaves.Set(double(s.live_leaves.load(std::memory_order_relaxed)));
+                live_branches.Set(double(s.live_branches.load(std::memory_order_relaxed)));
+                retained.Set(double(s.retained_leaf_slots.load(std::memory_order_relaxed)) *
+                                 sizeof(lotus::v2::txmerklix::Leaf) +
+                             double(s.retained_branch_slots.load(std::memory_order_relaxed)) *
+                                 sizeof(lotus::v2::txmerklix::Branch));
+                stores.Set(double(s.stores.load(std::memory_order_relaxed)));
+            });
+        });
+    }
 } // namespace
 
 void StartNodeMetricsCollectors(NodeContext &node) {
@@ -150,6 +241,7 @@ void StartNodeMetricsCollectors(NodeContext &node) {
     }
     AddAdaptiveCapacityCollector(*m);
     AddPeersCollector(*m, node.addrman.get(), node.banman.get());
+    AddMerklixMetrics(*m);
 }
 
 void StopNodeMetricsCollectors() {
