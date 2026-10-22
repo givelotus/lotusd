@@ -1206,8 +1206,8 @@ size_t AddTransactionsToOverlayBatch(
                                  e.created_coins);
             e.fee_sats = fee_sats;
             e.sigchecks = sigchecks;
-            e.tx_ref = ptx;
             e.payload_bytes = OverlayPayloadBytes(ptx);
+            e.tx_ref = ptx;
         }
     };
 

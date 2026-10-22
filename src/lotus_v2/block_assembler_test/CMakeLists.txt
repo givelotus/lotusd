@@ -10,7 +10,7 @@ endif()
 get_filename_component(LOTUS_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 add_executable(block_assembler_test
     ../../support/cleanse.cpp
-    ../mempool_overlay.cpp ../header_admission.cpp ../disk_body.cpp ../development_chain.cpp ../disk_block.cpp ../block_transition.cpp ../test_block_assembler.cpp ../block_assembler.cpp ../block_template.cpp ../development_runtime.cpp ../candidate_selection.cpp ../candidate_body_pool.cpp ../reorg_recovery.cpp ../chain_index.cpp
+    ../mempool_overlay.cpp ../tx_merklix.cpp ../minhash.cpp ../header_admission.cpp ../disk_body.cpp ../development_chain.cpp ../disk_block.cpp ../block_transition.cpp ../test_block_assembler.cpp ../block_assembler.cpp ../block_template.cpp ../development_runtime.cpp ../candidate_selection.cpp ../candidate_body_pool.cpp ../reorg_recovery.cpp ../chain_index.cpp
     ../output.cpp ../transaction.cpp ../commitment.cpp ../tagged_hash.cpp
     ../signing.cpp ../vm.cpp ../field_size.cpp ../sparse_state.cpp
     ../incremental_utxo.cpp ../ordinary_validation.cpp ../monetary.cpp
