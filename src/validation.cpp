@@ -1248,6 +1248,12 @@ private:
     }
 
 public:
+    /** Copy only advisory native input context; never export a verdict. */
+    std::optional<std::vector<Coin>> PrepareNativeCrypto(
+        const CTransactionRef &tx, std::vector<COutPoint> &fetched,
+        uint32_t script_flags, const MempoolAdmissionLimits &limits)
+        EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
     std::vector<bool>
     PrepareStaged(const std::vector<CTransactionRef> &txs,
                   std::vector<PrecomputedAdmissionChecks> &checks,
@@ -3201,14 +3207,93 @@ MemPoolAccept::PrepareStaged(const std::vector<CTransactionRef> &txs,
     return verify;
 }
 
+std::optional<std::vector<Coin>> MemPoolAccept::PrepareNativeCrypto(
+    const CTransactionRef &tx, std::vector<COutPoint> &fetched,
+    uint32_t script_flags, const MempoolAdmissionLimits &limits) {
+    AssertLockHeld(cs_main);
+    LOCK(m_pool.cs);
+    assert(tx->nVersion == 7);
+    auto args = ATMPArgs::SingleAccept(
+        m_active_chainstate.m_chainman.GetConfig(), GetTime(), false,
+        fetched, false, 0);
+    Workspace ws(tx, script_flags);
+    if (!PreChecks(args, ws, /*defer_script_checks=*/true) ||
+        ws.m_modified_fees <
+            m_pool.m_opts.min_relay_feerate.GetFee(tx->GetTotalSize()) ||
+        (limits.max_fee > Amount::zero() && ws.m_base_fees > limits.max_fee)) {
+        return std::nullopt;
+    }
+    return std::move(ws.m_resolved_inputs);
+}
+
+namespace {
+/**
+ * Run the ordinary native script engine on owned, copied coins. Only its
+ * independently synchronized signature cache is shared with admission. Never
+ * cache a script verdict or pass a staged success/failure to the commit owner.
+ * It re-resolves coins and derives every signing message again under cs_main;
+ * changed coins/rules/context therefore hit only their own signature keys.
+ */
+void WarmNativeAdmissionSignatures(const CTransaction &tx,
+                                  const std::vector<Coin> &coins,
+                                  uint32_t flags,
+                                  const lotus::v2::ChainId &chain_id,
+                                  SignatureCache &signature_cache) {
+    AssertLockNotHeld(cs_main);
+    auto resolved = std::make_shared<CScriptCheck::V2ResolvedCoins>(tx.vin.size());
+    for (size_t i = 0; i < tx.vin.size(); ++i) {
+        if (tx.vin[i].nFlags != 3) {
+            (*resolved)[i] = coins[i].GetTxOut().ToV2Output();
+        }
+    }
+    auto deferred = std::make_shared<V2DeferredTxChecks>(tx);
+    TxSigCheckLimiter limiter;
+    for (size_t i = 0; i < tx.vin.size(); ++i) {
+        const CTxOut empty;
+        const auto &out = tx.vin[i].nFlags == 0 ? coins[i].GetTxOut() : empty;
+        CScriptCheck check(out, tx, signature_cache, i, flags,
+                           /*cacheIn=*/true, tx.GetPrecomputedData(), &limiter,
+                           /*blockLimit=*/nullptr, resolved);
+        check.SetV2Deferred(deferred);
+        check.SetV2ChainId(chain_id);
+        if (check().has_value()) return;
+    }
+}
+} // namespace
+
 PrecomputedAdmissionChecks
 PrecomputeMempoolAdmission(ChainstateManager &chainman,
                            const CTransactionRef &tx,
                            const MempoolAdmissionLimits &limits) {
     AssertLockNotHeld(cs_main);
-    // Native scripts deliberately use authoritative admission only. Do not
-    // acquire staging locks or allocate spent-output tables for a skipped tx.
     if (tx->nVersion == 7) {
+        std::optional<std::vector<Coin>> coins;
+        uint32_t flags{0};
+        lotus::v2::ChainId chain_id{};
+        {
+            const auto waiting = SteadyClock::now();
+            LOCK(cs_main);
+            node::AdmissionLockTimer timer(waiting);
+            auto &chainstate = chainman.ActiveChainstate();
+            chain_id = chainman.GetParams().V2ChainId();
+            if (auto *pool = chainstate.GetMempool()) {
+                std::vector<COutPoint> fetched;
+                flags = GetMempoolScriptFlags(chainstate) |
+                        STANDARD_SCRIPT_VERIFY_FLAGS;
+                coins = MemPoolAccept(*pool, chainstate)
+                            .PrepareNativeCrypto(tx, fetched, flags, limits);
+                for (const auto &outpoint : fetched) {
+                    chainstate.CoinsTip().Uncache(outpoint);
+                }
+            }
+        }
+        if (coins) {
+            WarmNativeAdmissionSignatures(
+                *tx, *coins, flags, chain_id,
+                chainman.m_validation_cache.m_signature_cache);
+        }
+        // Native execution verdicts are intentionally never reused. Ordinary
+        // authoritative checks still resolve all current coins and rules.
         PrecomputedAdmissionChecks checks;
         return checks;
     }
@@ -4415,7 +4500,7 @@ CScriptCheck::CheckInput(lotus::v2::DeferredRecords &records) {
         };
 
         if (m_resolved_coins) {
-            const auto &chain = GetActiveV2ChainId();
+            const auto &chain = m_v2_chain_id ? *m_v2_chain_id : GetActiveV2ChainId();
             if (tl_cache.tx_ptr != ptxTo ||
                 tl_cache.tx_hash != ptxTo->GetHash() ||
                 tl_cache.chain != chain ||
@@ -4460,7 +4545,8 @@ CScriptCheck::CheckInput(lotus::v2::DeferredRecords &records) {
             std::string prep_err;
             if (local_prepared_vm.PrepareChecked(
                     ptxTo->ToV2Transaction(), lotus::v2::DefaultTxProfile,
-                    GetActiveV2ChainId(), fallback_resolved, kDefaultVmCost,
+                    (m_v2_chain_id ? *m_v2_chain_id : GetActiveV2ChainId()),
+                    fallback_resolved, kDefaultVmCost,
                     prep_err, &precomputed_ids) !=
                 lotus::v2::SigningPreparationStatus::Ready) {
                 return std::make_pair(ScriptError::EVAL_FALSE,
