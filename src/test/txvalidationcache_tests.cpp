@@ -94,7 +94,7 @@ struct NativeValidationCacheSetup : TestChain100Setup {
 
 BOOST_AUTO_TEST_SUITE(txvalidationcache_tests)
 
-BOOST_FIXTURE_TEST_CASE(native_advisory_precompute_avoids_locks, TestingSetup) {
+BOOST_FIXTURE_TEST_CASE(native_advisory_warmup_exports_no_verdict, TestingSetup) {
     // An invalid native transaction is sufficient: advisory staging must leave
     // its verdict to the unchanged authoritative admission path.
     CMutableTransaction native_mtx;
@@ -120,23 +120,10 @@ BOOST_FIXTURE_TEST_CASE(native_advisory_precompute_avoids_locks, TestingSetup) {
         BOOST_CHECK(!checks.standard.ran);
         BOOST_CHECK(!checks.consensus.ran);
     };
-    const auto check_without_lock = [&](auto &mutex) {
-        std::promise<void> started;
-        std::future<PrecomputedAdmissionChecks> result;
-        {
-            LOCK(mutex);
-            result = std::async(std::launch::async, [&] {
-                started.set_value();
-                return PrecomputeMempoolAdmission(*m_node.chainman, tx, {});
-            });
-            started.get_future().wait();
-            BOOST_CHECK(result.wait_for(std::chrono::seconds{1}) ==
-                        std::future_status::ready);
-        }
-        check_default(result.get());
-    };
-    check_without_lock(cs_main);
-    check_without_lock(m_node.mempool->cs);
+    // Single-RPC warmup now takes a short coin-snapshot lock and performs
+    // useful native crypto outside it. It still exports no acceptance verdict.
+    // Missing inputs must remain an ordinary authoritative rejection.
+    check_default(PrecomputeMempoolAdmission(*m_node.chainman, tx, {}));
 
     // A native-only batch must reach the unlocked phase without first waiting
     // for cs_main. Phase C must still take the lock and reject both transactions.
