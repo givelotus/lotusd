@@ -19,7 +19,8 @@ if(NOT TARGET Boost::headers)
     find_package(Boost 1.64 REQUIRED)
 endif()
 target_sources(lotus_v2_header PRIVATE
-    output.cpp commitment.cpp sparse_state.cpp mempool_overlay.cpp)
+    output.cpp commitment.cpp sparse_state.cpp mempool_overlay.cpp
+    tx_merklix.cpp minhash.cpp)
 target_link_libraries(lotus_v2_header PUBLIC Boost::headers)
 
 target_sources(lotus_v2_header PRIVATE blocksnap.cpp)

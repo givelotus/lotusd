@@ -667,6 +667,16 @@ public:
 
     const lotus::v2::MempoolOverlayLayer &FreezeEpochBatch()
         EXCLUSIVE_LOCKS_REQUIRED(cs);
+
+    /**
+     * O(1) immutable Subtree A view of the complete current mempool: the
+     * speculative overlay's slab Merklix tree after deferred overlay updates
+     * are applied, pinned together with its membership version and bottom-k
+     * MinHash. Digests are completed lazily by the holder, outside cs. Returns
+     * nullptr (caller falls back) if overlay membership does not equal mapTx.
+     */
+    std::shared_ptr<const lotus::v2::txmerklix::Snapshot>
+    PinTxMerklixSnapshot() const EXCLUSIVE_LOCKS_REQUIRED(cs);
     void SyncMerklixOverlayToTip(const BlockHash &tip_hash,
                                 uint64_t next_height, uint64_t parent_mtp) const
         EXCLUSIVE_LOCKS_REQUIRED(cs);
