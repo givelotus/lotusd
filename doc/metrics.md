@@ -212,6 +212,45 @@ work, under this naming scheme; they are not listed here.
 | `fullnode_adaptive_block_size_bytes` | gauge | `limit` (`max`, `target`, `max_generated`, `ema`) | 4 | Adaptive block capacity: the consensus limit it allows, its target, the mining limit with `-adaptiveblocksize`, and the moving average of block sizes. |
 | `fullnode_adaptive_block_size_history_complete` | gauge | | 1 | 1 once the adaptive capacity has a complete history. |
 
+### Slab Merklix tree and full-mempool reconciliation
+
+Process-wide counters of the slab-backed transaction Merklix tree
+(`lotus_v2/tx_merklix.h`) and of complete-mempool reconciliation (scope 5).
+The MinHash series describe an unauthenticated similarity hint only.
+
+| Name | Type | Labels | Max series | Meaning |
+|---|---|---|---|---|
+| `fullnode_txmerklix_leaf_allocations_total` | counter | | 1 | Leaf nodes allocated. |
+| `fullnode_txmerklix_branch_allocations_total` | counter | | 1 | Branch nodes allocated (new branch points and path copies). |
+| `fullnode_txmerklix_slot_reuses_total` | counter | | 1 | Allocations served from reclaimed slab slots. |
+| `fullnode_txmerklix_path_copies_total` | counter | | 1 | Shared branches copied because a snapshot or tree copy still referenced them. |
+| `fullnode_txmerklix_inplace_updates_total` | counter | | 1 | Exclusively owned branches mutated in place. |
+| `fullnode_txmerklix_nodes_freed_total` | counter | | 1 | Nodes reclaimed after their last owner was released. |
+| `fullnode_txmerklix_node_hashes_total` | counter | | 1 | Lazy digest computations (leaves, branches and unary folds). |
+| `fullnode_txmerklix_hash_races_total` | counter | | 1 | Concurrent digest computations that lost the cache publication race. |
+| `fullnode_txmerklix_pins_total` | counter | | 1 | Immutable snapshots pinned. |
+| `fullnode_txmerklix_parallel_completions_total` | counter | | 1 | Large dirty commitments completed with parallel subtree hashing. |
+| `fullnode_txmerklix_sketch_rebuilds_total` | counter | | 1 | MinHash candidate rebuilds after deletions exhausted the candidate buffer. |
+| `fullnode_txmerklix_sketch_rebuild_members_total` | counter | | 1 | Members scanned by MinHash candidate rebuilds. |
+| `fullnode_txmerklix_live_leaves` | gauge | | 1 | Live leaf nodes in all stores. |
+| `fullnode_txmerklix_live_branches` | gauge | | 1 | Live branch nodes in all stores. |
+| `fullnode_txmerklix_retained_slot_bytes` | gauge | | 1 | Bytes of constructed slab slots (live or reusable) in all stores. |
+| `fullnode_txmerklix_stores` | gauge | | 1 | Live node stores. |
+| `fullnode_fullrecon_captures_total` | counter | | 1 | Reconciliation snapshots captured. |
+| `fullnode_fullrecon_capture_pins_total` | counter | | 1 | Captures served by an O(1) pinned mempool tree. |
+| `fullnode_fullrecon_capture_fallbacks_total` | counter | | 1 | Captures rebuilt from copied mempool transactions. |
+| `fullnode_fullrecon_capture_lock_microseconds_total` | counter | | 1 | Time holding `cs_main` and the mempool lock to capture. |
+| `fullnode_fullrecon_capture_build_microseconds_total` | counter | | 1 | Time constructing captured snapshots after the locks. |
+| `fullnode_fullrecon_commitment_microseconds_total` | counter | | 1 | Lazy commitment completion for offered roots, outside mempool locks. |
+| `fullnode_fullrecon_offers_total` | counter | | 1 | Offers sent. |
+| `fullnode_fullrecon_coverage_complete_total` | counter | | 1 | Remote snapshots whose authenticated traversal completed. |
+| `fullnode_fullrecon_sketch_offers_total` | counter | | 1 | Received offers whose MinHash hint was evaluated. |
+| `fullnode_fullrecon_sketch_jaccard_ppm_total` | counter | | 1 | Summed estimated Jaccard similarity (parts per million). |
+| `fullnode_fullrecon_sketch_estimated_remote_only_total` | counter | | 1 | Summed estimates of remote-only members at offer time. |
+| `fullnode_fullrecon_sketch_completed_total` | counter | | 1 | Completed traversals that had an estimate. |
+| `fullnode_fullrecon_sketch_actual_recovered_total` | counter | | 1 | Members actually recovered by those traversals. |
+| `fullnode_fullrecon_sketch_abs_error_total` | counter | | 1 | Summed absolute error between estimates and recovered members. |
+
 ### Chronik
 
 | Name | Type | Labels | Max series | Meaning |
