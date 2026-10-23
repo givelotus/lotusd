@@ -53,6 +53,14 @@ protected:
     ~CValidationInterface() = default;
     /** Wait for prior callbacks offloaded to a subscriber's secondary queue. */
     virtual void SyncTransactionQueue() {}
+    /** Callback counterpart to SyncTransactionQueue. Built-in subscribers
+     * with private queues override this with a nonblocking cutoff fence.
+     * The fallback retains correctness for legacy synchronous subscribers.
+     */
+    virtual void CallAfterTransactionQueue(std::function<void()> callback) {
+        SyncTransactionQueue();
+        callback();
+    }
     /**
      * Notifies listeners when the block chain tip advances.
      *
@@ -251,6 +259,15 @@ public:
      * that do not run on the scheduler thread.
      */
     void SyncSecondaryQueues() LOCKS_EXCLUDED(cs_main);
+    /** The async waiter retains these references in its coroutine frame until
+     * all fences complete. This prevents final subscriber destruction/join on
+     * its own private worker when unregistration races with an RPC.
+     */
+    std::vector<std::shared_ptr<CValidationInterface>>
+    GetTransactionQueueSubscribers() LOCKS_EXCLUDED(cs_main);
+    void CallAfterTransactionQueue(CValidationInterface &subscriber,
+                                   std::function<void()> callback)
+        LOCKS_EXCLUDED(cs_main);
 
     void UpdatedBlockTip(const CBlockIndex *, const CBlockIndex *,
                          bool fInitialDownload);

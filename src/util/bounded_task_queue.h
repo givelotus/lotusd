@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <list>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -41,6 +42,8 @@ private:
     std::deque<Task> m_tasks;
     size_t m_bytes{0}, m_count{0};
     uint64_t m_submitted{0}, m_completed{0};
+    using Fence = std::pair<uint64_t, std::function<void()>>;
+    std::list<Fence> m_fences;
     bool m_stopping{false}, m_failed{false};
     const Overflow m_overflow;
     const std::string m_thread_name;
@@ -80,11 +83,17 @@ private:
             }
             // A completed fence must also observe the fatal notification.
             if (notify_failure) m_fail();
+            std::list<Fence> ready;
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
                 ++m_completed;
+                while (!m_fences.empty() &&
+                       m_fences.front().first <= m_completed) {
+                    ready.splice(ready.end(), m_fences, m_fences.begin());
+                }
             }
             m_drained.notify_all();
+            for (auto &fence : ready) fence.second();
         }
     }
 
@@ -139,6 +148,19 @@ public:
         m_ready.notify_one();
         if (notify_failure) m_fail();
         return !notify_failure;
+    }
+    /** Capture the current submitted cutoff without consuming a FIFO task
+     * reservation or waiting for queue capacity. Completion is outside locks.
+     */
+    void CallAfter(std::function<void()> callback) {
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (m_completed < m_submitted) {
+                m_fences.emplace_back(m_submitted, std::move(callback));
+                return;
+            }
+        }
+        callback();
     }
     void Sync() {
         if (std::this_thread::get_id() == m_worker_id) return;

@@ -508,6 +508,10 @@ namespace {
                 m_queue->Sync();
             }
         }
+        void CallAfterTransactionQueue(std::function<void()> callback) override {
+            if (m_queue) m_queue->CallAfter(std::move(callback));
+            else callback();
+        }
         //! Run every accepted callback, then join the worker. Later events are
         //! dropped. The caller must not hold a lock the callbacks take.
         void StopWorker() {
