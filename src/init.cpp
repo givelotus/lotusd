@@ -1257,9 +1257,8 @@ void SetupServerArgs(NodeContext &node) {
     argsman.AddArg(
         "-checkmempool=<n>",
         strprintf("Run mempool consistency checks every <n> transactions. Use "
-                  "0 to disable. (default: %u, regtest: %u)",
-                  defaultChainParams->DefaultConsistencyChecks(),
-                  regtestChainParams->DefaultConsistencyChecks()),
+                  "0 to disable. (default: %u on all networks)",
+                  DEFAULT_CHECK_MEMPOOL),
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
         OptionsCategory::DEBUG_TEST);
     argsman.AddArg("-checkpoints",
@@ -2719,7 +2718,7 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
     assert(!node.chainman);
 
     CTxMemPool::Options mempool_opts{
-        .check_ratio = chainparams.DefaultConsistencyChecks() ? 1 : 0,
+        .check_ratio = DEFAULT_CHECK_MEMPOOL,
         .signals = &validation_signals,
     };
     if (const auto err{ApplyArgsManOptions(args, chainparams, mempool_opts)}) {

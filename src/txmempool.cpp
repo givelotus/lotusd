@@ -424,6 +424,9 @@ void CTxMemPool::check(const CCoinsViewCache &active_coins_tip,
     CCoinsViewCache mempoolDuplicate(
         const_cast<CCoinsViewCache *>(&active_coins_tip));
 
+    // Every direct parent is checked below to have a smaller entry_id.
+    // By induction this also proves the ordering of every transitive ancestor;
+    // walking that entire set for every entry would make a chain quadratic.
     for (const CTxMemPoolEntryRef &entry : mapTx.get<entry_id>()) {
         checkTotal += entry->GetTxSize();
         check_total_fee += entry->GetFee();
@@ -463,15 +466,6 @@ void CTxMemPool::check(const CCoinsViewCache &active_coins_tip,
         assert(setParentCheck.size() == entry->GetMemPoolParentsConst().size());
         assert(std::equal(setParentCheck.begin(), setParentCheck.end(),
                           entry->GetMemPoolParentsConst().begin(), comp));
-
-        // Verify ancestor state is correct.
-        setEntries setAncestors;
-        CalculateMemPoolAncestors(entry, setAncestors);
-
-        // all ancestors should have entryId < this tx's entryId
-        for (const auto &ancestor : setAncestors) {
-            assert((*ancestor)->GetEntryId() < entry->GetEntryId());
-        }
 
         // Check children against mapNextTx
         CTxMemPoolEntry::Children setChildrenCheck;

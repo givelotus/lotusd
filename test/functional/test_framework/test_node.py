@@ -140,6 +140,9 @@ class TestNode:
         # spam debug.log.
         self.default_args = [
             "-datadir=" + self.datadir,
+            # Keep invariant checking explicit in tests even though node startup
+            # defaults to no whole-pool scan on every network, including regtest.
+            "-checkmempool=1",
             "-logtimemicros",
             "-logthreadnames",
             "-logsourcelocations",
