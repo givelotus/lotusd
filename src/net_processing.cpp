@@ -10726,18 +10726,20 @@ void PeerManagerImpl::MaybeSendFeefilter(
 }
 
 namespace {
-class CompareInvMempoolOrder {
-    CTxMemPool *mp;
+struct RelayInventoryCandidate {
+    std::set<TxId>::iterator inventory;
+    std::optional<uint64_t> entry_id;
+};
 
-public:
-    explicit CompareInvMempoolOrder(CTxMemPool *_mempool) : mp(_mempool) {}
-
-    bool operator()(std::set<TxId>::iterator a, std::set<TxId>::iterator b) {
-        /**
-         * As std::make_heap produces a max-heap, we want the entries which
-         * are topologically earlier to sort later.
-         */
-        return mp->CompareTopologically(*b, *a);
+struct CompareInvMempoolOrder {
+    bool operator()(const RelayInventoryCandidate &a,
+                    const RelayInventoryCandidate &b) const {
+        // make_heap is a max-heap: existing entries precede stale inventory,
+        // and lower admission IDs (parents before children) are sent first.
+        if (a.entry_id.has_value() != b.entry_id.has_value()) {
+            return !a.entry_id.has_value();
+        }
+        return a.entry_id && *a.entry_id > *b.entry_id;
     }
 };
 } // namespace
@@ -11258,13 +11260,22 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
 
             // Determine transactions to relay
             if (fSendTrickle) {
-                // Produce a vector with all candidates for sending
-                std::vector<std::set<TxId>::iterator> vInvTx;
+                // Resolve each rank once under one coherent mempool view.
+                // Heap comparisons must not hash txids and recursively take
+                // the mempool lock for every comparison. cs_main (held above)
+                // prevents admission/removal while this relay turn runs.
+                std::vector<RelayInventoryCandidate> vInvTx;
                 vInvTx.reserve(tx_relay->m_tx_inventory_to_send.size());
-                for (std::set<TxId>::iterator it =
-                         tx_relay->m_tx_inventory_to_send.begin();
-                     it != tx_relay->m_tx_inventory_to_send.end(); it++) {
-                    vInvTx.push_back(it);
+                {
+                    LOCK(m_mempool.cs);
+                    for (auto it = tx_relay->m_tx_inventory_to_send.begin();
+                         it != tx_relay->m_tx_inventory_to_send.end(); ++it) {
+                        const auto entry = m_mempool.mapTx.find(*it);
+                        vInvTx.push_back({it, entry == m_mempool.mapTx.end()
+                                                ? std::nullopt
+                                                : std::optional<uint64_t>{
+                                                      (*entry)->GetEntryId()}});
+                    }
                 }
                 const CFeeRate filterrate{
                     tx_relay->m_fee_filter_received.load()};
@@ -11272,7 +11283,7 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                 // mempool, which is guaranteed to be a topological sort order.
                 // A heap is used so that not all items need sorting if only a
                 // few are being sent.
-                CompareInvMempoolOrder compareInvMempoolOrder(&m_mempool);
+                CompareInvMempoolOrder compareInvMempoolOrder;
                 std::make_heap(vInvTx.begin(), vInvTx.end(),
                                compareInvMempoolOrder);
                 // Per-peer budget per tick (-txrelayratemax); the rest
@@ -11280,13 +11291,13 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                 const size_t tick_budget{TxRelayTickBudget()};
                 size_t nRelayedTransactions = 0;
                 std::vector<std::pair<TxId, CTransactionRef>> vRelayTxs;
-                vRelayTxs.reserve(vInvTx.size());
+                vRelayTxs.reserve(std::min(vInvTx.size(), tick_budget));
                 LOCK(tx_relay->m_bloom_filter_mutex);
                 while (!vInvTx.empty() && nRelayedTransactions < tick_budget) {
                     // Fetch the top element from the heap
                     std::pop_heap(vInvTx.begin(), vInvTx.end(),
                                   compareInvMempoolOrder);
-                    std::set<TxId>::iterator it = vInvTx.back();
+                    std::set<TxId>::iterator it = vInvTx.back().inventory;
                     vInvTx.pop_back();
                     const TxId txid = *it;
                     // Remove it from the to-be-sent set
