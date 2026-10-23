@@ -570,6 +570,12 @@ public:
         return m_unbroadcast_txids;
     }
 
+    /** Returns the unbroadcast count without copying the transaction IDs. */
+    size_t GetUnbroadcastTxCount() const EXCLUSIVE_LOCKS_REQUIRED(cs) {
+        AssertLockHeld(cs);
+        return m_unbroadcast_txids.size();
+    }
+
     /** Returns whether a txid is in the unbroadcast set */
     bool IsUnbroadcastTx(const TxId &txid) const EXCLUSIVE_LOCKS_REQUIRED(cs) {
         AssertLockHeld(cs);
