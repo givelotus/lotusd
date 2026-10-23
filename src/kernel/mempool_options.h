@@ -12,6 +12,9 @@
 
 class ValidationSignals;
 
+/** Default for the optional whole-pool diagnostic on every network. */
+static constexpr int DEFAULT_CHECK_MEMPOOL{0};
+
 /** Default for -maxmempool, maximum megabytes of mempool memory usage */
 static constexpr unsigned int DEFAULT_MAX_MEMPOOL_SIZE_MB{300};
 /**
@@ -29,7 +32,7 @@ namespace kernel {
  */
 struct MemPoolOptions {
     /** The ratio used to determine how often sanity checks will run. */
-    int check_ratio{0};
+    int check_ratio{DEFAULT_CHECK_MEMPOOL};
     int64_t max_size_bytes{DEFAULT_MAX_MEMPOOL_SIZE_MB * 1'000'000};
     std::chrono::seconds expiry{
         std::chrono::hours{DEFAULT_MEMPOOL_EXPIRY_HOURS}};

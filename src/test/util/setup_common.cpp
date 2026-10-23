@@ -144,8 +144,8 @@ BasicTestingSetup::~BasicTestingSetup() {
 }
 CTxMemPool::Options MemPoolOptionsForTest(const NodeContext &node) {
     CTxMemPool::Options mempool_opts{
-        // Default to always checking mempool regardless of
-        // chainparams.DefaultConsistencyChecks for tests
+        // Tests explicitly check every mutation regardless of the opt-in
+        // whole-pool diagnostic default used by production node startup.
         .check_ratio = 1,
         .signals = node.validation_signals.get(),
     };
