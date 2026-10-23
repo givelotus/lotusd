@@ -4,7 +4,10 @@
 
 #include <txmempool.h>
 
+#include <chainparams.h>
+#include <common/args.h>
 #include <common/system.h>
+#include <mempool_args.h>
 #include <consensus/tx_verify.h>
 #include <kernel/disconnected_transactions.h>
 #include <kernel/mempool_entry.h>
@@ -23,6 +26,124 @@
 BOOST_FIXTURE_TEST_SUITE(mempool_tests, TestingSetup)
 
 static constexpr auto REMOVAL_REASON_DUMMY = MemPoolRemovalReason::CONFLICT;
+
+BOOST_AUTO_TEST_CASE(optional_consistency_check_default_and_override) {
+    // Native fixtures deliberately keep checking every mutation. Startup's
+    // mempool-specific default must not change the block-index diagnostic.
+    BOOST_CHECK_EQUAL(m_node.mempool->m_opts.check_ratio, 1);
+    for (const auto chain : {ChainType::MAIN, ChainType::TESTNET, ChainType::REGTEST}) {
+        ArgsManager args;
+        args.AddArg("-checkmempool=<n>", "", ArgsManager::ALLOW_ANY,
+                    OptionsCategory::DEBUG_TEST);
+        const auto params{CreateChainParams(args, chain)};
+        BOOST_CHECK_EQUAL(params->DefaultConsistencyChecks(), chain == ChainType::REGTEST);
+        CTxMemPool::Options options;
+        BOOST_CHECK_EQUAL(options.check_ratio, 0);
+        BOOST_CHECK(!ApplyArgsManOptions(args, *params, options));
+        BOOST_CHECK_EQUAL(options.check_ratio, 0);
+        for (const int ratio : {1, 17, 0}) {
+            args.ForceSetArg("-checkmempool", std::to_string(ratio));
+            BOOST_CHECK(!ApplyArgsManOptions(args, *params, options));
+            BOOST_CHECK_EQUAL(options.check_ratio, ratio);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(optional_consistency_check_long_chain_repeated_parent_inputs) {
+    CTxMemPool pool{GetConfig(), CTxMemPool::Options{.check_ratio = 1}};
+    LOCK2(cs_main, pool.cs);
+    CCoinsView view;
+    CCoinsViewCache coins{&view};
+    const COutPoint funding{TxId{uint256{uint8_t(1)}}, 0};
+    coins.AddCoin(funding, Coin{CTxOut{100000 * SATOSHI, CScript() << OP_TRUE},
+                              1, false}, false);
+    TestMemPoolEntryHelper entry;
+    entry.SigChecks(0);
+    std::vector<CTransactionRef> chain;
+    CMutableTransaction tx;
+    tx.vin.emplace_back(funding);
+    Amount value{100000 * SATOSHI};
+    for (size_t i{0}; i < 512; ++i) {
+        value -= SATOSHI;
+        tx.vout = {CTxOut{value - SATOSHI, CScript() << OP_TRUE},
+                   CTxOut{SATOSHI, CScript() << OP_TRUE}};
+        chain.push_back(MakeTransactionRef(tx));
+        pool.addUnchecked(entry.Fee(SATOSHI).FromTx(chain.back()));
+        tx.vin.clear();
+        tx.vin.emplace_back(chain.back()->GetId(), 0);
+        tx.vin.emplace_back(chain.back()->GetId(), 1);
+    }
+    BOOST_REQUIRE_EQUAL(pool.size(), chain.size());
+    for (const auto &item : pool.mapTx.get<entry_id>()) {
+        if (item->GetTx().GetId() == chain.front()->GetId()) continue;
+        BOOST_CHECK_EQUAL(item->GetMemPoolParentsConst().size(), 1U);
+    }
+    // Direct calls execute the real checker independently of startup defaults.
+    pool.check(coins, 2);
+    pool.removeRecursive(*chain[256], REMOVAL_REASON_DUMMY);
+    BOOST_CHECK_EQUAL(pool.size(), 256U);
+    pool.check(coins, 2);
+    for (size_t i{256}; i < chain.size(); ++i)
+        pool.addUnchecked(entry.Fee(SATOSHI).FromTx(chain[i]));
+    pool.check(coins, 2);
+    pool.removeRecursive(*chain.front(), REMOVAL_REASON_DUMMY);
+    BOOST_CHECK_EQUAL(pool.size(), 0U);
+    pool.check(coins, 2);
+}
+
+BOOST_AUTO_TEST_CASE(optional_consistency_check_diamond_mined_parent_and_reaccept) {
+    CTxMemPool pool{GetConfig(), CTxMemPool::Options{.check_ratio = 1}};
+    LOCK2(cs_main, pool.cs);
+    CCoinsView view;
+    CCoinsViewCache coins{&view};
+    const COutPoint funding{TxId{uint256{uint8_t(2)}}, 0};
+    const CTxOut funded{100000 * SATOSHI, CScript() << OP_TRUE};
+    coins.AddCoin(funding, Coin{CTxOut{funded}, 1, false}, false);
+    TestMemPoolEntryHelper entry;
+    entry.SigChecks(0);
+    const auto make_tx = [&](std::vector<COutPoint> inputs,
+                             std::vector<Amount> amounts) {
+        CMutableTransaction tx;
+        for (const auto &input : inputs) tx.vin.emplace_back(input);
+        for (const auto amount : amounts)
+            tx.vout.emplace_back(amount, CScript() << OP_TRUE);
+        return MakeTransactionRef(tx);
+    };
+    const auto root{make_tx({funding}, {60000 * SATOSHI, 39000 * SATOSHI})};
+    const auto left{make_tx({COutPoint{root->GetId(), 0}},
+                            {20000 * SATOSHI, 39000 * SATOSHI})};
+    const auto right{make_tx({COutPoint{root->GetId(), 1}}, {38000 * SATOSHI})};
+    const auto join{make_tx({COutPoint{left->GetId(), 0}, COutPoint{left->GetId(), 1},
+                             COutPoint{right->GetId(), 0}}, {96000 * SATOSHI})};
+    const std::vector<CTransactionRef> graph{root, left, right, join};
+    for (const auto &tx : graph) pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx));
+    BOOST_CHECK_EQUAL((*pool.mapTx.find(join->GetId()))->GetMemPoolParentsConst().size(), 2U);
+    pool.check(coins, 2);
+    pool.removeRecursive(*left, REMOVAL_REASON_DUMMY);
+    BOOST_CHECK_EQUAL(pool.size(), 2U); // root and right survive the diamond cut.
+    pool.check(coins, 2);
+    pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(left));
+    pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(join));
+    pool.check(coins, 2);
+
+    // Actual block-removal API changes a mempool parent into confirmed coins.
+    DisconnectedBlockTransactions disconnected;
+    disconnected.removeForBlock({root}, pool);
+    BOOST_CHECK_EQUAL(pool.size(), 3U);
+    BOOST_CHECK(coins.SpendCoin(funding));
+    AddCoins(coins, *root, 2);
+    pool.check(coins, 3);
+
+    // Recreate the disconnected coin view and reaccept in parent-first order.
+    // This checks graph rebuilding, not transaction admission or chain consensus.
+    for (const auto &tx : graph) pool.removeRecursive(*tx, REMOVAL_REASON_DUMMY);
+    BOOST_CHECK(coins.SpendCoin(COutPoint{root->GetId(), 0}));
+    BOOST_CHECK(coins.SpendCoin(COutPoint{root->GetId(), 1}));
+    coins.AddCoin(funding, Coin{CTxOut{funded}, 1, false}, false);
+    for (const auto &tx : graph) pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx));
+    BOOST_CHECK_EQUAL(pool.size(), 4U);
+    pool.check(coins, 2);
+}
 
 BOOST_AUTO_TEST_CASE(MempoolRemoveTest) {
     // Test CTxMemPool::remove functionality

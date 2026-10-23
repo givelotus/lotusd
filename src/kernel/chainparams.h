@@ -110,7 +110,7 @@ public:
     std::vector<int> GetAvailableSnapshotHeights() const;
 
     const CBlock &GenesisBlock() const { return genesis; }
-    /** Default value for -checkmempool and -checkblockindex argument */
+    /** Default value for the -checkblockindex argument. */
     bool DefaultConsistencyChecks() const { return fDefaultConsistencyChecks; }
     /** Policy: Filter transactions that do not match well-defined patterns */
     bool RequireStandard() const { return fRequireStandard; }
