@@ -302,7 +302,8 @@ void SubmitRpcAdmission(const NodeContext &node, CTransactionRef tx,
     const MempoolAdmissionLimits limits{max_tx_fee, true};
     std::optional<PrecomputedAdmissionChecks> prepared;
     if (node.args && node.args->GetBoolArg("-parallelmempool", DEFAULT_PARALLEL_MEMPOOL)) {
-        prepared = PrecomputeMempoolAdmission(*node.chainman, tx, limits);
+        prepared = PrecomputeMempoolAdmission(
+            *node.chainman, tx, limits, node.mempool.get());
     }
     if (node.rpc_admission && node.rpc_admission->DispatchAsync(
         tx->GetTotalSize(),

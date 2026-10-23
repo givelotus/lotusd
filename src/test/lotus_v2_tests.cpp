@@ -25,6 +25,8 @@
 #include <lotus_v2/vm.h>
 #include <future>
 #include <node/snapshot.h>
+#include <node/transaction.h>
+#include <node/txadmission.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <script/interpreter.h>
@@ -829,6 +831,51 @@ BOOST_FIXTURE_TEST_CASE(v2_snapshot_crypto_warmup_is_advisory,
         BOOST_CHECK_MESSAGE(result.m_result_type == MempoolAcceptResult::ResultType::VALID,
                             result.m_state.ToString());
     }
+}
+
+BOOST_FIXTURE_TEST_CASE(v2_async_admission_prepares_without_cs_main,
+                        TestChain100Setup) {
+    using namespace lotus::v2;
+    using namespace std::chrono_literals;
+    Output output;
+    output.value = 1000000;
+    output.branches = {BranchLeaf(NativeBenchmarkProgram())};
+    output.paths = {{0}};
+    const auto funding = MineV2Coinbase({CTxOut::FromV2Output(output)});
+    WITH_LOCK(cs_main, ::node::PublishChainTipSnapshot(
+        *m_node.chainman, m_node.mempool.get()));
+    const auto spend = MakeTransactionRef(NativeBenchmarkSpend(
+        *funding, 0, {funding->vout[0].nValue - 10000 * SATOSHI}));
+    BOOST_REQUIRE(m_node.args);
+    BOOST_REQUIRE(m_node.args->GetBoolArg("-parallelmempool", ::node::DEFAULT_PARALLEL_MEMPOOL));
+    m_node.rpc_admission = std::make_unique<::node::RpcAdmissionDispatcher>();
+    auto promise = std::make_shared<std::promise<::node::RpcAdmissionOutcome>>();
+    auto outcome = promise->get_future();
+    std::future<void> submitted;
+    bool prepared_without_lock = false;
+    bool commit_waited = false;
+    {
+        LOCK(cs_main);
+        submitted = std::async(std::launch::async, [&, promise] {
+            ::node::SubmitRpcAdmission(m_node, spend, Amount::zero(),
+                [promise](std::exception_ptr error, ::node::RpcAdmissionOutcome result) {
+                    if (error) promise->set_exception(error);
+                    else promise->set_value(std::move(result));
+                });
+        });
+        prepared_without_lock = submitted.wait_for(2s) == std::future_status::ready;
+        commit_waited = outcome.wait_for(0ms) != std::future_status::ready;
+    }
+    // Always release cs_main before joining, including when preparation
+    // accidentally falls back to its locked path.
+    submitted.get();
+    const auto result = outcome.get();
+    m_node.rpc_admission->Stop();
+    m_node.rpc_admission.reset();
+    BOOST_CHECK(prepared_without_lock);
+    BOOST_CHECK(commit_waited);
+    BOOST_CHECK(result.result == ::node::TransactionError::OK);
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), 1U);
 }
 
 BOOST_FIXTURE_TEST_CASE(v2_kernel_throughput_benchmark, TestChain100Setup) {
