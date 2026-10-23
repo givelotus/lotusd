@@ -7,6 +7,13 @@
 #include <interfaces/chain.h>
 #include <interfaces/handler.h>
 #include <node/transaction.h>
+#include <core_io.h>
+#include <rpc/server.h>
+#include <util/async_completion.h>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/thread_pool.hpp>
+#include <boost/asio/strand.hpp>
+#include <boost/asio/use_future.hpp>
 #include <node/snapshot.h>
 #include <primitives/block.h>
 #include <scheduler.h>
@@ -884,6 +891,9 @@ public:
         });
     }
 
+    void CallAfterTransactionQueue(std::function<void()> callback) override {
+        Enqueue(std::move(callback));
+    }
     void SyncTransactionQueue() override {
         auto promise = std::make_shared<std::promise<void>>();
         auto completed = promise->get_future();
@@ -1135,6 +1145,11 @@ struct MempoolSecondaryQueueSubscriber final : public CValidationInterface {
         });
     }
     void SyncTransactionQueue() override { queue.Sync(); }
+    std::atomic<bool> async_fence_entered{false};
+    void CallAfterTransactionQueue(std::function<void()> callback) override {
+        queue.CallAfter(std::move(callback));
+        async_fence_entered = true;
+    }
 };
 
 BOOST_FIXTURE_TEST_CASE(broadcast_wait_fences_secondary_queue,
@@ -1163,6 +1178,156 @@ BOOST_FIXTURE_TEST_CASE(broadcast_wait_fences_secondary_queue,
     // Returned only after the worker had applied the event.
     BOOST_CHECK(subscriber->indexed);
     m_node.validation_signals->UnregisterSharedValidationInterface(subscriber);
+}
+
+BOOST_FIXTURE_TEST_CASE(rpc_one_worker_serves_reads_while_notification_pending,
+                        TestChain100Setup) {
+    using namespace std::chrono_literals;
+    auto subscriber = std::make_shared<MempoolSecondaryQueueSubscriber>();
+    m_node.validation_signals->RegisterSharedValidationInterface(subscriber);
+    m_node.rpc_admission = std::make_unique<node::RpcAdmissionDispatcher>();
+    const auto spend = MakeTransactionRef(CreateValidMempoolTransaction(
+        m_coinbase_txns[0], 0, 1, coinbaseKey,
+        GetScriptForRawPubKey(coinbaseKey.GetPubKey()),
+        m_coinbase_txns[0]->vout[0].nValue - 2000 * SATOSHI, false));
+    if (RPCIsInWarmup(nullptr)) SetRPCWarmupFinished();
+    JSONRPCRequest write;
+    write.context = &m_node;
+    write.strMethod = "sendrawtransaction";
+    write.params = UniValue(UniValue::VARR);
+    write.params.push_back(EncodeHexTx(*spend));
+    write.params.push_back(0);
+    JSONRPCRequest read;
+    read.context = &m_node;
+    read.strMethod = "getmempoolinfo";
+    read.params = UniValue(UniValue::VARR);
+    const Config &config = m_node.chainman->GetConfig();
+    boost::asio::thread_pool pool(1);
+    auto result = boost::asio::co_spawn(pool,
+        tableRPC.executeAsync(config, write, pool.get_executor()),
+        boost::asio::use_future);
+    const auto deadline = std::chrono::steady_clock::now() + 3s;
+    while (!subscriber->async_fence_entered &&
+           std::chrono::steady_clock::now() < deadline &&
+           result.wait_for(0ms) != std::future_status::ready) {
+        std::this_thread::sleep_for(1ms);
+    }
+    const bool entered = subscriber->async_fence_entered;
+    const bool pending = result.wait_for(0ms) == std::future_status::timeout;
+    auto reading = boost::asio::co_spawn(pool,
+        tableRPC.executeAsync(config, read, pool.get_executor()),
+        boost::asio::use_future);
+    const bool read_ready = reading.wait_for(3s) == std::future_status::ready;
+    // Always release the private worker before asserting, including failures.
+    subscriber->release_indexing.set_value();
+    const bool write_ready = result.wait_for(10s) == std::future_status::ready;
+    pool.join();
+    m_node.rpc_admission.reset();
+    m_node.validation_signals->UnregisterSharedValidationInterface(subscriber);
+    BOOST_CHECK(entered);
+    BOOST_CHECK(pending);
+    BOOST_CHECK(read_ready);
+    BOOST_REQUIRE(write_ready);
+    BOOST_CHECK_EQUAL(result.get().get_str(), spend->GetId().GetHex());
+    BOOST_CHECK_EQUAL(reading.get()["size"].getInt<int>(), 1);
+    BOOST_CHECK(subscriber->indexed);
+}
+
+BOOST_AUTO_TEST_CASE(async_completion_retained_then_throw_is_delivered_once) {
+    using namespace std::chrono_literals;
+    boost::asio::thread_pool pool(1);
+    std::function<void(std::exception_ptr, std::monostate)> late;
+    auto result = boost::asio::co_spawn(pool,
+        util::AwaitCompletion(pool.get_executor(), [&late](auto complete) {
+            late = complete;
+            throw std::runtime_error("retained completion");
+        }), boost::asio::use_future);
+    BOOST_REQUIRE(result.wait_for(3s) == std::future_status::ready);
+    BOOST_CHECK_EXCEPTION(result.get(), std::runtime_error,
+        [](const auto &error) { return std::string(error.what()) == "retained completion"; });
+    pool.join();
+    BOOST_REQUIRE(bool(late));
+    // The coroutine frame is gone; a retained late callback must be harmless.
+    late(nullptr, {});
+}
+
+BOOST_AUTO_TEST_CASE(admission_wait_releases_single_rpc_executor) {
+    using namespace std::chrono_literals;
+    if (RPCIsInWarmup(nullptr)) SetRPCWarmupFinished();
+    JSONRPCRequest read;
+    read.context = &m_node;
+    read.strMethod = "getmempoolinfo";
+    read.params = UniValue(UniValue::VARR);
+    const Config &config = m_node.chainman->GetConfig();
+    // Initialize the scalar publication before the controlled cs_main hold.
+    tableRPC.execute(config, read);
+    node::RpcAdmissionDispatcher dispatcher;
+    std::promise<void> entered, release, queued;
+    auto released = release.get_future().share();
+    BOOST_REQUIRE(dispatcher.DispatchAsync(1, [&] {
+        entered.set_value();
+        released.wait();
+        return node::RpcAdmissionOutcome{};
+    }, [](auto, auto) {}));
+    entered.get_future().wait();
+    boost::asio::thread_pool pool(1);
+    auto lifetime = std::make_shared<int>(1);
+    std::weak_ptr<int> weak = lifetime;
+    auto waiting = boost::asio::co_spawn(pool,
+        util::AwaitCompletion<node::RpcAdmissionOutcome>(
+            pool.get_executor(), [&, lifetime](auto complete) {
+                const bool accepted = dispatcher.DispatchAsync(1,
+                    [lifetime] { return node::RpcAdmissionOutcome{}; }, complete);
+                if (!accepted) throw std::runtime_error("unexpected queue pressure");
+                queued.set_value();
+            }), boost::asio::use_future);
+    lifetime.reset();
+    queued.get_future().wait();
+    auto reading = boost::asio::co_spawn(pool,
+        tableRPC.executeAsync(config, read, pool.get_executor()),
+        boost::asio::use_future);
+    const bool pending = waiting.wait_for(0ms) == std::future_status::timeout;
+    const bool readable = reading.wait_for(3s) == std::future_status::ready;
+    release.set_value();
+    BOOST_REQUIRE(waiting.wait_for(3s) == std::future_status::ready);
+    dispatcher.Stop();
+    pool.join();
+    BOOST_CHECK(pending);
+    BOOST_CHECK(readable);
+    BOOST_CHECK(waiting.get().result == node::TransactionError::OK);
+    BOOST_CHECK(reading.get().isObject());
+    BOOST_CHECK(weak.expired());
+}
+
+BOOST_AUTO_TEST_CASE(async_completion_resumes_on_originating_strand) {
+    boost::asio::thread_pool pool(2);
+    auto strand = boost::asio::make_strand(pool);
+    BoundedTaskQueue queue(1024, 16, [] {});
+    auto operation = [&]() -> boost::asio::awaitable<bool> {
+        co_await util::AwaitCompletion(pool.get_executor(), [&queue](auto done) {
+            queue.Enqueue(1, [done] { done(nullptr, {}); });
+        });
+        co_return strand.running_in_this_thread();
+    };
+    auto result = boost::asio::co_spawn(strand, operation(), boost::asio::use_future);
+    BOOST_CHECK(result.get());
+    pool.join();
+    queue.Stop();
+}
+
+BOOST_AUTO_TEST_CASE(full_secondary_queue_accepts_nonblocking_cutoff_fence) {
+    using namespace std::chrono_literals;
+    BoundedTaskQueue queue(1, 1, [] {}, BoundedTaskQueue::Overflow::BLOCK);
+    std::promise<void> entered, release, completed;
+    auto released = release.get_future().share();
+    BOOST_REQUIRE(queue.Enqueue(1, [&] { entered.set_value(); released.wait(); }));
+    entered.get_future().wait();
+    auto done = completed.get_future();
+    queue.CallAfter([&] { completed.set_value(); });
+    BOOST_CHECK(done.wait_for(0ms) == std::future_status::timeout);
+    release.set_value();
+    BOOST_REQUIRE(done.wait_for(3s) == std::future_status::ready);
+    queue.Stop();
 }
 
 namespace {

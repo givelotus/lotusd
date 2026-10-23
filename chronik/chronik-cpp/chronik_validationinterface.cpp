@@ -51,6 +51,9 @@ public:
     // Normal-operation fence for work already forwarded by ValidationSignals.
     // Once shutdown starts, StopWorker/join owns draining the remaining FIFO.
     void SyncTransactionQueue() override { m_queue.Sync(); }
+    void CallAfterTransactionQueue(std::function<void()> callback) override {
+        m_queue.CallAfter(std::move(callback));
+    }
 
     void StopWorker() { m_queue.Stop(); }
 

@@ -89,6 +89,14 @@ public:
         m_map.clear();
     }
 
+    auto SnapshotCallbacks() {
+        std::vector<std::shared_ptr<CValidationInterface>> callbacks;
+        LOCK(m_mutex);
+        callbacks.reserve(m_list.size());
+        for (const auto &entry : m_list) callbacks.push_back(entry.callbacks);
+        return callbacks;
+    }
+
     template <typename F>
     void Iterate(F &&f) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
         WAIT_LOCK(m_mutex, lock);
@@ -120,6 +128,18 @@ void ValidationSignals::SyncSecondaryQueues() {
     m_internals->Iterate([](CValidationInterface &callbacks) {
         callbacks.SyncTransactionQueue();
     });
+}
+
+std::vector<std::shared_ptr<CValidationInterface>>
+ValidationSignals::GetTransactionQueueSubscribers() {
+    AssertLockNotHeld(cs_main);
+    return m_internals->SnapshotCallbacks();
+}
+
+void ValidationSignals::CallAfterTransactionQueue(
+    CValidationInterface &subscriber, std::function<void()> callback) {
+    AssertLockNotHeld(cs_main);
+    subscriber.CallAfterTransactionQueue(std::move(callback));
 }
 
 size_t ValidationSignals::CallbacksPending() {

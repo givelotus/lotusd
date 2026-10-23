@@ -9,6 +9,7 @@
 #include <chainparams.h>
 #include <common/args.h>
 #include <core_io.h>
+#include <httpserver.h>
 #include <lotus_v2/fee_hysteresis.h>
 #include <lotus_v2/signing.h>
 #include <net/v2_protocol_handler.h>
@@ -37,6 +38,7 @@
 #include <cstdlib>
 #include <thread>
 #include <vector>
+#include <util/async_completion.h>
 
 using kernel::DumpMempool;
 
@@ -45,6 +47,50 @@ using node::MempoolPath;
 using node::NodeContext;
 using node::TransactionError;
 using util::ToString;
+
+namespace {
+boost::asio::awaitable<void> WaitForRpcNotification(
+    std::shared_ptr<util::CompletionSignal> signal,
+    boost::asio::any_io_executor executor) {
+    if (!signal->IsComplete()) {
+        HTTPScopedWaitSuspension suspended;
+        co_await util::AwaitCompletion(executor, [signal](auto complete) {
+            signal->Then([complete] { complete(nullptr, {}); });
+        });
+    }
+}
+
+boost::asio::awaitable<void> WaitForRpcSecondaryQueues(
+    ValidationSignals &signals, boost::asio::any_io_executor executor) {
+    // Keep subscriber ownership on this frame/executor, never on the private
+    // worker that calls its fence (which might otherwise destroy/join itself).
+    auto subscribers = signals.GetTransactionQueueSubscribers();
+    if (subscribers.empty()) co_return;
+    struct Group {
+        std::atomic<size_t> remaining;
+        std::shared_ptr<util::CompletionSignal> ready{
+            std::make_shared<util::CompletionSignal>()};
+        explicit Group(size_t n) : remaining(n) {}
+    };
+    auto group = std::make_shared<Group>(subscribers.size() + 1);
+    auto arrive = [group] {
+        if (group->remaining.fetch_sub(1) == 1) group->ready->Complete();
+    };
+    for (const auto &subscriber : subscribers) {
+        signals.CallAfterTransactionQueue(*subscriber, arrive);
+    }
+    arrive();
+    co_await WaitForRpcNotification(group->ready, executor);
+}
+
+boost::asio::awaitable<void> WaitForRpcValidationQueues(
+    ValidationSignals &signals, boost::asio::any_io_executor executor) {
+    auto signal = std::make_shared<util::CompletionSignal>();
+    signals.CallFunctionInValidationInterfaceQueue([signal] { signal->Complete(); });
+    co_await WaitForRpcNotification(signal, executor);
+    co_await WaitForRpcSecondaryQueues(signals, executor);
+}
+} // namespace
 
 static RPCHelpMan sendrawtransaction() {
     return RPCHelpMan{
@@ -82,7 +128,9 @@ static RPCHelpMan sendrawtransaction() {
             "\nAs a JSON-RPC call\n" +
             HelpExampleRpc("sendrawtransaction", "\"signedhex\"")},
         [&](const RPCHelpMan &self, const Config &config,
-            const JSONRPCRequest &request) -> UniValue {
+            const JSONRPCRequest &request,
+            boost::asio::any_io_executor executor)
+            -> boost::asio::awaitable<UniValue> {
             // parse hex string from parameter
             CMutableTransaction mtx;
             if (!DecodeHexTx(mtx, request.params[0].get_str())) {
@@ -107,10 +155,17 @@ static RPCHelpMan sendrawtransaction() {
                 TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
             const auto &fee_ctrl =
                 lotus::v2::GetGlobalFeeHysteresisController();
-            const TransactionError err = BroadcastTransaction(
-                node, tx, err_string, max_raw_tx_fee, /*relay*/ true,
-                /*wait_callback*/ true, /*rpc_fee_hysteresis=*/true,
-                /*use_rpc_admission_queue=*/true);
+            node::RpcAdmissionOutcome outcome;
+            {
+                HTTPScopedWaitSuspension suspended;
+                outcome = co_await util::AwaitCompletion<node::RpcAdmissionOutcome>(
+                    executor, [&node, tx, max_raw_tx_fee](auto complete) {
+                        node::SubmitRpcAdmission(node, tx, max_raw_tx_fee,
+                                                  std::move(complete));
+                    });
+            }
+            const TransactionError err = outcome.result;
+            err_string = std::move(outcome.error);
             if (err != TransactionError::OK) {
                 if (err == TransactionError::MEMPOOL_REJECTED &&
                     (err_string.find("min relay fee not met") !=
@@ -136,11 +191,16 @@ static RPCHelpMan sendrawtransaction() {
                 throw JSONRPCTransactionError(err, err_string);
             }
 
-            // Block to make sure wallet/indexers sync before returning
-            CHECK_NONFATAL(node.validation_signals)
-                ->SyncWithValidationInterfaceQueue();
-
-            return tx->GetId().GetHex();
+            if (outcome.notification) {
+                co_await WaitForRpcNotification(outcome.notification, executor);
+                co_await WaitForRpcSecondaryQueues(
+                    *CHECK_NONFATAL(node.validation_signals), executor);
+            }
+            node.peerman->RelayTransaction(tx->GetId());
+            // Preserve the existing final wallet/indexer fence after relay.
+            co_await WaitForRpcValidationQueues(
+                *CHECK_NONFATAL(node.validation_signals), executor);
+            co_return tx->GetId().GetHex();
         },
     };
 }

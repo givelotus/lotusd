@@ -6,6 +6,8 @@
 #define BITCOIN_NODE_TRANSACTION_H
 
 #include <cstddef>
+#include <exception>
+#include <util/completion_signal.h>
 #include <feerate.h>
 #include <functional>
 #include <future>
@@ -35,12 +37,12 @@ struct NodeContext;
 struct RpcAdmissionOutcome {
     TransactionError result{TransactionError::OK};
     std::string error;
-    std::shared_ptr<std::promise<void>> notification;
+    std::shared_ptr<util::CompletionSignal> notification;
 };
 
 /** Bounded immediate-drain independent RPC commit dispatcher.
  * Dispatch callbacks run under cs_main. Callers wait without daemon locks and
- * receive an owned outcome through a future. nullopt means
+ * receive an owned outcome through a future or callback. nullopt/false means
  * stopped/full/oversized: use ordinary direct admission. This does not batch
  * atomic packages, native verification, callbacks, or snapshot publication.
  */
@@ -49,12 +51,19 @@ class RpcAdmissionDispatcher {
     std::unique_ptr<Impl> m_impl;
 
 public:
+    using Completion = std::function<void(std::exception_ptr, RpcAdmissionOutcome)>;
     RpcAdmissionDispatcher();
     ~RpcAdmissionDispatcher();
     RpcAdmissionDispatcher(const RpcAdmissionDispatcher &) = delete;
     RpcAdmissionDispatcher &operator=(const RpcAdmissionDispatcher &) = delete;
     std::optional<RpcAdmissionOutcome>
     Dispatch(size_t bytes, std::function<RpcAdmissionOutcome()> commit);
+    /** Returns false for the same stopped/full/oversized direct fallback.
+     * The queue owns an accepted request through its completion callback.
+     * Completion occurs after releasing cs_main, never in the commit slice.
+     */
+    bool DispatchAsync(size_t bytes, std::function<RpcAdmissionOutcome()> commit,
+                       Completion completion);
     void Stop();
 };
 
@@ -96,6 +105,14 @@ BroadcastTransaction(const NodeContext &node, CTransactionRef tx,
                      std::string &err_string, Amount max_tx_fee, bool relay,
                      bool wait_callback, bool rpc_fee_hysteresis = false,
                      bool use_rpc_admission_queue = false);
+
+/** RPC-only submission. Returns the owned authoritative commit result through
+ * completion; the RPC coroutine then fences notifications and relays. Existing
+ * synchronous wallet/Chronik callers retain BroadcastTransaction.
+ */
+void SubmitRpcAdmission(const NodeContext &node, CTransactionRef tx,
+                        Amount max_tx_fee,
+                        RpcAdmissionDispatcher::Completion completion);
 
 /**
  * Return transaction with a given txid.

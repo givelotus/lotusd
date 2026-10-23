@@ -52,7 +52,7 @@ namespace {
                          const MempoolAdmissionLimits &limits, bool relay,
                          bool wait_callback,
                          const PrecomputedAdmissionChecks *precomputed,
-                         const std::shared_ptr<std::promise<void>> &promise)
+                         const std::shared_ptr<util::CompletionSignal> &promise)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
         AssertLockHeld(cs_main);
         RpcAdmissionOutcome outcome;
@@ -104,7 +104,7 @@ namespace {
                 // immediately call some wallet RPC, and get a stale result
                 // because callbacks have not yet been processed.
                 node.validation_signals->CallFunctionInValidationInterfaceQueue(
-                    [promise] { promise->set_value(); });
+                    [promise] { promise->Complete(); });
                 outcome.notification = promise;
             }
         }
@@ -123,7 +123,9 @@ struct RpcAdmissionDispatcher::Impl {
             : bytes(size), commit(std::move(fn)) {}
         size_t bytes;
         std::function<RpcAdmissionOutcome()> commit;
-        std::promise<RpcAdmissionOutcome> completed;
+        std::optional<std::promise<RpcAdmissionOutcome>> completed;
+        Completion async_completed;
+        std::shared_ptr<Request> retained;
         std::optional<RpcAdmissionOutcome> outcome;
         std::exception_ptr error;
     };
@@ -169,7 +171,7 @@ struct RpcAdmissionDispatcher::Impl {
         } producer{*this};
         if (nbytes > MAX_BYTES) return std::nullopt;
         auto request = std::make_shared<Request>(nbytes, std::move(commit));
-        auto completed = request->completed.get_future();
+        auto completed = request->completed.emplace().get_future();
         size_t used = bytes.load(std::memory_order_relaxed);
         do {
             if (used > MAX_BYTES - nbytes) return std::nullopt;
@@ -183,6 +185,41 @@ struct RpcAdmissionDispatcher::Impl {
         // The request owns its inputs. Transfer the typed verdict, error text
         // and independent notification barrier to the waiting RPC producer.
         return completed.get();
+    }
+    bool DispatchAsync(size_t nbytes, std::function<RpcAdmissionOutcome()> commit,
+                       Completion completion) {
+        AssertLockNotHeld(cs_main);
+        assert(completion);
+        uint64_t observed = producers.load(std::memory_order_acquire);
+        do {
+            if (observed & STOPPED) return false;
+        } while (!producers.compare_exchange_weak(observed, observed + 1,
+                                                   std::memory_order_acq_rel));
+        struct Producer {
+            Impl &owner;
+            ~Producer() {
+                owner.producers.fetch_sub(1, std::memory_order_acq_rel);
+                owner.Notify();
+            }
+        } producer{*this};
+        if (nbytes > MAX_BYTES) return false;
+        auto request = std::make_shared<Request>(nbytes, std::move(commit));
+        request->async_completed = std::move(completion);
+        size_t used = bytes.load(std::memory_order_relaxed);
+        do {
+            if (used > MAX_BYTES - nbytes) return false;
+        } while (!bytes.compare_exchange_weak(used, used + nbytes,
+                                               std::memory_order_relaxed));
+        // Unlike a synchronous producer, the coroutine returns to its executor
+        // immediately. Keep the raw queue entry owned until the worker pops it.
+        request->retained = request;
+        if (!queue.push(request.get())) {
+            request->retained.reset();
+            bytes.fetch_sub(nbytes, std::memory_order_relaxed);
+            return false;
+        }
+        Notify();
+        return true;
     }
     void Run() {
         util::ThreadRename("rpcadmit");
@@ -198,7 +235,9 @@ struct RpcAdmissionDispatcher::Impl {
             size_t count = 0;
             Request *pending = nullptr;
             while (count < slice.size() && queue.pop(pending)) {
-                slice[count++] = pending->shared_from_this();
+                slice[count] = pending->shared_from_this();
+                slice[count]->retained.reset();
+                ++count;
             }
             if (count == 0) {
                 if (producers.load(std::memory_order_acquire) == STOPPED)
@@ -222,10 +261,15 @@ struct RpcAdmissionDispatcher::Impl {
                 bytes.fetch_sub(request->bytes, std::memory_order_relaxed);
                 // Retain ownership through set_value/set_exception: the
                 // waiting producer may immediately release its own reference.
-                if (request->error)
-                    request->completed.set_exception(request->error);
-                else
-                    request->completed.set_value(std::move(*request->outcome));
+                if (request->async_completed) {
+                    request->async_completed(request->error,
+                        request->outcome ? std::move(*request->outcome)
+                                         : RpcAdmissionOutcome{});
+                } else if (request->error) {
+                    request->completed->set_exception(request->error);
+                } else {
+                    request->completed->set_value(std::move(*request->outcome));
+                }
             }
         }
     }
@@ -241,6 +285,48 @@ std::optional<RpcAdmissionOutcome>
 RpcAdmissionDispatcher::Dispatch(size_t bytes,
                                  std::function<RpcAdmissionOutcome()> commit) {
     return m_impl->Dispatch(bytes, std::move(commit));
+}
+
+bool RpcAdmissionDispatcher::DispatchAsync(
+    size_t bytes, std::function<RpcAdmissionOutcome()> commit,
+    Completion completion) {
+    return m_impl->DispatchAsync(bytes, std::move(commit), std::move(completion));
+}
+
+void SubmitRpcAdmission(const NodeContext &node, CTransactionRef tx,
+                        Amount max_tx_fee,
+                        RpcAdmissionDispatcher::Completion completion) {
+    AssertLockNotHeld(cs_main);
+    assert(node.chainman && node.mempool && node.peerman);
+    const auto notification = std::make_shared<util::CompletionSignal>();
+    const MempoolAdmissionLimits limits{max_tx_fee, true};
+    std::optional<PrecomputedAdmissionChecks> prepared;
+    if (node.args && node.args->GetBoolArg("-parallelmempool", DEFAULT_PARALLEL_MEMPOOL)) {
+        prepared = PrecomputeMempoolAdmission(*node.chainman, tx, limits);
+    }
+    if (node.rpc_admission && node.rpc_admission->DispatchAsync(
+        tx->GetTotalSize(),
+        [&node, tx, limits, notification, prepared = std::move(prepared)]()
+            EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+            return AdmitBroadcastLocked(node, tx, limits, true, true,
+                prepared ? &*prepared : nullptr, notification);
+        }, completion)) {
+        return;
+    }
+    // Preserve the existing overload/stopped fallback and all authoritative
+    // checks. It can take cs_main; notification waits remain asynchronous.
+    RpcAdmissionOutcome outcome;
+    std::exception_ptr error;
+    try {
+        const auto waiting = SteadyClock::now();
+        LOCK(cs_main);
+        AdmissionLockTimer timer(waiting);
+        outcome = AdmitBroadcastLocked(node, tx, limits, true, true, nullptr,
+                                       notification);
+    } catch (...) {
+        error = std::current_exception();
+    }
+    completion(error, std::move(outcome));
 }
 
 TransactionError
@@ -259,7 +345,7 @@ BroadcastTransaction(const NodeContext &node, const CTransactionRef tx,
     // The queue can retain a barrier even if scheduling it throws. Give the
     // callback ownership independent of an RPC frame or disconnected client.
     const auto promise =
-        wait_callback ? std::make_shared<std::promise<void>>() : nullptr;
+        wait_callback ? std::make_shared<util::CompletionSignal>() : nullptr;
     TxId txid = tx->GetId();
     const MempoolAdmissionLimits limits{max_tx_fee, rpc_fee_hysteresis};
     std::optional<PrecomputedAdmissionChecks> precomputed;
@@ -310,7 +396,7 @@ BroadcastTransaction(const NodeContext &node, const CTransactionRef tx,
     if (outcome.notification) {
         // Wait until Validation Interface clients have been notified of the
         // transaction entering the mempool.
-        outcome.notification->get_future().wait();
+        outcome.notification->Wait();
         // Subscribers that deliver on their own worker (the wallet, Chronik)
         // received the event from the main queue; wait for them too.
         node.validation_signals->SyncSecondaryQueues();
