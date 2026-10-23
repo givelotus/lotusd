@@ -1780,6 +1780,7 @@ BOOST_AUTO_TEST_CASE(single_tx_relays_wait_for_the_relay_tick) {
         BOOST_CHECK(peerman->SendMessages(config, &node));
         size_t announced = 0;
         size_t pushed = 0;
+        std::vector<TxId> announced_ids;
         V1TransportDeserializer deserializer(config, node.GetId());
         {
             LOCK(node.cs_vSend);
@@ -1794,21 +1795,31 @@ BOOST_AUTO_TEST_CASE(single_tx_relays_wait_for_the_relay_tick) {
                     if (msg.m_type == NetMsgType::INV) {
                         std::vector<CInv> invs;
                         msg.m_recv >> invs;
-                        for (const auto &inv : invs)
-                            announced += inv.IsMsgTx();
+                        for (const auto &inv : invs) {
+                            if (inv.IsMsgTx()) {
+                                ++announced;
+                                announced_ids.push_back(TxId(inv.hash));
+                            }
+                        }
                     } else if (msg.m_type == NetMsgType::SHORTTX) {
                         ShortTxResponse response;
                         msg.m_recv >> response;
                         announced += response.txs.size();
                         pushed += response.txs.size();
-                        for (const auto &tx : response.txs)
+                        for (const auto &tx : response.txs) {
                             BOOST_CHECK(tx->GetId() != txs.back()->GetId());
+                            announced_ids.push_back(tx->GetId());
+                        }
                     }
                 }
             }
         }
         BOOST_CHECK_EQUAL(announced, 16U);
         BOOST_CHECK_EQUAL(pushed, high_bandwidth ? 16U : 0U);
+        BOOST_REQUIRE_EQUAL(announced_ids.size(), 16U);
+        for (size_t i = 0; i < announced_ids.size(); ++i) {
+            BOOST_CHECK(announced_ids[i] == txs[i]->GetId());
+        }
         peerman->FinalizeNode(config, node);
     }
     SetMockTime(0);
