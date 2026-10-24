@@ -269,6 +269,7 @@ class NativeAdmissionPreparation {
                     &lotus::v2::DeferredCheckRegistry::Consensus()};
         }
     };
+    const TxId m_txid;
     const TxHash m_txhash;
     const ChainstateManager *const m_chainman;
     const CTxMemPool *const m_pool;
@@ -281,6 +282,7 @@ class NativeAdmissionPreparation {
     const std::vector<Coin> m_coins;
     const Amount m_base_fee;
     const bool m_verify_coins_tip{true};
+    const bool m_all_confirmed_inputs{false};
     int m_standard_sigchecks{0};
     int m_consensus_sigchecks{0};
     mutable bool m_reused GUARDED_BY(cs_main){false};
@@ -289,13 +291,17 @@ class NativeAdmissionPreparation {
                               const node::ChainAndMempoolSnapshot &snapshot,
                               const lotus::v2::ChainId &chain,
                               std::vector<Coin> coins, Amount base_fee,
-                              bool verify_coins_tip = true)
-        : m_txhash(tx.GetHash()), m_chainman(snapshot.chainman_ptr),
-          m_pool(snapshot.mempool_ptr), m_tip(snapshot.best_block_hash),
-          m_height(snapshot.height), m_mtp(snapshot.mediantime),
+                              bool verify_coins_tip = true,
+                              bool all_confirmed_inputs = false)
+        : m_txid(tx.GetId()),
+          m_txhash(verify_coins_tip ? tx.GetHash() : TxHash{}),
+          m_chainman(snapshot.chainman_ptr), m_pool(snapshot.mempool_ptr),
+          m_tip(snapshot.best_block_hash), m_height(snapshot.height),
+          m_mtp(snapshot.mediantime),
           m_next_flags(*snapshot.next_script_flags), m_chain_id(chain),
           m_coins(std::move(coins)), m_base_fee(base_fee),
-          m_verify_coins_tip(verify_coins_tip) {}
+          m_verify_coins_tip(verify_coins_tip),
+          m_all_confirmed_inputs(all_confirmed_inputs) {}
 
 public:
     static std::shared_ptr<const NativeAdmissionPreparation> Prepare(
@@ -305,9 +311,20 @@ public:
         lotus::v2::BatchSigCollector *sig_collector = nullptr,
         bool store_sig_cache = true)
         LOCKS_EXCLUDED(cs_main);
+    static std::shared_ptr<const NativeAdmissionPreparation>
+    PrepareFastConfirmed(const CTransaction &tx,
+                         const node::ChainAndMempoolSnapshot &snapshot,
+                         const lotus::v2::ChainId &chain, Amount base_fee)
+        LOCKS_EXCLUDED(cs_main) {
+        return std::shared_ptr<const NativeAdmissionPreparation>(
+            new NativeAdmissionPreparation(tx, snapshot, chain, {}, base_fee,
+                                           /*verify_coins_tip=*/false,
+                                           /*all_confirmed_inputs=*/true));
+    }
     const std::vector<Coin> &Coins() const noexcept { return m_coins; }
     Amount BaseFee() const noexcept { return m_base_fee; }
     bool VerifyCoinsTip() const noexcept { return m_verify_coins_tip; }
+    bool AllConfirmedInputs() const noexcept { return m_all_confirmed_inputs; }
     int StandardSigChecks() const noexcept { return m_standard_sigchecks; }
     int ConsensusSigChecks() const noexcept { return m_consensus_sigchecks; }
     bool MatchesContext(const CTransaction &tx, const Chainstate &chainstate,
@@ -317,14 +334,21 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
         AssertLockHeld(cs_main);
         const auto *tip = chainstate.m_chain.Tip();
-        return tx.nVersion == 7 && tx.GetHash() == m_txhash && tip &&
-            &chainstate.m_chainman == m_chainman && &pool == m_pool &&
-            tip->GetBlockHash() == m_tip && tip->nHeight == m_height &&
+        if (tx.nVersion != 7 || !tip || &chainstate.m_chainman != m_chainman ||
+            &pool != m_pool || tip->GetBlockHash() != m_tip ||
+            tip->nHeight != m_height ||
             (precomputed_tip_mtp ? *precomputed_tip_mtp
-                                 : tip->GetMedianTimePast()) == m_mtp &&
-            next_flags == m_next_flags &&
-            chainstate.m_chainman.GetParams().V2ChainId() == m_chain_id &&
-            GetActiveV2ChainId() == m_chain_id && m_rules == Rules::Current();
+                                 : tip->GetMedianTimePast()) != m_mtp ||
+            next_flags != m_next_flags) {
+            return false;
+        }
+        if (m_verify_coins_tip) {
+            return tx.GetHash() == m_txhash &&
+                   chainstate.m_chainman.GetParams().V2ChainId() == m_chain_id &&
+                   GetActiveV2ChainId() == m_chain_id &&
+                   m_rules == Rules::Current();
+        }
+        return tx.GetId() == m_txid && m_rules == Rules::Current();
     }
     std::optional<int> Match(const CTransaction &tx,
                             const CCoinsViewCache &view, uint32_t flags) const
@@ -634,8 +658,8 @@ GetV2FastPathShape(const CTransaction &tx,
     return shape;
 }
 
-lotus::v2::Hash ComputeV2FastPathSighash(
-    const CTransaction &tx, const std::vector<Coin> &resolved_inputs,
+lotus::v2::Hash ComputeV2FastPathSighashFromSpk45(
+    const CTransaction &tx, const uint8_t *prev_spk45,
     const V2FastPathShape &shape, const lotus::v2::ChainId &chain_id,
     const lotus::v2::Hash &coins_root, size_t i) {
     const uint8_t mode = shape.sig_modes[i];
@@ -656,7 +680,6 @@ lotus::v2::Hash ComputeV2FastPathSighash(
 
     const CTxIn &in = tx.vin[i];
     const auto &w = in.vWitnesses[0];
-    const CTxOut &prev_out = resolved_inputs[i].GetTxOut();
     std::array<uint8_t, 125> own_buf{};
     std::memcpy(own_buf.data(), in.prevout.GetTxId().begin(), 32);
     const uint32_t prev_n = in.prevout.GetN();
@@ -674,7 +697,7 @@ lotus::v2::Hash ComputeV2FastPathSighash(
     std::memcpy(own_buf.data() + 44, w.script.data(), 34);
     own_buf[78] = 0;  // siblings.size() == 0
     own_buf[79] = 45; // CompactSize(coin_wire.size()) == 45
-    std::memcpy(own_buf.data() + 80, prev_out.scriptPubKey.data(), 45);
+    std::memcpy(own_buf.data() + 80, prev_spk45, 45);
     const lotus::v2::Hash own_input_hash =
         lotus::v2::TaggedHash(lotus::v2::HashDomain::OwnInput, own_buf);
 
@@ -702,6 +725,204 @@ lotus::v2::Hash ComputeV2FastPathSighash(
     // preimage[114..117] = 0 (branch_index == 0)
     std::memcpy(preimage.data() + 118, shape.leaf_hashes[i].data(), 32);
     return lotus::v2::TaggedHash(lotus::v2::HashDomain::Sighash, preimage);
+}
+
+lotus::v2::Hash ComputeV2FastPathSighash(
+    const CTransaction &tx, const std::vector<Coin> &resolved_inputs,
+    const V2FastPathShape &shape, const lotus::v2::ChainId &chain_id,
+    const lotus::v2::Hash &coins_root, size_t i) {
+    return ComputeV2FastPathSighashFromSpk45(
+        tx, resolved_inputs[i].GetTxOut().scriptPubKey.data(), shape, chain_id,
+        coins_root, i);
+}
+
+bool TryVerifyV2ConfirmedFastPathFromSmt(
+    const CTransaction &tx, const lotus::v2::SmtNode *utxo_root,
+    int spend_height, const lotus::v2::ChainId &chain_id,
+    SignatureCache &sig_cache, lotus::v2::BatchSigCollector *sig_collector,
+    Amount &fee_out) {
+    if (utxo_root == nullptr || tx.nVersion != 7 || tx.nV2Lock != 0 ||
+        tx.vin.empty() || tx.vin.size() > 16 || tx.vout.empty() ||
+        tx.vout.size() > MAX_V2_TX_OUTPUTS ||
+        tx.GetTotalSize() > MAX_TX_SIZE) {
+        return false;
+    }
+    Amount nValueOut = Amount::zero();
+    for (const CTxOut &out : tx.vout) {
+        if (out.IsLegacy() || (out.nFlags & 0x05U) != 0 ||
+            out.scriptPubKey.size() > 65535 || out.nValue < Amount::zero() ||
+            out.nValue > MAX_MONEY) {
+            return false;
+        }
+        nValueOut += out.nValue;
+        if (!MoneyRange(nValueOut)) {
+            return false;
+        }
+    }
+
+    static const lotus::v2::Hash kOpTrueBranchLeaf =
+        lotus::v2::BranchLeaf(std::array<uint8_t, 1>{0x4e});
+    V2FastPathShape shape;
+    std::array<std::array<uint8_t, 45>, 16> input_spk45{};
+    Amount nValueIn = Amount::zero();
+
+    for (size_t i = 0; i < tx.vin.size(); ++i) {
+        const CTxIn &in = tx.vin[i];
+        if (in.nFlags != 1 || in.nSequence != CTxIn::SEQUENCE_FINAL ||
+            in.prevout.IsNull() || in.nPathIndex != 0 ||
+            in.vWitnesses.size() != 1 ||
+            !in.vWitnesses[0].siblings.empty()) {
+            return false;
+        }
+        for (size_t j = 0; j < i; ++j) {
+            if (tx.vin[j].prevout == in.prevout) {
+                return false;
+            }
+        }
+        lotus::v2::Outpoint outpoint{};
+        std::copy_n(in.prevout.GetTxId().begin(), 32, outpoint.tx_id.begin());
+        outpoint.index = in.prevout.GetN();
+        const auto *coin = lotus::v2::SmtFindBorrowed(utxo_root, outpoint);
+        if (!coin || coin->output.legacy_script || coin->output.flags != 0 ||
+            coin->output.branches.size() != 1 ||
+            coin->output.paths.size() != 1 ||
+            coin->output.paths[0].size() != 1 ||
+            coin->output.paths[0][0] != 0 || coin->fee_per_output != 0 ||
+            coin->creation_height >
+                uint64_t(std::numeric_limits<int>::max())) {
+            return false;
+        }
+        if (coin->coinbase &&
+            spend_height - int(coin->creation_height) < COINBASE_MATURITY) {
+            return false;
+        }
+        if (coin->expiration_height != 0 &&
+            uint64_t(spend_height) >= coin->expiration_height) {
+            return false;
+        }
+        if (coin->output.value > uint64_t(MAX_MONEY / SATOSHI)) {
+            return false;
+        }
+        const Amount val_in = static_cast<int64_t>(coin->output.value) * SATOSHI;
+        if (!MoneyRange(val_in)) {
+            return false;
+        }
+        nValueIn += val_in;
+        if (!MoneyRange(nValueIn)) {
+            return false;
+        }
+
+        uint8_t *p = input_spk45[i].data();
+        p[0] = 0x00;
+        const uint64_t v = coin->output.value;
+        for (size_t b = 0; b < 8; ++b) {
+            p[1 + b] = static_cast<uint8_t>(v >> (8 * b));
+        }
+        p[9] = 0x01;
+        const uint8_t *expected_branch = coin->output.branches[0].data();
+        std::memcpy(p + 10, expected_branch, 32);
+        p[42] = 0x01;
+        p[43] = 0x01;
+        p[44] = 0x00;
+
+        const auto &w = in.vWitnesses[0];
+        if (w.script.size() == 1 && w.script[0] == 0x4e &&
+            w.arguments.empty()) {
+            if (std::memcmp(expected_branch, kOpTrueBranchLeaf.data(), 32) !=
+                0) {
+                return false;
+            }
+            shape.leaf_hashes[i] = kOpTrueBranchLeaf;
+            shape.is_schnorr_in[i] = false;
+        } else if (w.script.size() == 34 && w.script[0] == 0x20 &&
+                   w.script[33] == 0xbb && w.arguments.size() == 1) {
+            const auto &sig_arg = w.arguments[0];
+            uint8_t mode = 0xff;
+            if (sig_arg.size() == 64) {
+                mode = 0;
+                shape.has_mode0 = true;
+            } else if (sig_arg.size() == 65 && sig_arg[64] == 1) {
+                mode = 1;
+            } else if (sig_arg.size() == 65 && sig_arg[64] == 2 &&
+                       i < tx.vout.size() &&
+                       (tx.vout[i].nFlags & 0x02U) == 0 &&
+                       tx.vout[i].scriptPubKey.size() < 253) {
+                mode = 2;
+            } else {
+                return false;
+            }
+            shape.leaf_hashes[i] = lotus::v2::BranchLeaf(w.script);
+            if (std::memcmp(expected_branch, shape.leaf_hashes[i].data(), 32) !=
+                0) {
+                return false;
+            }
+            shape.has_schnorr = true;
+            shape.is_schnorr_in[i] = true;
+            shape.sig_modes[i] = mode;
+        } else {
+            return false;
+        }
+    }
+
+    if (nValueIn < nValueOut) {
+        return false;
+    }
+    const Amount fee = nValueIn - nValueOut;
+    if (!MoneyRange(fee)) {
+        return false;
+    }
+
+    if (shape.has_schnorr) {
+        lotus::v2::Hash coins_root{};
+        if (shape.has_mode0) {
+            std::array<lotus::v2::Hash, 16> coin_leaves{};
+            for (size_t i = 0; i < tx.vin.size(); ++i) {
+                coin_leaves[i] = lotus::v2::CoinEntryLeaf(
+                    std::span<const uint8_t>(input_spk45[i].data(), 45));
+            }
+            coins_root = lotus::v2::IndexedTreeRoot(
+                std::span<const lotus::v2::Hash>(coin_leaves.data(),
+                                                 tx.vin.size()));
+        }
+        lotus::v2::BatchSigCollector staged_sigs;
+        for (size_t i = 0; i < tx.vin.size(); ++i) {
+            if (!shape.is_schnorr_in[i]) {
+                continue;
+            }
+            const lotus::v2::Hash msg = ComputeV2FastPathSighashFromSpk45(
+                tx, input_spk45[i].data(), shape, chain_id, coins_root, i);
+            const auto &w = tx.vin[i].vWitnesses[0];
+            const std::span<const uint8_t> pubkey(w.script.data() + 1, 32);
+            const std::span<const uint8_t> sig(w.arguments[0].data(),
+                                               w.arguments[0].size());
+            if (sig_collector != nullptr) {
+                lotus::v2::BatchSigCollector *target =
+                    (tx.vin.size() == 1) ? sig_collector : &staged_sigs;
+                if (!target->Add(pubkey, sig, msg, nullptr,
+                                 /*store_in_cache=*/false)) {
+                    return false;
+                }
+            } else {
+                uint256 sig_entry;
+                sig_cache.ComputeBip340Entry(sig_entry, msg, sig, pubkey,
+                                             false);
+                if (!sig_cache.Get(sig_entry, /*erase=*/false)) {
+                    if (lotus::v2::VerifyBip340Signature(pubkey, sig, msg,
+                                                         false) !=
+                        lotus::v2::SignatureStatus::Valid) {
+                        return false;
+                    }
+                    sig_cache.Set(sig_entry);
+                }
+            }
+        }
+        if (sig_collector != nullptr && tx.vin.size() > 1) {
+            sig_collector->Merge(std::move(staged_sigs));
+        }
+    }
+
+    fee_out = fee;
+    return true;
 }
 
 std::optional<ParallelTxScriptError> VerifyTxScriptsFromResolvedCoins(
@@ -1316,7 +1537,8 @@ public:
         std::optional<uint32_t> precomputed_next_flags = std::nullopt,
         std::optional<int64_t> precomputed_tip_mtp = std::nullopt,
         bool overlay_already_synced = false,
-        bool suppress_signal_enqueue = false)
+        bool suppress_signal_enqueue = false,
+        bool pool_unchanged_since_phase_b = false)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     void ClearView(const CTransaction &tx) {
@@ -1444,11 +1666,13 @@ private:
         std::vector<Coin> m_resolved_inputs;
         std::vector<int32_t> m_batch_parent_indices;
         bool m_has_mempool_parents{true};
+        bool m_v2_pre_coins_matched{false};
         std::optional<LockPoints> m_lock_points;
 
         // Legacy outcomes or exact-context, completed native success. Live
         // admission prechecks remain authoritative for both.
         const PrecomputedAdmissionChecks *m_precomputed{nullptr};
+        bool m_pool_unchanged_since_phase_b{false};
     };
 
     // Run the policy checks on a given transaction, excluding any script
@@ -1464,7 +1688,8 @@ private:
                         const std::vector<CTransactionRef> &txns,
                         const std::vector<BatchTxIdIndexSlot> &txid_table,
                         size_t txid_mask, bool mempool_nonempty,
-                        const PrecomputedBatchTxData *pre = nullptr)
+                        bool has_intra_batch_parents = true,
+                        PrecomputedBatchTxData *pre = nullptr)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     bool FinalizeDeferredPreChecks(ATMPArgs &args, Workspace &ws)
@@ -1580,67 +1805,80 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws,
     const CCoinsViewCache &coins_cache = m_active_chainstate.CoinsTip();
 
     if (!defer_script_checks && ws.m_precomputed && ws.m_precomputed->native) {
-        if (m_pool.exists(txid)) {
-            return state.Invalid(TxValidationResult::TX_DUPLICATE,
-                                 "txn-already-in-mempool");
-        }
-        for (const CTxIn &txin : tx.vin) {
-            if (txin.nFlags == 3) {
-                continue;
-            }
-            if (const auto ptxConflicting = m_pool.GetConflictTx(txin.prevout)) {
-                if (m_pool.isAvalancheFinalizedPreConsensus(
-                        ptxConflicting->GetId())) {
-                    return state.Invalid(TxValidationResult::TX_CONFLICT,
-                                         "finalized-tx-conflict");
-                }
-                return state.Invalid(
-                    TxValidationResult::TX_AVALANCHE_RECONSIDERABLE,
-                    "txn-mempool-conflict");
-            }
-        }
         const auto &native = *ws.m_precomputed->native;
-        const auto &prepared_coins = native.Coins();
-        bool all_matched = (prepared_coins.size() == tx.vin.size());
-        bool has_mempool_parents = false;
-        if (all_matched) {
-            for (size_t i = 0; i < tx.vin.size(); ++i) {
-                const COutPoint &prevout = tx.vin[i].prevout;
-                const Coin &prepared = prepared_coins[i];
-                if (tx.vin[i].nFlags != 1 || prepared.IsSpent()) {
-                    all_matched = false;
-                    break;
+        const bool skip_pool_conflict_check =
+            ws.m_pool_unchanged_since_phase_b && native.AllConfirmedInputs() &&
+            !native.VerifyCoinsTip();
+        if (!skip_pool_conflict_check) {
+            if (m_pool.exists(txid)) {
+                return state.Invalid(TxValidationResult::TX_DUPLICATE,
+                                     "txn-already-in-mempool");
+            }
+            for (const CTxIn &txin : tx.vin) {
+                if (txin.nFlags == 3) {
+                    continue;
                 }
-                if (prepared.GetHeight() != MEMPOOL_HEIGHT) {
-                    if (native.VerifyCoinsTip()) {
-                        const Coin *current = coins_cache.PeekCoin(prevout);
-                        if (!current ||
-                            current->GetTxOut() != prepared.GetTxOut() ||
-                            current->GetHeight() != prepared.GetHeight() ||
-                            current->IsCoinBase() != prepared.IsCoinBase() ||
-                            current->nFeePerOutput != prepared.nFeePerOutput ||
-                            current->nExpirationHeight !=
-                                prepared.nExpirationHeight) {
-                            all_matched = false;
-                            break;
-                        }
+                if (const auto ptxConflicting =
+                        m_pool.GetConflictTx(txin.prevout)) {
+                    if (m_pool.isAvalancheFinalizedPreConsensus(
+                            ptxConflicting->GetId())) {
+                        return state.Invalid(TxValidationResult::TX_CONFLICT,
+                                             "finalized-tx-conflict");
                     }
-                } else if (const CTransactionRef ptx_parent =
-                        m_pool.get(prevout.GetTxId())) {
-                    const uint32_t n = prevout.GetN();
-                    if (n >= ptx_parent->vout.size() ||
-                        ptx_parent->vout[n].IsNull() ||
-                        prepared.IsCoinBase() ||
-                        prepared.nFeePerOutput != 0 ||
-                        prepared.nExpirationHeight != 0 ||
-                        prepared.GetTxOut() != ptx_parent->vout[n]) {
+                    return state.Invalid(
+                        TxValidationResult::TX_AVALANCHE_RECONSIDERABLE,
+                        "txn-mempool-conflict");
+                }
+            }
+        }
+        bool all_matched = false;
+        bool has_mempool_parents = false;
+        if (native.AllConfirmedInputs() && !native.VerifyCoinsTip()) {
+            all_matched = true;
+            has_mempool_parents = false;
+        } else {
+            const auto &prepared_coins = native.Coins();
+            all_matched = (prepared_coins.size() == tx.vin.size());
+            if (all_matched) {
+                for (size_t i = 0; i < tx.vin.size(); ++i) {
+                    const COutPoint &prevout = tx.vin[i].prevout;
+                    const Coin &prepared = prepared_coins[i];
+                    if (tx.vin[i].nFlags != 1 || prepared.IsSpent()) {
                         all_matched = false;
                         break;
                     }
-                    has_mempool_parents = true;
-                } else {
-                    all_matched = false;
-                    break;
+                    if (prepared.GetHeight() != MEMPOOL_HEIGHT) {
+                        if (native.VerifyCoinsTip()) {
+                            const Coin *current = coins_cache.PeekCoin(prevout);
+                            if (!current ||
+                                current->GetTxOut() != prepared.GetTxOut() ||
+                                current->GetHeight() != prepared.GetHeight() ||
+                                current->IsCoinBase() != prepared.IsCoinBase() ||
+                                current->nFeePerOutput !=
+                                    prepared.nFeePerOutput ||
+                                current->nExpirationHeight !=
+                                    prepared.nExpirationHeight) {
+                                all_matched = false;
+                                break;
+                            }
+                        }
+                    } else if (const CTransactionRef ptx_parent =
+                                   m_pool.get(prevout.GetTxId())) {
+                        const uint32_t n = prevout.GetN();
+                        if (n >= ptx_parent->vout.size() ||
+                            ptx_parent->vout[n].IsNull() ||
+                            prepared.IsCoinBase() ||
+                            prepared.nFeePerOutput != 0 ||
+                            prepared.nExpirationHeight != 0 ||
+                            prepared.GetTxOut() != ptx_parent->vout[n]) {
+                            all_matched = false;
+                            break;
+                        }
+                        has_mempool_parents = true;
+                    } else {
+                        all_matched = false;
+                        break;
+                    }
                 }
             }
         }
@@ -1648,7 +1886,9 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws,
             ws.m_has_mempool_parents = has_mempool_parents;
             ws.m_base_fees = native.BaseFee();
             ws.m_modified_fees = ws.m_base_fees;
-            m_pool.ApplyDelta(txid, ws.m_modified_fees);
+            if (!m_pool.mapDeltas.empty()) {
+                m_pool.ApplyDelta(txid, ws.m_modified_fees);
+            }
             ws.m_lock_points = LockPoints{};
             ws.m_sig_checks_standard = native.StandardSigChecks();
             TxSigCheckLimiter limiter;
@@ -1836,13 +2076,50 @@ bool MemPoolAccept::PreChecksBatch(
     ATMPArgs &args, Workspace &ws, size_t ws_idx,
     const std::vector<CTransactionRef> &txns,
     const std::vector<BatchTxIdIndexSlot> &txid_table, size_t txid_mask,
-    bool mempool_nonempty, const PrecomputedBatchTxData *pre) {
+    bool mempool_nonempty, bool has_intra_batch_parents,
+    PrecomputedBatchTxData *pre) {
     AssertLockHeld(cs_main);
     AssertLockHeld(m_pool.cs);
     const CTransaction &tx = *ws.m_ptx;
     const TxId &txid = ws.m_ptx->GetId();
     std::vector<COutPoint> &coins_to_uncache = args.m_coins_to_uncache;
     TxValidationState &state = ws.m_state;
+
+    CBlockIndex *const tip = Assert(m_active_chainstate.m_chain.Tip());
+    if (pre != nullptr && pre->v2_fast_path_verified &&
+        pre->v2_all_confirmed_fast_inputs && !has_intra_batch_parents &&
+        pre->v2_snapshot_tip_hash == tip->GetBlockHash() &&
+        m_pool.size() > 6400) {
+        if (mempool_nonempty) {
+            if (m_pool.exists(txid)) {
+                return state.Invalid(TxValidationResult::TX_DUPLICATE,
+                                     "txn-already-in-mempool");
+            }
+            for (const CTxIn &txin : tx.vin) {
+                if (const auto ptxConflicting =
+                        m_pool.GetConflictTx(txin.prevout)) {
+                    if (m_pool.isAvalancheFinalizedPreConsensus(
+                            ptxConflicting->GetId())) {
+                        return state.Invalid(TxValidationResult::TX_CONFLICT,
+                                             "finalized-tx-conflict");
+                    }
+                    return state.Invalid(
+                        TxValidationResult::TX_AVALANCHE_RECONSIDERABLE,
+                        "txn-mempool-conflict");
+                }
+            }
+        }
+        ws.m_batch_parent_indices.clear();
+        ws.m_has_mempool_parents = false;
+        ws.m_v2_pre_coins_matched = true;
+        ws.m_base_fees = pre->v2_precomputed_base_fee;
+        ws.m_modified_fees = ws.m_base_fees;
+        if (!m_pool.mapDeltas.empty()) {
+            m_pool.ApplyDelta(txid, ws.m_modified_fees);
+        }
+        ws.m_lock_points = LockPoints{};
+        return true;
+    }
 
     if (ws.m_regular_tx_checked) {
         if (!ws.m_regular_tx_valid) {
@@ -1866,7 +2143,6 @@ bool MemPoolAccept::PreChecksBatch(
         return state.Invalid(TxValidationResult::TX_NOT_STANDARD, reason);
     }
 
-    CBlockIndex *const tip = Assert(m_active_chainstate.m_chain.Tip());
     TxValidationState ctxState;
     if (!ContextualCheckTransactionForCurrentBlock(
             *tip, args.m_config.GetChainParams().GetConsensus(), tx,
@@ -1899,91 +2175,110 @@ bool MemPoolAccept::PreChecksBatch(
         }
     }
 
-    ws.m_resolved_inputs.resize(tx.vin.size());
     ws.m_batch_parent_indices.clear();
     ws.m_has_mempool_parents = false;
+    ws.m_v2_pre_coins_matched = false;
     const CCoinsViewCache &coins_cache = m_active_chainstate.CoinsTip();
     const bool reuse_pre_coins =
         pre != nullptr && pre->v2_fast_path_verified &&
         pre->v2_snapshot_tip_hash == tip->GetBlockHash() &&
         pre->v2_resolved_coins.size() == tx.vin.size();
 
-    for (size_t i = 0; i < tx.vin.size(); ++i) {
-        const CTxIn &txin = tx.vin[i];
-        if (txin.nFlags == 3) {
-            ws.m_resolved_inputs[i] =
-                Coin(CTxOut(Amount::zero(), CScript()), 1, false);
-            continue;
-        }
-        bool resolved = false;
-        if (!txid_table.empty()) {
-            const TxId &prev_txid = txin.prevout.GetTxId();
-            size_t tslot = prev_txid.GetUint64(0) & txid_mask;
-            while (txid_table[tslot].occupied) {
-                if (txid_table[tslot].txid == prev_txid) {
-                    const size_t parent_idx = txid_table[tslot].index;
-                    if (parent_idx < ws_idx) {
-                        const CTransaction &parent_tx = *txns[parent_idx];
-                        const uint32_t n = txin.prevout.GetN();
-                        if (n < parent_tx.vout.size() &&
-                            !parent_tx.vout[n].IsNull()) {
-                            ws.m_resolved_inputs[i] =
-                                Coin(parent_tx.vout[n], MEMPOOL_HEIGHT, false);
-                            if (ws.m_batch_parent_indices.empty()) {
-                                ws.m_batch_parent_indices.assign(tx.vin.size(),
-                                                                 -1);
-                            }
-                            ws.m_batch_parent_indices[i] =
-                                static_cast<int32_t>(parent_idx);
-                            ws.m_has_mempool_parents = true;
-                            resolved = true;
-                        }
-                    }
-                    break;
-                }
-                tslot = (tslot + 1) & txid_mask;
+    if (reuse_pre_coins && !has_intra_batch_parents && m_pool.size() > 6400) {
+        bool all_confirmed = true;
+        for (size_t i = 0; i < tx.vin.size(); ++i) {
+            if (tx.vin[i].nFlags == 3 ||
+                pre->v2_resolved_coins[i].IsSpent() ||
+                pre->v2_resolved_coins[i].GetHeight() == MEMPOOL_HEIGHT) {
+                all_confirmed = false;
+                break;
             }
         }
-        if (!resolved && reuse_pre_coins &&
-            pre->v2_resolved_coins[i].GetHeight() != MEMPOOL_HEIGHT) {
-            ws.m_resolved_inputs[i] = pre->v2_resolved_coins[i];
-            resolved = true;
+        if (all_confirmed) {
+            ws.m_resolved_inputs = std::move(pre->v2_resolved_coins);
+            ws.m_v2_pre_coins_matched = true;
         }
-        if (!resolved) {
-            if (const Coin *cached = coins_cache.PeekCoin(txin.prevout)) {
-                ws.m_resolved_inputs[i] = *cached;
+    }
+
+    if (!ws.m_v2_pre_coins_matched) {
+        ws.m_resolved_inputs.resize(tx.vin.size());
+        for (size_t i = 0; i < tx.vin.size(); ++i) {
+            const CTxIn &txin = tx.vin[i];
+            if (txin.nFlags == 3) {
+                ws.m_resolved_inputs[i] =
+                    Coin(CTxOut(Amount::zero(), CScript()), 1, false);
+                continue;
+            }
+            bool resolved = false;
+            if (has_intra_batch_parents && !txid_table.empty()) {
+                const TxId &prev_txid = txin.prevout.GetTxId();
+                size_t tslot = prev_txid.GetUint64(0) & txid_mask;
+                while (txid_table[tslot].occupied) {
+                    if (txid_table[tslot].txid == prev_txid) {
+                        const size_t parent_idx = txid_table[tslot].index;
+                        if (parent_idx < ws_idx) {
+                            const CTransaction &parent_tx = *txns[parent_idx];
+                            const uint32_t n = txin.prevout.GetN();
+                            if (n < parent_tx.vout.size() &&
+                                !parent_tx.vout[n].IsNull()) {
+                                ws.m_resolved_inputs[i] = Coin(
+                                    parent_tx.vout[n], MEMPOOL_HEIGHT, false);
+                                if (ws.m_batch_parent_indices.empty()) {
+                                    ws.m_batch_parent_indices.assign(
+                                        tx.vin.size(), -1);
+                                }
+                                ws.m_batch_parent_indices[i] =
+                                    static_cast<int32_t>(parent_idx);
+                                ws.m_has_mempool_parents = true;
+                                resolved = true;
+                            }
+                        }
+                        break;
+                    }
+                    tslot = (tslot + 1) & txid_mask;
+                }
+            }
+            if (!resolved && reuse_pre_coins &&
+                pre->v2_resolved_coins[i].GetHeight() != MEMPOOL_HEIGHT) {
+                ws.m_resolved_inputs[i] = pre->v2_resolved_coins[i];
                 resolved = true;
             }
-        }
-        if (!resolved && mempool_nonempty) {
-            if (const auto entry = m_pool.getEntry(txin.prevout.GetTxId())) {
-                const CTransaction &ptx = entry->GetTx();
-                const uint32_t n = txin.prevout.GetN();
-                if (n < ptx.vout.size() && !ptx.vout[n].IsNull()) {
-                    ws.m_resolved_inputs[i] =
-                        Coin(ptx.vout[n], MEMPOOL_HEIGHT, false);
-                    ws.m_has_mempool_parents = true;
+            if (!resolved) {
+                if (const Coin *cached = coins_cache.PeekCoin(txin.prevout)) {
+                    ws.m_resolved_inputs[i] = *cached;
                     resolved = true;
                 }
             }
-        }
-        if (!resolved) {
-            coins_to_uncache.push_back(txin.prevout);
-            const Coin &coin = coins_cache.AccessCoin(txin.prevout);
-            if (!coin.IsSpent()) {
-                ws.m_resolved_inputs[i] = coin;
-                resolved = true;
-            }
-        }
-        if (!resolved) {
-            for (size_t out = 0; out < tx.vout.size(); out++) {
-                if (coins_cache.HaveCoinInCache(COutPoint(txid, out))) {
-                    return state.Invalid(TxValidationResult::TX_DUPLICATE,
-                                         "txn-already-known");
+            if (!resolved && mempool_nonempty) {
+                if (const auto entry = m_pool.getEntry(txin.prevout.GetTxId())) {
+                    const CTransaction &ptx = entry->GetTx();
+                    const uint32_t n = txin.prevout.GetN();
+                    if (n < ptx.vout.size() && !ptx.vout[n].IsNull()) {
+                        ws.m_resolved_inputs[i] =
+                            Coin(ptx.vout[n], MEMPOOL_HEIGHT, false);
+                        ws.m_has_mempool_parents = true;
+                        resolved = true;
+                    }
                 }
             }
-            return state.Invalid(TxValidationResult::TX_MISSING_INPUTS,
-                                 "bad-txns-inputs-missingorspent");
+            if (!resolved) {
+                coins_to_uncache.push_back(txin.prevout);
+                const Coin &coin = coins_cache.AccessCoin(txin.prevout);
+                if (!coin.IsSpent()) {
+                    ws.m_resolved_inputs[i] = coin;
+                    resolved = true;
+                }
+            }
+            if (!resolved) {
+                for (size_t out = 0; out < tx.vout.size(); out++) {
+                    if (coins_cache.HaveCoinInCache(COutPoint(txid, out))) {
+                        return state.Invalid(TxValidationResult::TX_DUPLICATE,
+                                             "txn-already-known");
+                    }
+                }
+                return state.Invalid(TxValidationResult::TX_MISSING_INPUTS,
+                                     "bad-txns-inputs-missingorspent");
+            }
         }
     }
 
@@ -2087,12 +2382,14 @@ bool MemPoolAccept::ConsensusScriptChecks(const ATMPArgs &args, Workspace &ws) {
             return state.Invalid(TxValidationResult::TX_CONSENSUS,
                                  "too-many-sigchecks");
         }
-        auto &validation_cache = GetValidationCache();
-        ScriptCacheKey hashCacheEntry(
-            tx, ws.m_next_block_script_verify_flags,
-            validation_cache.ScriptExecutionCacheHasher());
-        validation_cache.m_script_execution_cache.insertUnlocked(
-            ScriptCacheElement{hashCacheEntry, nSigChecksConsensus});
+        if (ws.m_precomputed->native->VerifyCoinsTip()) {
+            auto &validation_cache = GetValidationCache();
+            ScriptCacheKey hashCacheEntry(
+                tx, ws.m_next_block_script_verify_flags,
+                validation_cache.ScriptExecutionCacheHasher());
+            validation_cache.m_script_execution_cache.insertUnlocked(
+                ScriptCacheElement{hashCacheEntry, nSigChecksConsensus});
+        }
     } else if (!CheckInputsFromMempoolAndCache(
             tx, state, m_view, m_pool, ws.m_next_block_script_verify_flags,
             tx.GetPrecomputedData(), GetValidationCache(), nSigChecksConsensus,
@@ -2328,7 +2625,8 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(
     std::vector<ValidationSignals::MempoolAddedBatchItem> *batch_signals,
     std::optional<uint32_t> precomputed_next_flags,
     std::optional<int64_t> precomputed_tip_mtp,
-    bool overlay_already_synced, bool suppress_signal_enqueue) {
+    bool overlay_already_synced, bool suppress_signal_enqueue,
+    bool pool_unchanged_since_phase_b) {
     AssertLockHeld(cs_main);
     // mempool "read lock" (held through
     // m_pool.m_opts.signals->TransactionAddedToMempool())
@@ -2340,6 +2638,7 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(
         ptx, precomputed_next_flags
                  ? *precomputed_next_flags
                  : GetNextBlockScriptFlags(tip, m_active_chainstate.m_chainman));
+    ws.m_pool_unchanged_since_phase_b = pool_unchanged_since_phase_b;
     if (ptx->nVersion == 7) {
         // TxId omits native witnesses. Never import the legacy regular or
         // script fields for native transactions through its TxId-only guard.
@@ -2406,6 +2705,10 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(
     }
 
     const TxId txid = ptx->GetId();
+    const bool native_fast_reused =
+        ws.m_precomputed && ws.m_precomputed->native &&
+        ws.m_precomputed->native->WasReused() &&
+        !ws.m_precomputed->native->VerifyCoinsTip();
 
     // Mempool sanity check -- in our new mempool no tx can be added if its
     // outputs are already spent in the mempool (that is, no children before
@@ -2415,22 +2718,24 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(
     // the existing mempool tx's, clear the mempool, and then re-add
     // remaining tx's in topological order via this function. Our new mempool
     // has fast adds, so this is ok.
-    bool has_spent_outputs = false;
-    m_pool.mapNextTx.forEachPrefix(
-        COutPoint{txid, 0}, OutpointRadixKey::TXID_PREFIX_NIBBLES,
-        [&](const COutPoint &, const CTransactionRef &) {
-            has_spent_outputs = true;
-            return false;
-        });
-    if (has_spent_outputs) {
-        LogInfoEvent(
-            BCLog::ALL, "mempool_child_before_parent",
-            "{source_function}: BUG! PLEASE REPORT THIS! Attempt to add txid {txid}, but its outputs are already spent in the mempool")
-            .Field(BCLog::LogField::SourceFunction, __func__)
-            .Field(BCLog::LogField::TxId, txid);
-        ws.m_state.Invalid(TxValidationResult::TX_CHILD_BEFORE_PARENT,
-                           "txn-child-before-parent");
-        return MempoolAcceptResult::Failure(ws.m_state);
+    if (!native_fast_reused) {
+        bool has_spent_outputs = false;
+        m_pool.mapNextTx.forEachPrefix(
+            COutPoint{txid, 0}, OutpointRadixKey::TXID_PREFIX_NIBBLES,
+            [&](const COutPoint &, const CTransactionRef &) {
+                has_spent_outputs = true;
+                return false;
+            });
+        if (has_spent_outputs) {
+            LogInfoEvent(
+                BCLog::ALL, "mempool_child_before_parent",
+                "{source_function}: BUG! PLEASE REPORT THIS! Attempt to add txid {txid}, but its outputs are already spent in the mempool")
+                .Field(BCLog::LogField::SourceFunction, __func__)
+                .Field(BCLog::LogField::TxId, txid);
+            ws.m_state.Invalid(TxValidationResult::TX_CHILD_BEFORE_PARENT,
+                               "txn-child-before-parent");
+            return MempoolAcceptResult::Failure(ws.m_state);
+        }
     }
 
     const CFeeRate effective_feerate{ws.m_modified_fees,
@@ -2606,8 +2911,13 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
 
     std::vector<BatchTxIdIndexSlot> txid_table;
     size_t txid_mask = 0;
+    bool has_intra_batch_parents = false;
+    const bool skip_batch_structure_check =
+        precomputed_batch != nullptr && !precomputed_batch->empty() &&
+        (*precomputed_batch)[0].batch_structure_verified_no_parents &&
+        m_pool.size() > 6400;
 
-    if (batch_count > 1) {
+    if (batch_count > 1 && !skip_batch_structure_check) {
         const int64_t total_size = std::accumulate(
             txns.cbegin(), txns.cend(), int64_t{0},
             [](int64_t sum, const auto &tx) {
@@ -2670,6 +2980,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
                             return PackageMempoolAcceptResult(package_state,
                                                               {});
                         }
+                        has_intra_batch_parents = true;
                         break;
                     }
                     tslot = (tslot + 1) & txid_mask;
@@ -2739,12 +3050,12 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
     // Pass 1: Single-wave UTXO dependency resolution & fast policy/input checks.
     for (size_t ws_idx = 0; ws_idx < workspaces.size(); ++ws_idx) {
         Workspace &ws = workspaces[ws_idx];
-        const PrecomputedBatchTxData *pre =
+        PrecomputedBatchTxData *pre =
             (precomputed_batch != nullptr && ws_idx < precomputed_batch->size())
                 ? &(*precomputed_batch)[ws_idx]
                 : nullptr;
         if (!PreChecksBatch(args, ws, ws_idx, txns, txid_table, txid_mask,
-                            mempool_nonempty, pre)) {
+                            mempool_nonempty, has_intra_batch_parents, pre)) {
             package_state.Invalid(PackageValidationResult::PCKG_TX,
                                   "transaction failed");
             results.emplace(ws.m_ptx->GetId(),
@@ -2766,12 +3077,19 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
         if (std_deferred_only && precomputed_batch != nullptr &&
             idx < precomputed_batch->size() &&
             (*precomputed_batch)[idx].v2_fast_path_verified) {
-            const auto &pre_outs = (*precomputed_batch)[idx].v2_spent_outputs;
-            if (pre_outs.size() == ws.m_resolved_inputs.size()) {
+            if (ws.m_v2_pre_coins_matched) {
+                ws.m_sig_checks_standard = 0;
+                ws.m_v2_produced_records = false;
+                continue;
+            }
+            const auto &pre_coins =
+                (*precomputed_batch)[idx].v2_resolved_coins;
+            if (pre_coins.size() == ws.m_resolved_inputs.size()) {
                 bool match = true;
-                for (size_t i = 0; i < pre_outs.size(); ++i) {
+                for (size_t i = 0; i < pre_coins.size(); ++i) {
                     if (ws.m_resolved_inputs[i].IsSpent() ||
-                        ws.m_resolved_inputs[i].GetTxOut() != pre_outs[i]) {
+                        ws.m_resolved_inputs[i].GetTxOut() !=
+                            pre_coins[i].GetTxOut()) {
                         match = false;
                         break;
                     }
@@ -3508,6 +3826,10 @@ void PrewarmRawTxBatchSignatures(
     const size_t batch_count = txns.size();
     std::vector<BatchTxIdIndexSlot> txid_table;
     size_t txid_mask = 0;
+    bool has_intra_batch_parents = false;
+    bool has_duplicate_txid = false;
+    bool has_duplicate_prevout = false;
+    int64_t total_size = 0;
     if (batch_count > 1) {
         size_t txid_cap = 16;
         while (txid_cap < batch_count * 2) {
@@ -3515,11 +3837,15 @@ void PrewarmRawTxBatchSignatures(
         }
         txid_mask = txid_cap - 1;
         txid_table.resize(txid_cap);
+        size_t total_inputs = 0;
         for (size_t i = 0; i < batch_count; ++i) {
             const TxId &id = txns[i]->GetId();
+            total_inputs += txns[i]->vin.size();
+            total_size += GetVirtualTransactionSize(*txns[i]);
             size_t slot = id.GetUint64(0) & txid_mask;
             while (txid_table[slot].occupied) {
                 if (txid_table[slot].txid == id) {
+                    has_duplicate_txid = true;
                     break;
                 }
                 slot = (slot + 1) & txid_mask;
@@ -3530,14 +3856,66 @@ void PrewarmRawTxBatchSignatures(
                 txid_table[slot].occupied = true;
             }
         }
+        if (!has_duplicate_txid &&
+            total_size <= int64_t(MAX_RAWTX_BATCH_SIZE_KB) * 1000) {
+            size_t in_cap = 16;
+            while (in_cap < (total_inputs + 1) * 2) {
+                in_cap <<= 1;
+            }
+            const size_t in_mask = in_cap - 1;
+            struct OutpointSlot {
+                COutPoint outpoint;
+                bool occupied{false};
+            };
+            std::vector<OutpointSlot> inputs_seen(in_cap);
+            for (size_t i = 0; i < batch_count && !has_duplicate_prevout; ++i) {
+                for (const auto &input : txns[i]->vin) {
+                    if (input.nFlags == 3) {
+                        continue;
+                    }
+                    const TxId &prev_txid = input.prevout.GetTxId();
+                    size_t tslot = prev_txid.GetUint64(0) & txid_mask;
+                    while (txid_table[tslot].occupied) {
+                        if (txid_table[tslot].txid == prev_txid) {
+                            has_intra_batch_parents = true;
+                            break;
+                        }
+                        tslot = (tslot + 1) & txid_mask;
+                    }
+                    const uint64_t ohash =
+                        prev_txid.GetUint64(0) ^
+                        (static_cast<uint64_t>(input.prevout.GetN()) *
+                         0x9e3779b97f4a7c15ULL);
+                    size_t islot = static_cast<size_t>(ohash) & in_mask;
+                    while (inputs_seen[islot].occupied) {
+                        if (inputs_seen[islot].outpoint == input.prevout) {
+                            has_duplicate_prevout = true;
+                            break;
+                        }
+                        islot = (islot + 1) & in_mask;
+                    }
+                    inputs_seen[islot].outpoint = input.prevout;
+                    inputs_seen[islot].occupied = true;
+                }
+            }
+            if (!has_duplicate_prevout && !has_intra_batch_parents &&
+                precomputed_batch != nullptr && !precomputed_batch->empty()) {
+                (*precomputed_batch)[0].batch_structure_verified_no_parents =
+                    true;
+            }
+        }
     }
 
     SignatureCache &sig_cache = chainman.m_validation_cache.m_signature_cache;
     const auto &chain_id = chainman.GetParams().V2ChainId();
     const lotus::v2::SmtNode *utxo_root = snapshot->tip_utxo_root.get();
     const BlockHash snapshot_tip_hash = snapshot->best_block_hash;
+    const int spend_height = snapshot->height + 1;
     const bool std_deferred_only =
         lotus::v2::DeferredCheckRegistry::Consensus().Kinds().size() == 2;
+    const bool use_fast_confirmed_smt =
+        std_deferred_only && !has_intra_batch_parents && utxo_root != nullptr &&
+        precomputed_batch != nullptr && pool.size() > 6400;
     const unsigned int hw_threads =
         std::max(1u, std::thread::hardware_concurrency());
     const size_t num_workers =
@@ -3564,6 +3942,21 @@ void PrewarmRawTxBatchSignatures(
                 if (tx.nVersion != 7 || tx.vin.empty() || tx.vin.size() > 16 ||
                     tx.vout.empty()) {
                     continue;
+                }
+                if (use_fast_confirmed_smt && idx < precomputed_batch->size()) {
+                    Amount fast_fee = Amount::zero();
+                    if (TryVerifyV2ConfirmedFastPathFromSmt(
+                            tx, utxo_root, spend_height, chain_id, sig_cache,
+                            &local_collector, fast_fee)) {
+                        auto &pre = (*precomputed_batch)[idx];
+                        pre.regular_tx_checked = true;
+                        pre.regular_tx_valid = true;
+                        pre.v2_snapshot_tip_hash = snapshot_tip_hash;
+                        pre.v2_all_confirmed_fast_inputs = true;
+                        pre.v2_precomputed_base_fee = fast_fee;
+                        local_cands.push_back(idx);
+                        continue;
+                    }
                 }
                 coins.clear();
                 coins.reserve(tx.vin.size());
@@ -3694,11 +4087,8 @@ void PrewarmRawTxBatchSignatures(
                 if (sigs_staged_ok && can_fast_verify) {
                     auto &pre = (*precomputed_batch)[idx];
                     pre.v2_snapshot_tip_hash = snapshot_tip_hash;
-                    pre.v2_spent_outputs.resize(coins.size());
-                    for (size_t i = 0; i < coins.size(); ++i) {
-                        pre.v2_spent_outputs[i] = coins[i].GetTxOut();
-                    }
-                    pre.v2_resolved_coins = coins;
+                    pre.v2_resolved_coins = std::move(coins);
+                    coins.reserve(4);
                     local_cands.push_back(idx);
                 }
             }
@@ -4258,6 +4648,14 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
     // One generation for this call. Owned coin/context copies survive the
     // workers; release the old snapshot before authoritative admission.
     auto native_snapshot = node::GetGlobalSnapshotPublisher().Load();
+    const size_t pool_size_before_phase_b =
+        native_pool != nullptr ? native_pool->size() : 0;
+    const unsigned int pool_updated_before_phase_b =
+        native_pool != nullptr ? native_pool->GetTransactionsUpdated() : 0;
+    bool batch_has_duplicate_txid = false;
+    bool batch_has_duplicate_prevout = false;
+    bool batch_has_intra_parents = false;
+
     // Phase B: context-free and script checks, no locks held.
     std::vector<size_t> work;
     work.reserve(n);
@@ -4279,12 +4677,15 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
             }
             batch_txid_mask = txid_cap - 1;
             batch_txid_table.resize(txid_cap);
+            size_t total_inputs = 0;
             for (size_t i = 0; i < n; ++i) {
                 if (!txs[i]) continue;
                 const TxId &id = txs[i]->GetId();
+                total_inputs += txs[i]->vin.size();
                 size_t slot = id.GetUint64(0) & batch_txid_mask;
                 while (batch_txid_table[slot].occupied) {
                     if (batch_txid_table[slot].txid == id) {
+                        batch_has_duplicate_txid = true;
                         break;
                     }
                     slot = (slot + 1) & batch_txid_mask;
@@ -4295,46 +4696,154 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
                     batch_txid_table[slot].occupied = true;
                 }
             }
+            size_t in_cap = 16;
+            while (in_cap < (total_inputs + 1) * 2) {
+                in_cap <<= 1;
+            }
+            const size_t in_mask = in_cap - 1;
+            struct OutpointSlot {
+                COutPoint outpoint;
+                bool occupied{false};
+            };
+            std::vector<OutpointSlot> inputs_seen(in_cap);
+            for (size_t i = 0; i < n; ++i) {
+                if (!txs[i]) continue;
+                for (const auto &in : txs[i]->vin) {
+                    if (in.nFlags == 3) continue;
+                    const TxId &prev_txid = in.prevout.GetTxId();
+                    size_t tslot = prev_txid.GetUint64(0) & batch_txid_mask;
+                    while (batch_txid_table[tslot].occupied) {
+                        if (batch_txid_table[tslot].txid == prev_txid) {
+                            batch_has_intra_parents = true;
+                            break;
+                        }
+                        tslot = (tslot + 1) & batch_txid_mask;
+                    }
+                    const uint64_t ohash =
+                        prev_txid.GetUint64(0) ^
+                        (static_cast<uint64_t>(in.prevout.GetN()) *
+                         0x9e3779b97f4a7c15ULL);
+                    size_t islot = static_cast<size_t>(ohash) & in_mask;
+                    while (inputs_seen[islot].occupied) {
+                        if (inputs_seen[islot].outpoint == in.prevout) {
+                            batch_has_duplicate_prevout = true;
+                            break;
+                        }
+                        islot = (islot + 1) & in_mask;
+                    }
+                    if (!inputs_seen[islot].occupied) {
+                        inputs_seen[islot].outpoint = in.prevout;
+                        inputs_seen[islot].occupied = true;
+                    }
+                }
+            }
         }
         ValidationCache &validation_cache = chainman.m_validation_cache;
+        const auto &chain_id = chainman.GetParams().V2ChainId();
+        const bool can_try_fast_confirmed =
+            !options.test_between_phases && !batch_has_intra_parents &&
+            native_pool != nullptr && native_snapshot != nullptr &&
+            native_snapshot->chainman_ptr == &chainman &&
+            native_snapshot->mempool_ptr == native_pool &&
+            native_snapshot->chain_valid && native_snapshot->mempool_valid &&
+            native_snapshot->has_utxo_snapshot &&
+            native_snapshot->consensus_params &&
+            native_snapshot->next_script_flags &&
+            !native_snapshot->mempool_has_fee_deltas &&
+            native_snapshot->height >= 0 &&
+            native_snapshot->height != std::numeric_limits<int>::max() &&
+            (!native_pool->m_opts.signals ||
+             !native_pool->m_opts.signals->HasSpentCoinsSubscribers()) &&
+            lotus::v2::DeferredCheckRegistry::Consensus().Kinds().size() == 2;
         std::atomic<size_t> next{0};
+        const size_t max_threads =
+            has_legacy ? options.script_threads
+                       : std::min<size_t>(options.script_threads, 8);
         const size_t threads =
-            std::clamp<size_t>(options.script_threads, 1, work.size());
+            std::clamp<size_t>(max_threads, 1, (work.size() + 15) / 16);
         std::vector<lotus::v2::BatchSigCollector> worker_collectors(threads);
         util::GetParallelRangeExecutor().Run(
             threads, 1, [&](size_t tid, size_t) {
                 auto *collector = &worker_collectors[tid];
-                for (size_t k = next.fetch_add(1, std::memory_order_relaxed);
-                     k < work.size();
-                     k = next.fetch_add(1, std::memory_order_relaxed)) {
-                    const size_t i = work[k];
-                    if (txs[i]->nVersion == 7) {
-                        std::optional<std::vector<Coin>> coins;
-                        uint32_t native_flags{0};
-                        Amount fee{Amount::zero()};
-                        // Snapshot-only: never take cs_main inside this pool.
-                        // A locked batch caller can itself be waiting for the
-                        // pool dispatcher. Missing coverage stays authoritative
-                        // in Phase C instead of falling back to a lock here.
-                        if (PrepareNativeCryptoFromSnapshot(
-                                chainman, *txs[i], native_pool, options.limits,
-                                coins, native_flags, fee, native_snapshot,
-                                &txs, i, &batch_txid_table,
-                                batch_txid_mask) &&
-                            coins) {
-                            checks[i].native =
-                                NativeAdmissionPreparation::Prepare(
-                                    *txs[i], *native_snapshot,
-                                    chainman.GetParams().V2ChainId(),
-                                    std::move(*coins), fee,
-                                    validation_cache.m_signature_cache,
-                                    collector,
-                                    /*store_sig_cache=*/bool(
-                                        options.test_between_phases));
+                for (size_t base = next.fetch_add(16, std::memory_order_relaxed);
+                     base < work.size();
+                     base = next.fetch_add(16, std::memory_order_relaxed)) {
+                    const size_t limit = std::min(base + 16, work.size());
+                    for (size_t k = base; k < limit; ++k) {
+                        const size_t i = work[k];
+                        if (txs[i]->nVersion == 7) {
+                            if (can_try_fast_confirmed) {
+                                const CTransaction &tx = *txs[i];
+                                const bool already_in_mempool =
+                                    native_snapshot->entry_tree
+                                        ? bool(native_snapshot->entry_tree->get(
+                                              Uint256RadixKey(tx.GetId())))
+                                        : native_pool->exists(tx.GetId());
+                                bool conflict_in_mempool = already_in_mempool;
+                                if (!conflict_in_mempool) {
+                                    for (const auto &in : tx.vin) {
+                                        if (native_pool->mapNextTx.contains(
+                                                in.prevout)) {
+                                            conflict_in_mempool = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (conflict_in_mempool) {
+                                    continue;
+                                }
+                                Amount fast_fee{Amount::zero()};
+                                if (TryVerifyV2ConfirmedFastPathFromSmt(
+                                        tx,
+                                        native_snapshot->tip_utxo_root.get(),
+                                        native_snapshot->height + 1, chain_id,
+                                        validation_cache.m_signature_cache,
+                                        collector, fast_fee)) {
+                                    const auto total_size = tx.GetTotalSize();
+                                    if (fast_fee >=
+                                            native_snapshot->min_relay_tx_fee
+                                                .GetFee(total_size) &&
+                                        fast_fee >=
+                                            native_snapshot->mempool_min_fee
+                                                .GetFee(total_size) &&
+                                        (options.limits.max_fee <=
+                                             Amount::zero() ||
+                                         fast_fee <= options.limits.max_fee)) {
+                                        checks[i].native =
+                                            NativeAdmissionPreparation::
+                                                PrepareFastConfirmed(
+                                                    tx, *native_snapshot,
+                                                    chain_id, fast_fee);
+                                    }
+                                    continue;
+                                }
+                            }
+                            std::optional<std::vector<Coin>> coins;
+                            uint32_t native_flags{0};
+                            Amount fee{Amount::zero()};
+                            // Snapshot-only: never take cs_main inside this pool.
+                            // A locked batch caller can itself be waiting for the
+                            // pool dispatcher. Missing coverage stays authoritative
+                            // in Phase C instead of falling back to a lock here.
+                            if (PrepareNativeCryptoFromSnapshot(
+                                    chainman, *txs[i], native_pool,
+                                    options.limits, coins, native_flags, fee,
+                                    native_snapshot, &txs, i, &batch_txid_table,
+                                    batch_txid_mask) &&
+                                coins) {
+                                checks[i].native =
+                                    NativeAdmissionPreparation::Prepare(
+                                        *txs[i], *native_snapshot, chain_id,
+                                        std::move(*coins), fee,
+                                        validation_cache.m_signature_cache,
+                                        collector,
+                                        /*store_sig_cache=*/bool(
+                                            options.test_between_phases));
+                            }
+                        } else {
+                            ComputeAdmissionChecks(*txs[i], script_flags,
+                                                   validation_cache, checks[i]);
                         }
-                    } else {
-                        ComputeAdmissionChecks(*txs[i], script_flags,
-                                               validation_cache, checks[i]);
                     }
                 }
             });
@@ -4346,15 +4855,29 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
             if (combined_sigs.VerifyAll()) {
                 validation_cache.m_signature_cache.SetBatch(combined_sigs);
             } else {
-                const auto &chain_id = chainman.GetParams().V2ChainId();
                 for (const size_t i : work) {
                     if (checks[i].native) {
-                        auto coins = checks[i].native->Coins();
-                        const Amount fee = checks[i].native->BaseFee();
-                        checks[i].native = NativeAdmissionPreparation::Prepare(
-                            *txs[i], *native_snapshot, chain_id,
-                            std::move(coins), fee,
-                            validation_cache.m_signature_cache, nullptr);
+                        std::optional<std::vector<Coin>> coins =
+                            checks[i].native->Coins();
+                        Amount fee = checks[i].native->BaseFee();
+                        if (coins->empty()) {
+                            uint32_t native_flags{0};
+                            coins.reset();
+                            PrepareNativeCryptoFromSnapshot(
+                                chainman, *txs[i], native_pool, options.limits,
+                                coins, native_flags, fee, native_snapshot, &txs,
+                                i, &batch_txid_table, batch_txid_mask);
+                        }
+                        if (coins && !coins->empty()) {
+                            checks[i].native =
+                                NativeAdmissionPreparation::Prepare(
+                                    *txs[i], *native_snapshot, chain_id,
+                                    std::move(*coins), fee,
+                                    validation_cache.m_signature_cache,
+                                    nullptr);
+                        } else {
+                            checks[i].native.reset();
+                        }
                     }
                 }
             }
@@ -4378,94 +4901,105 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
         local.lock_wait += acquired - start;
         Chainstate &chainstate = chainman.ActiveChainstate();
         CTxMemPool *pool = chainstate.GetMempool();
-        // Publish one mempool snapshot for the whole batch.
-        std::optional<CTxMemPool::ScopedSnapshotDefer> defer;
-        if (pool != nullptr) {
+        if (pool == nullptr) {
+            for (size_t i = 0; i < n; ++i) {
+                if (options.skip_at_commit && options.skip_at_commit(txs[i])) {
+                    continue;
+                }
+                TxValidationState state;
+                state.Invalid(TxValidationResult::TX_NO_MEMPOOL, "no-mempool");
+                results[i].emplace(MempoolAcceptResult::Failure(state));
+            }
+            local.commit_locked = SteadyClock::now() - acquired;
+        } else {
             LOCK(pool->cs);
-            defer.emplace(*pool);
-        }
-        std::vector<ValidationSignals::MempoolAddedBatchItem> batch_signals;
-        const bool suppress_staged_signals =
-            n >= 128 && pool != nullptr && pool->m_opts.signals &&
-            !pool->m_opts.signals->HasSpentCoinsSubscribers();
-        if (pool != nullptr && pool->m_opts.signals &&
-            !suppress_staged_signals) {
-            batch_signals.reserve(n);
-        }
-        const int64_t accept_time = GetTime();
-        const Config &config = chainstate.m_chainman.GetConfig();
-        std::vector<COutPoint> coins_to_uncache;
-        const uint64_t native_checks_before = g_native_input_checks;
-        std::optional<MemPoolAccept> acceptor;
-        std::optional<uint32_t> batch_next_flags;
-        std::optional<int64_t> batch_tip_mtp;
-        bool batch_overlay_synced = false;
-        if (pool != nullptr) {
-            acceptor.emplace(*pool, chainstate);
+            // Publish one mempool snapshot for the whole batch.
+            std::optional<CTxMemPool::ScopedSnapshotDefer> defer(*pool);
+            const bool pool_unchanged_since_phase_b =
+                !options.test_between_phases && (pool == native_pool) &&
+                (pool->size() == pool_size_before_phase_b) &&
+                (pool->GetTransactionsUpdated() ==
+                 pool_updated_before_phase_b) &&
+                !batch_has_duplicate_txid && !batch_has_duplicate_prevout;
+            std::vector<ValidationSignals::MempoolAddedBatchItem> batch_signals;
+            const bool suppress_staged_signals =
+                n >= 128 && pool->m_opts.signals &&
+                !pool->m_opts.signals->HasSpentCoinsSubscribers();
+            if (pool->m_opts.signals && !suppress_staged_signals) {
+                batch_signals.reserve(n);
+            }
+            const int64_t accept_time = GetTime();
+            const Config &config = chainstate.m_chainman.GetConfig();
+            std::vector<COutPoint> coins_to_uncache;
+            const uint64_t native_checks_before = g_native_input_checks;
+            MemPoolAccept acceptor(*pool, chainstate);
+            std::optional<uint32_t> batch_next_flags;
+            std::optional<int64_t> batch_tip_mtp;
+            bool batch_overlay_synced = false;
             if (const CBlockIndex *tip = chainstate.m_chain.Tip()) {
                 batch_tip_mtp = tip->GetMedianTimePast();
                 batch_next_flags =
                     GetNextBlockScriptFlags(tip, chainstate.m_chainman);
-                LOCK(pool->cs);
                 pool->SyncMerklixOverlayToTip(
                     tip->GetBlockHash(), static_cast<uint64_t>(tip->nHeight + 1),
                     static_cast<uint64_t>(*batch_tip_mtp));
                 batch_overlay_synced = true;
             }
-        }
-        for (size_t i = 0; i < n; ++i) {
-            if (options.skip_at_commit && options.skip_at_commit(txs[i])) {
-                continue;
-            }
-            if (pool == nullptr) {
-                TxValidationState state;
-                state.Invalid(TxValidationResult::TX_NO_MEMPOOL, "no-mempool");
-                results[i].emplace(MempoolAcceptResult::Failure(state));
-                continue;
-            }
-            g_mempool_admission_attempts.fetch_add(1,
-                                                   std::memory_order_relaxed);
-            coins_to_uncache.clear();
-            auto args = MemPoolAccept::ATMPArgs::SingleAccept(
-                config, accept_time, /*bypass_limits=*/false, coins_to_uncache,
-                /*test_accept=*/false, /*height_override=*/0);
-            args.m_limits = options.limits;
-            MempoolAcceptResult result =
-                acceptor->AcceptSingleTransaction(
-                    txs[i], args,
-                    (verify[i] || checks[i].native) ? &checks[i] : nullptr,
-                    (pool->m_opts.signals && !suppress_staged_signals)
-                        ? &batch_signals
-                        : nullptr,
-                    batch_next_flags, batch_tip_mtp, batch_overlay_synced,
-                    suppress_staged_signals);
-            const bool native_reused =
-                checks[i].native && checks[i].native->WasReused();
-            if (!native_reused ||
-                result.m_result_type != MempoolAcceptResult::ResultType::VALID) {
-                acceptor->ClearView(*txs[i]);
-            }
-            RecordMempoolAdmission(result);
-            if (result.m_result_type != MempoolAcceptResult::ResultType::VALID) {
-                for (const COutPoint &outpoint : coins_to_uncache) {
-                    chainstate.CoinsTip().Uncache(outpoint);
+            for (size_t i = 0; i < n; ++i) {
+                const bool fast_skip_commit_check =
+                    pool_unchanged_since_phase_b && checks[i].native &&
+                    checks[i].native->AllConfirmedInputs() &&
+                    !pool->HasOrphans() && !pool->HasConflicting();
+                if (!fast_skip_commit_check && options.skip_at_commit &&
+                    options.skip_at_commit(txs[i])) {
+                    continue;
+                }
+                g_mempool_admission_attempts.fetch_add(
+                    1, std::memory_order_relaxed);
+                coins_to_uncache.clear();
+                auto args = MemPoolAccept::ATMPArgs::SingleAccept(
+                    config, accept_time, /*bypass_limits=*/false,
+                    coins_to_uncache, /*test_accept=*/false,
+                    /*height_override=*/0);
+                args.m_limits = options.limits;
+                MempoolAcceptResult result =
+                    acceptor.AcceptSingleTransaction(
+                        txs[i], args,
+                        (verify[i] || checks[i].native) ? &checks[i] : nullptr,
+                        (pool->m_opts.signals && !suppress_staged_signals)
+                            ? &batch_signals
+                            : nullptr,
+                        batch_next_flags, batch_tip_mtp, batch_overlay_synced,
+                        suppress_staged_signals, pool_unchanged_since_phase_b);
+                const bool native_reused =
+                    checks[i].native && checks[i].native->WasReused();
+                if (!native_reused ||
+                    result.m_result_type !=
+                        MempoolAcceptResult::ResultType::VALID) {
+                    acceptor.ClearView(*txs[i]);
+                }
+                RecordMempoolAdmission(result);
+                if (result.m_result_type !=
+                    MempoolAcceptResult::ResultType::VALID) {
+                    for (const COutPoint &outpoint : coins_to_uncache) {
+                        chainstate.CoinsTip().Uncache(outpoint);
+                    }
+                }
+                results[i].emplace(std::move(result));
+                if (native_reused) {
+                    ++local.native_reused;
                 }
             }
-            results[i].emplace(std::move(result));
-            if (native_reused) {
-                ++local.native_reused;
-            }
-        }
-        local.native_inputs_checked = g_native_input_checks - native_checks_before;
-        for (size_t i = 0; i < n; ++i) {
-            if (!results[i] || results[i]->m_result_type !=
-                                   MempoolAcceptResult::ResultType::VALID) {
-                for (const COutPoint &outpoint : fetched[i]) {
-                    chainstate.CoinsTip().Uncache(outpoint);
+            local.native_inputs_checked =
+                g_native_input_checks - native_checks_before;
+            for (size_t i = 0; i < n; ++i) {
+                if (!results[i] || results[i]->m_result_type !=
+                                       MempoolAcceptResult::ResultType::VALID) {
+                    for (const COutPoint &outpoint : fetched[i]) {
+                        chainstate.CoinsTip().Uncache(outpoint);
+                    }
                 }
             }
-        }
-        if (pool != nullptr) {
             BlockValidationState stateDummy;
             chainstate.FlushStateToDisk(stateDummy, FlushStateMode::PERIODIC);
             pool->check(chainstate.CoinsTip(), chainstate.m_chain.Height() + 1);
@@ -4473,10 +5007,9 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
                 pool->m_opts.signals->TransactionsAddedToMempoolBatch(
                     std::move(batch_signals));
             }
-            LOCK(pool->cs);
             defer.reset();
+            local.commit_locked = SteadyClock::now() - acquired;
         }
-        local.commit_locked = SteadyClock::now() - acquired;
     }
     if (auto *metrics = node::GetNodeMetrics()) {
         metrics->mempool_admission_lock_hold_seconds.RecordDuration(

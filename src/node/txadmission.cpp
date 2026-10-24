@@ -63,19 +63,37 @@ TxAdmissionQueue::TakeBatch(size_t max_items, std::chrono::milliseconds wait) {
         return out;
     }
     out.reserve(std::min(max_items, m_count));
-    while (out.size() < max_items && !m_order.empty()) {
+    if (m_order.size() == 1) {
         const NodeId peer = m_order.front();
-        m_order.pop_front();
         auto it = m_queues.find(peer);
         Assume(it != m_queues.end() && !it->second.empty());
-        out.push_back(std::move(it->second.front()));
-        it->second.pop_front();
-        m_bytes -= out.back().tx->GetTotalSize();
-        --m_count;
-        if (it->second.empty()) {
+        auto &q = it->second;
+        const size_t take = std::min(max_items, q.size());
+        for (size_t i = 0; i < take; ++i) {
+            out.push_back(std::move(q.front()));
+            q.pop_front();
+            m_bytes -= out.back().tx->GetTotalSize();
+        }
+        m_count -= take;
+        if (q.empty()) {
+            m_order.pop_front();
             m_queues.erase(it);
-        } else {
-            m_order.push_back(peer);
+        }
+    } else {
+        while (out.size() < max_items && !m_order.empty()) {
+            const NodeId peer = m_order.front();
+            m_order.pop_front();
+            auto it = m_queues.find(peer);
+            Assume(it != m_queues.end() && !it->second.empty());
+            out.push_back(std::move(it->second.front()));
+            it->second.pop_front();
+            m_bytes -= out.back().tx->GetTotalSize();
+            --m_count;
+            if (it->second.empty()) {
+                m_queues.erase(it);
+            } else {
+                m_order.push_back(peer);
+            }
         }
     }
     m_taken += out.size();

@@ -513,7 +513,7 @@ struct Peer {
          * the same txid to a peer that already has the transaction.
          */
         CRollingBloomFilter m_tx_inventory_known_filter
-            GUARDED_BY(m_tx_inventory_mutex){50000, 0.000001};
+            GUARDED_BY(m_tx_inventory_mutex){350000, 0.000001};
         /** Pending IDs ranked by cached admission incarnation. Suffix refresh
          * and authoritative selection restore current order before emission.
          * Body ownership is confined to bounded chunks, not backlog. */
@@ -1268,7 +1268,7 @@ private:
     };
 
     std::unique_ptr<node::TxAdmissionQueue> m_tx_admission_queue;
-    node::TxAdmissionRetainedBudget m_tx_admission_retained_budget{64U << 20};
+    node::TxAdmissionRetainedBudget m_tx_admission_retained_budget{128U << 20};
     std::thread m_tx_admission_thread;
     std::atomic<bool> m_tx_admission_running{false};
     Mutex m_tx_admission_done_mutex;
@@ -1297,7 +1297,9 @@ private:
         CNode &pfrom, const PeerRef &peer, const CTransactionRef &ptx,
         bool count_full, bool notify = true,
         const std::vector<txrelay::EpochKey> *epochs = nullptr,
-        const std::shared_ptr<TxAdmissionSender> *shared_sender = nullptr)
+        const std::shared_ptr<TxAdmissionSender> *shared_sender = nullptr,
+        bool request_cleared = false,
+        std::span<const TxId> precomputed_shortid_keys = {})
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
                                  g_msgproc_mutex);
@@ -1314,7 +1316,8 @@ private:
      */
     bool PrepareTxAdmission(
         CNode &pfrom, const CTransactionRef &ptx,
-        const std::vector<txrelay::EpochKey> *epochs = nullptr)
+        const std::vector<txrelay::EpochKey> *epochs = nullptr,
+        bool request_cleared = false)
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
                                  g_msgproc_mutex);
@@ -3538,7 +3541,9 @@ bool PeerManagerImpl::QueueTxForAdmission(
     CNode &pfrom, const PeerRef &peer, const CTransactionRef &ptx,
     bool count_full, bool notify,
     const std::vector<txrelay::EpochKey> *epochs,
-    const std::shared_ptr<TxAdmissionSender> *shared_sender) {
+    const std::shared_ptr<TxAdmissionSender> *shared_sender,
+    bool request_cleared,
+    std::span<const TxId> precomputed_shortid_keys) {
     AssertLockHeld(g_msgproc_mutex);
     const TxId &txid = ptx->GetId();
     if (m_tx_admission_inflight.count(txid)) {
@@ -3553,11 +3558,15 @@ bool PeerManagerImpl::QueueTxForAdmission(
         }
         return false;
     }
-    if (!PrepareTxAdmission(pfrom, ptx, epochs)) {
+    if (!PrepareTxAdmission(pfrom, ptx, epochs, request_cleared)) {
         return true;
     }
     m_tx_admission_inflight.insert(txid);
-    if (epochs) {
+    if (!precomputed_shortid_keys.empty()) {
+        for (const TxId &req_key : precomputed_shortid_keys) {
+            m_tx_admission_inflight_shortids.emplace(req_key, txid);
+        }
+    } else if (epochs) {
         for (const txrelay::EpochKey &epoch : *epochs) {
             m_tx_admission_inflight_shortids.emplace(
                 TxId{txrelay::ShortIdRequestKey(
@@ -3611,6 +3620,8 @@ bool PeerManagerImpl::ProcessTxAdmissionDone() {
     }
     const auto epochs = m_txrelay_index.Epochs();
     const auto now_sec = GetTime<std::chrono::seconds>();
+    const bool defer_shortid_erase =
+        (m_tx_admission_inflight.size() == done.size());
     auto handle_done_item = [&](TxAdmissionDone &d, bool cs_main_held)
         EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex)
@@ -3642,14 +3653,16 @@ bool PeerManagerImpl::ProcessTxAdmissionDone() {
         }
         const TxId &txid = d.tx->GetId();
         m_tx_admission_inflight.erase(txid);
-        if (m_tx_admission_inflight.empty()) {
-            m_tx_admission_inflight_shortids.clear();
-        } else {
-            for (const txrelay::EpochKey &epoch : epochs) {
-                m_tx_admission_inflight_shortids.erase(
-                    TxId{txrelay::ShortIdRequestKey(
-                        epoch.epoch_id,
-                        m_txrelay_index.ShortId(epoch, txid))});
+        if (!defer_shortid_erase) {
+            if (m_tx_admission_inflight.empty()) {
+                m_tx_admission_inflight_shortids.clear();
+            } else {
+                for (const txrelay::EpochKey &epoch : epochs) {
+                    m_tx_admission_inflight_shortids.erase(
+                        TxId{txrelay::ShortIdRequestKey(
+                            epoch.epoch_id,
+                            m_txrelay_index.ShortId(epoch, txid))});
+                }
             }
         }
         Assume(peer.m_tx_admission_pending > 0);
@@ -3665,6 +3678,23 @@ bool PeerManagerImpl::ProcessTxAdmissionDone() {
         node::AdmissionLockTimer timer(waiting);
         for (TxAdmissionDone &d : done) {
             handle_done_item(d, /*cs_main_held=*/true);
+        }
+    }
+    if (defer_shortid_erase) {
+        if (m_tx_admission_inflight.empty()) {
+            m_tx_admission_inflight_shortids.clear();
+        } else {
+            for (const TxAdmissionDone &d : done) {
+                const TxId &txid = d.tx->GetId();
+                if (!m_tx_admission_inflight.count(txid)) {
+                    for (const txrelay::EpochKey &epoch : epochs) {
+                        m_tx_admission_inflight_shortids.erase(
+                            TxId{txrelay::ShortIdRequestKey(
+                                epoch.epoch_id,
+                                m_txrelay_index.ShortId(epoch, txid))});
+                    }
+                }
+            }
         }
     }
     if (!relay_batch.empty()) {
@@ -4428,21 +4458,61 @@ void PeerManagerImpl::ProcessShortTxResponse(
         AddKnownTxBatch(*peer, txs);
         const auto epochs = m_txrelay_index.Epochs();
         const auto sender = std::make_shared<TxAdmissionSender>(node, peer);
+        const size_t n_epochs = epochs.size();
+        std::vector<TxId> batch_shortid_keys;
+        if (n_epochs > 0) {
+            batch_shortid_keys.resize(txs.size() * n_epochs);
+            for (size_t i = 0; i < txs.size(); ++i) {
+                if (!txs[i]) continue;
+                const TxId &txid = txs[i]->GetId();
+                for (size_t e = 0; e < n_epochs; ++e) {
+                    batch_shortid_keys[i * n_epochs + e] =
+                        TxId{txrelay::ShortIdRequestKey(
+                            epochs[e].epoch_id,
+                            m_txrelay_index.ShortId(epochs[e], txid))};
+                }
+            }
+        }
         bool any_queued = false;
-        for (const auto &tx : txs) {
+        size_t clear_limit = txs.size();
+        for (size_t i = 0; i < txs.size(); ++i) {
+            const auto &tx = txs[i];
             if (!tx) continue;
             if (!force_relay &&
                 (m_mempool.exists(tx->GetId()) ||
                  m_tx_admission_inflight.count(tx->GetId()))) {
-                PrepareTxAdmission(node, tx, &epochs);
+                PrepareTxAdmission(node, tx, &epochs,
+                                   /*request_cleared=*/true);
                 continue;
             }
+            const std::span<const TxId> tx_keys =
+                n_epochs > 0
+                    ? std::span<const TxId>(
+                          batch_shortid_keys.data() + i * n_epochs, n_epochs)
+                    : std::span<const TxId>{};
             if (!peer->m_tx_admission_held_txs.empty() ||
                 !QueueTxForAdmission(node, peer, tx, /*count_full=*/true,
-                                     /*notify=*/false, &epochs, &sender)) {
+                                     /*notify=*/false, &epochs, &sender,
+                                     /*request_cleared=*/true, tx_keys)) {
+                if (clear_limit == txs.size()) {
+                    clear_limit = i;
+                }
                 peer->m_tx_admission_held_txs.push_back(tx);
             } else {
                 any_queued = true;
+            }
+        }
+        if (clear_limit > 0 && TxRequestSize() > 0) {
+            LOCK(cs_txrequest);
+            for (size_t i = 0; i < clear_limit; ++i) {
+                if (!txs[i]) continue;
+                m_txrequest.ReceivedResponse(node.GetId(), txs[i]->GetId());
+                if (m_txrequest.Size() > 0) {
+                    for (size_t e = 0; e < n_epochs; ++e) {
+                        m_txrequest.ForgetInvId(
+                            batch_shortid_keys[i * n_epochs + e]);
+                    }
+                }
             }
         }
         // The primary queue accounts queued bodies. Keep the conservative
@@ -4596,10 +4666,17 @@ void PeerManagerImpl::DrainRelayQueue() {
             }
         }
     }
+    const bool track_routes = (targets.size() > fanout);
     std::vector<size_t> candidates;
     std::vector<bool> chosen(targets.size());
     std::vector<std::pair<TxId, std::vector<NodeId>>> new_routes;
-    new_routes.reserve(batch.size());
+    std::vector<uint32_t> picked_counts;
+    if (track_routes) {
+        new_routes.reserve(batch.size());
+    } else {
+        picked_counts.resize(batch.size(), 0);
+    }
+    size_t announcements{0};
     for (size_t i = 0; i < batch.size(); ++i) {
         candidates.clear();
         for (size_t t = 0; t < targets.size(); ++t) {
@@ -4632,25 +4709,36 @@ void PeerManagerImpl::DrainRelayQueue() {
                 }
             }
         }
-        std::vector<NodeId> route;
-        for (size_t t = 0; t < targets.size(); ++t) {
-            if (chosen[t]) {
-                targets[t].picks.push_back(uint32_t(i));
-                route.push_back(targets[t].id);
+        if (track_routes) {
+            std::vector<NodeId> route;
+            for (size_t t = 0; t < targets.size(); ++t) {
+                if (chosen[t]) {
+                    targets[t].picks.push_back(uint32_t(i));
+                    route.push_back(targets[t].id);
+                }
             }
+            announcements += route.size();
+            new_routes.emplace_back(batch[i].txid, std::move(route));
+        } else {
+            uint32_t count = 0;
+            for (size_t t = 0; t < targets.size(); ++t) {
+                if (chosen[t]) {
+                    targets[t].picks.push_back(uint32_t(i));
+                    ++count;
+                }
+            }
+            picked_counts[i] = count;
+            announcements += count;
         }
-        new_routes.emplace_back(batch[i].txid, std::move(route));
     }
 
-    size_t announcements{0};
-    for (const auto &route : new_routes) {
-        announcements += route.second.size();
-    }
     if (auto *m{node::GetNodeMetrics()}) {
         m->txrelay_queue_depth.Set(double(batch.size()));
         const auto now{RelayTickNow()};
         for (size_t i = 0; i < batch.size(); ++i) {
-            m->txrelay_fanout_peers.Record(new_routes[i].second.size());
+            m->txrelay_fanout_peers.Record(
+                track_routes ? new_routes[i].second.size()
+                             : size_t(picked_counts[i]));
             m->txrelay_first_seen_to_announce_seconds.RecordDuration(
                 now - batch[i].queued);
         }
@@ -4671,14 +4759,16 @@ void PeerManagerImpl::DrainRelayQueue() {
         }
     }
 
-    for (auto &[txid, route] : new_routes) {
-        if (m_relay_routes.insert_or_assign(txid, std::move(route)).second) {
-            m_relay_routes_order.push_back(txid);
+    if (track_routes) {
+        for (auto &[txid, route] : new_routes) {
+            if (m_relay_routes.insert_or_assign(txid, std::move(route)).second) {
+                m_relay_routes_order.push_back(txid);
+            }
         }
-    }
-    while (m_relay_routes_order.size() > MAX_RELAY_ROUTES) {
-        m_relay_routes.erase(m_relay_routes_order.front());
-        m_relay_routes_order.pop_front();
+        while (m_relay_routes_order.size() > MAX_RELAY_ROUTES) {
+            m_relay_routes.erase(m_relay_routes_order.front());
+            m_relay_routes_order.pop_front();
+        }
     }
     m_txrelay_wake.store(true, std::memory_order_relaxed);
 }
@@ -6053,12 +6143,13 @@ void PeerManagerImpl::ProcessSingleTx(
 
 bool PeerManagerImpl::PrepareTxAdmission(
     CNode &pfrom, const CTransactionRef &ptx,
-    const std::vector<txrelay::EpochKey> *epochs) {
+    const std::vector<txrelay::EpochKey> *epochs,
+    bool request_cleared) {
     AssertLockHeld(g_msgproc_mutex);
     const CTransaction &tx = *ptx;
     const TxId &txid = tx.GetId();
 
-    if (TxRequestSize() > 0) {
+    if (!request_cleared && TxRequestSize() > 0) {
         LOCK(cs_txrequest);
         m_txrequest.ReceivedResponse(pfrom.GetId(), txid);
         if (m_txrequest.Size() > 0) {
@@ -11389,7 +11480,9 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
     // At each relay tick, the first peer to get here moves the relay queue
     // into the chosen peers' inventory, so all peers send at this tick.
     MaybeDrainRelayQueue();
-    if (!m_chainman.IsInitialBlockDownload()) {
+    if (!m_chainman.IsInitialBlockDownload() &&
+        m_tx_admission_inflight.empty() && TxRequestSize() == 0 &&
+        (m_mempool.size() < 4096 || m_mempool.GetUnbroadcastTxCount() == 0)) {
         if (const auto next{m_full_recon.Tick(*pto, RelayTickNow())}) {
             auto deadline{m_full_recon_wake.load(std::memory_order_relaxed)};
             while (next->count() < deadline &&

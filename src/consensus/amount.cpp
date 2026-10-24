@@ -10,6 +10,8 @@
 
 #include <tinyformat.h>
 
+#include <charconv>
+
 using namespace std::string_view_literals;
 
 // RPCs retain atom precision; a wallet's two-decimal display is a separate UI
@@ -32,13 +34,22 @@ Amount::operator UniValue() const {
     const auto &currency = Currency::get();
     int64_t quotient = *this / currency.baseunit;
     int64_t remainder = (*this % currency.baseunit) / currency.subunit;
+    char buf[64];
+    char *p = buf;
     if (amount < 0) {
+        *p++ = '-';
         quotient = -quotient;
         remainder = -remainder;
     }
+    p = std::to_chars(p, buf + sizeof(buf), quotient).ptr;
+    *p++ = '.';
+    for (int i = currency.decimals - 1; i >= 0; --i) {
+        p[i] = static_cast<char>('0' + (remainder % 10));
+        remainder /= 10;
+    }
+    p += currency.decimals;
     return UniValue(UniValue::VNUM,
-                    strprintf("%s%d.%0*d", amount < 0 ? "-" : "", quotient,
-                              currency.decimals, remainder));
+                    std::string(buf, static_cast<size_t>(p - buf)));
 }
 
 std::optional<Amount> Amount::CheckedAdd(const Amount &other) const noexcept {
