@@ -16,11 +16,13 @@
 #include <netmessagemaker.h>
 #include <node/metrics.h>
 #include <txmempool.h>
+#include <util/parallel_range.h>
 #include <validation.h>
 
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <mutex>
 #include <unordered_set>
 
@@ -1656,11 +1658,66 @@ void V2PeerProtocolHandler::HandleGetShortTx(
     }
 }
 
+ShortTxResponse DecodeShortTxResponse(DataStream &stream) {
+    ShortTxResponse response;
+    stream >> response.scope >> response.context_id;
+    const uint64_t count = ReadCompactSize(stream);
+    if (count > ShortTxResponse::MAX_TXS) {
+        throw std::ios_base::failure("SHORTTX transaction count exceeds limit");
+    }
+
+    // Reuse the transaction decoder's exact structural scanner. Its spans
+    // borrow the receive buffer until all synchronous workers have finished.
+    // This pass neither copies script bytes nor constructs transactions in the
+    // shared tier. Hosts extending the wire grammar extend that same scanner.
+    std::vector<TransactionWire> wires;
+    wires.reserve(count);
+    auto remaining = Span<const uint8_t>{UCharCast(stream.data()), stream.size()};
+    size_t consumed = 0;
+    for (uint64_t i = 0; i < count; ++i) {
+        auto wire = ScanTransactionWire(remaining);
+        consumed += wire.bytes.size();
+        remaining = remaining.subspan(wire.bytes.size());
+        wires.push_back(wire);
+    }
+
+    response.txs.resize(count);
+    std::vector<std::exception_ptr> errors(count);
+    auto decode = [&](size_t begin, size_t end) {
+        for (size_t i = begin; i < end; ++i) {
+            try {
+                auto tx = MakeTransactionRef(wires[i]);
+                // Keep null/coinbase rejection in the existing handler. The
+                // preparation is context-free and never admits a transaction.
+                if (tx) {
+                    (void)tx->GetId();
+                    PrecomputedBatchTxData regular;
+                    PrecomputeSingleTxData(*tx, regular);
+                }
+                response.txs[i] = std::move(tx);
+            } catch (...) {
+                errors[i] = std::current_exception();
+            }
+        }
+    };
+    if (count >= 8) {
+        util::GetParallelRangeExecutor().Run(count, 1, decode, 8);
+    } else {
+        decode(0, count);
+    }
+    // Worker scheduling must not select which exception reaches the caller.
+    for (const auto &error : errors) {
+        if (error) std::rethrow_exception(error);
+    }
+    stream.ignore(consumed);
+    return response;
+}
+
 void V2PeerProtocolHandler::HandleShortTx(
     CNode &pfrom, DataStream &vRecv, std::chrono::microseconds time_received) {
     ShortTxResponse resp;
     try {
-        vRecv >> resp;
+        resp = DecodeShortTxResponse(vRecv);
     } catch (const std::exception &) {
         if (!CheckPeerRateLimit(pfrom.GetId(), time_received)) {
             return;

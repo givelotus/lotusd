@@ -229,6 +229,11 @@ struct ShortTxResponse {
     }
 };
 
+/** Decode bounded SHORTTX bodies in wire order, warming transaction caches.
+ * Leaves any trailing message bytes unread, like ShortTxResponse deserialization.
+ */
+ShortTxResponse DecodeShortTxResponse(DataStream &stream);
+
 /**
  * GF(2^64) arithmetic modulo P(z) = z^64 + z^4 + z^3 + z + 1 (0x1b).
  * Used for 2-element syndrome decoding and s5 checksum verification in
