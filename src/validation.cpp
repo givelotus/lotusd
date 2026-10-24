@@ -3416,20 +3416,24 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
     // AcceptToMemoryPool does for the coins it fetches).
     std::vector<std::vector<COutPoint>> fetched(n);
     uint32_t script_flags = 0;
+    const CTxMemPool *native_pool = nullptr;
 
-    // Native entries are never eligible for legacy advisory precomputation.
-    // Mixed batches retain ordinary staging; every batch still runs Phase C.
+    // Native entries never reuse legacy execution verdicts. They may warm
+    // signatures from immutable snapshots; Phase C validates current state.
     const bool has_legacy = std::any_of(txs.begin(), txs.end(),
         [](const auto &tx) { return tx->nVersion != 7; });
-    // Phase A: resolve spent outputs under the locks only when useful.
-    if (has_legacy) {
+    const bool has_native = std::any_of(txs.begin(), txs.end(),
+        [](const auto &tx) { return tx->nVersion == 7; });
+    // Phase A also captures the node-owned pool for native snapshot identity.
+    if (has_legacy || has_native) {
         const auto start = SteadyClock::now();
         LOCK(cs_main);
         const auto acquired = SteadyClock::now();
         local.lock_wait += acquired - start;
         Chainstate &chainstate = chainman.ActiveChainstate();
         CTxMemPool *pool = chainstate.GetMempool();
-        if (pool != nullptr) {
+        native_pool = pool;
+        if (pool != nullptr && has_legacy) {
             script_flags = GetMempoolScriptFlags(chainstate);
             verify = MemPoolAccept(*pool, chainstate)
                          .PrepareStaged(txs, checks, fetched, script_flags,
@@ -3442,11 +3446,12 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
     std::vector<size_t> work;
     work.reserve(n);
     for (size_t i = 0; i < n; ++i) {
-        if (verify[i]) {
+        if (verify[i] || (native_pool && txs[i]->nVersion == 7)) {
             work.push_back(i);
         }
     }
-    local.precomputed = work.size();
+    // Count reusable legacy verdicts, not native signature-only hints.
+    local.precomputed = std::count(verify.begin(), verify.end(), true);
     if (!work.empty()) {
         const auto start = SteadyClock::now();
         ValidationCache &validation_cache = chainman.m_validation_cache;
@@ -3458,8 +3463,25 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
                  k < work.size();
                  k = next.fetch_add(1, std::memory_order_relaxed)) {
                 const size_t i = work[k];
-                ComputeAdmissionChecks(*txs[i], script_flags, validation_cache,
-                                       checks[i]);
+                if (txs[i]->nVersion == 7) {
+                    std::optional<std::vector<Coin>> coins;
+                    uint32_t native_flags{0};
+                    // Snapshot-only: never take cs_main inside this pool.
+                    // A locked batch caller can itself be waiting for the
+                    // pool dispatcher. Missing coverage stays authoritative
+                    // in Phase C instead of falling back to a lock here.
+                    if (PrepareNativeCryptoFromSnapshot(
+                            chainman, *txs[i], native_pool, options.limits,
+                            coins, native_flags) && coins) {
+                        WarmNativeAdmissionSignatures(
+                            *txs[i], *coins, native_flags,
+                            chainman.GetParams().V2ChainId(),
+                            validation_cache.m_signature_cache);
+                    }
+                } else {
+                    ComputeAdmissionChecks(*txs[i], script_flags, validation_cache,
+                                           checks[i]);
+                }
             }
         });
         local.verify_unlocked = SteadyClock::now() - start;

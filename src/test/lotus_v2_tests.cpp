@@ -692,6 +692,71 @@ BOOST_FIXTURE_TEST_CASE(v2_native_crypto_warmup_keeps_authoritative_context,
     BOOST_CHECK_EQUAL(m_node.mempool->size(), 0U);
 }
 
+BOOST_FIXTURE_TEST_CASE(v2_staged_native_signatures_warm_before_authoritative_commit,
+                        TestChain100Setup) {
+    using namespace lotus::v2;
+    const auto program = NativeBenchmarkProgram();
+    Output output;
+    output.value = 1000000;
+    output.branches = {BranchLeaf(program)};
+    output.paths = {{0}};
+    const auto coin = CTxOut::FromV2Output(output);
+    const auto funding = MineV2Coinbase({coin, coin, coin});
+    WITH_LOCK(cs_main, ::node::PublishChainTipSnapshot(
+        *m_node.chainman, m_node.mempool.get()));
+    std::vector<CTransactionRef> txs;
+    for (uint32_t i = 0; i < 3; ++i) {
+        auto tx = NativeBenchmarkSpend(*funding, i,
+            {funding->vout[i].nValue - 10000 * SATOSHI});
+        if (i == 1) tx.vin[0].vWitnesses[0].arguments[0][10] ^= 1;
+        txs.push_back(MakeTransactionRef(std::move(tx)));
+    }
+    auto &cache = m_node.chainman->m_validation_cache.m_signature_cache;
+    std::array<uint256, 3> entries;
+    for (size_t i = 0; i < txs.size(); ++i) {
+        lotus::v2::Hash message{};
+        std::string error;
+        BOOST_REQUIRE_MESSAGE(SigningMessage(
+            txs[i]->ToV2Transaction(), DefaultTxProfile,
+            m_node.chainman->GetParams().V2ChainId(),
+            {funding->vout[i].ToV2Output()}, 0, 0, 0, std::nullopt,
+            message, error), error);
+        cache.ComputeBip340Entry(entries[i], message,
+            txs[i]->vin[0].vWitnesses[0].arguments[0],
+            std::span<const uint8_t>(program.data() + 1, 32), false);
+        BOOST_REQUIRE(!cache.Get(entries[i], false));
+    }
+    StagedAdmissionOptions options;
+    options.script_threads = 2;
+    options.test_between_phases = [&] {
+        AssertLockNotHeld(cs_main);
+        BOOST_CHECK(cache.Get(entries[0], false));
+        BOOST_CHECK(!cache.Get(entries[1], false));
+        BOOST_CHECK(cache.Get(entries[2], false));
+        BOOST_CHECK_EQUAL(m_node.mempool->size(), 0U);
+        // A valid warmed signature must not authorize a changed input value.
+        LOCK(cs_main);
+        auto &view = m_node.chainman->ActiveChainstate().CoinsTip();
+        const COutPoint previous(funding->GetId(), 2);
+        const auto old = view.GetCoin(previous);
+        BOOST_REQUIRE(old.has_value());
+        auto changed = old->GetTxOut().ToV2Output();
+        --changed.value;
+        BOOST_REQUIRE(view.SpendCoin(previous));
+        view.AddCoin(previous, ::Coin(CTxOut::FromV2Output(changed),
+            old->GetHeight(), old->IsCoinBase()), false);
+    };
+    StagedAdmissionStats stats;
+    const auto results = AcceptToMemoryPoolStaged(*m_node.chainman, txs, options, &stats);
+    BOOST_REQUIRE_EQUAL(results.size(), 3U);
+    for (const auto &result : results) BOOST_REQUIRE(result.has_value());
+    BOOST_CHECK(results[0]->m_result_type == MempoolAcceptResult::ResultType::VALID);
+    BOOST_CHECK(results[1]->m_result_type != MempoolAcceptResult::ResultType::VALID);
+    BOOST_CHECK(results[2]->m_result_type != MempoolAcceptResult::ResultType::VALID);
+    BOOST_CHECK_EQUAL(stats.precomputed, 0U); // Native execution verdicts are not reused.
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), 1U);
+}
+
 BOOST_FIXTURE_TEST_CASE(v2_snapshot_crypto_warmup_is_advisory,
                         TestChain100Setup) {
     using namespace lotus::v2;
