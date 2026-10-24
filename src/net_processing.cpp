@@ -740,6 +740,11 @@ struct Peer {
     /** A non-transaction message read while transactions were pending. */
     std::optional<CNetMessage>
         m_tx_admission_held_msg GUARDED_BY(NetEventsInterface::g_msgproc_mutex);
+    // Declared before held bodies so destruction releases the bodies first.
+    /** Compact-response reservations follow held bodies through disconnect. */
+    std::vector<node::TxAdmissionRetainedBudget::Reservation>
+        m_tx_admission_held_budgets GUARDED_BY(NetEventsInterface::g_msgproc_mutex);
+
     /**
      * Transactions that could not be queued yet, in arrival order: an
      * earlier copy is still in admission (handled after that copy's verdict,
@@ -747,10 +752,6 @@ struct Peer {
      */
     std::deque<CTransactionRef>
         m_tx_admission_held_txs GUARDED_BY(NetEventsInterface::g_msgproc_mutex);
-
-    /** Compact-response reservations follow held bodies through disconnect. */
-    std::vector<node::TxAdmissionRetainedBudget::Reservation>
-        m_tx_admission_held_budgets GUARDED_BY(NetEventsInterface::g_msgproc_mutex);
 
     /** A coalesced decode failure, handled after its decoded prefix. */
     std::exception_ptr m_tx_admission_exception
