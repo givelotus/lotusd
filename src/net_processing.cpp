@@ -222,10 +222,10 @@ static constexpr DataRequestParameters TX_REQUEST_PARAMS{
  * answered is retried from another announcer after 2 s rather than 60 s.
  */
 static constexpr DataRequestParameters SHORTID_REQUEST_PARAMS{
-    5000,                            // max_peer_request_in_flight
+    8192,                            // max_peer_request_in_flight
     100000,                          // max_peer_announcements
-    std::chrono::milliseconds{200},  // nonpref_peer_delay
-    std::chrono::milliseconds{2000}, // overloaded_peer_delay
+    std::chrono::milliseconds{10},   // nonpref_peer_delay
+    std::chrono::milliseconds{20},   // overloaded_peer_delay
     std::chrono::seconds(2),         // getdata_interval
     NetPermissionFlags::Relay,       // bypass_request_limits_permissions
 };
@@ -4474,7 +4474,8 @@ void PeerManagerImpl::ProcessShortTxResponse(
             }
         }
         bool any_queued = false;
-        size_t clear_limit = txs.size();
+        std::vector<size_t> cleared_indices;
+        cleared_indices.reserve(txs.size());
         for (size_t i = 0; i < txs.size(); ++i) {
             const auto &tx = txs[i];
             if (!tx) continue;
@@ -4483,6 +4484,7 @@ void PeerManagerImpl::ProcessShortTxResponse(
                  m_tx_admission_inflight.count(tx->GetId()))) {
                 PrepareTxAdmission(node, tx, &epochs,
                                    /*request_cleared=*/true);
+                cleared_indices.push_back(i);
                 continue;
             }
             const std::span<const TxId> tx_keys =
@@ -4494,18 +4496,15 @@ void PeerManagerImpl::ProcessShortTxResponse(
                 !QueueTxForAdmission(node, peer, tx, /*count_full=*/true,
                                      /*notify=*/false, &epochs, &sender,
                                      /*request_cleared=*/true, tx_keys)) {
-                if (clear_limit == txs.size()) {
-                    clear_limit = i;
-                }
                 peer->m_tx_admission_held_txs.push_back(tx);
             } else {
+                cleared_indices.push_back(i);
                 any_queued = true;
             }
         }
-        if (clear_limit > 0 && TxRequestSize() > 0) {
+        if (!cleared_indices.empty() && TxRequestSize() > 0) {
             LOCK(cs_txrequest);
-            for (size_t i = 0; i < clear_limit; ++i) {
-                if (!txs[i]) continue;
+            for (const size_t i : cleared_indices) {
                 m_txrequest.ReceivedResponse(node.GetId(), txs[i]->GetId());
                 if (m_txrequest.Size() > 0) {
                     for (size_t e = 0; e < n_epochs; ++e) {
@@ -10630,13 +10629,32 @@ bool PeerManagerImpl::ProcessMessages(const Config &config, CNode *pfrom,
             const auto sender =
                 std::make_shared<TxAdmissionSender>(*pfrom, peer);
             bool any_queued = false;
+            std::vector<CTransactionRef> drained_txs;
             while (!peer->m_tx_admission_held_txs.empty() &&
                    QueueTxForAdmission(*pfrom, peer,
                                        peer->m_tx_admission_held_txs.front(),
                                        /*count_full=*/false,
-                                       /*notify=*/false, &epochs, &sender)) {
+                                       /*notify=*/false, &epochs, &sender,
+                                       /*request_cleared=*/true)) {
+                drained_txs.push_back(
+                    std::move(peer->m_tx_admission_held_txs.front()));
                 peer->m_tx_admission_held_txs.pop_front();
                 any_queued = true;
+            }
+            if (!drained_txs.empty() && TxRequestSize() > 0) {
+                LOCK(cs_txrequest);
+                for (const auto &tx : drained_txs) {
+                    const TxId &txid = tx->GetId();
+                    m_txrequest.ReceivedResponse(pfrom->GetId(), txid);
+                    if (m_txrequest.Size() > 0) {
+                        for (const txrelay::EpochKey &epoch : epochs) {
+                            m_txrequest.ForgetInvId(
+                                TxId{txrelay::ShortIdRequestKey(
+                                    epoch.epoch_id,
+                                    m_txrelay_index.ShortId(epoch, txid))});
+                        }
+                    }
+                }
             }
             const bool held_empty = peer->m_tx_admission_held_txs.empty();
             if (held_empty) {

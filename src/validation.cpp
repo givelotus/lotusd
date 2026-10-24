@@ -1572,7 +1572,8 @@ public:
     AcceptRawTxBatch(
         const std::vector<CTransactionRef> &txns, ATMPArgs &args,
         const CFeeRate &max_raw_tx_fee_rate,
-        std::vector<PrecomputedBatchTxData> *precomputed_batch = nullptr)
+        std::vector<PrecomputedBatchTxData> *precomputed_batch = nullptr,
+        bool mark_unbroadcast = false)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     /**
@@ -1723,7 +1724,8 @@ private:
                        std::map<TxId, MempoolAcceptResult> &results,
                        bool scripts_already_verified = false,
                        std::vector<PrecomputedBatchTxData> *precomputed_batch_out =
-                           nullptr)
+                           nullptr,
+                       bool mark_unbroadcast = false)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     // Compare a package's feerate against minimum allowed.
@@ -2496,7 +2498,8 @@ bool MemPoolAccept::SubmitPackage(
     PackageValidationState &package_state,
     std::map<TxId, MempoolAcceptResult> &results,
     bool scripts_already_verified,
-    std::vector<PrecomputedBatchTxData> *precomputed_batch_out) {
+    std::vector<PrecomputedBatchTxData> *precomputed_batch_out,
+    bool mark_unbroadcast) {
     AssertLockHeld(cs_main);
     AssertLockHeld(m_pool.cs);
     CTxMemPool::ScopedSnapshotDefer snap_defer(m_pool);
@@ -2575,7 +2578,20 @@ bool MemPoolAccept::SubmitPackage(
 
     // It may or may not be the case that all the transactions made it into the
     // mempool. Regardless, make sure we haven't exceeded max mempool size.
+    const size_t size_before_limit = m_pool.size();
     m_pool.LimitSize(m_active_chainstate.CoinsTip());
+
+    if (mark_unbroadcast && all_submitted) {
+        if (m_pool.size() == size_before_limit) {
+            m_pool.AddUnbroadcastItersBatch(batch_iters);
+        } else {
+            for (const Workspace &ws : workspaces) {
+                if (m_pool.exists(ws.m_ptx->GetId())) {
+                    m_pool.AddUnbroadcastTx(ws.m_ptx->GetId());
+                }
+            }
+        }
+    }
 
     if (precomputed_batch_out != nullptr &&
         precomputed_batch_out->size() == workspaces.size() &&
@@ -2898,7 +2914,8 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(
 PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
     const std::vector<CTransactionRef> &txns, ATMPArgs &args,
     const CFeeRate &max_raw_tx_fee_rate,
-    std::vector<PrecomputedBatchTxData> *precomputed_batch) {
+    std::vector<PrecomputedBatchTxData> *precomputed_batch,
+    bool mark_unbroadcast) {
     AssertLockHeld(cs_main);
 
     PackageValidationState package_state;
@@ -3288,7 +3305,8 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
                 return PackageMempoolAcceptResult(package_state, std::move(results));
             }
         }
-        if (!args.m_test_accept && !ws.m_v2_produced_records) {
+        if (!args.m_test_accept && !ws.m_v2_produced_records &&
+            !ws.m_v2_pre_coins_matched) {
             ScriptCacheKey consensusKey(
                 *ws.m_ptx, ws.m_next_block_script_verify_flags,
                 val_cache.ScriptExecutionCacheHasher());
@@ -3341,7 +3359,8 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
     }
 
     SubmitPackage(args, workspaces, package_state, results,
-                  /*scripts_already_verified=*/true, precomputed_batch);
+                  /*scripts_already_verified=*/true, precomputed_batch,
+                  mark_unbroadcast);
     cleanup_views();
     return PackageMempoolAcceptResult(package_state, std::move(results));
 }
@@ -3808,6 +3827,7 @@ void PrecomputeSingleTxData(const CTransaction &tx,
     out.regular_tx_valid = CheckRegularTransaction(tx, out.regular_tx_state);
     if (out.regular_tx_valid) {
         (void)tx.GetPrecomputedData();
+        (void)RecursiveDynamicUsage(tx);
     }
 }
 
@@ -4130,7 +4150,8 @@ ProcessRawTxBatch(
     Chainstate &active_chainstate, CTxMemPool &pool,
     const Package &package, bool test_accept,
     const CFeeRate &max_raw_tx_fee_rate,
-    std::vector<PrecomputedBatchTxData> *precomputed_batch) {
+    std::vector<PrecomputedBatchTxData> *precomputed_batch,
+    bool mark_unbroadcast) {
     AssertLockHeld(cs_main);
     assert(!package.empty());
     assert(std::all_of(package.cbegin(), package.cend(),
@@ -4143,7 +4164,7 @@ ProcessRawTxBatch(
     PackageMempoolAcceptResult result =
         MemPoolAccept(pool, active_chainstate)
             .AcceptRawTxBatch(package, args, max_raw_tx_fee_rate,
-                              precomputed_batch);
+                              precomputed_batch, mark_unbroadcast);
     if (!test_accept) {
         if (result.m_tx_results.empty() && precomputed_batch != nullptr) {
             if (auto *metrics = node::GetNodeMetrics()) {

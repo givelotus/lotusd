@@ -202,6 +202,30 @@ public:
     }
 
     /**
+     * Visit all leaves in the top-level child slot `top_child_idx` (0..15)
+     * in ascending radix order, passing `const T &` while holding an RCU read
+     * lock without per-leaf atomic refcount increments/decrements.
+     */
+    template <typename Callable>
+    bool forEachTopChildBorrowed(size_t top_child_idx, Callable &&func) const {
+        if (top_child_idx >= CHILD_PER_LEVEL) {
+            return true;
+        }
+        RCULock lock;
+        RadixElement e = root.load();
+        if (e.isLeaf()) {
+            const T *leaf = e.getLeaf();
+            if (leaf != nullptr &&
+                childIndex(TOP_LEVEL, getId(*leaf)) == top_child_idx) {
+                return func(*leaf);
+            }
+            return true;
+        }
+        return forEachLeafBorrowed(e.getNode()->getChild(top_child_idx)->load(),
+                                   func);
+    }
+
+    /**
      * Visit all leaves with key >= lower_bound_key in ascending radix order,
      * pruning subtrees strictly below lower_bound_key in O(depth).
      */
@@ -451,6 +475,22 @@ private:
         return e.getNode()->forEachChild(
             [&](const std::atomic<RadixElement> *pElement) {
                 return forEachLeaf(pElement->load(), func);
+            });
+    }
+
+    template <typename Callable>
+    bool forEachLeafBorrowed(RadixElement e, Callable &&func) const {
+        if (e.isLeaf()) {
+            const T *leaf = e.getLeaf();
+            if (leaf != nullptr) {
+                return func(*leaf);
+            }
+            return true;
+        }
+
+        return e.getNode()->forEachChild(
+            [&](const std::atomic<RadixElement> *pElement) {
+                return forEachLeafBorrowed(pElement->load(), func);
             });
     }
 

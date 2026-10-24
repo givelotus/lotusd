@@ -1792,13 +1792,13 @@ static RPCHelpMan submitrawtxbatch() {
                     ProcessRawTxBatch(chainstate, mempool, txns,
                                       /*test_accept=*/false,
                                       max_raw_tx_fee_rate,
-                                      &precomputed_batch);
+                                      &precomputed_batch,
+                                      /*mark_unbroadcast=*/true);
 
                 if (res.m_state.IsValid() &&
                     (res.m_tx_results.size() == txns.size() ||
                      (!precomputed_batch.empty() &&
                       precomputed_batch[0].batch_accepted))) {
-                    mempool.AddUnbroadcastTxBatch(txns);
                     const auto cur_snap =
                         node::GetGlobalSnapshotPublisher().Load();
                     if (!cur_snap || !cur_snap->chain_valid ||

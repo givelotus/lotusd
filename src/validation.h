@@ -505,7 +505,8 @@ ProcessRawTxBatch(
     Chainstate &active_chainstate, CTxMemPool &pool,
     const Package &txns, bool test_accept,
     const CFeeRate &max_raw_tx_fee_rate = CFeeRate(Amount::zero()),
-    std::vector<PrecomputedBatchTxData> *precomputed_batch = nullptr)
+    std::vector<PrecomputedBatchTxData> *precomputed_batch = nullptr,
+    bool mark_unbroadcast = false)
     EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 /** Options for AcceptToMemoryPoolStaged. */

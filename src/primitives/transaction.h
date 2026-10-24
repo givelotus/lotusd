@@ -775,6 +775,17 @@ public:
      */
     unsigned int GetTotalSize() const { return m_serialize_size; }
 
+    uint32_t GetCachedDynamicUsage() const noexcept {
+        return m_cached_dynamic_usage.load(std::memory_order_relaxed);
+    }
+
+    void SetCachedDynamicUsage(size_t usage) const noexcept {
+        if (usage > 0 && usage <= UINT32_MAX) {
+            m_cached_dynamic_usage.store(static_cast<uint32_t>(usage),
+                                         std::memory_order_relaxed);
+        }
+    }
+
     bool IsCoinBase() const {
         return (vin.size() == 1 &&
                 (nVersion == 7 ? vin[0].nFlags == 2 : vin[0].prevout.IsNull()));
@@ -826,6 +837,7 @@ private:
      */
     enum : uint8_t { PRECOMPUTED_EMPTY, PRECOMPUTED_WRITING, PRECOMPUTED_READY };
     mutable std::atomic<uint8_t> m_precomputed_state{PRECOMPUTED_EMPTY};
+    mutable std::atomic<uint32_t> m_cached_dynamic_usage{0};
     mutable PrecomputedTransactionData m_precomputed;
 
     const PrecomputedTransactionData &FillPrecomputedData() const;

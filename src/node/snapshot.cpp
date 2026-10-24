@@ -23,6 +23,7 @@
 #include <streams.h>
 #include <timedata.h>
 #include <txmempool.h>
+#include <util/parallel_range.h>
 #include <util/strencodings.h>
 #include <util/time.h>
 #include <validation.h>
@@ -889,11 +890,34 @@ void ChainAndMempoolSnapshot::EnsureMempoolTxIds() const {
             return true;
         });
     } else if (mempool_ptr != nullptr) {
-        mempool_txids.reserve(mempool_size);
-        mempool_ptr->m_tx_tree.forEachLeaf([&](const auto &entry) {
-            mempool_txids.push_back(entry->GetTxId());
-            return true;
-        });
+        if (mempool_size >= 4096) {
+            std::array<std::vector<TxId>, 16> shards;
+            util::GetParallelRangeExecutor().Run(
+                16, /*grain=*/1, [&](size_t begin, size_t end) {
+                    for (size_t s = begin; s < end; ++s) {
+                        shards[s].reserve(mempool_size / 14 + 64);
+                        mempool_ptr->m_tx_tree.forEachTopChildBorrowed(
+                            s, [&](const CTxMemPoolEntry &entry) {
+                                shards[s].push_back(entry.GetTxId());
+                                return true;
+                            });
+                    }
+                });
+            size_t total = 0;
+            for (const auto &sh : shards) {
+                total += sh.size();
+            }
+            mempool_txids.reserve(total);
+            for (const auto &sh : shards) {
+                mempool_txids.insert(mempool_txids.end(), sh.begin(), sh.end());
+            }
+        } else {
+            mempool_txids.reserve(mempool_size);
+            mempool_ptr->m_tx_tree.forEachLeaf([&](const auto &entry) {
+                mempool_txids.push_back(entry->GetTxId());
+                return true;
+            });
+        }
     }
     mempool_txids_ready = true;
 }

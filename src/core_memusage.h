@@ -41,12 +41,16 @@ static inline size_t RecursiveDynamicUsage(const CTxOut &out) {
 }
 
 static inline size_t RecursiveDynamicUsage(const CTransaction &tx) {
+    if (const uint32_t cached = tx.GetCachedDynamicUsage()) {
+        return cached;
+    }
     // Input/output objects and long scripts share the transaction allocation.
     // Native witnesses, coinbase payloads, branches and paths retain separate
     // allocations; borrowed script storage itself reports zero dynamic usage.
     size_t mem = tx.GetStorageSize();
     for (const auto &input : tx.vin) mem += RecursiveDynamicUsage(input);
     for (const auto &output : tx.vout) mem += RecursiveDynamicUsage(output);
+    tx.SetCachedDynamicUsage(mem);
     return mem;
 }
 

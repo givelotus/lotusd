@@ -650,6 +650,8 @@ public:
     void AddUnbroadcastTx(const TxId &txid);
     void AddUnbroadcastTxBatch(std::span<const CTransactionRef> txs)
         EXCLUSIVE_LOCKS_REQUIRED(cs);
+    void AddUnbroadcastItersBatch(std::span<const txiter> iters)
+        EXCLUSIVE_LOCKS_REQUIRED(cs);
 
     /** Removes a transaction from the unbroadcast set */
     void RemoveUnbroadcastTx(const TxId &txid, const bool unchecked = false);

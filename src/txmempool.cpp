@@ -1328,6 +1328,35 @@ void CTxMemPool::AddUnbroadcastTxBatch(std::span<const CTransactionRef> txs) {
     }
 }
 
+void CTxMemPool::AddUnbroadcastItersBatch(std::span<const txiter> iters) {
+    AssertLockHeld(cs);
+    if (iters.empty()) {
+        return;
+    }
+    size_t added = 0;
+    {
+        StdLockGuard guard(m_unbroadcast_log_mutex);
+        m_unbroadcast_log.reserve(m_unbroadcast_log.size() + iters.size());
+        for (const txiter &it : iters) {
+            const CTxMemPoolEntry &entry = **it;
+            if (entry.SetUnbroadcast(true)) {
+                ++added;
+                const TxId &txid = entry.GetTxId();
+                m_unbroadcast_log.push_back(txid);
+                if (m_snapshot_defer_depth == 0) {
+                    MarkSnapshotEntryChanged(txid);
+                }
+            }
+        }
+    }
+    if (added > 0) {
+        m_unbroadcast_count.fetch_add(added, std::memory_order_relaxed);
+        if (!DeferSnapshotIfActive()) {
+            node::PublishMempoolSnapshot(*this);
+        }
+    }
+}
+
 std::set<TxId> CTxMemPool::GetUnbroadcastTxs() const {
     if (m_unbroadcast_count.load(std::memory_order_relaxed) == 0) {
         StdLockGuard guard(m_unbroadcast_log_mutex);
