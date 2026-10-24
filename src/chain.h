@@ -18,6 +18,7 @@
 #include <sync.h>
 #include <uint256.h>
 
+#include <atomic>
 #include <unordered_map>
 #include <vector>
 
@@ -143,8 +144,22 @@ public:
 class CChain {
 private:
     std::vector<CBlockIndex *> vChain;
+    std::atomic<CBlockIndex *> m_tip{nullptr};
 
 public:
+    CChain() = default;
+    CChain(const CChain &other)
+        : vChain(other.vChain),
+          m_tip(other.m_tip.load(std::memory_order_relaxed)) {}
+    CChain &operator=(const CChain &other) {
+        if (this != &other) {
+            vChain = other.vChain;
+            m_tip.store(other.m_tip.load(std::memory_order_relaxed),
+                        std::memory_order_release);
+        }
+        return *this;
+    }
+
     /**
      * Returns the index entry for the genesis block of this chain, or nullptr
      * if none.
@@ -157,7 +172,7 @@ public:
      * Returns the index entry for the tip of this chain, or nullptr if none.
      */
     CBlockIndex *Tip() const {
-        return vChain.size() > 0 ? vChain[vChain.size() - 1] : nullptr;
+        return m_tip.load(std::memory_order_acquire);
     }
 
     /**

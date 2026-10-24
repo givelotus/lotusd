@@ -12,6 +12,7 @@ void CChain::SetTip(CBlockIndex &block) {
         vChain[pindex->nHeight] = pindex;
         pindex = pindex->pprev;
     }
+    m_tip.store(&block, std::memory_order_release);
 }
 
 std::vector<BlockHash> LocatorEntries(const CBlockIndex *index) {
