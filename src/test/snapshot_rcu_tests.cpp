@@ -957,18 +957,32 @@ BOOST_AUTO_TEST_CASE(
             LOCK(::cs_main);
             node::PublishChainTipSnapshot(*m_node.chainman, m_node.mempool.get());
         }
+        std::vector<CTransactionRef> chain_txs;
         CTransactionRef chain_prev = m_coinbase_txns[0];
         Amount chain_val = chain_prev->vout[0].nValue;
         for (size_t i = 0; i < 24; ++i) {
             chain_val -= 2000 * SATOSHI;
             CMutableTransaction mtx = CreateNativeMempoolTransaction(chain_prev, 0, chain_val);
             chain_prev = MakeTransactionRef(mtx);
+            chain_txs.push_back(chain_prev);
         }
         BOOST_CHECK_EQUAL(m_node.mempool->size(), 24U);
         auto snap24 = publisher.Load();
         BOOST_REQUIRE(snap24 != nullptr);
         BOOST_CHECK_EQUAL(snap24->mempool_size, 24U);
         BOOST_CHECK_EQUAL(snap24->mempool_entries.size(), 24U);
+        for (size_t j = 0; j < chain_txs.size(); ++j) {
+            const auto *entry = snap24->FindMempoolEntry(chain_txs[j]->GetId());
+            BOOST_REQUIRE(entry != nullptr);
+            BOOST_CHECK_EQUAL(entry->depends.size(), j == 0 ? 0U : 1U);
+            BOOST_CHECK_EQUAL(entry->spentby.size(), j + 1 == chain_txs.size() ? 0U : 1U);
+            if (j > 0) {
+                BOOST_CHECK(entry->depends.front() == chain_txs[j - 1]->GetId());
+            }
+            if (j + 1 < chain_txs.size()) {
+                BOOST_CHECK(entry->spentby.front() == chain_txs[j + 1]->GetId());
+            }
+        }
         BOOST_CHECK_EQUAL(snap24->mining_template.non_coinbase_txs.size(), 24U);
         BOOST_CHECK(!snap24->mining_template.roots_ready);
 

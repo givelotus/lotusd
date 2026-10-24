@@ -153,19 +153,15 @@ MempoolEntrySnapshot MakeMempoolEntrySnapshot(const CTxMemPoolEntry &e,
     entry_snap.height = static_cast<int>(e.GetHeight());
 
     const auto &parents = e.GetMemPoolParentsConst();
-    if (!parents.empty()) {
-        std::set<std::string> set_depends;
-        for (const auto &parent : parents) {
-            set_depends.insert(parent.get()->GetTx().GetId().ToString());
-        }
-        entry_snap.depends.assign(set_depends.begin(), set_depends.end());
+    entry_snap.depends.reserve(parents.size());
+    for (const auto &parent : parents) {
+        entry_snap.depends.push_back(parent.get()->GetTx().GetId());
     }
 
     const auto &children = e.GetMemPoolChildrenConst();
     entry_snap.spentby.reserve(children.size());
     for (const auto &child : children) {
-        entry_snap.spentby.push_back(
-            child.get()->GetTx().GetId().ToString());
+        entry_snap.spentby.push_back(child.get()->GetTx().GetId());
     }
     // Sorted, as the depends list, so the order does not depend on
     // admission order.
@@ -298,7 +294,7 @@ void PopulateMempoolVectorsLocked(ChainAndMempoolSnapshot &snap,
             delta_spent.reserve(delta_count * 2);
             std::vector<MempoolEntrySnapshot> delta_entries;
             delta_entries.reserve(delta_count);
-            std::vector<std::pair<TxId, std::string>> parent_spentby_updates;
+            std::vector<std::pair<TxId, TxId>> parent_spentby_updates;
 
             for (auto it = new_begin; it != id_idx.end(); ++it) {
                 const CTxMemPoolEntry &e = **it;
@@ -314,7 +310,7 @@ void PopulateMempoolVectorsLocked(ChainAndMempoolSnapshot &snap,
                 for (const auto &parent : e.GetMemPoolParentsConst()) {
                     if (parent.get()->GetEntryId() <= prev_max_entry_id) {
                         parent_spentby_updates.emplace_back(
-                            parent.get()->GetTx().GetId(), txid.ToString());
+                            parent.get()->GetTx().GetId(), txid);
                     }
                 }
                 delta_entries.push_back(MakeMempoolEntrySnapshot(e, mempool));
@@ -342,7 +338,7 @@ void PopulateMempoolVectorsLocked(ChainAndMempoolSnapshot &snap,
                        delta_entries.end(),
                        std::back_inserter(snap.mempool_entries), entry_cmp);
 
-            for (auto &[parent_txid, child_txid_str] : parent_spentby_updates) {
+            for (auto &[parent_txid, child_txid] : parent_spentby_updates) {
                 auto pit = std::lower_bound(
                     snap.mempool_entries.begin(), snap.mempool_entries.end(),
                     parent_txid,
@@ -353,8 +349,8 @@ void PopulateMempoolVectorsLocked(ChainAndMempoolSnapshot &snap,
                     pit->txid == parent_txid) {
                     pit->spentby.insert(
                         std::upper_bound(pit->spentby.begin(),
-                                         pit->spentby.end(), child_txid_str),
-                        child_txid_str);
+                                         pit->spentby.end(), child_txid),
+                        child_txid);
                 }
             }
             RefreshUnbroadcast(snap.mempool_entries, mempool);
@@ -679,8 +675,7 @@ void PopulateMiningTemplate(ChainAndMempoolSnapshot &snap,
                 for (size_t child = 0; child < nodes.size(); ++child) {
                     for (const auto &parent :
                          nodes[child].entry->depends) {
-                        const auto pos =
-                            locations.find(TxId(uint256S(parent)));
+                        const auto pos = locations.find(parent);
                         if (pos != locations.end()) {
                             nodes[pos->second].children.push_back(child);
                         }
