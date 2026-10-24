@@ -1151,7 +1151,8 @@ private:
      */
     void ProcessInvalidTx(NodeId nodeid, const CTransactionRef &tx,
                           const TxValidationState &result,
-                          bool maybe_add_extra_compact_tx)
+                          bool maybe_add_extra_compact_tx,
+                          bool from_admission = false)
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, g_msgproc_mutex, cs_main);
 
     struct PackageToValidate {
@@ -1197,7 +1198,8 @@ private:
      * m_orphanage. Also queues the tx for relay (or appends to relay_batch).
      */
     void ProcessValidTx(NodeId nodeid, const CTransactionRef &tx,
-                        std::vector<CTransactionRef> *relay_batch = nullptr)
+                        std::vector<CTransactionRef> *relay_batch = nullptr,
+                        bool from_admission = false)
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, g_msgproc_mutex, cs_main);
 
     void ProcessSingleTx(CNode &pfrom, Peer &peer, const CTransactionRef &ptx,
@@ -1257,7 +1259,8 @@ private:
     std::deque<TxAdmissionDone>
         m_tx_admission_done GUARDED_BY(m_tx_admission_done_mutex);
     /** Transactions queued for or in admission, by txid. */
-    std::set<TxId> m_tx_admission_inflight GUARDED_BY(g_msgproc_mutex);
+    std::unordered_set<TxId, SaltedTxIdHasher>
+        m_tx_admission_inflight GUARDED_BY(g_msgproc_mutex);
     /**
      * Short-id request keys of transactions currently in
      * m_tx_admission_inflight, mapped to txid so INVSHORT announcements from
@@ -3497,12 +3500,13 @@ bool PeerManagerImpl::QueueTxForAdmission(CNode &pfrom, const PeerRef &peer,
         return true;
     }
     m_tx_admission_inflight.insert(txid);
-    for (const auto &epoch : m_txrelay_index.Epochs()) {
-        m_tx_admission_inflight_shortids.emplace(
-            TxId{txrelay::ShortIdRequestKey(
-                epoch.epoch_id, m_txrelay_index.ShortId(epoch, txid))},
-            txid);
-    }
+    m_txrelay_index.ForEachEpoch(
+        [&](const txrelay::EpochKey &epoch) EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+            m_tx_admission_inflight_shortids.emplace(
+                TxId{txrelay::ShortIdRequestKey(
+                    epoch.epoch_id, m_txrelay_index.ShortId(epoch, txid))},
+                txid);
+        });
     ++peer->m_tx_admission_pending;
     // g_msgproc_mutex serializes every producer; only the consumer can
     // change queue capacity after HasRoom, and it can only free space.
@@ -3553,12 +3557,14 @@ bool PeerManagerImpl::ProcessTxAdmissionDone() {
             if (m_tx_admission_inflight.empty()) {
                 m_tx_admission_inflight_shortids.clear();
             } else {
-                for (const auto &epoch : m_txrelay_index.Epochs()) {
-                    m_tx_admission_inflight_shortids.erase(
-                        TxId{txrelay::ShortIdRequestKey(
-                            epoch.epoch_id,
-                            m_txrelay_index.ShortId(epoch, txid))});
-                }
+                m_txrelay_index.ForEachEpoch(
+                    [&](const txrelay::EpochKey &epoch)
+                        EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+                            m_tx_admission_inflight_shortids.erase(
+                                TxId{txrelay::ShortIdRequestKey(
+                                    epoch.epoch_id,
+                                    m_txrelay_index.ShortId(epoch, txid))});
+                        });
             }
             Assume(peer.m_tx_admission_pending > 0);
             --peer.m_tx_admission_pending;
@@ -4305,10 +4311,11 @@ void PeerManagerImpl::ForgetShortIdRequests(const TxId &txid) {
     if (m_txrequest.Size() == 0) {
         return;
     }
-    for (const auto &epoch : m_txrelay_index.Epochs()) {
-        m_txrequest.ForgetInvId(TxId{txrelay::ShortIdRequestKey(
-            epoch.epoch_id, m_txrelay_index.ShortId(epoch, txid))});
-    }
+    m_txrelay_index.ForEachEpoch(
+        [&](const txrelay::EpochKey &epoch) EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+            m_txrequest.ForgetInvId(TxId{txrelay::ShortIdRequestKey(
+                epoch.epoch_id, m_txrelay_index.ShortId(epoch, txid))});
+        });
 }
 
 void PeerManagerImpl::MaybeDrainRelayQueue() {
@@ -5738,7 +5745,8 @@ void PeerManagerImpl::ProcessHeadersMessage(const Config &config, CNode &pfrom,
 void PeerManagerImpl::ProcessInvalidTx(NodeId nodeid,
                                        const CTransactionRef &ptx,
                                        const TxValidationState &state,
-                                       bool maybe_add_extra_compact_tx) {
+                                       bool maybe_add_extra_compact_tx,
+                                       bool from_admission) {
     AssertLockNotHeld(m_peer_mutex);
     AssertLockHeld(g_msgproc_mutex);
     AssertLockHeld(cs_main);
@@ -5768,7 +5776,9 @@ void PeerManagerImpl::ProcessInvalidTx(NodeId nodeid,
         m_recent_rejects.insert(txid);
     }
     m_txrequest.ForgetInvId(txid);
-    ForgetShortIdRequests(txid);
+    if (!from_admission) {
+        ForgetShortIdRequests(txid);
+    }
 
     if (maybe_add_extra_compact_tx && RecursiveDynamicUsage(*ptx) < 100000) {
         AddToCompactExtraTransactions(ptx);
@@ -5790,7 +5800,7 @@ void PeerManagerImpl::ProcessInvalidTx(NodeId nodeid,
 
 void PeerManagerImpl::ProcessValidTx(
     NodeId nodeid, const CTransactionRef &tx,
-    std::vector<CTransactionRef> *relay_batch) {
+    std::vector<CTransactionRef> *relay_batch, bool from_admission) {
     AssertLockNotHeld(m_peer_mutex);
     AssertLockHeld(g_msgproc_mutex);
     AssertLockHeld(cs_main);
@@ -5798,7 +5808,9 @@ void PeerManagerImpl::ProcessValidTx(
     // As this version of the transaction was acceptable, we can forget about
     // any requests for it. No-op if the tx is not in txrequest.
     m_txrequest.ForgetInvId(tx->GetId());
-    ForgetShortIdRequests(tx->GetId());
+    if (!from_admission) {
+        ForgetShortIdRequests(tx->GetId());
+    }
 
     m_mempool.withOrphanage([&tx](TxOrphanage &orphanage) {
         orphanage.AddChildrenToWorkSet(*tx);
@@ -5912,7 +5924,7 @@ void PeerManagerImpl::FinishTxAdmission(
     const TxValidationState &state = result.m_state;
 
     if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
-        ProcessValidTx(pfrom.GetId(), ptx, relay_batch);
+        ProcessValidTx(pfrom.GetId(), ptx, relay_batch, /*from_admission=*/true);
         pfrom.m_last_tx_time = GetTime<std::chrono::seconds>();
     } else if (state.GetResult() == TxValidationResult::TX_MISSING_INPUTS) {
         bool fRejectedParents = false;
@@ -5979,7 +5991,8 @@ void PeerManagerImpl::FinishTxAdmission(
     }
     if (state.IsInvalid()) {
         ProcessInvalidTx(pfrom.GetId(), ptx, state,
-                         /*maybe_add_extra_compact_tx=*/true);
+                         /*maybe_add_extra_compact_tx=*/true,
+                         /*from_admission=*/true);
     }
     if (state.GetResult() == TxValidationResult::TX_PACKAGE_RECONSIDERABLE) {
         LogEvent(BCLog::TXPACKAGES, "relay_orphan_reconsiderable_failure",

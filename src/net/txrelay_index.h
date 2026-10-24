@@ -119,6 +119,20 @@ public:
     std::optional<EpochKey> Current() const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
     /** The current and the previous epoch (those indexed) */
     std::vector<EpochKey> Epochs() const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    /** Invoke fn(const EpochKey&) for the current and previous epoch without allocating */
+    template <typename Fn>
+    void ForEachEpoch(Fn &&fn) const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
+        const auto snap = LoadEpochs();
+        if (!snap) {
+            return;
+        }
+        if (snap->current) {
+            fn(snap->current->key);
+        }
+        if (snap->previous) {
+            fn(snap->previous->key);
+        }
+    }
     /** The current or previous epoch named epoch_id, if indexed */
     std::optional<EpochKey> FindEpoch(const uint256 &epoch_id) const
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
