@@ -470,6 +470,8 @@ struct PrecomputedBatchTxData {
     TxValidationState regular_tx_state;
     bool regular_tx_checked{false};
     bool regular_tx_valid{false};
+    bool v2_fast_path_verified{false};
+    std::vector<CTxOut> v2_spent_outputs;
 };
 
 void PrecomputeSingleTxData(const CTransaction &tx,
@@ -479,9 +481,9 @@ void PrecomputeSingleTxData(const CTransaction &tx,
  * Pre-verify and warm SignatureCache for V2 fast-path transactions in a raw
  * transaction batch outside cs_main using the published RCU snapshot.
  */
-void PrewarmRawTxBatchSignatures(ChainstateManager &chainman,
-                                 const CTxMemPool &pool,
-                                 const Package &txns)
+void PrewarmRawTxBatchSignatures(
+    ChainstateManager &chainman, const CTxMemPool &pool, const Package &txns,
+    std::vector<PrecomputedBatchTxData> *precomputed_batch = nullptr)
     LOCKS_EXCLUDED(cs_main);
 
 /**

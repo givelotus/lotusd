@@ -1023,25 +1023,48 @@ std::optional<LockPoints> CalculateLockPointsFromResolvedCoins(
     CBlockIndex *tip, const CTransaction &tx,
     const std::vector<Coin> &resolved_inputs) {
     assert(tip);
-    std::vector<int> prev_heights(tx.vin.size());
+    int nMinHeight = -1;
+    int64_t nMinTime = -1;
+    const bool enforce_bip68 =
+        tx.nVersion >= 2 &&
+        (STANDARD_LOCKTIME_VERIFY_FLAGS & LOCKTIME_VERIFY_SEQUENCE);
+    const int next_height = tip->nHeight + 1;
     for (size_t i = 0; i < tx.vin.size(); ++i) {
         if (tx.vin[i].nFlags == 3) {
-            prev_heights[i] = 0;
             continue;
         }
         if (resolved_inputs[i].IsSpent()) {
             return std::nullopt;
         }
-        prev_heights[i] = resolved_inputs[i].GetHeight() == MEMPOOL_HEIGHT
-                              ? tip->nHeight + 1
-                              : resolved_inputs[i].GetHeight();
+        if (!enforce_bip68) {
+            continue;
+        }
+        const uint32_t seq = tx.vin[i].nSequence;
+        if (seq & CTxIn::SEQUENCE_LOCKTIME_DISABLE_FLAG) {
+            continue;
+        }
+        const int nCoinHeight = resolved_inputs[i].GetHeight() == MEMPOOL_HEIGHT
+                                    ? next_height
+                                    : resolved_inputs[i].GetHeight();
+        if (seq & CTxIn::SEQUENCE_LOCKTIME_TYPE_FLAG) {
+            const CBlockIndex *anc =
+                (nCoinHeight - 1 >= tip->nHeight)
+                    ? tip
+                    : Assert(tip->GetAncestor(std::max(nCoinHeight - 1, 0)));
+            const int64_t nCoinTime = anc->GetMedianTimePast();
+            nMinTime = std::max(
+                nMinTime,
+                nCoinTime +
+                    int64_t((seq & CTxIn::SEQUENCE_LOCKTIME_MASK)
+                            << CTxIn::SEQUENCE_LOCKTIME_GRANULARITY) -
+                    1);
+        } else {
+            nMinHeight = std::max(
+                nMinHeight,
+                nCoinHeight + int(seq & CTxIn::SEQUENCE_LOCKTIME_MASK) - 1);
+        }
     }
-    CBlockIndex next_tip;
-    next_tip.pprev = tip;
-    next_tip.nHeight = tip->nHeight + 1;
-    const auto [min_height, min_time] = CalculateSequenceLocks(
-        tx, STANDARD_LOCKTIME_VERIFY_FLAGS, prev_heights, next_tip);
-    return LockPoints{min_height, min_time};
+    return LockPoints{nMinHeight, nMinTime};
 }
 
 static inline bool ExtractTokenIdAndValueFast(const CTxOut &txout,
@@ -1842,7 +1865,7 @@ bool MemPoolAccept::PreChecksBatch(
     }
 
     if (mempool_nonempty) {
-        if (m_pool.mapTx.find(txid) != m_pool.mapTx.end()) {
+        if (m_pool.exists(txid)) {
             return state.Invalid(TxValidationResult::TX_DUPLICATE,
                                  "txn-already-in-mempool");
         }
@@ -2687,8 +2710,30 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
     ValidationCache &val_cache = GetValidationCache();
     std::vector<size_t> uncached_ws_indices;
     uncached_ws_indices.reserve(workspaces.size());
+    const bool std_deferred_only =
+        lotus::v2::DeferredCheckRegistry::Consensus().Kinds().size() == 2;
     for (size_t idx = 0; idx < workspaces.size(); ++idx) {
         Workspace &ws = workspaces[idx];
+        if (std_deferred_only && precomputed_batch != nullptr &&
+            idx < precomputed_batch->size() &&
+            (*precomputed_batch)[idx].v2_fast_path_verified) {
+            const auto &pre_outs = (*precomputed_batch)[idx].v2_spent_outputs;
+            if (pre_outs.size() == ws.m_resolved_inputs.size()) {
+                bool match = true;
+                for (size_t i = 0; i < pre_outs.size(); ++i) {
+                    if (ws.m_resolved_inputs[i].IsSpent() ||
+                        ws.m_resolved_inputs[i].GetTxOut() != pre_outs[i]) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) {
+                    ws.m_sig_checks_standard = 0;
+                    ws.m_v2_produced_records = false;
+                    continue;
+                }
+            }
+        }
         const CTransaction &tx = *ws.m_ptx;
         const uint32_t scriptVerifyFlags =
             ws.m_next_block_script_verify_flags | STANDARD_SCRIPT_VERIFY_FLAGS;
@@ -3384,9 +3429,9 @@ void PrecomputeSingleTxData(const CTransaction &tx,
     }
 }
 
-void PrewarmRawTxBatchSignatures(ChainstateManager &chainman,
-                                 const CTxMemPool &pool,
-                                 const Package &txns) {
+void PrewarmRawTxBatchSignatures(
+    ChainstateManager &chainman, const CTxMemPool &pool, const Package &txns,
+    std::vector<PrecomputedBatchTxData> *precomputed_batch) {
     AssertLockNotHeld(cs_main);
     if (txns.empty()) {
         return;
@@ -3428,6 +3473,12 @@ void PrewarmRawTxBatchSignatures(ChainstateManager &chainman,
     const lotus::v2::SmtNode *utxo_root = snapshot->tip_utxo_root.get();
     lotus::v2::BatchSigCollector collector;
     std::vector<Coin> coins;
+    const bool std_deferred_only =
+        lotus::v2::DeferredCheckRegistry::Consensus().Kinds().size() == 2;
+    std::vector<size_t> candidate_indices;
+    if (precomputed_batch != nullptr) {
+        candidate_indices.reserve(batch_count);
+    }
 
     for (size_t idx = 0; idx < batch_count; ++idx) {
         const CTransaction &tx = *txns[idx];
@@ -3502,11 +3553,11 @@ void PrewarmRawTxBatchSignatures(ChainstateManager &chainman,
             continue;
         }
         const auto shape = GetV2FastPathShape(tx, coins);
-        if (!shape || !shape->has_schnorr) {
+        if (!shape) {
             continue;
         }
         lotus::v2::Hash coins_root{};
-        if (shape->has_mode0) {
+        if (shape->has_schnorr && shape->has_mode0) {
             std::array<lotus::v2::Hash, 16> coin_leaves{};
             for (size_t i = 0; i < tx.vin.size(); ++i) {
                 const CTxOut &prev_out = coins[i].GetTxOut();
@@ -3517,27 +3568,49 @@ void PrewarmRawTxBatchSignatures(ChainstateManager &chainman,
                 std::span<const lotus::v2::Hash>(coin_leaves.data(),
                                                  tx.vin.size()));
         }
-        for (size_t i = 0; i < tx.vin.size(); ++i) {
-            if (!shape->is_schnorr_in[i]) {
-                continue;
+        bool sigs_staged_ok = true;
+        if (shape->has_schnorr) {
+            for (size_t i = 0; i < tx.vin.size(); ++i) {
+                if (!shape->is_schnorr_in[i]) {
+                    continue;
+                }
+                const lotus::v2::Hash msg = ComputeV2FastPathSighash(
+                    tx, coins, *shape, chain_id, coins_root, i);
+                const auto &w = tx.vin[i].vWitnesses[0];
+                const std::span<const uint8_t> pubkey(w.script.data() + 1, 32);
+                const std::span<const uint8_t> sig(w.arguments[0].data(),
+                                                   w.arguments[0].size());
+                uint256 sig_entry;
+                sig_cache.ComputeBip340Entry(sig_entry, msg, sig, pubkey, false);
+                if (!sig_cache.Get(sig_entry, /*erase=*/false)) {
+                    if (!collector.Add(pubkey, sig, msg, sig_entry.begin(),
+                                       /*store_in_cache=*/true)) {
+                        sigs_staged_ok = false;
+                        break;
+                    }
+                }
             }
-            const lotus::v2::Hash msg = ComputeV2FastPathSighash(
-                tx, coins, *shape, chain_id, coins_root, i);
-            const auto &w = tx.vin[i].vWitnesses[0];
-            const std::span<const uint8_t> pubkey(w.script.data() + 1, 32);
-            const std::span<const uint8_t> sig(w.arguments[0].data(),
-                                               w.arguments[0].size());
-            uint256 sig_entry;
-            sig_cache.ComputeBip340Entry(sig_entry, msg, sig, pubkey, false);
-            if (!sig_cache.Get(sig_entry, /*erase=*/false)) {
-                collector.Add(pubkey, sig, msg, sig_entry.begin(),
-                              /*store_in_cache=*/true);
+        }
+        if (sigs_staged_ok && std_deferred_only && !shape->has_state_output &&
+            precomputed_batch != nullptr && idx < precomputed_batch->size()) {
+            auto &pre = (*precomputed_batch)[idx];
+            pre.v2_spent_outputs.resize(coins.size());
+            for (size_t i = 0; i < coins.size(); ++i) {
+                pre.v2_spent_outputs[i] = coins[i].GetTxOut();
             }
+            candidate_indices.push_back(idx);
         }
     }
 
-    if (!collector.Empty() && collector.VerifyAll(/*num_threads=*/1)) {
+    bool batch_verified = collector.Empty();
+    if (!batch_verified && collector.VerifyAll(/*num_threads=*/1)) {
         sig_cache.SetBatch(collector);
+        batch_verified = true;
+    }
+    if (batch_verified && precomputed_batch != nullptr) {
+        for (const size_t idx : candidate_indices) {
+            (*precomputed_batch)[idx].v2_fast_path_verified = true;
+        }
     }
 }
 

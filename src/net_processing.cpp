@@ -722,8 +722,11 @@ struct Peer {
     /** Whether we consider this a preferred download peer. */
     std::atomic<bool> m_preferred_download{false};
 
-    /** Whether we've started headers synchronization with this peer. */
-    std::atomic<bool> m_sync_started{false};
+    /** Whether initial block-sync eligibility has been checked for this peer. */
+    std::atomic<bool> m_initial_sync_checked{false};
+    /** Last V2 known block hash processed in SendMessages for this peer. */
+    BlockHash m_last_v2_known_block
+        GUARDED_BY(NetEventsInterface::g_msgproc_mutex){};
 
     /** When to potentially disconnect peer for stalling headers download */
     std::chrono::microseconds m_headers_sync_timeout
@@ -1688,6 +1691,7 @@ private:
     GlobalMutex m_relay_queue_mutex;
     std::vector<RelayQueueEntry> m_relay_queue GUARDED_BY(m_relay_queue_mutex);
     std::atomic<std::chrono::microseconds> m_next_relay_drain{0us};
+    std::atomic<std::chrono::microseconds> m_last_relay_wake_tick{0us};
     uint64_t m_relay_admission_cursor GUARDED_BY(g_msgproc_mutex){0};
     uint64_t m_relay_last_removal_seq GUARDED_BY(g_msgproc_mutex){0};
     RelayInventoryWork m_relay_inventory_work GUARDED_BY(g_msgproc_mutex);
@@ -4039,7 +4043,11 @@ void PeerManagerImpl::RelayTransaction(const TxId &txid) {
     WITH_LOCK(m_relay_queue_mutex,
               m_relay_queue.push_back({txid, local, queued}));
     m_txrelay_wake.store(true, std::memory_order_relaxed);
-    if (queued >= m_next_relay_drain.load(std::memory_order_relaxed)) {
+    const auto next_drain = m_next_relay_drain.load(std::memory_order_relaxed);
+    if (queued >= next_drain &&
+        m_last_relay_wake_tick.exchange(next_drain,
+                                        std::memory_order_relaxed) !=
+            next_drain) {
         m_connman.WakeMessageHandler();
     }
 }
@@ -4070,7 +4078,11 @@ void PeerManagerImpl::RelayTransactionBatch(
         }
     }
     m_txrelay_wake.store(true, std::memory_order_relaxed);
-    if (queued >= m_next_relay_drain.load(std::memory_order_relaxed)) {
+    const auto next_drain = m_next_relay_drain.load(std::memory_order_relaxed);
+    if (queued >= next_drain &&
+        m_last_relay_wake_tick.exchange(next_drain,
+                                        std::memory_order_relaxed) !=
+            next_drain) {
         m_connman.WakeMessageHandler();
     }
 }
@@ -4336,7 +4348,9 @@ void PeerManagerImpl::ProcessShortTxResponse(
     size_t retained_bytes{0};
     for (const auto &tx : txs) {
         if (!tx) continue;
-        if (!force_relay && m_mempool.exists(tx->GetId())) {
+        if (!force_relay &&
+            (m_mempool.exists(tx->GetId()) ||
+             m_tx_admission_inflight.count(tx->GetId()))) {
             continue;
         }
         const size_t bytes = tx->GetTotalSize();
@@ -4359,7 +4373,9 @@ void PeerManagerImpl::ProcessShortTxResponse(
         bool any_queued = false;
         for (const auto &tx : txs) {
             if (!tx) continue;
-            if (!force_relay && m_mempool.exists(tx->GetId())) {
+            if (!force_relay &&
+                (m_mempool.exists(tx->GetId()) ||
+                 m_tx_admission_inflight.count(tx->GetId()))) {
                 PrepareTxAdmission(node, tx);
                 continue;
             }
@@ -11345,11 +11361,15 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
         WITH_LOCK(peer->m_block_inv_mutex,
                   return !peer->m_blocks_for_headers_relay.empty());
     const bool need_initial_sync =
-        !peer->m_sync_started.load(std::memory_order_relaxed) &&
+        !peer->m_initial_sync_checked.load(std::memory_order_relaxed) &&
         CanServeBlocks(*peer);
+    const auto v2_known_block =
+        m_v2_protocol_handler.GetLastPeerKnownBlock(pto->GetId());
+    const bool has_new_v2_known_block =
+        v2_known_block.has_value() &&
+        *v2_known_block != peer->m_last_v2_known_block;
     if (need_initial_sync || has_headers_to_relay ||
-        m_chainman.IsInitialBlockDownload() ||
-        m_v2_protocol_handler.GetLastPeerKnownBlock(pto->GetId()).has_value()) {
+        m_chainman.IsInitialBlockDownload() || has_new_v2_known_block) {
         LOCK(cs_main);
 
         CNodeState &state = *State(pto->GetId());
@@ -11406,7 +11426,6 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                         peer->m_starting_height);
 
                     state.fSyncStarted = true;
-                    peer->m_sync_started.store(true, std::memory_order_relaxed);
                     peer->m_headers_sync_timeout =
                         current_time + HEADERS_DOWNLOAD_TIMEOUT_BASE +
                         (
@@ -11420,14 +11439,9 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                             consensusParams.nPowTargetSpacing);
                     nSyncStarted++;
                 }
-            } else {
-                peer->m_sync_started.store(state.fSyncStarted,
-                                           std::memory_order_relaxed);
             }
-        } else {
-            peer->m_sync_started.store(state.fSyncStarted,
-                                       std::memory_order_relaxed);
         }
+        peer->m_initial_sync_checked.store(true, std::memory_order_relaxed);
 
         //
         // Try sending block announcements via headers
@@ -11456,6 +11470,7 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
             if (auto known_hash =
                     m_v2_protocol_handler.GetLastPeerKnownBlock(pto->GetId())) {
                 UpdateBlockAvailability(pto->GetId(), *known_hash);
+                peer->m_last_v2_known_block = *known_hash;
             }
             ProcessBlockAvailability(pto->GetId());
 
@@ -11745,7 +11760,8 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                 tx_relay->m_next_tx_tick =
                     NextRelayTick(tick_now, m_opts.txrelay_tick);
             }
-            const bool fSendTrickle = tick_now >= tx_relay->m_next_tx_tick;
+            const auto prev_next_tx_tick = tx_relay->m_next_tx_tick;
+            const bool fSendTrickle = tick_now >= prev_next_tx_tick;
             if (fSendTrickle) {
                 tx_relay->m_next_tx_tick =
                     NextRelayTick(tick_now, m_opts.txrelay_tick);
@@ -11796,7 +11812,17 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
             if (fSendTrickle) {
                 const CFeeRate filterrate{
                     tx_relay->m_fee_filter_received.load()};
-                const size_t tick_budget{TxRelayTickBudget()};
+                size_t elapsed_ticks = 1;
+                if (m_opts.txrelay_rate_max >= DEFAULT_TXRELAY_RATE_MAX &&
+                    m_opts.txrelay_tick > 0ms && prev_next_tx_tick > 0us &&
+                    tick_now >= prev_next_tx_tick) {
+                    elapsed_ticks = std::clamp<size_t>(
+                        static_cast<size_t>((tick_now - prev_next_tx_tick) /
+                                            m_opts.txrelay_tick) +
+                            1,
+                        1, 8);
+                }
+                const size_t tick_budget{TxRelayTickBudget() * elapsed_ticks};
                 size_t nRelayedTransactions = 0;
                 std::vector<std::pair<TxId, CTransactionRef>> vRelayTxs;
                 vRelayTxs.reserve(std::min(
@@ -12031,8 +12057,8 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                         // will also result in at least one more getheaders
                         // message to be sent to this peer (eventually).
                         state.fSyncStarted = false;
-                        peer->m_sync_started.store(false,
-                                                   std::memory_order_relaxed);
+                        peer->m_initial_sync_checked.store(
+                            false, std::memory_order_relaxed);
                         nSyncStarted--;
                         peer->m_headers_sync_timeout = 0us;
                     }

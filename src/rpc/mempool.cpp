@@ -1451,7 +1451,8 @@ static RPCHelpMan testrawtxbatch() {
             ChainstateManager &chainman = EnsureChainman(node);
             Chainstate &chainstate = chainman.ActiveChainstate();
 
-            PrewarmRawTxBatchSignatures(chainman, mempool, txns);
+            PrewarmRawTxBatchSignatures(chainman, mempool, txns,
+                                        &precomputed_batch);
 
             const PackageMempoolAcceptResult package_result = [&] {
                 LOCK(::cs_main);
@@ -1735,7 +1736,8 @@ static RPCHelpMan submitrawtxbatch() {
                 fee_ctrl.GetFeeRateInfo(now_ms);
             results_arr.reserve(txns.size());
 
-            PrewarmRawTxBatchSignatures(chainman, mempool, txns);
+            PrewarmRawTxBatchSignatures(chainman, mempool, txns,
+                                        &precomputed_batch);
 
             const PackageMempoolAcceptResult package_result = [&] {
                 LOCK2(::cs_main, mempool.cs);
