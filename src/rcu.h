@@ -60,15 +60,23 @@ class RCUInfos {
 
 class RCULock {
     RCUInfos *infos;
+    bool owns_lock{false};
 
-    explicit RCULock(RCUInfos *infosIn) : infos(infosIn) { infos->readLock(); }
+    explicit RCULock(RCUInfos *infosIn)
+        : infos(infosIn), owns_lock(!infosIn->isLocked()) {
+        if (owns_lock) {
+            infos->readLock();
+        }
+    }
     friend class RCUInfos;
 
 public:
     RCULock() : RCULock(&RCUInfos::infos) {}
     ~RCULock() {
-        infos->readFree();
-        infos->runCleanups();
+        if (owns_lock) {
+            infos->readFree();
+            infos->runCleanups();
+        }
     }
 
     RCULock(const RCULock &) = delete;

@@ -251,6 +251,7 @@ struct ChainAndMempoolSnapshot {
     mutable bool mining_template_ready{true};
 
     void EnsureMempoolTxIds() const;
+    std::string FormatMempoolTxIdsJsonArray() const;
     void EnsureMempoolVectors() const;
     void EnsureMiningTemplate() const;
 

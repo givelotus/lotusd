@@ -511,35 +511,12 @@ UniValue MempoolToJSON(const CTxMemPool &pool, bool verbose,
     } else {
         const auto snap_ptr = LoadOrInitMempoolSnapshot(pool);
         const node::ChainAndMempoolSnapshot &snap = *CHECK_NONFATAL(snap_ptr);
-        snap.EnsureMempoolTxIds();
         UniValue a(UniValue::VARR);
-        const size_t n = snap.mempool_txids.size();
-        if (n >= 4096) {
-            static constexpr char kHexDigits[16] = {
-                '0', '1', '2', '3', '4', '5', '6', '7',
-                '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
-            std::string raw;
-            raw.resize(n * 67 - 1);
-            util::GetParallelRangeExecutor().Run(
-                n, /*grain=*/2048, [&](size_t begin, size_t end) {
-                    char *base = raw.data();
-                    for (size_t i = begin; i < end; ++i) {
-                        char *dst = base + i * 67;
-                        dst[0] = '"';
-                        const uint8_t *p = snap.mempool_txids[i].data();
-                        for (int b = 0; b < 32; ++b) {
-                            const uint8_t v = p[31 - b];
-                            dst[1 + b * 2] = kHexDigits[v >> 4];
-                            dst[2 + b * 2] = kHexDigits[v & 0x0f];
-                        }
-                        dst[65] = '"';
-                        if (i + 1 < n) {
-                            dst[66] = ',';
-                        }
-                    }
-                });
-            a.setRawArrayStr(std::move(raw));
+        if (snap.mempool_size >= 4096) {
+            a.setRawArrayStr(snap.FormatMempoolTxIdsJsonArray());
         } else {
+            snap.EnsureMempoolTxIds();
+            const size_t n = snap.mempool_txids.size();
             a.reserve(n);
             for (const TxId &txid : snap.mempool_txids) {
                 a.push_back(txid.ToString());
@@ -1828,6 +1805,20 @@ static RPCHelpMan submitrawtxbatch() {
                                 return p.batch_accepted;
                             });
 
+            bool relayed_early = false;
+            if (all_allowed &&
+                (all_fast_accepted ||
+                 package_result.m_tx_results.size() == txns.size())) {
+                if (node.validation_signals && txns.size() <= 64) {
+                    node.validation_signals->SyncWithValidationInterfaceQueue();
+                }
+                if (node.peerman) {
+                    node.peerman->RelayTransactionBatch(txns,
+                                                        /*is_local=*/true);
+                }
+                relayed_early = true;
+            }
+
             if (all_fast_accepted) {
                 std::string raw_txids;
                 raw_txids.reserve(txns.size() * 67);
@@ -2029,7 +2020,7 @@ static RPCHelpMan submitrawtxbatch() {
                 }
             }
 
-            if (all_allowed) {
+            if (all_allowed && !relayed_early) {
                 if (node.validation_signals && txns.size() <= 64) {
                     node.validation_signals->SyncWithValidationInterfaceQueue();
                 }

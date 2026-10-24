@@ -309,6 +309,33 @@ void TxRelayIndex::AddBatch(std::span<const CTransactionRef> txs, Clock time) {
     }
 }
 
+void TxRelayIndex::AddTxIdBatch(std::span<const TxId> txids, Clock time) {
+    if (txids.empty()) {
+        return;
+    }
+    std::optional<EpochKey> precomputed_key;
+    std::vector<uint64_t> precomputed_short_ids;
+    if (!m_rebuilding.load(std::memory_order_acquire)) {
+        if (const auto snap{LoadEpochs()}; snap && snap->current) {
+            precomputed_key = snap->current->key;
+            precomputed_short_ids.resize(txids.size());
+            for (size_t i = 0; i < txids.size(); ++i) {
+                precomputed_short_ids[i] =
+                    ShortId(*precomputed_key, txids[i]);
+            }
+        }
+    }
+    LOCK(m_mutex);
+    const bool key_matches =
+        precomputed_key && m_current && m_current->key == *precomputed_key;
+    for (size_t i = 0; i < txids.size(); ++i) {
+        AddUnlocked(txids[i], time,
+                    key_matches
+                        ? std::optional<uint64_t>{precomputed_short_ids[i]}
+                        : std::nullopt);
+    }
+}
+
 void TxRelayIndex::RemoveFromEpoch(Epoch &epoch, const TxId &txid) {
     const auto removed_tx{epoch.short_id_of.extractEntry(txid)};
     if (!removed_tx) {

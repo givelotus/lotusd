@@ -1693,6 +1693,8 @@ private:
         bool local;
         //! When it was queued (relay tick clock)
         std::chrono::microseconds queued;
+        //! True if short-id indexing was deferred from RelayTransactionBatch
+        bool needs_index{false};
     };
     // GlobalMutex: taken from many call paths without lock annotations.
     GlobalMutex m_relay_queue_mutex;
@@ -4132,6 +4134,8 @@ void PeerManagerImpl::RelayTransactionBatch(
     if (txs.empty()) {
         return;
     }
+    const bool defer_index_to_drain =
+        is_local.value_or(false) && txs.size() >= 64;
     std::vector<bool> local(txs.size(), is_local.value_or(false));
     if (!is_local.has_value()) {
         for (size_t i = 0; i < txs.size(); ++i) {
@@ -4140,15 +4144,18 @@ void PeerManagerImpl::RelayTransactionBatch(
             }
         }
     }
-    const auto now{GetTime<std::chrono::microseconds>()};
-    m_txrelay_index.AddBatch(txs, now);
+    if (!defer_index_to_drain) {
+        const auto now{GetTime<std::chrono::microseconds>()};
+        m_txrelay_index.AddBatch(txs, now);
+    }
     const auto queued{RelayTickNow()};
     {
         LOCK(m_relay_queue_mutex);
         m_relay_queue.reserve(m_relay_queue.size() + txs.size());
         for (size_t i = 0; i < txs.size(); ++i) {
             if (txs[i]) {
-                m_relay_queue.push_back({txs[i]->GetId(), local[i], queued});
+                m_relay_queue.push_back(
+                    {txs[i]->GetId(), local[i], queued, defer_index_to_drain});
             }
         }
     }
@@ -4588,6 +4595,21 @@ void PeerManagerImpl::DrainRelayQueue() {
     }
     if (m_opts.txrelay_shortids && !m_txrelay_index.Current()) {
         UpdateRelayEpoch();
+    }
+    {
+        std::vector<TxId> deferred_txids;
+        for (const auto &item : batch) {
+            if (item.needs_index) {
+                if (deferred_txids.empty()) {
+                    deferred_txids.reserve(batch.size());
+                }
+                deferred_txids.push_back(item.txid);
+            }
+        }
+        if (!deferred_txids.empty()) {
+            m_txrelay_index.AddTxIdBatch(
+                deferred_txids, GetTime<std::chrono::microseconds>());
+        }
     }
 
     // Relay peers (handshake complete, accepting transactions), and for

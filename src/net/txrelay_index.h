@@ -141,6 +141,8 @@ public:
     void Add(const TxId &txid, Clock time) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
     void AddBatch(std::span<const CTransactionRef> txs, Clock time)
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    void AddTxIdBatch(std::span<const TxId> txids, Clock time)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
     /** A transaction left the mempool (the previous epoch keeps it) */
     void Remove(const TxId &txid) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 

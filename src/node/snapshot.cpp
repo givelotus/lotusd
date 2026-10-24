@@ -931,6 +931,88 @@ void ChainAndMempoolSnapshot::EnsureMempoolTxIds() const {
     mempool_txids_ready = true;
 }
 
+std::string ChainAndMempoolSnapshot::FormatMempoolTxIdsJsonArray() const {
+    static constexpr char kHexDigits[16] = {'0', '1', '2', '3', '4', '5',
+                                            '6', '7', '8', '9', 'a', 'b',
+                                            'c', 'd', 'e', 'f'};
+    auto format_txid = [](char *dst, const TxId &txid, bool trailing_comma) {
+        dst[0] = '"';
+        const uint8_t *p = txid.data();
+        for (int b = 0; b < 32; ++b) {
+            const uint8_t v = p[31 - b];
+            dst[1 + b * 2] = kHexDigits[v >> 4];
+            dst[2 + b * 2] = kHexDigits[v & 0x0f];
+        }
+        dst[65] = '"';
+        if (trailing_comma) {
+            dst[66] = ',';
+        }
+    };
+
+    if (!entry_tree && mempool_ptr != nullptr && mempool_size >= 4096) {
+        bool already_ready = false;
+        {
+            std::lock_guard<std::mutex> lock(*mempool_vectors_mutex);
+            already_ready = mempool_txids_ready || mempool_vectors_ready;
+        }
+        if (!already_ready) {
+            std::array<std::vector<TxId>, 16> shards;
+            util::GetParallelRangeExecutor().Run(
+                16, /*grain=*/1, [&](size_t begin, size_t end) {
+                    for (size_t s = begin; s < end; ++s) {
+                        shards[s].reserve(mempool_size / 14 + 64);
+                        mempool_ptr->m_tx_tree.forEachTopChildBorrowed(
+                            s, [&](const CTxMemPoolEntry &entry) {
+                                shards[s].push_back(entry.GetTxId());
+                                return true;
+                            });
+                    }
+                });
+            size_t total = 0;
+            std::array<size_t, 16> offsets{};
+            for (size_t s = 0; s < 16; ++s) {
+                offsets[s] = total;
+                total += shards[s].size();
+            }
+            if (total == 0) {
+                return {};
+            }
+            std::string raw;
+            raw.resize(total * 67 - 1);
+            util::GetParallelRangeExecutor().Run(
+                16, /*grain=*/1, [&](size_t begin, size_t end) {
+                    char *base = raw.data();
+                    for (size_t s = begin; s < end; ++s) {
+                        const auto &shard = shards[s];
+                        const size_t base_idx = offsets[s];
+                        for (size_t j = 0; j < shard.size(); ++j) {
+                            const size_t idx = base_idx + j;
+                            format_txid(base + idx * 67, shard[j],
+                                        idx + 1 < total);
+                        }
+                    }
+                });
+            return raw;
+        }
+    }
+
+    EnsureMempoolTxIds();
+    const size_t n = mempool_txids.size();
+    if (n == 0) {
+        return {};
+    }
+    std::string raw;
+    raw.resize(n * 67 - 1);
+    util::GetParallelRangeExecutor().Run(
+        n, /*grain=*/2048, [&](size_t begin, size_t end) {
+            char *base = raw.data();
+            for (size_t i = begin; i < end; ++i) {
+                format_txid(base + i * 67, mempool_txids[i], i + 1 < n);
+            }
+        });
+    return raw;
+}
+
 void ChainAndMempoolSnapshot::EnsureMempoolVectors() const {
     std::lock_guard<std::mutex> lock(*mempool_vectors_mutex);
     if (mempool_vectors_ready) return;
