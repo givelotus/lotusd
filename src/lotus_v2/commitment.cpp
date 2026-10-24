@@ -2,12 +2,13 @@
 
 #include "tagged_hash.h"
 
+#include <util/parallel_range.h>
+
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
 #include <vector>
 
-#include <future>
 
 namespace lotus::v2 {
 namespace {
@@ -84,15 +85,60 @@ Hash TransactionSubtreeA(std::span<const TxIdentityPair *> entries,
         });
     const auto left = entries.first(static_cast<size_t>(split - entries.begin()));
     const auto right = entries.subspan(left.size());
-    if (depth < 4 && entries.size() >= 64 && !left.empty() && !right.empty()) {
-        auto left_future = std::async(std::launch::async, [left, depth]() {
-            return TransactionSubtreeA(left, depth + 1);
-        });
-        const Hash right_hash = TransactionSubtreeA(right, depth + 1);
-        return TxNodeAtDepth(depth, left_future.get(), right_hash);
-    }
     return TxNodeAtDepth(depth, TransactionSubtreeA(left, depth + 1),
                          TransactionSubtreeA(right, depth + 1));
+}
+
+Hash ParallelTransactionSubtreeA(std::span<const TxIdentityPair *> entries) {
+    if (entries.size() < 64) return TransactionSubtreeA(entries, 0);
+
+    // Heap indices 1..31 describe the first four radix levels. Partition in
+    // tree order: TxKeyBit consumes the low bit first, not numeric nibble order.
+    std::array<std::span<const TxIdentityPair *>, 32> prefixes{};
+    std::array<Hash, 32> roots{};
+    prefixes[1] = entries;
+    for (unsigned depth = 0; depth < 4; ++depth) {
+        for (size_t node = size_t{1} << depth;
+             node < (size_t{1} << (depth + 1)); ++node) {
+            const auto prefix = prefixes[node];
+            if (prefix.size() <= 1) continue;
+            const auto split = std::partition(prefix.begin(), prefix.end(),
+                [depth](const TxIdentityPair *entry) {
+                    return !TxKeyBit(entry->tx_id, depth);
+                });
+            prefixes[2 * node] = prefix.first(split - prefix.begin());
+            prefixes[2 * node + 1] = prefix.subspan(prefixes[2 * node].size());
+        }
+    }
+    std::array<size_t, 16> occupied{};
+    size_t count = 0;
+    for (size_t node = 16; node < 32; ++node) {
+        if (prefixes[node].empty()) {
+            roots[node] = EmptyTxRoot();
+        } else {
+            occupied[count++] = node;
+        }
+    }
+    // Calls synchronously drain their disjoint pointer spans before folding.
+    // Contended submissions run inline; recursive subtrees never submit work.
+    util::GetParallelRangeExecutor().Run(count, 1, [&](size_t begin, size_t end) {
+        for (size_t i = begin; i < end; ++i) {
+            const size_t node = occupied[i];
+            roots[node] = TransactionSubtreeA(prefixes[node], 4);
+        }
+    }, /*max_participants=*/8);
+    for (unsigned depth = 4; depth-- > 0;) {
+        for (size_t node = size_t{1} << depth;
+             node < (size_t{1} << (depth + 1)); ++node) {
+            const auto prefix = prefixes[node];
+            // Empty and singleton prefixes stop at their original depth. An
+            // unconditional four-level fold would change path compression.
+            roots[node] = prefix.empty() ? EmptyTxRoot()
+                : prefix.size() == 1 ? TxLeaf(*prefix[0])
+                : TxNodeAtDepth(depth, roots[2 * node], roots[2 * node + 1]);
+        }
+    }
+    return roots[1];
 }
 
 Hash TransactionIdentity(HashDomain domain, const ChainId &chain_id,
@@ -282,7 +328,7 @@ bool TransactionRoot(std::span<const TxIdentityPair> transactions, Hash &out) {
     for (size_t i = 1; i < transactions.size(); ++i) {
         entries.push_back(&transactions[i]);
     }
-    const Hash subtree_a = TransactionSubtreeA(entries, 0);
+    const Hash subtree_a = ParallelTransactionSubtreeA(entries);
     out = TransactionRootFromSubtreeA(transactions[0], subtree_a);
     return true;
 }
@@ -304,7 +350,7 @@ Hash TransactionSubtreeARoot(
             throw std::invalid_argument("duplicate transaction identifier in subtree");
         }
     }
-    return TransactionSubtreeA(entries, 0);
+    return ParallelTransactionSubtreeA(entries);
 }
 
 Hash TransactionRootFromSubtreeA(const TxIdentityPair &coinbase_tx,
