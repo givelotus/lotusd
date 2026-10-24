@@ -90,11 +90,19 @@ public:
      */
     struct ImmutableSnapshotTag {};
 
-    RadixTree(const RadixTree &src, ImmutableSnapshotTag) : RadixTree() {
+    RadixTree(const RadixTree &src, ImmutableSnapshotTag) noexcept : RadixTree() {
         RCULock lock;
         RadixElement e = src.root.load();
         e.incrementRefCount();
         root = e;
+    }
+
+    /**
+     * Pin an O(1) Copy-on-Write snapshot of this tree without a global RCU
+     * synchronize() barrier. See ImmutableSnapshotTag for caller contract.
+     */
+    RadixTree pinSnapshot() const noexcept {
+        return RadixTree(*this, ImmutableSnapshotTag{});
     }
 
     RadixTree &operator=(const RadixTree &rhs) {
@@ -133,6 +141,16 @@ public:
      * Returns true if the value was inserted, false if it was already present.
      */
     bool insert(const RCUPtr<T> &value) { return insert(getId(*value), value); }
+
+    /**
+     * Insert a value into the tree, or replace an existing leaf with the same
+     * key using Copy-on-Write.
+     * Returns true if a new key was inserted, false if an existing key was
+     * replaced.
+     */
+    bool insertOrAssign(const RCUPtr<T> &value) {
+        return insertOrAssign(getId(*value), value);
+    }
 
     /**
      * Get the value corresponding to a key.
@@ -180,7 +198,53 @@ public:
 
     template <typename Callable> bool forEachLeaf(Callable &&func) const {
         RCULock lock;
-        return forEachLeaf(root.load(), std::move(func));
+        return forEachLeaf(root.load(), func);
+    }
+
+    /**
+     * Visit all leaves with key >= lower_bound_key in ascending radix order,
+     * pruning subtrees strictly below lower_bound_key in O(depth).
+     */
+    template <typename Callable>
+    bool forEachFrom(const KeyType &lower_bound_key, Callable &&func) const {
+        RCULock lock;
+        return forEachFrom(root.load(), TOP_LEVEL, lower_bound_key, true, func);
+    }
+
+    /**
+     * Descend prefix_nibbles 4-bit levels matching prefix_key and visit only
+     * leaves in that prefix subtree in ascending radix order.
+     */
+    template <typename Callable>
+    bool forEachPrefix(const KeyType &prefix_key, size_t prefix_nibbles,
+                       Callable &&func) const {
+        RCULock lock;
+        constexpr size_t TOTAL_NIBBLES = TOP_LEVEL + 1;
+        if (prefix_nibbles > TOTAL_NIBBLES) {
+            prefix_nibbles = TOTAL_NIBBLES;
+        }
+        RadixElement e = root.load();
+        uint32_t level = TOP_LEVEL;
+        for (size_t consumed = 0; consumed < prefix_nibbles;
+             ++consumed, --level) {
+            if (e.isLeaf()) {
+                T *leaf = e.getLeaf();
+                if (leaf == nullptr) {
+                    return true;
+                }
+                const KeyType &leafKey = getId(*leaf);
+                for (size_t i = 0; i < prefix_nibbles; ++i) {
+                    const uint32_t chk = TOP_LEVEL - static_cast<uint32_t>(i);
+                    if (childIndex(chk, leafKey) !=
+                        childIndex(chk, prefix_key)) {
+                        return true;
+                    }
+                }
+                return func(RCUPtr<T>::copy(leaf));
+            }
+            e = e.getNode()->get(level, prefix_key)->load();
+        }
+        return forEachLeaf(e, func);
     }
 
 #define SEEK_LEAF_LOOP()                                                       \
@@ -246,6 +310,34 @@ public:
 private:
     KeyType getId(const T &value) const { return Adapter::getId(value); }
 
+    static size_t childIndex(uint32_t level, const KeyType &key) {
+        if constexpr (BITS == 4 && requires { key.GetNibble(level); }) {
+            return key.GetNibble(level);
+        } else {
+            return size_t((key >> uint32_t(level * BITS)) & MASK);
+        }
+    }
+
+    static bool keyAtLeast(const KeyType &a, const KeyType &b) {
+        if constexpr (std::is_integral_v<KeyType>) {
+            using U = std::make_unsigned_t<KeyType>;
+            return static_cast<U>(a) >= static_cast<U>(b);
+        } else if constexpr (requires { a < b; }) {
+            return !(a < b);
+        } else {
+            for (uint32_t lvl = TOP_LEVEL;; --lvl) {
+                const size_t na = childIndex(lvl, a);
+                const size_t nb = childIndex(lvl, b);
+                if (na != nb) {
+                    return na > nb;
+                }
+                if (lvl == 0) {
+                    return true;
+                }
+            }
+        }
+    }
+
     bool insert(const KeyType &key, RCUPtr<T> value) {
         uint32_t level = TOP_LEVEL;
 
@@ -289,6 +381,60 @@ private:
         }
     }
 
+    bool insertOrAssign(const KeyType &key, RCUPtr<T> value) {
+        uint32_t level = TOP_LEVEL;
+
+        RCULock lock;
+        std::atomic<RadixElement> *eptr = &root;
+
+        while (true) {
+            SEEK_LEAF_LOOP();
+
+            // If the slot is empty, try to insert right there.
+            if (e.getLeaf() == nullptr) {
+                if (eptr->compare_exchange_strong(e,
+                                                  RadixElement(value.get()))) {
+                    value.release();
+                    return true;
+                }
+
+                // CAS failed, we may have a node in there now.
+                if (e.isNode()) {
+                    goto Node;
+                }
+            }
+
+            // Replace existing leaf with matching key via CoW.
+            T *oldLeaf = e.getLeaf();
+            const KeyType &leafKey = getId(*oldLeaf);
+            if (key == leafKey) {
+                if (oldLeaf == value.get()) {
+                    return false;
+                }
+                if (eptr->compare_exchange_strong(e,
+                                                  RadixElement(value.get()))) {
+                    value.release();
+                    RCUPtr<T>::acquire(oldLeaf);
+                    return false;
+                }
+                if (e.isNode()) {
+                    goto Node;
+                }
+                continue;
+            }
+
+            // There is an element there, but it isn't a subtree. We need to
+            // convert it into a subtree and resume insertion into that subtree.
+            auto newChild = std::make_unique<RadixNode>(level, leafKey, e);
+            if (eptr->compare_exchange_strong(e,
+                                              RadixElement(newChild.get()))) {
+                newChild.release();
+            } else {
+                newChild->get(level, leafKey)->store(RadixElement());
+            }
+        }
+    }
+
 #undef SEEK_LEAF_LOOP
 
     template <typename Callable>
@@ -306,6 +452,41 @@ private:
             [&](const std::atomic<RadixElement> *pElement) {
                 return forEachLeaf(pElement->load(), func);
             });
+    }
+
+    template <typename Callable>
+    bool forEachFrom(RadixElement e, uint32_t level,
+                     const KeyType &lower_bound_key, bool tight,
+                     Callable &&func) const {
+        if (!tight) {
+            return forEachLeaf(e, func);
+        }
+        if (e.isLeaf()) {
+            T *leaf = e.getLeaf();
+            if (leaf != nullptr && keyAtLeast(getId(*leaf), lower_bound_key)) {
+                return func(RCUPtr<T>::copy(leaf));
+            }
+            return true;
+        }
+        const RadixNode *node = e.getNode();
+        const size_t min_idx = childIndex(level, lower_bound_key);
+        const RadixElement tight_child = node->getChild(min_idx)->load();
+        if (level == 0) {
+            if (!forEachFrom(tight_child, 0, lower_bound_key, true, func)) {
+                return false;
+            }
+        } else {
+            if (!forEachFrom(tight_child, level - 1, lower_bound_key, true,
+                             func)) {
+                return false;
+            }
+        }
+        for (size_t i = min_idx + 1; i < CHILD_PER_LEVEL; ++i) {
+            if (!forEachLeaf(node->getChild(i)->load(), func)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     struct RadixElement {
@@ -434,13 +615,16 @@ private:
         RadixNode &operator=(const RadixNode &) = delete;
 
         std::atomic<RadixElement> *get(uint32_t level, const KeyType &key) {
-            // Optional numeric-nibble access avoids a full-width temporary.
-            // Other key types retain the generic shift/mask contract.
-            if constexpr (BITS == 4 && requires { key.GetNibble(level); }) {
-                return &children[key.GetNibble(level)];
-            } else {
-                return &children[(key >> uint32_t(level * BITS)) & MASK];
-            }
+            return &children[childIndex(level, key)];
+        }
+
+        const std::atomic<RadixElement> *get(uint32_t level,
+                                             const KeyType &key) const {
+            return &children[childIndex(level, key)];
+        }
+
+        const std::atomic<RadixElement> *getChild(size_t index) const {
+            return &children[index];
         }
 
         bool isShared() const { return refcount > 0; }
