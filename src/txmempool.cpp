@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 #include <vector>
 
 void CTxMemPool::CalculateAncestors(setEntries &setAncestors,
@@ -845,6 +846,28 @@ std::vector<TxMempoolInfo> CTxMemPool::infoAll() const {
     }
 
     return ret;
+}
+
+CTxMemPool::RelayAdmissions
+CTxMemPool::ReadRelayAdmissionsAfter(uint64_t cursor) const {
+    AssertLockHeld(cs);
+    RelayAdmissions result{nextEntryId - 1, {}};
+    if (cursor > result.watermark) {
+        throw std::invalid_argument("relay admission cursor exceeds watermark");
+    }
+    const auto &index = mapTx.get<entry_id>();
+    // Seek directly into the ordered ID index; do not enumerate/copy the
+    // prefix or reserve storage proportional to the entire mempool.
+    auto it = index.upper_bound(
+        cursor, [](uint64_t id, const CTxMemPoolEntryRef &entry) {
+            return id < entry->GetEntryId();
+        });
+    for (; it != index.end(); ++it) {
+        const auto &entry = *it;
+        result.entries.push_back({entry->GetTx().GetId(), entry->GetEntryId(),
+                                  entry->GetFee(), entry->GetTxSize()});
+    }
+    return result;
 }
 
 bool CTxMemPool::setAvalancheFinalized(const CTxMemPoolEntryRef &tx,

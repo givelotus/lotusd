@@ -592,6 +592,36 @@ public:
     TxMempoolInfo info(const TxId &txid) const;
     std::vector<TxMempoolInfo> infoAll() const;
 
+    /** Copied relay facts for one current admission, without body ownership. */
+    struct RelayAdmission {
+        TxId txid;
+        uint64_t entry_id;
+        Amount fee;
+        size_t vsize;
+    };
+    struct RelayAdmissions {
+        uint64_t watermark;
+        std::vector<RelayAdmission> entries;
+    };
+
+    /** Read currently-live admissions with entry_id > cursor, in ID order.
+     * The captured watermark includes IDs whose entries were since removed;
+     * clear() does not rewind it. Returned values own no iterators/body refs.
+     * Work is O(log(mempool size) + returned entries), not a full-pool scan.
+     *
+     * The cursor belongs to this pool's lifetime, starts at zero, and must not
+     * exceed its current watermark (otherwise throws std::invalid_argument).
+     * Hold cs continuously through this read. This relies on the current
+     * serialized ID assignment AND insertion: an allocated ID cannot publish
+     * later after a reader has advanced past it. Concurrent reservation before
+     * insertion would require a committed contiguous frontier or publication
+     * journal instead; an atomic allocation counter is not such a frontier.
+     * This is an admission suffix, not a removal/fee-update journal or proof
+     * of continued membership after cs is released.
+     */
+    RelayAdmissions ReadRelayAdmissionsAfter(uint64_t cursor) const
+        EXCLUSIVE_LOCKS_REQUIRED(cs);
+
     CFeeRate estimateFee() const;
 
     size_t DynamicMemoryUsage() const;
