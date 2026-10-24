@@ -10,6 +10,7 @@
 #include <sync.h>
 #include <util/time.h>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -17,6 +18,8 @@
 #include <deque>
 #include <map>
 #include <memory>
+#include <optional>
+#include <utility>
 #include <vector>
 
 namespace node {
@@ -27,6 +30,46 @@ static constexpr bool DEFAULT_PARALLEL_MEMPOOL{true};
 static constexpr int DEFAULT_PARALLEL_MEMPOOL_THREADS{0};
 /** Most script-check threads -parallelmempoolthreads may ask for. */
 static constexpr int MAX_PARALLEL_MEMPOOL_THREADS{64};
+
+/** Additional serialized-byte budget for decoded compact responses retained
+ * outside the primary queue. Reservations may outlive their budget owner. */
+class TxAdmissionRetainedBudget {
+    struct State {
+        const size_t limit;
+        std::atomic<size_t> used{0};
+        explicit State(size_t limit_in) : limit(limit_in) {}
+    };
+    std::shared_ptr<State> m_state;
+public:
+    class Reservation {
+        friend class TxAdmissionRetainedBudget;
+        std::shared_ptr<State> m_state;
+        size_t m_bytes;
+        Reservation(std::shared_ptr<State> state, size_t bytes)
+            : m_state(std::move(state)), m_bytes(bytes) {}
+    public:
+        Reservation(const Reservation &) = delete;
+        Reservation &operator=(const Reservation &) = delete;
+        Reservation(Reservation &&other) noexcept
+            : m_state(std::move(other.m_state)), m_bytes(other.m_bytes) {}
+        ~Reservation() {
+            if (m_state) m_state->used.fetch_sub(m_bytes, std::memory_order_relaxed);
+        }
+    };
+    explicit TxAdmissionRetainedBudget(size_t limit)
+        : m_state(std::make_shared<State>(limit)) {}
+    std::optional<Reservation> TryReserve(size_t bytes) {
+        size_t used = m_state->used.load(std::memory_order_relaxed);
+        do {
+            if (bytes > m_state->limit - used) return std::nullopt;
+        } while (!m_state->used.compare_exchange_weak(
+            used, used + bytes, std::memory_order_relaxed));
+        return Reservation{m_state, bytes};
+    }
+    size_t Used() const noexcept {
+        return m_state->used.load(std::memory_order_relaxed);
+    }
+};
 
 /** A received transaction waiting for mempool admission. */
 struct TxAdmissionItem {

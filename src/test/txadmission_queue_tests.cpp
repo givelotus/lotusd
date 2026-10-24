@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <map>
+#include <limits>
 #include <thread>
 #include <vector>
 
@@ -32,6 +33,47 @@ TxAdmissionItem Item(NodeId peer, uint32_t n) {
 } // namespace
 
 BOOST_FIXTURE_TEST_SUITE(txadmission_queue_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(retained_compact_bodies_share_a_lifetime_safe_byte_budget) {
+    node::TxAdmissionRetainedBudget budget{64};
+    auto a = budget.TryReserve(40);
+    BOOST_REQUIRE(a.has_value());
+    BOOST_CHECK(!budget.TryReserve(25));
+    auto b = budget.TryReserve(24);
+    BOOST_REQUIRE(b.has_value());
+    BOOST_CHECK_EQUAL(budget.Used(), 64U);
+    auto moved = std::move(*a);
+    a.reset();
+    BOOST_CHECK_EQUAL(budget.Used(), 64U);
+    b.reset();
+    BOOST_CHECK_EQUAL(budget.Used(), 40U);
+    BOOST_CHECK(budget.TryReserve(24).has_value());
+    BOOST_CHECK(!budget.TryReserve(std::numeric_limits<size_t>::max()));
+    // A disconnected peer can retain a reservation after its manager dies.
+    std::optional<node::TxAdmissionRetainedBudget::Reservation> surviving;
+    {
+        node::TxAdmissionRetainedBudget temporary{1};
+        surviving.emplace(std::move(*temporary.TryReserve(1)));
+    }
+    surviving.reset();
+}
+
+BOOST_AUTO_TEST_CASE(retained_compact_body_budget_is_bounded_across_threads) {
+    node::TxAdmissionRetainedBudget budget{64};
+    std::atomic<bool> over_limit{false};
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 8; ++i) {
+        threads.emplace_back([&] {
+            for (int j = 0; j < 2000; ++j) {
+                auto reservation = budget.TryReserve(17);
+                if (budget.Used() > 64) over_limit.store(true);
+            }
+        });
+    }
+    for (auto &thread : threads) thread.join();
+    BOOST_CHECK(!over_limit.load());
+    BOOST_CHECK_EQUAL(budget.Used(), 0U);
+}
 
 BOOST_AUTO_TEST_CASE(round_robin_keeps_per_peer_order) {
     TxAdmissionQueue q{{}};

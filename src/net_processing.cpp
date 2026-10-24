@@ -748,6 +748,10 @@ struct Peer {
     std::deque<CTransactionRef>
         m_tx_admission_held_txs GUARDED_BY(NetEventsInterface::g_msgproc_mutex);
 
+    /** Compact-response reservations follow held bodies through disconnect. */
+    std::vector<node::TxAdmissionRetainedBudget::Reservation>
+        m_tx_admission_held_budgets GUARDED_BY(NetEventsInterface::g_msgproc_mutex);
+
     /** A coalesced decode failure, handled after its decoded prefix. */
     std::exception_ptr m_tx_admission_exception
         GUARDED_BY(NetEventsInterface::g_msgproc_mutex);
@@ -1210,6 +1214,7 @@ private:
     };
 
     std::unique_ptr<node::TxAdmissionQueue> m_tx_admission_queue;
+    node::TxAdmissionRetainedBudget m_tx_admission_retained_budget{64U << 20};
     std::thread m_tx_admission_thread;
     std::atomic<bool> m_tx_admission_running{false};
     Mutex m_tx_admission_done_mutex;
@@ -4171,7 +4176,24 @@ void PeerManagerImpl::ProcessShortTxResponse(
     }
     // The handler already checked response bounds and request eligibility.
     // Use the same bounded admission/verdict path as ordinary TX messages.
-    if (m_tx_admission_running.load()) {
+    constexpr size_t retained_limit = 64U << 20;
+    size_t retained_bytes{0};
+    for (const auto &tx : txs) {
+        if (!tx) continue;
+        const size_t bytes = tx->GetTotalSize();
+        if (bytes > retained_limit - retained_bytes) {
+            retained_bytes = retained_limit + 1;
+            break;
+        }
+        retained_bytes += bytes;
+    }
+    auto reservation = m_tx_admission_running.load()
+        ? m_tx_admission_retained_budget.TryReserve(retained_bytes)
+        : std::nullopt;
+    // Reserve before queueing anything. If the extra retention budget is full,
+    // process this already-decoded response serially, retaining no extra FIFO.
+    if (reservation) {
+        peer->m_tx_admission_held_budgets.push_back(std::move(*reservation));
         for (const auto &tx : txs) {
             if (tx) AddKnownTx(*peer, tx->GetId());
         }
@@ -4185,8 +4207,11 @@ void PeerManagerImpl::ProcessShortTxResponse(
                 peer->m_tx_admission_held_txs.push_back(tx);
             }
         }
-        // At most one bounded response is retained: ProcessMessages drains
-        // held transactions before reading another frame from this peer.
+        // The primary queue accounts queued bodies. Keep the conservative
+        // whole-response reservation until all additional held bodies drain.
+        if (peer->m_tx_admission_held_txs.empty()) {
+            peer->m_tx_admission_held_budgets.clear();
+        }
         return;
     }
     // Serial control: orphan handling, 1p1c, reject caches and relay apply.
@@ -10050,6 +10075,9 @@ bool PeerManagerImpl::ProcessMessages(const Config &config, CNode *pfrom,
                                        peer->m_tx_admission_held_txs.front(),
                                        /*count_full=*/false)) {
                 peer->m_tx_admission_held_txs.pop_front();
+            }
+            if (peer->m_tx_admission_held_txs.empty()) {
+                peer->m_tx_admission_held_budgets.clear();
             }
             return peer->m_tx_admission_held_txs.empty() || admission_progress;
         }
