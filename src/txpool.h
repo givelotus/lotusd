@@ -11,6 +11,7 @@
 #include <sync.h>
 #include <util/time.h>
 
+#include <atomic>
 #include <chrono>
 #include <map>
 #include <set>
@@ -98,7 +99,13 @@ public:
         return m_pool_txs.size();
     }
 
+    /** Fast lock-free check whether the pool is empty */
+    bool Empty() const noexcept {
+        return m_size.load(std::memory_order_relaxed) == 0;
+    }
+
 protected:
+    std::atomic<size_t> m_size{0};
     /** The transaction kind as string, used for logging */
     const std::string txKind;
     /** Expiration time for transactions */

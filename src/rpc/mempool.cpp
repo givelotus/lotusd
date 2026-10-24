@@ -510,7 +510,7 @@ UniValue MempoolToJSON(const CTxMemPool &pool, bool verbose,
     } else {
         const auto snap_ptr = LoadOrInitMempoolSnapshot(pool);
         const node::ChainAndMempoolSnapshot &snap = *CHECK_NONFATAL(snap_ptr);
-        snap.EnsureMempoolVectors();
+        snap.EnsureMempoolTxIds();
         UniValue a(UniValue::VARR);
         const size_t n = snap.mempool_txids.size();
         if (n >= 4096) {

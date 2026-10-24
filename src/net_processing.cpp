@@ -91,7 +91,7 @@
  */
 static constexpr auto UNCONDITIONAL_RELAY_DELAY = 2min;
 /** Most transactions the admission thread takes into one staged batch. */
-static constexpr size_t TX_ADMISSION_MAX_BATCH{2560};
+static constexpr size_t TX_ADMISSION_MAX_BATCH{4096};
 /** How long the idle admission thread waits before checking for shutdown. */
 static constexpr auto TX_ADMISSION_IDLE_WAIT{100ms};
 /**
@@ -1280,7 +1280,8 @@ private:
      * wait (earlier copy in admission, or no room); the caller holds it.
      */
     bool QueueTxForAdmission(CNode &pfrom, const PeerRef &peer,
-                             const CTransactionRef &ptx, bool count_full)
+                             const CTransactionRef &ptx, bool count_full,
+                             bool notify = true)
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
                                  g_msgproc_mutex, cs_main);
@@ -2710,12 +2711,14 @@ ComputeRequestTime(const CNode &node,
                    const DataRequestParameters &requestParams,
                    std::chrono::microseconds current_time, bool preferred) {
     auto delay = std::chrono::microseconds{0};
+    const bool bypass_limits =
+        node.HasPermission(requestParams.bypass_request_limits_permissions);
 
-    if (!preferred) {
+    if (!preferred && !bypass_limits) {
         delay += requestParams.nonpref_peer_delay;
     }
 
-    if (!node.HasPermission(requestParams.bypass_request_limits_permissions) &&
+    if (!bypass_limits &&
         requestTracker.CountInFlight(node.GetId()) >=
             requestParams.max_peer_request_in_flight) {
         delay += requestParams.overloaded_peer_delay;
@@ -2775,7 +2778,9 @@ void PeerManagerImpl::AddTxAnnouncement(const CNode &node, const TxId &txid,
         return;
     }
 
-    const bool preferred = isPreferredDownloadPeer(node);
+    const bool preferred =
+        isPreferredDownloadPeer(node) ||
+        node.HasPermission(params.bypass_request_limits_permissions);
     auto reqtime =
         ComputeRequestTime(node, m_txrequest, params, current_time, preferred);
 
@@ -3483,7 +3488,7 @@ void PeerManagerImpl::ThreadTxAdmission() {
 
 bool PeerManagerImpl::QueueTxForAdmission(CNode &pfrom, const PeerRef &peer,
                                           const CTransactionRef &ptx,
-                                          bool count_full) {
+                                          bool count_full, bool notify) {
     AssertLockHeld(g_msgproc_mutex);
     AssertLockHeld(cs_main);
     const TxId &txid = ptx->GetId();
@@ -3513,9 +3518,10 @@ bool PeerManagerImpl::QueueTxForAdmission(CNode &pfrom, const PeerRef &peer,
     ++peer->m_tx_admission_pending;
     // g_msgproc_mutex serializes every producer; only the consumer can
     // change queue capacity after HasRoom, and it can only free space.
-    const bool pushed = m_tx_admission_queue->Push(node::TxAdmissionItem{
-        pfrom.GetId(), ptx, SteadyClock::now(),
-        std::make_shared<TxAdmissionSender>(pfrom, peer)});
+    const bool pushed = m_tx_admission_queue->Push(
+        node::TxAdmissionItem{pfrom.GetId(), ptx, SteadyClock::now(),
+                              std::make_shared<TxAdmissionSender>(pfrom, peer)},
+        notify);
     Assert(pushed);
     return true;
 }
@@ -3904,13 +3910,19 @@ bool PeerManagerImpl::AlreadyHaveTx(const TxId &txid,
         m_recent_rejects_package_reconsiderable.reset();
     }
 
-    if (m_mempool.withOrphanage([&txid](const TxOrphanage &orphanage) {
+    if (m_mempool.exists(txid)) {
+        return true;
+    }
+
+    if (m_mempool.HasOrphans() &&
+        m_mempool.withOrphanage([&txid](const TxOrphanage &orphanage) {
             return orphanage.HaveTx(txid);
         })) {
         return true;
     }
 
-    if (m_mempool.withConflicting([&txid](const TxConflicting &conflicting) {
+    if (m_mempool.HasConflicting() &&
+        m_mempool.withConflicting([&txid](const TxConflicting &conflicting) {
             return conflicting.HaveTx(txid);
         })) {
         return true;
@@ -3928,7 +3940,7 @@ bool PeerManagerImpl::AlreadyHaveTx(const TxId &txid,
         }
     }
 
-    return m_recent_rejects.contains(txid) || m_mempool.exists(txid);
+    return m_recent_rejects.contains(txid);
 }
 
 bool PeerManagerImpl::AlreadyHaveBlock(const BlockHash &block_hash) {
@@ -4276,24 +4288,33 @@ void PeerManagerImpl::ProcessShortTxResponse(
         for (const auto &tx : txs) {
             if (tx) AddKnownTx(*peer, tx->GetId());
         }
-        const auto waiting = SteadyClock::now();
-        LOCK(cs_main);
-        node::AdmissionLockTimer timer(waiting);
-        for (const auto &tx : txs) {
-            if (!tx) continue;
-            if (!force_relay && m_mempool.exists(tx->GetId())) {
-                PrepareTxAdmission(node, tx);
-                continue;
+        bool any_queued = false;
+        {
+            const auto waiting = SteadyClock::now();
+            LOCK(cs_main);
+            node::AdmissionLockTimer timer(waiting);
+            for (const auto &tx : txs) {
+                if (!tx) continue;
+                if (!force_relay && m_mempool.exists(tx->GetId())) {
+                    PrepareTxAdmission(node, tx);
+                    continue;
+                }
+                if (!peer->m_tx_admission_held_txs.empty() ||
+                    !QueueTxForAdmission(node, peer, tx, /*count_full=*/true,
+                                         /*notify=*/false)) {
+                    peer->m_tx_admission_held_txs.push_back(tx);
+                } else {
+                    any_queued = true;
+                }
             }
-            if (!peer->m_tx_admission_held_txs.empty() ||
-                !QueueTxForAdmission(node, peer, tx, /*count_full=*/true)) {
-                peer->m_tx_admission_held_txs.push_back(tx);
+            // The primary queue accounts queued bodies. Keep the conservative
+            // whole-response reservation until all additional held bodies drain.
+            if (peer->m_tx_admission_held_txs.empty()) {
+                peer->m_tx_admission_held_budgets.clear();
             }
         }
-        // The primary queue accounts queued bodies. Keep the conservative
-        // whole-response reservation until all additional held bodies drain.
-        if (peer->m_tx_admission_held_txs.empty()) {
-            peer->m_tx_admission_held_budgets.clear();
+        if (any_queued) {
+            m_tx_admission_queue->Notify();
         }
         return;
     }
@@ -5815,12 +5836,14 @@ void PeerManagerImpl::ProcessValidTx(
         ForgetShortIdRequests(tx->GetId());
     }
 
-    m_mempool.withOrphanage([&tx](TxOrphanage &orphanage) {
-        orphanage.AddChildrenToWorkSet(*tx);
-        // If it came from the orphanage, remove it. No-op if the tx is not in
-        // txorphanage.
-        orphanage.EraseTx(tx->GetId());
-    });
+    if (m_mempool.HasOrphans()) {
+        m_mempool.withOrphanage([&tx](TxOrphanage &orphanage) {
+            orphanage.AddChildrenToWorkSet(*tx);
+            // If it came from the orphanage, remove it. No-op if the tx is not in
+            // txorphanage.
+            orphanage.EraseTx(tx->GetId());
+        });
+    }
 
     LogDebug(
         BCLog::MEMPOOL,
@@ -5867,14 +5890,16 @@ bool PeerManagerImpl::PrepareTxAdmission(CNode &pfrom,
     m_txrequest.ReceivedResponse(pfrom.GetId(), txid);
     // Whichever way it came, it answers announcements of its short id.
     ForgetShortIdRequests(txid);
+    const bool already_have =
+        AlreadyHaveTx(txid, /*include_reconsiderable=*/true);
     if (auto *m{node::GetNodeMetrics()}) {
         m->txrelay_body_recv.Inc();
-        if (AlreadyHaveTx(txid, /*include_reconsiderable=*/true)) {
+        if (already_have) {
             m->txrelay_body_dup.Inc();
         }
     }
 
-    if (AlreadyHaveTx(txid, /*include_reconsiderable=*/true)) {
+    if (already_have) {
         if (pfrom.HasPermission(NetPermissionFlags::ForceRelay)) {
             if (!m_mempool.exists(tx.GetId())) {
                 LogInfoEvent(BCLog::ALL, "relay_forced_nonmempool_rejected",
@@ -7420,7 +7445,10 @@ void PeerManagerImpl::ProcessMessage(
         uint64_t missing{0};
         if (!missing_req_keys.empty()) {
             LOCK(cs_main);
-            const bool preferred = isPreferredDownloadPeer(pfrom);
+            const bool preferred =
+                isPreferredDownloadPeer(pfrom) ||
+                pfrom.HasPermission(
+                    SHORTID_REQUEST_PARAMS.bypass_request_limits_permissions);
             for (const TxId &req_key : missing_req_keys) {
                 if (!m_tx_admission_inflight_shortids.empty()) {
                     const auto it = m_tx_admission_inflight_shortids.find(req_key);
@@ -10283,19 +10311,29 @@ bool PeerManagerImpl::ProcessMessages(const Config &config, CNode *pfrom,
         // Transactions waiting for an earlier copy's verdict or for room in
         // the admission queue go first, in order.
         if (!peer->m_tx_admission_held_txs.empty()) {
-            const auto waiting = SteadyClock::now();
-            LOCK(cs_main);
-            node::AdmissionLockTimer timer(waiting);
-            while (!peer->m_tx_admission_held_txs.empty() &&
-                   QueueTxForAdmission(*pfrom, peer,
-                                       peer->m_tx_admission_held_txs.front(),
-                                       /*count_full=*/false)) {
-                peer->m_tx_admission_held_txs.pop_front();
+            bool any_queued = false;
+            bool held_empty = false;
+            {
+                const auto waiting = SteadyClock::now();
+                LOCK(cs_main);
+                node::AdmissionLockTimer timer(waiting);
+                while (!peer->m_tx_admission_held_txs.empty() &&
+                       QueueTxForAdmission(*pfrom, peer,
+                                           peer->m_tx_admission_held_txs.front(),
+                                           /*count_full=*/false,
+                                           /*notify=*/false)) {
+                    peer->m_tx_admission_held_txs.pop_front();
+                    any_queued = true;
+                }
+                held_empty = peer->m_tx_admission_held_txs.empty();
+                if (held_empty) {
+                    peer->m_tx_admission_held_budgets.clear();
+                }
             }
-            if (peer->m_tx_admission_held_txs.empty()) {
-                peer->m_tx_admission_held_budgets.clear();
+            if (any_queued) {
+                m_tx_admission_queue->Notify();
             }
-            return peer->m_tx_admission_held_txs.empty() || admission_progress;
+            return held_empty || admission_progress;
         }
         if (peer->m_tx_admission_exception) {
             if (peer->m_tx_admission_pending > 0) {
@@ -10428,6 +10466,7 @@ bool PeerManagerImpl::ProcessMessages(const Config &config, CNode *pfrom,
             for (const auto &ptx : received) {
                 AddKnownTx(*peer, ptx->GetId());
             }
+            bool any_queued = false;
             {
                 const auto waiting = SteadyClock::now();
                 LOCK(cs_main);
@@ -10435,10 +10474,16 @@ bool PeerManagerImpl::ProcessMessages(const Config &config, CNode *pfrom,
                 for (auto &ptx : received) {
                     if (!peer->m_tx_admission_held_txs.empty() ||
                         !QueueTxForAdmission(*pfrom, peer, ptx,
-                                             /*count_full=*/true)) {
+                                             /*count_full=*/true,
+                                             /*notify=*/false)) {
                         peer->m_tx_admission_held_txs.push_back(std::move(ptx));
+                    } else {
+                        any_queued = true;
                     }
                 }
+            }
+            if (any_queued) {
+                m_tx_admission_queue->Notify();
             }
             if (malformed) {
                 peer->m_tx_admission_exception = malformed;
@@ -11613,7 +11658,7 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                     // Read only a bounded top prefix, not the whole backlog.
                     // Previously selected refs + this chunk's refs <= the
                     // original successful-send budget, even on filtered runs.
-                    constexpr size_t MAX_SELECTION_CHUNK = 256;
+                    constexpr size_t MAX_SELECTION_CHUNK = 4096;
                     const auto prefix =
                         tx_relay->m_tx_inventory_to_send.PeekPrefix(std::min(
                             MAX_SELECTION_CHUNK,

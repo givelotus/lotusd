@@ -1301,7 +1301,9 @@ void CTxMemPool::AddUnbroadcastTxBatch(std::span<const CTransactionRef> txs) {
             if (entry && entry->SetUnbroadcast(true)) {
                 ++added;
                 m_unbroadcast_log.push_back(txid);
-                MarkSnapshotEntryChanged(txid);
+                if (m_snapshot_defer_depth == 0) {
+                    MarkSnapshotEntryChanged(txid);
+                }
             }
         }
     }
@@ -1366,6 +1368,9 @@ void CTxMemPool::FinishRemoveUnbroadcastBatch(std::span<const TxId> txids) {
         return;
     }
     m_unbroadcast_count.fetch_sub(txids.size(), std::memory_order_relaxed);
+    if (size() > 64) {
+        return;
+    }
     LOCK(cs);
     ScopedSnapshotDefer defer(*this);
     for (const TxId &txid : txids) {

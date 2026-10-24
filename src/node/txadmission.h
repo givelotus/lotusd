@@ -96,8 +96,8 @@ struct TxAdmissionItem {
 class TxAdmissionQueue {
 public:
     struct Limits {
-        size_t max_per_peer{4096};
-        size_t max_total{16384};
+        size_t max_per_peer{16384};
+        size_t max_total{32768};
         size_t max_total_bytes{64 << 20};
     };
 
@@ -122,10 +122,15 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /**
-     * Atomically check bounds and append, waking the consumer on success.
-     * HasRoom is advisory and does not reserve space for concurrent producers.
+     * Atomically check bounds and append, waking the consumer on success when
+     * `notify` is true. HasRoom is advisory and does not reserve space for
+     * concurrent producers.
      */
-    bool Push(TxAdmissionItem item) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    bool Push(TxAdmissionItem item, bool notify = true)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
+    /** Wake the consumer thread after a batch of unnotified Push() calls. */
+    void Notify() noexcept { m_cv.notify_one(); }
 
     /**
      * Take up to `max_items`, round-robin over peers, waiting up to `wait`

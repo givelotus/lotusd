@@ -128,6 +128,7 @@ private:
     std::vector<uint64_t> data;
     uint32_t nTweak;
     int nHashFuncs;
+    bool m_has_entries{false};
 };
 
 #endif // BITCOIN_COMMON_BLOOM_H

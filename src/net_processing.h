@@ -108,7 +108,7 @@ static constexpr size_t DEFAULT_TXRELAY_FANOUT_MAX{32};
  * next tick (nothing is dropped). Sized for 1M transactions per second
  * network-wide: target TPS x 2 / fan-out minimum.
  */
-static constexpr uint64_t DEFAULT_TXRELAY_RATE_MAX{250'000};
+static constexpr uint64_t DEFAULT_TXRELAY_RATE_MAX{500'000};
 
 /**
  * Default for -txrelayshortids: announce transactions with 8-byte short ids

@@ -40,6 +40,7 @@ bool TxPool::AddTx(const CTransactionRef &tx, NodeId peer) {
     for (const CTxIn &txin : tx->vin) {
         m_outpoint_to_tx_it[txin.prevout].insert(ret.first);
     }
+    m_size.store(m_pool_txs.size(), std::memory_order_relaxed);
 
     LogDebug(BCLog::TXPACKAGES,
              "stored %s tx %s, size: %u (mapsz %u outsz %u)\n", txKind,
@@ -89,6 +90,7 @@ int TxPool::EraseTxNoLock(const TxId &txid) {
     m_txs_list.pop_back();
 
     m_pool_txs.erase(it);
+    m_size.store(m_pool_txs.size(), std::memory_order_relaxed);
     return 1;
 }
 
