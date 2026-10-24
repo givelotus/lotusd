@@ -614,6 +614,62 @@ BOOST_AUTO_TEST_CASE(tree_traversal) {
     BOOST_CHECK(!ret);
 }
 
+BOOST_AUTO_TEST_CASE(uint256_nibbles_match_full_width_shift) {
+    auto check = [](const arith_uint256 &value) {
+        const Uint256RadixKey key{value};
+        for (uint32_t level = 0; level < 64; ++level) {
+            BOOST_TEST_CONTEXT("value=" << value.GetHex() << " level=" << level) {
+                const uint32_t expected =
+                    static_cast<uint32_t>((value >> (level * 4)).GetLow64() & 15);
+                BOOST_CHECK_EQUAL(value.GetNibble(level), expected);
+                BOOST_CHECK_EQUAL(key.GetNibble(level), expected);
+            }
+        }
+        BOOST_CHECK_EQUAL(value.GetNibble(64), 0U);
+        BOOST_CHECK_EQUAL(key.GetNibble(std::numeric_limits<uint32_t>::max()), 0U);
+    };
+    check(arith_uint256(0));
+    check(~arith_uint256(0));
+    check(UintToArith256(uint256S(
+        "0123456789abcdeffedcba98765432100f1e2d3c4b5a69788796a5b4c3d2e1f0")));
+    check(UintToArith256(uint256S(
+        "aaaaaaaa55555555aaaaaaaa55555555aaaaaaaa55555555aaaaaaaa55555555")));
+    for (unsigned bit = 0; bit < 256; ++bit) {
+        check(arith_uint256(1) << bit);
+    }
+    FastRandomContext rng{true};
+    for (unsigned i = 0; i < 128; ++i) check(UintToArith256(rng.rand256()));
+}
+
+BOOST_AUTO_TEST_CASE(uint256_tree_splits_at_every_nibble) {
+    using E = TestElementUint256;
+    for (unsigned level = 0; level < 64; ++level) {
+        BOOST_TEST_CONTEXT("split level=" << level) {
+            RadixTree<E> tree;
+            const arith_uint256 shared = UintToArith256(uint256S(
+                "c86420fedba9753113579bdf02468acefedcba98765432100123456789abcdef"));
+            const arith_uint256 mask = arith_uint256(15) << (level * 4);
+            std::vector<RCUPtr<E>> entries;
+            // Each trial starts with one leaf, then diverges only at the
+            // selected nibble. Include every possible child slot.
+            for (unsigned nibble = 0; nibble < 16; ++nibble) {
+                const auto key = (shared & ~mask) |
+                    (arith_uint256(nibble) << (level * 4));
+                entries.push_back(RCUPtr<E>::make(ArithToUint256(key)));
+                BOOST_REQUIRE(tree.insert(entries.back()));
+            }
+            for (const auto &entry : entries) {
+                BOOST_CHECK(tree.get(entry->getId()) == entry);
+                BOOST_CHECK(!tree.insert(entry));
+            }
+            for (const auto &entry : entries) {
+                BOOST_REQUIRE(tree.remove(entry->getId()));
+                BOOST_CHECK(!tree.get(entry->getId()));
+            }
+        }
+    }
+}
+
 BOOST_AUTO_TEST_CASE(uint256_key_equality_compares_high_bits) {
     for (uint64_t low : {uint64_t{0}, uint64_t{0x0123456789abcdef}}) {
         const Uint256RadixKey original{arith_uint256(low)};

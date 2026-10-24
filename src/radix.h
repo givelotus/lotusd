@@ -434,7 +434,13 @@ private:
         RadixNode &operator=(const RadixNode &) = delete;
 
         std::atomic<RadixElement> *get(uint32_t level, const KeyType &key) {
-            return &children[(key >> uint32_t(level * BITS)) & MASK];
+            // Optional numeric-nibble access avoids a full-width temporary.
+            // Other key types retain the generic shift/mask contract.
+            if constexpr (BITS == 4 && requires { key.GetNibble(level); }) {
+                return &children[key.GetNibble(level)];
+            } else {
+                return &children[(key >> uint32_t(level * BITS)) & MASK];
+            }
         }
 
         bool isShared() const { return refcount > 0; }

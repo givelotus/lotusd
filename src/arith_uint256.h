@@ -264,6 +264,12 @@ public:
     arith_uint256(const base_uint<256> &b) : base_uint<256>(b) {}
     arith_uint256(uint64_t b) : base_uint<256>(b) {}
 
+    /** Numeric nibble indexed from the least significant end; zero past bit 255. */
+    uint32_t GetNibble(uint32_t index) const {
+        if (index >= 64) return 0;
+        return (pn[index / 8] >> (4 * (index % 8))) & 0x0fU;
+    }
+
     /**
      * The "compact" format is a representation of a whole number N using an
      * unsigned 32bit number similar to a floating point format.
