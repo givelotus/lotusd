@@ -6,6 +6,7 @@
 #include <merkleblock.h>
 
 #include <consensus/consensus.h>
+#include <consensus/merkle.h>
 #include <hash.h>
 
 std::vector<uint8_t> BitsToBytes(const std::vector<bool> &bits) {
@@ -180,6 +181,7 @@ CPartialMerkleTree::CPartialMerkleTree() : nTransactions(0), fBad(true) {}
 uint256 CPartialMerkleTree::ExtractMatches(std::vector<uint256> &vMatch,
                                            std::vector<size_t> &vnIndex) {
     vMatch.clear();
+    vnIndex.clear();
 
     // An empty set will not work
     if (nTransactions == 0) {
@@ -228,4 +230,61 @@ uint256 CPartialMerkleTree::ExtractMatches(std::vector<uint256> &vMatch,
     }
 
     return hashMerkleRoot;
+}
+
+MerkleBlockVerifyResult VerifyMerkleBlockAgainstAuthenticatedBlock(
+    CMerkleBlock &merkle_block, const CBlock &block,
+    const BlockHash &expected_block_hash, const CBlockHeader &expected_header,
+    const uint32_t expected_num_txs, std::vector<uint256> &matched_out) {
+    matched_out.clear();
+
+    if (expected_num_txs == 0 || block.GetHash() != expected_block_hash ||
+        expected_header.GetHash() != expected_block_hash ||
+        block.hashMerkleRoot != expected_header.hashMerkleRoot ||
+        block.vtx.size() != expected_num_txs) {
+        return MerkleBlockVerifyResult::CORRUPT_BLOCK;
+    }
+
+    std::vector<uint256> txids;
+    txids.reserve(block.vtx.size());
+    for (const auto &tx : block.vtx) {
+        if (!tx) {
+            return MerkleBlockVerifyResult::CORRUPT_BLOCK;
+        }
+        txids.push_back(tx->GetId());
+    }
+
+    bool mutated = false;
+    if (BlockMerkleRoot(block, &mutated) != expected_header.hashMerkleRoot ||
+        mutated) {
+        return MerkleBlockVerifyResult::CORRUPT_BLOCK;
+    }
+
+    if (merkle_block.header.GetHash() != expected_block_hash ||
+        merkle_block.txn.GetNumTransactions() != expected_num_txs) {
+        return MerkleBlockVerifyResult::INVALID_PROOF;
+    }
+
+    std::vector<uint256> vMatch;
+    std::vector<size_t> vIndex;
+    const uint256 proof_legacy_root =
+        merkle_block.txn.ExtractMatches(vMatch, vIndex);
+    if (proof_legacy_root.IsNull() || vMatch.size() != vIndex.size()) {
+        return MerkleBlockVerifyResult::INVALID_PROOF;
+    }
+
+    const uint256 actual_legacy_root = ComputeMerkleRoot(std::move(txids));
+    if (proof_legacy_root != actual_legacy_root) {
+        return MerkleBlockVerifyResult::INVALID_PROOF;
+    }
+
+    for (size_t i = 0; i < vMatch.size(); ++i) {
+        if (vIndex[i] >= block.vtx.size() ||
+            vMatch[i] != block.vtx[vIndex[i]]->GetId()) {
+            return MerkleBlockVerifyResult::INVALID_PROOF;
+        }
+    }
+
+    matched_out = std::move(vMatch);
+    return MerkleBlockVerifyResult::VALID;
 }
