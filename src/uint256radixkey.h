@@ -20,6 +20,7 @@ struct Uint256RadixKey {
     Uint256RadixKey(const uint256 &keyIn) : base(UintToArith256(keyIn)) {}
     Uint256RadixKey(const base_uint<256> &keyIn) : base(keyIn) {}
 
+    uint32_t GetNibble(uint32_t level) const { return base.GetNibble(level); }
     Uint256RadixKey operator>>(uint32_t shift) const { return base >> shift; }
     Uint256RadixKey operator&(const Uint256RadixKey &mask) const {
         return base & mask.base;
