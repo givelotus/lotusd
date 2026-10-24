@@ -364,7 +364,7 @@ std::array<uint8_t, 56> EncodeMonetaryState(const MonetaryState &state) {
 }
 
 MonetaryState DecodeMonetaryState(const std::vector<uint8_t> &wire) {
-    if (wire.size() != 56) {
+    if (wire.size() != 56 && wire.size() != 88) {
         throw std::invalid_argument("MonetaryState length");
     }
     auto read_u64 = [&](size_t offset) -> uint64_t {
@@ -386,19 +386,34 @@ MonetaryState DecodeMonetaryState(const std::vector<uint8_t> &wire) {
         throw std::invalid_argument("zero previous work");
     }
     state.ema_block_cost = read_u64(48);
+    if (wire.size() == 88) {
+        std::copy(wire.begin() + 56, wire.begin() + 88, state.history_root.begin());
+    }
     return state;
 }
 
 Hash StateRoot(const ChainId &chain_id, uint64_t height,
                const Hash &utxo_root, const MonetaryState &state) {
-    std::array<uint8_t, 130> input{};
+    if (state.history_root == Hash{}) {
+        std::array<uint8_t, 130> input{};
+        input[0] = 0;
+        std::copy(chain_id.begin(), chain_id.end(), input.begin() + 1);
+        PutLE(input, 33, height, 8);
+        std::copy(utxo_root.begin(), utxo_root.end(), input.begin() + 41);
+        input[73] = 56; // Bytes(MonetaryState), fixed CompactSize length.
+        const auto monetary = EncodeMonetaryState(state);
+        std::copy(monetary.begin(), monetary.end(), input.begin() + 74);
+        return TaggedHash(HashDomain::State, input);
+    }
+    std::array<uint8_t, 162> input{};
     input[0] = 0;
     std::copy(chain_id.begin(), chain_id.end(), input.begin() + 1);
     PutLE(input, 33, height, 8);
     std::copy(utxo_root.begin(), utxo_root.end(), input.begin() + 41);
-    input[73] = 56; // Bytes(MonetaryState), fixed CompactSize length.
+    input[73] = 88; // Bytes(MonetaryState) + 32-byte history_root.
     const auto monetary = EncodeMonetaryState(state);
     std::copy(monetary.begin(), monetary.end(), input.begin() + 74);
+    std::copy(state.history_root.begin(), state.history_root.end(), input.begin() + 130);
     return TaggedHash(HashDomain::State, input);
 }
 

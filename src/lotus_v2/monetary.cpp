@@ -263,7 +263,7 @@ MonetaryTransition AdvanceMonetary(const MonetaryProfile &profile,
         token_burn + burned_fees + explicit_burn + expired_burned_atoms;
     Int delta = Int(subsidy) - token_burn - burned_fees - underclaim -
                 explicit_burn - expired_burned_atoms;
-    return {{reserve, tail, WorkBytes(work), ema},
+    return {{reserve, tail, WorkBytes(work), ema, parent.history_root},
             bootstrap,
             subsidy,
             fee,

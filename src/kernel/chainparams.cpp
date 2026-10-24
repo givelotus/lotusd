@@ -480,10 +480,10 @@ public:
         m_assumeutxo_data = {
             {.height = 110,
              .hash_serialized =
-                 AssumeutxoHash{uint256S("0x99b8c406f1aa808165216c1840766e939f4e1c226757ffd88a25e5b4ebd54bf1")},
+                 AssumeutxoHash{uint256S("0x726d415bad1ea1520d666fafcd0679d224900a31e9051b3b8453e27b9f9b58ac")},
              .m_chain_tx_count = 111,
              .blockhash =
-                 BlockHash{uint256S("0x48f1d2577086612cefe7584bc0a1c5d17ac8e0445341a84dca6104dd4ad1a598")},
+                 BlockHash{uint256S("0x2d17027fd7cb473d5ef1cacc729d7e5e4ca6f531b96b78bb950f2c204c90add0")},
              .native_monetary_state = lotus::v2::MonetaryState{0, 200, lotus::v2::Hash{2}, 436}},
             {// For use by test/functional/feature_assumeutxo.py
              .height = 299,
