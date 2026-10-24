@@ -417,6 +417,80 @@ BOOST_AUTO_TEST_CASE(batched_inserts_match_serial_inserts_while_growing) {
 }
 
 
+BOOST_AUTO_TEST_CASE(transaction_subtree_a_prefix_boundaries) {
+    using namespace lotus::v2;
+    for (size_t count : {0U, 1U, 2U, 63U, 64U, 65U, 128U}) {
+        // All prefixes, one occupied prefix, singleton at depth 1, and keys
+        // sharing 248 bits (including a split at the final key bit).
+        for (unsigned shape = 0; shape < 4; ++shape) {
+            BOOST_TEST_CONTEXT("count=" << count << " shape=" << shape) {
+                std::vector<TxIdentityPair> entries(count);
+                TxOverlayArena arena;
+                uint32_t root = TxOverlayArena::kNullIdx;
+                for (size_t i = 0; i < count; ++i) {
+                    auto &entry = entries[i];
+                    entry.tx_hash[0] = static_cast<uint8_t>(i + 17);
+                    if (shape == 0) {
+                        entry.tx_id[0] = static_cast<uint8_t>(i);
+                    } else if (shape == 1) {
+                        entry.tx_id[1] = static_cast<uint8_t>(i);
+                    } else if (shape == 2) {
+                        entry.tx_id[0] = i == 0 ? 1 : 0;
+                        entry.tx_id[1] = static_cast<uint8_t>(i);
+                    } else {
+                        // Bit reversal includes both 0 and 128 even at count 2.
+                        uint8_t reversed = 0;
+                        for (unsigned bit = 0; bit < 8; ++bit) {
+                            reversed |= ((i >> bit) & 1) << (7 - bit);
+                        }
+                        entry.tx_id[31] = reversed;
+                    }
+                    root = arena.InsertTxLeaf(root, entry.tx_id, entry.tx_hash);
+                }
+                const lotus::v2::Hash expected = arena.SubtreeARoot(root);
+                BOOST_CHECK(TransactionSubtreeARoot(entries) == expected);
+                std::reverse(entries.begin(), entries.end());
+                BOOST_CHECK(BuildTxSubtreeA(entries) == expected);
+                TxIdentityPair coinbase{};
+                coinbase.tx_id.fill(0xff);
+                const lotus::v2::Hash full_expected =
+                    TransactionRootFromSubtreeA(coinbase, expected);
+                entries.insert(entries.begin(), coinbase);
+                lotus::v2::Hash actual{};
+                BOOST_REQUIRE(TransactionRoot(entries, actual));
+                BOOST_CHECK(actual == full_expected);
+            }
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(transaction_subtree_a_duplicate_keys) {
+    using namespace lotus::v2;
+    for (size_t count : {2U, 63U, 64U, 65U}) {
+        std::vector<TxIdentityPair> entries(count);
+        for (size_t i = 0; i < count; ++i) {
+            entries[i].tx_id[0] = static_cast<uint8_t>(i);
+            entries[i].tx_hash[0] = static_cast<uint8_t>(i);
+        }
+        entries.back().tx_id = entries.front().tx_id;
+        BOOST_CHECK_THROW(TransactionSubtreeARoot(entries), std::invalid_argument);
+        BOOST_CHECK_THROW(BuildTxSubtreeA(entries), std::invalid_argument);
+        lotus::v2::Hash out{};
+        BOOST_CHECK(!TransactionRoot(entries, out));
+    }
+    // Rejecting a duplicate must leave subsequent executor use healthy.
+    std::vector<TxIdentityPair> valid(65);
+    for (size_t i = 0; i < valid.size(); ++i) {
+        valid[i].tx_id[0] = static_cast<uint8_t>(i);
+    }
+    const lotus::v2::Hash expected = TransactionSubtreeARoot(valid);
+    auto concurrent = std::async(std::launch::async, [&] {
+        return TransactionSubtreeARoot(valid);
+    });
+    BOOST_CHECK(TransactionSubtreeARoot(valid) == expected);
+    BOOST_CHECK(concurrent.get() == expected);
+}
+
 BOOST_AUTO_TEST_CASE(transaction_subtree_span_partition_matches_arena) {
     using namespace lotus::v2;
     std::mt19937 random(0x718391);
