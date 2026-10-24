@@ -18,6 +18,7 @@
 #include <policy/packages.h>
 #include <primitives/transaction.h>
 #include <radix.h>
+#include <radix_map.h>
 #include <support/allocators/chunked_slab.h>
 #include <sync.h>
 #include <lotus_v2/utxo_fast_filter.h>
@@ -374,10 +375,7 @@ private:
         EXCLUSIVE_LOCKS_REQUIRED(cs);
 
 public:
-    indirectmap<
-        COutPoint, CTransactionRef,
-        ChunkedSlabAllocator<std::pair<const COutPoint *const, CTransactionRef>>>
-        mapNextTx GUARDED_BY(cs);
+    RadixTreeMap<COutPoint, CTransactionRef> mapNextTx;
     std::map<TxId, Amount> mapDeltas GUARDED_BY(cs);
 
     using Options = kernel::MemPoolOptions;

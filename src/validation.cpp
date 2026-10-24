@@ -2096,8 +2096,14 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(
     // the existing mempool tx's, clear the mempool, and then re-add
     // remaining tx's in topological order via this function. Our new mempool
     // has fast adds, so this is ok.
-    if (auto it = m_pool.mapNextTx.lower_bound(COutPoint{txid, 0});
-        it != m_pool.mapNextTx.end() && it->first->GetTxId() == txid) {
+    bool has_spent_outputs = false;
+    m_pool.mapNextTx.forEachPrefix(
+        COutPoint{txid, 0}, OutpointRadixKey::TXID_PREFIX_NIBBLES,
+        [&](const COutPoint &, const CTransactionRef &) {
+            has_spent_outputs = true;
+            return false;
+        });
+    if (has_spent_outputs) {
         LogInfoEvent(
             BCLog::ALL, "mempool_child_before_parent",
             "{source_function}: BUG! PLEASE REPORT THIS! Attempt to add txid {txid}, but its outputs are already spent in the mempool")

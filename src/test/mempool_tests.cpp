@@ -530,8 +530,7 @@ BOOST_AUTO_TEST_CASE(MempoolSizeLimitTest) {
     auto fraction_limit = [&pool](size_t numerator, size_t denominator)
         EXCLUSIVE_LOCKS_REQUIRED(pool.cs) {
         const size_t retained =
-            pool.mapTx.get_allocator().resource()->TotalAllocatedBytes() +
-            pool.mapNextTx.get_allocator().resource()->TotalAllocatedBytes();
+            pool.mapTx.get_allocator().resource()->TotalAllocatedBytes();
         const size_t usage = pool.DynamicMemoryUsage();
         BOOST_REQUIRE_GE(usage, retained);
         return retained + (usage - retained) * numerator / denominator;
@@ -1536,14 +1535,11 @@ BOOST_AUTO_TEST_CASE(mempool_slab_allocator_churn) {
 
     const size_t tx_chunks_initial =
         pool.mapTx.get_allocator().resource()->NumAllocatedChunks();
-    const size_t next_chunks_initial =
-        pool.mapNextTx.get_allocator().resource()->NumAllocatedChunks();
     BOOST_CHECK_GE(tx_chunks_initial, 1U);
-    BOOST_CHECK_GE(next_chunks_initial, 1U);
 
     const size_t slab_bytes =
         pool.mapTx.get_allocator().resource()->TotalAllocatedChunkBytes() +
-        pool.mapNextTx.get_allocator().resource()->TotalAllocatedChunkBytes();
+        pool.mapNextTx.DynamicMemoryUsage();
     BOOST_CHECK_GE(pool.DynamicMemoryUsage(), slab_bytes);
     const size_t peak_usage = pool.DynamicMemoryUsage();
 
@@ -1568,17 +1564,13 @@ BOOST_AUTO_TEST_CASE(mempool_slab_allocator_churn) {
         BOOST_CHECK_EQUAL(
             pool.mapTx.get_allocator().resource()->NumAllocatedChunks(),
             tx_chunks_initial);
-        BOOST_CHECK_EQUAL(
-            pool.mapNextTx.get_allocator().resource()->NumAllocatedChunks(),
-            next_chunks_initial);
     }
 
     pool.clear(/*include_finalized_txs=*/true);
     BOOST_CHECK_EQUAL(pool.size(), 0UL);
     BOOST_CHECK(pool.mapNextTx.empty());
     BOOST_CHECK_LT(pool.DynamicMemoryUsage(), peak_usage);
-    BOOST_CHECK_EQUAL(
-        pool.mapNextTx.get_allocator().resource()->TotalAllocatedChunkBytes(), 0U);
+    BOOST_CHECK_EQUAL(pool.mapNextTx.DynamicMemoryUsage(), 0U);
 
 }
 

@@ -160,8 +160,7 @@ bool CTxMemPool::isSpent(const COutPoint &outpoint) const {
                                              outpoint.GetN())) {
         return false;
     }
-    LOCK(cs);
-    return mapNextTx.count(outpoint);
+    return mapNextTx.contains(outpoint);
 }
 
 unsigned int CTxMemPool::GetTransactionsUpdated() const {
@@ -215,7 +214,7 @@ CTxMemPool::txiter CTxMemPool::addUnchecked(
         if (in.nFlags == 3) {
             continue;
         }
-        mapNextTx.insert(std::make_pair(&in.prevout, tx));
+        mapNextTx.insertOrAssign(in.prevout, tx);
         m_utxo_fast_filter.MarkSpentInMempool(in.prevout.GetTxId().begin(),
                                               in.prevout.GetN());
         if (has_mempool_parents && had_mempool_txs &&
@@ -383,14 +382,15 @@ void CTxMemPool::removeRecursive(const CTransaction &origTx,
         // remove any children that are in the pool. This can happen during
         // chain re-orgs if origTx isn't re-accepted into the mempool for any
         // reason.
-        auto it = mapNextTx.lower_bound(COutPoint(origTx.GetId(), 0));
-        while (it != mapNextTx.end() &&
-               it->first->GetTxId() == origTx.GetId()) {
-            txiter nextit = mapTx.find(it->second->GetId());
-            assert(nextit != mapTx.end());
-            txToRemove.insert(nextit);
-            ++it;
-        }
+        mapNextTx.forEachPrefix(
+            COutPoint(origTx.GetId(), 0), OutpointRadixKey::TXID_PREFIX_NIBBLES,
+            [&](const COutPoint &, const CTransactionRef &child_tx) {
+                AssertLockHeld(cs);
+                txiter nextit = mapTx.find(child_tx->GetId());
+                assert(nextit != mapTx.end());
+                txToRemove.insert(nextit);
+                return true;
+            });
     }
 
     setEntries setAllRemoves;
@@ -408,9 +408,8 @@ void CTxMemPool::removeConflicts(const CTransaction &tx) {
         if (txin.nFlags == 3) {
             continue;
         }
-        auto it = mapNextTx.find(txin.prevout);
-        if (it != mapNextTx.end()) {
-            const CTransaction &txConflict = *it->second;
+        if (auto txConflictRef = mapNextTx.get(txin.prevout).value_or(nullptr)) {
+            const CTransaction &txConflict = *txConflictRef;
             if (txConflict != tx) {
                 // We reject blocks that contains a tx conflicting with a
                 // finalized tx, so this should never happen
@@ -484,7 +483,6 @@ void CTxMemPool::_clear() {
     mapTx.clear();
     mapNextTx.clear();
     mapTx.get_allocator().resource()->ReleaseUnusedChunks();
-    mapNextTx.get_allocator().resource()->ReleaseUnusedChunks();
     m_utxo_fast_filter.ClearMempool();
     totalTxSize = 0;
     m_total_fee = Amount::zero();
@@ -748,10 +746,9 @@ void CTxMemPool::check(const CCoinsViewCache &active_coins_tip,
             // their coins added to the mempoolDuplicate coins cache.
             assert(mempoolDuplicate.HaveCoin(txin.prevout));
             // Check whether its inputs are marked in mapNextTx.
-            auto prevoutNextIt = mapNextTx.find(txin.prevout);
-            assert(prevoutNextIt != mapNextTx.end());
-            assert(prevoutNextIt->first == &txin.prevout);
-            assert(prevoutNextIt->second.get() == &tx);
+            auto prevoutNext = mapNextTx.get(txin.prevout);
+            assert(prevoutNext.has_value());
+            assert(prevoutNext->get() == &tx);
         }
         auto comp = [](const auto &a, const auto &b) -> bool {
             return a.get()->GetTx().GetId() == b.get()->GetTx().GetId();
@@ -762,15 +759,17 @@ void CTxMemPool::check(const CCoinsViewCache &active_coins_tip,
 
         // Check children against mapNextTx
         CTxMemPoolEntry::Children setChildrenCheck;
-        auto iter = mapNextTx.lower_bound(COutPoint(entry->GetTx().GetId(), 0));
-        for (; iter != mapNextTx.end() &&
-               iter->first->GetTxId() == entry->GetTx().GetId();
-             ++iter) {
-            txiter childIt = mapTx.find(iter->second->GetId());
-            // mapNextTx points to in-mempool transactions
-            assert(childIt != mapTx.end());
-            setChildrenCheck.insert(*childIt);
-        }
+        mapNextTx.forEachPrefix(
+            COutPoint(entry->GetTx().GetId(), 0),
+            OutpointRadixKey::TXID_PREFIX_NIBBLES,
+            [&](const COutPoint &, const CTransactionRef &child_tx) {
+                AssertLockHeld(cs);
+                txiter childIt = mapTx.find(child_tx->GetId());
+                // mapNextTx points to in-mempool transactions
+                assert(childIt != mapTx.end());
+                setChildrenCheck.insert(*childIt);
+                return true;
+            });
         assert(setChildrenCheck.size() ==
                entry->GetMemPoolChildrenConst().size());
         assert(std::equal(setChildrenCheck.begin(), setChildrenCheck.end(),
@@ -791,11 +790,13 @@ void CTxMemPool::check(const CCoinsViewCache &active_coins_tip,
         AddCoins(mempoolDuplicate, tx, std::numeric_limits<int>::max());
     }
 
-    for (auto &[_, nextTx] : mapNextTx) {
+    mapNextTx.forEach([&](const COutPoint &, const CTransactionRef &nextTx) {
+        AssertLockHeld(cs);
         txiter it = mapTx.find(nextTx->GetId());
         assert(it != mapTx.end());
         assert((*it)->GetSharedTx() == nextTx);
-    }
+        return true;
+    });
 
     assert(totalTxSize == checkTotal);
     assert(m_total_fee == check_total_fee);
@@ -1108,8 +1109,7 @@ void CTxMemPool::ClearPrioritisation(const TxId &txid) {
 }
 
 CTransactionRef CTxMemPool::GetConflictTx(const COutPoint &prevout) const {
-    const auto it = mapNextTx.find(prevout);
-    return it == mapNextTx.end() ? nullptr : it->second;
+    return mapNextTx.get(prevout).value_or(nullptr);
 }
 
 std::optional<CTxMemPool::txiter> CTxMemPool::GetIter(const TxId &txid) const {
@@ -1200,23 +1200,24 @@ bool CTxMemPool::CanFitRawTxBatch(
     const size_t entry_overhead = memusage::MallocUsage(sizeof(CTxMemPoolEntry));
     const size_t initial_usage = usage;
     size_t staged_nodes = 0;
-    size_t staged_inputs = 0;
     const CTxMemPoolEntry::Parents empty_links;
     const size_t edge_usage = 2 * memusage::IncrementalDynamicUsage(empty_links);
+    const size_t next_tx_node_usage = sizeof(decltype(mapNextTx)::Entry);
     std::set<TxId> staged;
     for (const auto *entry : entries) {
         usage += entry_overhead + entry->DynamicMemoryUsage();
         std::set<TxId> parents;
         for (const auto &input : entry->GetTx().vin) {
-            ++staged_inputs;
+            if (input.nFlags != 3) {
+                usage += next_tx_node_usage;
+            }
             const auto &id = input.prevout.GetTxId();
             if (exists(id) || staged.count(id)) parents.insert(id);
         }
         usage += parents.size() * edge_usage;
         ++staged_nodes;
         size_t projected = usage +
-            mapTx.get_allocator().resource()->AdditionalChunkBytes(staged_nodes) +
-            mapNextTx.get_allocator().resource()->AdditionalChunkBytes(staged_inputs);
+            mapTx.get_allocator().resource()->AdditionalChunkBytes(staged_nodes);
         const auto &index = mapTx.get<0>();
         if (mapTx.size() + staged_nodes > index.bucket_count() * index.max_load_factor()) {
             // Boost grows its prime bucket table geometrically. Reserve room
