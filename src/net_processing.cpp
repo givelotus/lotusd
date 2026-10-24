@@ -4168,8 +4168,27 @@ void PeerManagerImpl::ProcessShortTxResponse(
         m_chainman.IsInitialBlockDownload()) {
         return;
     }
-    // Exactly as if each had come in a tx message: orphan handling, 1p1c
-    // packages, reject caches and relay all apply.
+    // The handler already checked response bounds and request eligibility.
+    // Use the same bounded admission/verdict path as ordinary TX messages.
+    if (m_tx_admission_running.load()) {
+        for (const auto &tx : txs) {
+            if (tx) AddKnownTx(*peer, tx->GetId());
+        }
+        const auto waiting = SteadyClock::now();
+        LOCK(cs_main);
+        node::AdmissionLockTimer timer(waiting);
+        for (const auto &tx : txs) {
+            if (!tx) continue;
+            if (!peer->m_tx_admission_held_txs.empty() ||
+                !QueueTxForAdmission(node, peer, tx, /*count_full=*/true)) {
+                peer->m_tx_admission_held_txs.push_back(tx);
+            }
+        }
+        // At most one bounded response is retained: ProcessMessages drains
+        // held transactions before reading another frame from this peer.
+        return;
+    }
+    // Serial control: orphan handling, 1p1c, reject caches and relay apply.
     for (const auto &tx : txs) {
         ProcessSingleTx(node, *peer, tx);
     }
