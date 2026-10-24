@@ -577,11 +577,26 @@ public:
     }
 
     bool exists(const TxId &txid) const {
-        return m_tx_tree.get(txid) != nullptr;
+        return m_tx_tree.contains(txid);
+    }
+
+    bool existsWithinReadSection(const TxId &txid) const {
+        return m_tx_tree.containsWithinReadSection(txid);
     }
 
     RCUPtr<const CTxMemPoolEntry> getEntry(const TxId &txid) const {
         return m_tx_tree.get(txid);
+    }
+
+    template <typename Callable>
+    bool withEntry(const TxId &txid, Callable &&fn) const {
+        return m_tx_tree.withLeaf(txid, std::forward<Callable>(fn));
+    }
+
+    template <typename Callable>
+    bool withEntryWithinReadSection(const TxId &txid, Callable &&fn) const {
+        return m_tx_tree.withLeafWithinReadSection(txid,
+                                                   std::forward<Callable>(fn));
     }
 
     bool setAvalancheFinalized(const CTxMemPoolEntryRef &tx,
@@ -670,8 +685,11 @@ public:
         if (m_unbroadcast_count.load(std::memory_order_relaxed) == 0) {
             return false;
         }
-        RCUPtr<const CTxMemPoolEntry> entry = m_tx_tree.get(txid);
-        return entry && entry->IsUnbroadcast();
+        bool unbroadcast = false;
+        m_tx_tree.withLeaf(txid, [&](const CTxMemPoolEntry &entry) {
+            unbroadcast = entry.IsUnbroadcast();
+        });
+        return unbroadcast;
     }
 
     /** Guards this internal counter for external reporting */

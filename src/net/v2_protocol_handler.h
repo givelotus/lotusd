@@ -872,6 +872,18 @@ private:
 
     mutable V2ProtocolHandlerStats m_stats GUARDED_BY(m_mutex);
     std::optional<CInv> m_last_fallback_inv GUARDED_BY(m_mutex);
+
+    struct CachedRelayShortTxResponse {
+        uint8_t scope{0};
+        uint256 context_id{};
+        uint64_t removal_seq{0};
+        size_t resolved_count{0};
+        std::vector<uint64_t> short_ids;
+        std::shared_ptr<const std::vector<uint8_t>> shared_payload;
+        std::array<uint8_t, CMessageHeader::CHECKSUM_SIZE> checksum{};
+    };
+    std::deque<CachedRelayShortTxResponse>
+        m_relay_shorttx_cache GUARDED_BY(m_mutex);
 };
 
 } // namespace lotus::v2::net

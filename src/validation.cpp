@@ -2091,23 +2091,25 @@ bool MemPoolAccept::PreChecksBatch(
     if (pre != nullptr && pre->v2_fast_path_verified &&
         pre->v2_all_confirmed_fast_inputs && !has_intra_batch_parents &&
         pre->v2_snapshot_tip_hash == tip->GetBlockHash() &&
-        m_pool.size() > 6400) {
+        m_pool.mapTx.size() > 6400) {
         if (mempool_nonempty) {
-            if (m_pool.exists(txid)) {
+            if (m_pool.existsWithinReadSection(txid)) {
                 return state.Invalid(TxValidationResult::TX_DUPLICATE,
                                      "txn-already-in-mempool");
             }
             for (const CTxIn &txin : tx.vin) {
-                if (const auto ptxConflicting =
-                        m_pool.GetConflictTx(txin.prevout)) {
-                    if (m_pool.isAvalancheFinalizedPreConsensus(
-                            ptxConflicting->GetId())) {
-                        return state.Invalid(TxValidationResult::TX_CONFLICT,
-                                             "finalized-tx-conflict");
+                if (m_pool.mapNextTx.containsWithinReadSection(txin.prevout)) {
+                    if (const auto ptxConflicting =
+                            m_pool.GetConflictTx(txin.prevout)) {
+                        if (m_pool.isAvalancheFinalizedPreConsensus(
+                                ptxConflicting->GetId())) {
+                            return state.Invalid(TxValidationResult::TX_CONFLICT,
+                                                 "finalized-tx-conflict");
+                        }
+                        return state.Invalid(
+                            TxValidationResult::TX_AVALANCHE_RECONSIDERABLE,
+                            "txn-mempool-conflict");
                     }
-                    return state.Invalid(
-                        TxValidationResult::TX_AVALANCHE_RECONSIDERABLE,
-                        "txn-mempool-conflict");
                 }
             }
         }
@@ -2155,7 +2157,7 @@ bool MemPoolAccept::PreChecksBatch(
     }
 
     if (mempool_nonempty) {
-        if (m_pool.exists(txid)) {
+        if (m_pool.existsWithinReadSection(txid)) {
             return state.Invalid(TxValidationResult::TX_DUPLICATE,
                                  "txn-already-in-mempool");
         }
@@ -2163,16 +2165,18 @@ bool MemPoolAccept::PreChecksBatch(
             if (txin.nFlags == 3) {
                 continue;
             }
-            if (const auto ptxConflicting =
-                    m_pool.GetConflictTx(txin.prevout)) {
-                if (m_pool.isAvalancheFinalizedPreConsensus(
-                        ptxConflicting->GetId())) {
-                    return state.Invalid(TxValidationResult::TX_CONFLICT,
-                                         "finalized-tx-conflict");
+            if (m_pool.mapNextTx.containsWithinReadSection(txin.prevout)) {
+                if (const auto ptxConflicting =
+                        m_pool.GetConflictTx(txin.prevout)) {
+                    if (m_pool.isAvalancheFinalizedPreConsensus(
+                            ptxConflicting->GetId())) {
+                        return state.Invalid(TxValidationResult::TX_CONFLICT,
+                                             "finalized-tx-conflict");
+                    }
+                    return state.Invalid(
+                        TxValidationResult::TX_AVALANCHE_RECONSIDERABLE,
+                        "txn-mempool-conflict");
                 }
-                return state.Invalid(
-                    TxValidationResult::TX_AVALANCHE_RECONSIDERABLE,
-                    "txn-mempool-conflict");
             }
         }
     }
@@ -2186,7 +2190,7 @@ bool MemPoolAccept::PreChecksBatch(
         pre->v2_snapshot_tip_hash == tip->GetBlockHash() &&
         pre->v2_resolved_coins.size() == tx.vin.size();
 
-    if (reuse_pre_coins && !has_intra_batch_parents && m_pool.size() > 6400) {
+    if (reuse_pre_coins && !has_intra_batch_parents && m_pool.mapTx.size() > 6400) {
         bool all_confirmed = true;
         for (size_t i = 0; i < tx.vin.size(); ++i) {
             if (tx.vin[i].nFlags == 3 ||
@@ -3065,20 +3069,23 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
     const bool mempool_nonempty = !m_pool.mapTx.empty();
 
     // Pass 1: Single-wave UTXO dependency resolution & fast policy/input checks.
-    for (size_t ws_idx = 0; ws_idx < workspaces.size(); ++ws_idx) {
-        Workspace &ws = workspaces[ws_idx];
-        PrecomputedBatchTxData *pre =
-            (precomputed_batch != nullptr && ws_idx < precomputed_batch->size())
-                ? &(*precomputed_batch)[ws_idx]
-                : nullptr;
-        if (!PreChecksBatch(args, ws, ws_idx, txns, txid_table, txid_mask,
-                            mempool_nonempty, has_intra_batch_parents, pre)) {
-            package_state.Invalid(PackageValidationResult::PCKG_TX,
-                                  "transaction failed");
-            results.emplace(ws.m_ptx->GetId(),
-                            MempoolAcceptResult::Failure(ws.m_state));
-            return PackageMempoolAcceptResult(package_state,
-                                              std::move(results));
+    {
+        RCULock rcu_lock;
+        for (size_t ws_idx = 0; ws_idx < workspaces.size(); ++ws_idx) {
+            Workspace &ws = workspaces[ws_idx];
+            PrecomputedBatchTxData *pre =
+                (precomputed_batch != nullptr && ws_idx < precomputed_batch->size())
+                    ? &(*precomputed_batch)[ws_idx]
+                    : nullptr;
+            if (!PreChecksBatch(args, ws, ws_idx, txns, txid_table, txid_mask,
+                                mempool_nonempty, has_intra_batch_parents, pre)) {
+                package_state.Invalid(PackageValidationResult::PCKG_TX,
+                                      "transaction failed");
+                results.emplace(ws.m_ptx->GetId(),
+                                MempoolAcceptResult::Failure(ws.m_state));
+                return PackageMempoolAcceptResult(package_state,
+                                                  std::move(results));
+            }
         }
     }
 
@@ -4795,18 +4802,24 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
                         if (txs[i]->nVersion == 7) {
                             if (can_try_fast_confirmed) {
                                 const CTransaction &tx = *txs[i];
-                                const bool already_in_mempool =
-                                    native_snapshot->entry_tree
-                                        ? bool(native_snapshot->entry_tree->get(
-                                              Uint256RadixKey(tx.GetId())))
-                                        : native_pool->exists(tx.GetId());
-                                bool conflict_in_mempool = already_in_mempool;
-                                if (!conflict_in_mempool) {
-                                    for (const auto &in : tx.vin) {
-                                        if (native_pool->mapNextTx.contains(
-                                                in.prevout)) {
-                                            conflict_in_mempool = true;
-                                            break;
+                                bool conflict_in_mempool = false;
+                                {
+                                    RCULock rcu_lock;
+                                    conflict_in_mempool =
+                                        native_snapshot->entry_tree
+                                            ? native_snapshot->entry_tree
+                                                  ->containsWithinReadSection(
+                                                      Uint256RadixKey(tx.GetId()))
+                                            : native_pool->existsWithinReadSection(
+                                                  tx.GetId());
+                                    if (!conflict_in_mempool) {
+                                        for (const auto &in : tx.vin) {
+                                            if (native_pool->mapNextTx
+                                                    .containsWithinReadSection(
+                                                        in.prevout)) {
+                                                conflict_in_mempool = true;
+                                                break;
+                                            }
                                         }
                                     }
                                 }

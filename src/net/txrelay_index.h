@@ -270,8 +270,12 @@ private:
     }
 
     //! Index txid in epoch (which the caller owns or guards with m_mutex)
-    bool InsertUnlocked(Epoch &epoch, const TxId &txid) const;
-    void AddUnlocked(const TxId &txid, Clock time)
+    bool InsertUnlocked(Epoch &epoch, const TxId &txid,
+                        std::optional<uint64_t> precomputed_short_id =
+                            std::nullopt) const;
+    void AddUnlocked(const TxId &txid, Clock time,
+                     std::optional<uint64_t> precomputed_short_id =
+                         std::nullopt)
         EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
     static void RemoveFromEpoch(Epoch &epoch, const TxId &txid);
     void RecordEpochChange(const TxId &txid, bool present)

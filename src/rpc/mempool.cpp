@@ -518,9 +518,10 @@ UniValue MempoolToJSON(const CTxMemPool &pool, bool verbose,
             static constexpr char kHexDigits[16] = {
                 '0', '1', '2', '3', '4', '5', '6', '7',
                 '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
-            std::string raw(n * 67 - 1, ',');
+            std::string raw;
+            raw.resize(n * 67 - 1);
             util::GetParallelRangeExecutor().Run(
-                n, /*grain=*/1024, [&](size_t begin, size_t end) {
+                n, /*grain=*/2048, [&](size_t begin, size_t end) {
                     char *base = raw.data();
                     for (size_t i = begin; i < end; ++i) {
                         char *dst = base + i * 67;
@@ -532,6 +533,9 @@ UniValue MempoolToJSON(const CTxMemPool &pool, bool verbose,
                             dst[2 + b * 2] = kHexDigits[v & 0x0f];
                         }
                         dst[65] = '"';
+                        if (i + 1 < n) {
+                            dst[66] = ',';
+                        }
                     }
                 });
             a.setRawArrayStr(std::move(raw));

@@ -9,6 +9,7 @@
 #include <consensus/merkle.h>
 #include <consensus/validation.h>
 #include <crypto/siphash.h>
+#include <hash.h>
 #include <logging.h>
 #include <lotus_v2/set_reconciliation.h>
 #include <lotus_v2/tagged_hash.h>
@@ -1611,20 +1612,57 @@ void V2PeerProtocolHandler::HandleGetShortTx(
 
     if (relay_epoch) {
         // Nucleation relay: answer from the relay index (O(request)).
+        const uint64_t removal_seq = m_mempool.GetRemovalSequence();
         {
             LOCK(m_mutex);
             ++m_stats.getshorttx_received;
+            for (const auto &entry : m_relay_shorttx_cache) {
+                if (entry.scope == req.scope &&
+                    entry.context_id == req.context_id &&
+                    entry.removal_seq == removal_seq &&
+                    entry.resolved_count >= req.short_ids.size() &&
+                    entry.short_ids == req.short_ids) {
+                    CSerializedNetMsg out;
+                    out.m_type = NetMsgType::SHORTTX;
+                    out.shared_data = entry.shared_payload;
+                    out.m_checksum = entry.checksum;
+                    m_connman.PushMessage(&pfrom, std::move(out));
+                    return;
+                }
+            }
         }
         std::vector<CTransactionRef> resolved{
             m_relay_epochs->ResolveRelayShortIds(req.context_id,
                                                  req.short_ids)};
         if (!resolved.empty()) {
+            const size_t resolved_count = resolved.size();
             ShortTxResponse resp;
             resp.scope = req.scope;
             resp.context_id = req.context_id;
             resp.txs = std::move(resolved);
-            m_connman.PushMessage(&pfrom,
-                                  NetMsg::Make(NetMsgType::SHORTTX, resp));
+            CSerializedNetMsg msg = NetMsg::Make(NetMsgType::SHORTTX, resp);
+            auto shared_payload =
+                std::make_shared<const std::vector<uint8_t>>(
+                    std::move(msg.data));
+            const uint256 hash = ::Hash(*shared_payload);
+            std::array<uint8_t, CMessageHeader::CHECKSUM_SIZE> checksum{};
+            std::memcpy(checksum.data(), hash.begin(),
+                        CMessageHeader::CHECKSUM_SIZE);
+            if (resolved_count >= req.short_ids.size()) {
+                LOCK(m_mutex);
+                static constexpr size_t MAX_RELAY_SHORTTX_CACHE = 4;
+                if (m_relay_shorttx_cache.size() >= MAX_RELAY_SHORTTX_CACHE) {
+                    m_relay_shorttx_cache.pop_front();
+                }
+                m_relay_shorttx_cache.push_back(CachedRelayShortTxResponse{
+                    req.scope, req.context_id, removal_seq, resolved_count,
+                    std::move(req.short_ids), shared_payload, checksum});
+            }
+            CSerializedNetMsg out;
+            out.m_type = NetMsgType::SHORTTX;
+            out.shared_data = std::move(shared_payload);
+            out.m_checksum = checksum;
+            m_connman.PushMessage(&pfrom, std::move(out));
         }
         return;
     }

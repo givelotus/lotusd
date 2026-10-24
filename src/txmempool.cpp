@@ -1051,17 +1051,19 @@ bool CTxMemPool::isWorthPolling(const CTransactionRef &tx) const {
 }
 
 CTransactionRef CTxMemPool::get(const TxId &txid) const {
-    RCUPtr<const CTxMemPoolEntry> entry = m_tx_tree.get(txid);
-    return entry ? entry->GetSharedTx() : nullptr;
+    CTransactionRef out;
+    m_tx_tree.withLeaf(txid, [&](const CTxMemPoolEntry &entry) {
+        out = entry.GetSharedTx();
+    });
+    return out;
 }
 
 TxMempoolInfo CTxMemPool::info(const TxId &txid) const {
-    RCUPtr<const CTxMemPoolEntry> entry = m_tx_tree.get(txid);
-    if (!entry) {
-        return TxMempoolInfo();
-    }
-
-    return GetInfo(*entry);
+    TxMempoolInfo out;
+    m_tx_tree.withLeaf(txid, [&](const CTxMemPoolEntry &entry) {
+        out = GetInfo(entry);
+    });
+    return out;
 }
 
 CFeeRate CTxMemPool::estimateFee() const {

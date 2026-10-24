@@ -2534,48 +2534,67 @@ void CConnman::SocketHandlerConnected(
         }
 
         if (recvSet || errorSet) {
-            // typical socket buffer is 8K-64K
+            // typical socket buffer is 8K-64K; drain up to 1 MB per poll
+            // iteration so large V2 SHORTTX batches do not require 14+ poll
+            // round-trips.
             uint8_t pchBuf[0x10000];
-            int32_t nBytes = 0;
-            {
-                LOCK(pnode->m_sock_mutex);
-                if (!pnode->m_sock) {
-                    continue;
+            bool any_notify = false;
+            static constexpr size_t MAX_RECV_CHUNKS_PER_POLL = 16;
+            for (size_t chunk = 0; chunk < MAX_RECV_CHUNKS_PER_POLL; ++chunk) {
+                if (pnode->fDisconnect || pnode->fPauseRecv) {
+                    break;
                 }
-                nBytes =
-                    pnode->m_sock->Recv(pchBuf, sizeof(pchBuf), MSG_DONTWAIT);
-            }
-            if (nBytes > 0) {
-                bool notify = false;
-                if (!pnode->ReceiveMsgBytes(*config, {pchBuf, (size_t)nBytes},
-                                            notify)) {
-                    pnode->CloseSocketDisconnect();
+                int32_t nBytes = 0;
+                {
+                    LOCK(pnode->m_sock_mutex);
+                    if (!pnode->m_sock) {
+                        break;
+                    }
+                    nBytes = pnode->m_sock->Recv(pchBuf, sizeof(pchBuf),
+                                                 MSG_DONTWAIT);
                 }
-                RecordBytesRecv(nBytes);
-                if (notify) {
-                    pnode->MarkReceivedMsgsForProcessing();
-                    WakeMessageHandler();
-                }
-            } else if (nBytes == 0) {
-                // socket closed gracefully
-                if (!pnode->fDisconnect) {
-                    LogEvent(BCLog::NET, "peer_socket_closed",
-                             "socket closed for peer={peer_id}")
-                        .Field(BCLog::LogField::PeerId, pnode->GetId());
-                }
-                pnode->CloseSocketDisconnect();
-            } else if (nBytes < 0) {
-                // error
-                int nErr = WSAGetLastError();
-                if (nErr != WSAEWOULDBLOCK && nErr != WSAEMSGSIZE &&
-                    nErr != WSAEINTR && nErr != WSAEINPROGRESS) {
+                if (nBytes > 0) {
+                    bool notify = false;
+                    if (!pnode->ReceiveMsgBytes(*config,
+                                                {pchBuf, (size_t)nBytes},
+                                                notify)) {
+                        pnode->CloseSocketDisconnect();
+                    }
+                    RecordBytesRecv(nBytes);
+                    if (notify) {
+                        any_notify = true;
+                    }
+                    if (pnode->fDisconnect ||
+                        static_cast<size_t>(nBytes) < sizeof(pchBuf)) {
+                        break;
+                    }
+                } else if (nBytes == 0) {
+                    // socket closed gracefully
                     if (!pnode->fDisconnect) {
-                        LogDebug(BCLog::NET,
-                                 "socket recv error for peer=%d: %s\n",
-                                 pnode->GetId(), NetworkErrorString(nErr));
+                        LogEvent(BCLog::NET, "peer_socket_closed",
+                                 "socket closed for peer={peer_id}")
+                            .Field(BCLog::LogField::PeerId, pnode->GetId());
                     }
                     pnode->CloseSocketDisconnect();
+                    break;
+                } else {
+                    // error
+                    int nErr = WSAGetLastError();
+                    if (nErr != WSAEWOULDBLOCK && nErr != WSAEMSGSIZE &&
+                        nErr != WSAEINTR && nErr != WSAEINPROGRESS) {
+                        if (!pnode->fDisconnect) {
+                            LogDebug(BCLog::NET,
+                                     "socket recv error for peer=%d: %s\n",
+                                     pnode->GetId(), NetworkErrorString(nErr));
+                        }
+                        pnode->CloseSocketDisconnect();
+                    }
+                    break;
                 }
+            }
+            if (any_notify) {
+                pnode->MarkReceivedMsgsForProcessing();
+                WakeMessageHandler();
             }
         }
 

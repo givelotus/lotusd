@@ -4230,12 +4230,16 @@ std::vector<CTransactionRef> PeerManagerImpl::ResolveRelayShortIds(
     txs.reserve(txids.size());
     const bool check_unbroadcast = m_mempool.GetUnbroadcastTxCount() > 0;
     std::vector<TxId> unbroadcast_cleared;
-    for (const TxId &txid : txids) {
-        if (auto entry{m_mempool.getEntry(txid)}) {
-            txs.push_back(entry->GetSharedTx());
-            if (check_unbroadcast && entry->SetUnbroadcast(false)) {
-                unbroadcast_cleared.push_back(txid);
-            }
+    {
+        RCULock lock;
+        for (const TxId &txid : txids) {
+            m_mempool.withEntryWithinReadSection(
+                txid, [&](const CTxMemPoolEntry &entry) {
+                    txs.push_back(entry.GetSharedTx());
+                    if (check_unbroadcast && entry.SetUnbroadcast(false)) {
+                        unbroadcast_cleared.push_back(txid);
+                    }
+                });
         }
     }
     // A peer fetched them: they have been broadcast (as for getdata).
@@ -4434,19 +4438,25 @@ void PeerManagerImpl::ProcessShortTxResponse(
     // Use the same bounded admission/verdict path as ordinary TX messages.
     constexpr size_t retained_limit = 64U << 20;
     size_t retained_bytes{0};
-    for (const auto &tx : txs) {
-        if (!tx) continue;
-        if (!force_relay &&
-            (m_mempool.exists(tx->GetId()) ||
-             m_tx_admission_inflight.count(tx->GetId()))) {
-            continue;
+    std::vector<uint8_t> already_known(txs.size(), 0);
+    {
+        RCULock lock;
+        for (size_t i = 0; i < txs.size(); ++i) {
+            const auto &tx = txs[i];
+            if (!tx) continue;
+            if (!force_relay &&
+                (m_mempool.existsWithinReadSection(tx->GetId()) ||
+                 m_tx_admission_inflight.count(tx->GetId()))) {
+                already_known[i] = 1;
+                continue;
+            }
+            const size_t bytes = tx->GetTotalSize();
+            if (bytes > retained_limit - retained_bytes) {
+                retained_bytes = retained_limit + 1;
+                break;
+            }
+            retained_bytes += bytes;
         }
-        const size_t bytes = tx->GetTotalSize();
-        if (bytes > retained_limit - retained_bytes) {
-            retained_bytes = retained_limit + 1;
-            break;
-        }
-        retained_bytes += bytes;
     }
     auto reservation = m_tx_admission_running.load()
         ? m_tx_admission_retained_budget.TryReserve(retained_bytes)
@@ -4479,9 +4489,7 @@ void PeerManagerImpl::ProcessShortTxResponse(
         for (size_t i = 0; i < txs.size(); ++i) {
             const auto &tx = txs[i];
             if (!tx) continue;
-            if (!force_relay &&
-                (m_mempool.exists(tx->GetId()) ||
-                 m_tx_admission_inflight.count(tx->GetId()))) {
+            if (already_known[i]) {
                 PrepareTxAdmission(node, tx, &epochs,
                                    /*request_cleared=*/true);
                 cleared_indices.push_back(i);
@@ -4636,14 +4644,22 @@ void PeerManagerImpl::DrainRelayQueue() {
     std::vector<const std::vector<NodeId> *> parent_route(batch.size(),
                                                           nullptr);
     std::vector<std::optional<uint64_t>> admission_ranks(batch.size());
+    std::vector<Amount> admission_fees(batch.size(), Amount::zero());
+    std::vector<uint32_t> admission_vsizes(batch.size(), 0);
+    const uint64_t drain_removal_seq = m_mempool.GetRemovalSequence();
     m_relay_inventory_work.enqueue_rank_lookups += batch.size();
     const bool need_parent_routes =
         targets.size() > fanout && !m_relay_routes.empty();
     if (!need_parent_routes) {
+        RCULock lock;
         for (size_t i = 0; i < batch.size(); ++i) {
-            if (const auto entry = m_mempool.getEntry(batch[i].txid)) {
-                admission_ranks[i] = entry->GetEntryId();
-            }
+            m_mempool.withEntryWithinReadSection(
+                batch[i].txid, [&](const CTxMemPoolEntry &entry) {
+                    admission_ranks[i] = entry.GetEntryId();
+                    admission_fees[i] = entry.GetFee();
+                    admission_vsizes[i] =
+                        static_cast<uint32_t>(entry.GetTxSize());
+                });
         }
     } else {
         LOCK(m_mempool.cs);
@@ -4653,6 +4669,8 @@ void PeerManagerImpl::DrainRelayQueue() {
                 continue;
             }
             admission_ranks[i] = (**it)->GetEntryId();
+            admission_fees[i] = (**it)->GetFee();
+            admission_vsizes[i] = static_cast<uint32_t>((**it)->GetTxSize());
             if (!batch[i].local) {
                 for (const auto &parent : (**it)->GetMemPoolParentsConst()) {
                     const auto route{
@@ -4753,8 +4771,9 @@ void PeerManagerImpl::DrainRelayQueue() {
         }
         LOCK(target.relay->m_tx_inventory_mutex);
         for (const uint32_t i : target.picks) {
-            target.relay->m_tx_inventory_to_send.SetRank(batch[i].txid,
-                                                        admission_ranks[i]);
+            target.relay->m_tx_inventory_to_send.SetRank(
+                batch[i].txid, admission_ranks[i], admission_fees[i],
+                admission_vsizes[i], drain_removal_seq);
         }
     }
 
@@ -10933,6 +10952,70 @@ bool PeerManagerImpl::ProcessMessages(const Config &config, CNode *pfrom,
         } else {
             ProcessMessage(config, *pfrom, msg.m_type, msg.m_recv, msg.m_time,
                            interruptMsgProc);
+            const bool is_v2_relay_msg =
+                msg.m_type == NetMsgType::SHORTTX ||
+                msg.m_type == NetMsgType::INVSHORT ||
+                msg.m_type == NetMsgType::GETSHORTTX;
+            if (is_v2_relay_msg && fMoreWork && !RejectIncomingTxs(*pfrom) &&
+                !m_chainman.IsInitialBlockDownload()) {
+                static constexpr size_t MAX_COALESCED_V2_RELAY_MESSAGES = 8;
+                size_t processed_v2 = 1;
+                while (fMoreWork &&
+                       processed_v2 < MAX_COALESCED_V2_RELAY_MESSAGES &&
+                       !interruptMsgProc && !pfrom->fDisconnect &&
+                       !pfrom->fPauseSend) {
+                    auto next_poll = pfrom->PollMessage();
+                    if (!next_poll) {
+                        fMoreWork = false;
+                        break;
+                    }
+                    CNetMessage &next_msg = next_poll->first;
+                    fMoreWork = next_poll->second;
+
+                    const bool next_is_v2_relay =
+                        next_msg.m_type == NetMsgType::SHORTTX ||
+                        next_msg.m_type == NetMsgType::INVSHORT ||
+                        next_msg.m_type == NetMsgType::GETSHORTTX;
+                    if (!next_is_v2_relay) {
+                        if (parallel_admission &&
+                            peer->m_tx_admission_pending > 0) {
+                            peer->m_tx_admission_held_msg.emplace(
+                                std::move(next_msg));
+                        } else {
+                            TRACE6(net, inbound_message, pfrom->GetId(),
+                                   pfrom->m_addr_name.c_str(),
+                                   pfrom->ConnectionTypeAsString().c_str(),
+                                   next_msg.m_type.c_str(),
+                                   next_msg.m_recv.size(),
+                                   next_msg.m_recv.data());
+                            if (m_opts.capture_messages) {
+                                CaptureMessage(pfrom->addr, next_msg.m_type,
+                                               MakeUCharSpan(next_msg.m_recv),
+                                               /*is_incoming=*/true);
+                            }
+                            ProcessMessage(config, *pfrom, next_msg.m_type,
+                                           next_msg.m_recv, next_msg.m_time,
+                                           interruptMsgProc);
+                        }
+                        break;
+                    }
+
+                    TRACE6(net, inbound_message, pfrom->GetId(),
+                           pfrom->m_addr_name.c_str(),
+                           pfrom->ConnectionTypeAsString().c_str(),
+                           next_msg.m_type.c_str(), next_msg.m_recv.size(),
+                           next_msg.m_recv.data());
+                    if (m_opts.capture_messages) {
+                        CaptureMessage(pfrom->addr, next_msg.m_type,
+                                       MakeUCharSpan(next_msg.m_recv),
+                                       /*is_incoming=*/true);
+                    }
+                    ProcessMessage(config, *pfrom, next_msg.m_type,
+                                   next_msg.m_recv, next_msg.m_time,
+                                   interruptMsgProc);
+                    ++processed_v2;
+                }
+            }
         }
         if (timed) {
             metrics->p2p_message_handling_seconds.RecordDuration(
@@ -12021,23 +12104,66 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                         CTransactionRef tx;
                         Amount fee;
                         size_t vsize{0};
+                        bool present{false};
                     };
                     std::vector<Prepared> prepared(prefix.size());
                     m_relay_inventory_work.authoritative_lookups += prefix.size();
                     ++m_relay_inventory_work.selection_chunks;
-                    for (size_t i = 0; i < prefix.size(); ++i) {
-                        const auto entry = m_mempool.getEntry(prefix[i].txid);
-                        if (!entry) continue;
-                        prepared[i].entry_id = entry->GetEntryId();
-                        prepared[i].tx = entry->GetSharedTx();
-                        prepared[i].fee = entry->GetFee();
-                        prepared[i].vsize = entry->GetTxSize();
+                    const bool need_tx_ref =
+                        high_bandwidth_peer ||
+                        static_cast<bool>(tx_relay->m_bloom_filter);
+                    const uint64_t current_removal_seq =
+                        m_mempool.GetRemovalSequence();
+                    if (!need_tx_ref) {
+                        bool any_lookup_needed = false;
+                        for (size_t i = 0; i < prefix.size(); ++i) {
+                            if (prefix[i].entry_id && prefix[i].vsize > 0 &&
+                                prefix[i].removal_seq == current_removal_seq) {
+                                prepared[i].entry_id = prefix[i].entry_id;
+                                prepared[i].fee = prefix[i].fee;
+                                prepared[i].vsize = prefix[i].vsize;
+                                prepared[i].present = true;
+                            } else {
+                                any_lookup_needed = true;
+                            }
+                        }
+                        if (any_lookup_needed) {
+                            RCULock lock;
+                            for (size_t i = 0; i < prefix.size(); ++i) {
+                                if (prepared[i].present) continue;
+                                m_mempool.withEntryWithinReadSection(
+                                    prefix[i].txid,
+                                    [&](const CTxMemPoolEntry &entry) {
+                                        prepared[i].entry_id =
+                                            entry.GetEntryId();
+                                        prepared[i].fee = entry.GetFee();
+                                        prepared[i].vsize = entry.GetTxSize();
+                                        prepared[i].present = true;
+                                    });
+                            }
+                        }
+                    } else {
+                        RCULock lock;
+                        for (size_t i = 0; i < prefix.size(); ++i) {
+                            m_mempool.withEntryWithinReadSection(
+                                prefix[i].txid,
+                                [&](const CTxMemPoolEntry &entry) {
+                                    prepared[i].entry_id = entry.GetEntryId();
+                                    prepared[i].tx = entry.GetSharedTx();
+                                    prepared[i].fee = entry.GetFee();
+                                    prepared[i].vsize = entry.GetTxSize();
+                                    prepared[i].present = true;
+                                });
+                        }
                     }
                     bool changed = false;
                     for (size_t i = 0; i < prefix.size(); ++i) {
                         if (prepared[i].entry_id != prefix[i].entry_id) {
                             tx_relay->m_tx_inventory_to_send.SetRank(
-                                prefix[i].txid, prepared[i].entry_id);
+                                prefix[i].txid, prepared[i].entry_id,
+                                prepared[i].fee,
+                                static_cast<uint32_t>(prepared[i].vsize),
+                                current_removal_seq);
                             changed = true;
                         }
                     }
@@ -12058,7 +12184,7 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                             continue;
                         }
                         auto &txinfo = prepared[i];
-                        if (!txinfo.tx) continue;
+                        if (!txinfo.present) continue;
                         if (txinfo.fee < filterrate.GetFee(txinfo.vsize)) {
                             continue;
                         }

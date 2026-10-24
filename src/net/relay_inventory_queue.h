@@ -5,6 +5,7 @@
 #ifndef BITCOIN_NET_RELAY_INVENTORY_QUEUE_H
 #define BITCOIN_NET_RELAY_INVENTORY_QUEUE_H
 
+#include <consensus/amount.h>
 #include <primitives/txid.h>
 #include <util/hasher.h>
 
@@ -46,6 +47,9 @@ public:
     struct Candidate {
         TxId txid;
         std::optional<uint64_t> entry_id;
+        Amount fee{Amount::zero()};
+        uint32_t vsize{0};
+        uint64_t removal_seq{0};
     };
 
 private:
@@ -54,6 +58,9 @@ private:
     using Node = typename Entries::value_type;
     struct Record {
         std::optional<uint64_t> entry_id;
+        Amount fee{Amount::zero()};
+        uint32_t vsize{0};
+        uint64_t removal_seq{0};
         size_t heap_index{0};
         Node *previous{nullptr};
         Node *next{nullptr};
@@ -180,18 +187,28 @@ public:
     std::optional<Candidate> Find(const TxId &txid) const {
         const auto it = m_entries.find(txid);
         if (it == m_entries.end()) return std::nullopt;
-        return Candidate{it->first, it->second.entry_id};
+        return Candidate{it->first, it->second.entry_id, it->second.fee,
+                         it->second.vsize, it->second.removal_seq};
     }
 
     /** Insert or rekey the single record for txid. Return true on insertion.
      * A duplicate with unchanged rank does not change stale-tail position.
      * Allocation failure leaves existing membership/rank/order unchanged.
      */
-    bool SetRank(const TxId &txid, std::optional<uint64_t> entry_id) {
+    bool SetRank(const TxId &txid, std::optional<uint64_t> entry_id,
+                 Amount fee = Amount::zero(), uint32_t vsize = 0,
+                 uint64_t removal_seq = 0) {
         auto [it, inserted] = m_entries.try_emplace(txid);
         Node *node = &*it;
         auto &record = node->second;
-        if (!inserted && record.entry_id == entry_id) return false;
+        if (!inserted && record.entry_id == entry_id) {
+            if (entry_id && vsize > 0) {
+                record.fee = fee;
+                record.vsize = vsize;
+                record.removal_seq = removal_seq;
+            }
+            return false;
+        }
 
         if (entry_id) {
             if (inserted || !record.entry_id) {
@@ -205,15 +222,24 @@ public:
                 }
                 if (!inserted) UnlinkStale(node);
                 record.entry_id = entry_id;
+                record.fee = fee;
+                record.vsize = vsize;
+                record.removal_seq = removal_seq;
                 record.heap_index = m_heap.size() - 1;
                 SiftUp(record.heap_index);
             } else {
                 record.entry_id = entry_id;
+                record.fee = fee;
+                record.vsize = vsize;
+                record.removal_seq = removal_seq;
                 FixHeap(record.heap_index);
             }
         } else {
             if (!inserted) RemoveHeap(record.heap_index);
             record.entry_id.reset();
+            record.fee = Amount::zero();
+            record.vsize = 0;
+            record.removal_seq = 0;
             AppendStale(node);
         }
         return inserted;
@@ -238,15 +264,21 @@ public:
                 m_heap.push_back(node);
                 UnlinkStale(node);
                 record.entry_id = entry_id;
+                record.vsize = 0;
+                record.removal_seq = 0;
                 record.heap_index = m_heap.size() - 1;
                 SiftUp(record.heap_index);
             } else {
                 record.entry_id = entry_id;
+                record.vsize = 0;
+                record.removal_seq = 0;
                 FixHeap(record.heap_index);
             }
         } else {
             RemoveHeap(record.heap_index);
             record.entry_id.reset();
+            record.vsize = 0;
+            record.removal_seq = 0;
             AppendStale(node);
         }
         return true;
@@ -255,7 +287,8 @@ public:
     std::optional<Candidate> Peek() const {
         const Node *node = First();
         if (!node) return std::nullopt;
-        return Candidate{node->first, node->second.entry_id};
+        return Candidate{node->first, node->second.entry_id, node->second.fee,
+                         node->second.vsize, node->second.removal_seq};
     }
 
     /** Copy at most limit candidates in selection order without changing the
@@ -278,7 +311,9 @@ public:
             const size_t index = frontier.back();
             frontier.pop_back();
             const Node *node = m_heap[index];
-            result.push_back({node->first, node->second.entry_id});
+            result.push_back({node->first, node->second.entry_id,
+                              node->second.fee, node->second.vsize,
+                              node->second.removal_seq});
             if (index < m_heap.size() / 2) {
                 const size_t left = 2 * index + 1;
                 frontier.push_back(left);
@@ -300,7 +335,8 @@ public:
     std::optional<Candidate> Pop() {
         Node *node = First();
         if (!node) return std::nullopt;
-        Candidate result{node->first, node->second.entry_id};
+        Candidate result{node->first, node->second.entry_id, node->second.fee,
+                         node->second.vsize, node->second.removal_seq};
         EraseNode(node);
         return result;
     }

@@ -904,13 +904,22 @@ void ChainAndMempoolSnapshot::EnsureMempoolTxIds() const {
                     }
                 });
             size_t total = 0;
-            for (const auto &sh : shards) {
-                total += sh.size();
+            std::array<size_t, 16> offsets{};
+            for (size_t s = 0; s < 16; ++s) {
+                offsets[s] = total;
+                total += shards[s].size();
             }
-            mempool_txids.reserve(total);
-            for (const auto &sh : shards) {
-                mempool_txids.insert(mempool_txids.end(), sh.begin(), sh.end());
-            }
+            mempool_txids.resize(total);
+            util::GetParallelRangeExecutor().Run(
+                16, /*grain=*/1, [&](size_t begin, size_t end) {
+                    for (size_t s = begin; s < end; ++s) {
+                        if (!shards[s].empty()) {
+                            std::memcpy(mempool_txids.data() + offsets[s],
+                                        shards[s].data(),
+                                        shards[s].size() * sizeof(TxId));
+                        }
+                    }
+                });
         } else {
             mempool_txids.reserve(mempool_size);
             mempool_ptr->m_tx_tree.forEachLeaf([&](const auto &entry) {

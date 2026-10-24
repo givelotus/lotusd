@@ -58,8 +58,11 @@ TxRelayIndex::TxRelayIndex(unsigned shortid_bits)
     : m_bits{std::clamp(shortid_bits, 1U, 64U)},
       m_published_epochs{std::make_shared<const EpochSnapshot>()} {}
 
-bool TxRelayIndex::InsertUnlocked(Epoch &epoch, const TxId &txid) const {
-    const uint64_t short_id{ShortId(epoch.key, txid)};
+bool TxRelayIndex::InsertUnlocked(
+    Epoch &epoch, const TxId &txid,
+    std::optional<uint64_t> precomputed_short_id) const {
+    const uint64_t short_id{precomputed_short_id ? *precomputed_short_id
+                                                 : ShortId(epoch.key, txid)};
     if (!epoch.short_id_of.insert(txid, short_id)) {
         return false;
     }
@@ -221,10 +224,11 @@ std::optional<EpochKey> TxRelayIndex::FindEpoch(const uint256 &epoch_id) const {
     return epoch->key;
 }
 
-void TxRelayIndex::AddUnlocked(const TxId &txid, Clock time) {
+void TxRelayIndex::AddUnlocked(const TxId &txid, Clock time,
+                               std::optional<uint64_t> precomputed_short_id) {
     RecordEpochChange(txid, true);
     if (m_current) {
-        if (!InsertUnlocked(*m_current, txid)) {
+        if (!InsertUnlocked(*m_current, txid, precomputed_short_id)) {
             return;
         }
     }
@@ -239,41 +243,68 @@ void TxRelayIndex::AddUnlocked(const TxId &txid, Clock time) {
 }
 
 void TxRelayIndex::Add(const TxId &txid, Clock time) {
+    std::optional<EpochKey> precomputed_key;
+    std::optional<uint64_t> precomputed_short_id;
     if (!m_rebuilding.load(std::memory_order_acquire)) {
-        if (const auto snap{LoadEpochs()};
-            snap && snap->current &&
-            snap->current->short_id_of.contains(txid) &&
-            !m_rebuilding.load(std::memory_order_acquire)) {
-            return;
+        if (const auto snap{LoadEpochs()}; snap && snap->current) {
+            if (snap->current->short_id_of.contains(txid) &&
+                !m_rebuilding.load(std::memory_order_acquire)) {
+                return;
+            }
+            precomputed_key = snap->current->key;
+            precomputed_short_id = ShortId(*precomputed_key, txid);
         }
     }
     LOCK(m_mutex);
-    AddUnlocked(txid, time);
+    const bool key_matches =
+        precomputed_key && m_current && m_current->key == *precomputed_key;
+    AddUnlocked(txid, time,
+                key_matches ? precomputed_short_id : std::nullopt);
 }
 
 void TxRelayIndex::AddBatch(std::span<const CTransactionRef> txs, Clock time) {
     if (txs.empty()) {
         return;
     }
+    std::optional<EpochKey> precomputed_key;
+    std::vector<uint64_t> precomputed_short_ids;
     if (!m_rebuilding.load(std::memory_order_acquire)) {
         if (const auto snap{LoadEpochs()}; snap && snap->current) {
             bool any_missing = false;
-            for (const auto &tx : txs) {
-                if (tx && !snap->current->short_id_of.contains(tx->GetId())) {
-                    any_missing = true;
-                    break;
+            {
+                RCULock lock;
+                for (const auto &tx : txs) {
+                    if (tx &&
+                        !snap->current->short_id_of.containsWithinReadSection(
+                            tx->GetId())) {
+                        any_missing = true;
+                        break;
+                    }
                 }
             }
             if (!any_missing &&
                 !m_rebuilding.load(std::memory_order_acquire)) {
                 return;
             }
+            precomputed_key = snap->current->key;
+            precomputed_short_ids.resize(txs.size());
+            for (size_t i = 0; i < txs.size(); ++i) {
+                if (txs[i]) {
+                    precomputed_short_ids[i] =
+                        ShortId(*precomputed_key, txs[i]->GetId());
+                }
+            }
         }
     }
     LOCK(m_mutex);
-    for (const auto &tx : txs) {
-        if (tx) {
-            AddUnlocked(tx->GetId(), time);
+    const bool key_matches =
+        precomputed_key && m_current && m_current->key == *precomputed_key;
+    for (size_t i = 0; i < txs.size(); ++i) {
+        if (txs[i]) {
+            AddUnlocked(txs[i]->GetId(), time,
+                        key_matches
+                            ? std::optional<uint64_t>{precomputed_short_ids[i]}
+                            : std::nullopt);
         }
     }
 }
@@ -337,18 +368,17 @@ TxRelayIndex::Lookup TxRelayIndex::Find(const uint256 &epoch_id,
     if (!epoch) {
         return Lookup::UNKNOWN_EPOCH;
     }
-    const auto bucket{epoch->by_short_id.getEntry(short_id)};
-    if (!bucket) {
-        return Lookup::MISSING;
-    }
-    if (out) {
-        out->push_back(bucket->value.first);
-        if (bucket->value.extra) {
-            out->insert(out->end(), bucket->value.extra->begin(),
-                        bucket->value.extra->end());
-        }
-    }
-    return Lookup::HAVE;
+    const bool found = epoch->by_short_id.withEntry(
+        short_id, [&](const ShortIdMap::Entry &bucket) {
+            if (out) {
+                out->push_back(bucket.value.first);
+                if (bucket.value.extra) {
+                    out->insert(out->end(), bucket.value.extra->begin(),
+                                bucket.value.extra->end());
+                }
+            }
+        });
+    return found ? Lookup::HAVE : Lookup::MISSING;
 }
 
 bool TxRelayIndex::ResolveShortIds(const uint256 &epoch_id,
@@ -359,14 +389,16 @@ bool TxRelayIndex::ResolveShortIds(const uint256 &epoch_id,
     if (!epoch) {
         return false;
     }
+    RCULock lock;
     for (const uint64_t short_id : short_ids) {
-        if (const auto bucket{epoch->by_short_id.getEntry(short_id)}) {
-            out.push_back(bucket->value.first);
-            if (bucket->value.extra) {
-                out.insert(out.end(), bucket->value.extra->begin(),
-                           bucket->value.extra->end());
-            }
-        }
+        epoch->by_short_id.withEntryWithinReadSection(
+            short_id, [&](const ShortIdMap::Entry &bucket) {
+                out.push_back(bucket.value.first);
+                if (bucket.value.extra) {
+                    out.insert(out.end(), bucket.value.extra->begin(),
+                               bucket.value.extra->end());
+                }
+            });
     }
     return true;
 }
@@ -380,15 +412,18 @@ bool TxRelayIndex::PartitionShortIds(const uint256 &epoch_id,
     if (!epoch) {
         return false;
     }
+    RCULock lock;
     for (const uint64_t short_id : short_ids) {
-        if (const auto bucket{epoch->by_short_id.getEntry(short_id)}) {
-            known_txids.push_back(bucket->value.first);
-            if (bucket->value.extra) {
-                known_txids.insert(known_txids.end(),
-                                   bucket->value.extra->begin(),
-                                   bucket->value.extra->end());
-            }
-        } else {
+        const bool found = epoch->by_short_id.withEntryWithinReadSection(
+            short_id, [&](const ShortIdMap::Entry &bucket) {
+                known_txids.push_back(bucket.value.first);
+                if (bucket.value.extra) {
+                    known_txids.insert(known_txids.end(),
+                                       bucket.value.extra->begin(),
+                                       bucket.value.extra->end());
+                }
+            });
+        if (!found) {
             missing_req_keys.emplace_back(ShortIdRequestKey(epoch_id, short_id));
         }
     }

@@ -196,6 +196,51 @@ public:
         return RCUPtr<const T>::acquire(ptr);
     }
 
+    /**
+     * Lock-free existence check without touching the leaf's atomic refcount.
+     */
+    bool contains(const KeyType &key) const {
+        RCULock lock;
+        return containsWithinReadSection(key);
+    }
+
+    bool containsWithinReadSection(const KeyType &key) const {
+        assert(RCULock::isLocked());
+        uint32_t level = TOP_LEVEL;
+        RadixElement e = root.load();
+        while (e.isNode()) {
+            e = e.getNode()->get(level--, key)->load();
+        }
+        const T *leaf = e.getLeaf();
+        return leaf != nullptr && getId(*leaf) == key;
+    }
+
+    /**
+     * Invoke `fn(const T &)` if `key` is found, while holding an RCU read lock
+     * without incrementing or decrementing the leaf's atomic refcount.
+     */
+    template <typename Callable>
+    bool withLeaf(const KeyType &key, Callable &&fn) const {
+        RCULock lock;
+        return withLeafWithinReadSection(key, std::forward<Callable>(fn));
+    }
+
+    template <typename Callable>
+    bool withLeafWithinReadSection(const KeyType &key, Callable &&fn) const {
+        assert(RCULock::isLocked());
+        uint32_t level = TOP_LEVEL;
+        RadixElement e = root.load();
+        while (e.isNode()) {
+            e = e.getNode()->get(level--, key)->load();
+        }
+        const T *leaf = e.getLeaf();
+        if (leaf == nullptr || getId(*leaf) != key) {
+            return false;
+        }
+        fn(*leaf);
+        return true;
+    }
+
     template <typename Callable> bool forEachLeaf(Callable &&func) const {
         RCULock lock;
         return forEachLeaf(root.load(), func);
