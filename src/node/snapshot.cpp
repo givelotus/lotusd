@@ -189,19 +189,15 @@ MempoolEntrySnapshot MakeMempoolEntrySnapshot(const CTxMemPoolEntry &e,
     entry_snap.height = static_cast<int>(e.GetHeight());
 
     const auto &parents = e.GetMemPoolParentsConst();
-    if (!parents.empty()) {
-        std::set<std::string> set_depends;
-        for (const auto &parent : parents) {
-            set_depends.insert(parent.get()->GetTx().GetId().ToString());
-        }
-        entry_snap.depends.assign(set_depends.begin(), set_depends.end());
+    entry_snap.depends.reserve(parents.size());
+    for (const auto &parent : parents) {
+        entry_snap.depends.push_back(parent.get()->GetTx().GetId());
     }
 
     const auto &children = e.GetMemPoolChildrenConst();
     entry_snap.spentby.reserve(children.size());
     for (const auto &child : children) {
-        entry_snap.spentby.push_back(
-            child.get()->GetTx().GetId().ToString());
+        entry_snap.spentby.push_back(child.get()->GetTx().GetId());
     }
     entry_snap.unbroadcast = mempool.IsUnbroadcastTx(entry_snap.txid);
     return entry_snap;
@@ -483,9 +479,9 @@ const MiningTemplateSnapshot &ChainAndMempoolSnapshot::GetMiningTemplate() const
             std::vector<size_t> children;
         };
         std::vector<DepNode> nodes;
-        std::unordered_map<std::string, size_t> locations;
+        std::unordered_map<TxId, size_t, SaltedTxIdHasher> locations;
         for (const auto &entry : mempool_entries) {
-            locations.emplace(entry.txid.ToString(), nodes.size());
+            locations.emplace(entry.txid, nodes.size());
             nodes.push_back({&entry, entry.depends.size(), {}});
         }
         for (size_t child = 0; child < nodes.size(); ++child) {

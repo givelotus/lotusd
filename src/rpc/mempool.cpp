@@ -517,15 +517,15 @@ static void entrySnapshotToJSON(UniValue &info,
 
     UniValue depends(UniValue::VARR);
     depends.reserve(e.depends.size());
-    for (const std::string &dep : e.depends) {
-        depends.push_back(dep);
+    for (const TxId &dep : e.depends) {
+        depends.push_back(dep.ToString());
     }
     info.pushKV("depends", std::move(depends));
 
     UniValue spent(UniValue::VARR);
     spent.reserve(e.spentby.size());
-    for (const std::string &child : e.spentby) {
-        spent.push_back(child);
+    for (const TxId &child : e.spentby) {
+        spent.push_back(child.ToString());
     }
     info.pushKV("spentby", std::move(spent));
     info.pushKV("unbroadcast", e.unbroadcast);

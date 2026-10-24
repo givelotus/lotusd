@@ -52,8 +52,8 @@ struct MempoolEntrySnapshot {
     uint64_t entry_id{0};
     CFeeRate modified_feerate{};
     int height{0};
-    std::vector<std::string> depends;
-    std::vector<std::string> spentby;
+    std::vector<TxId> depends;
+    std::vector<TxId> spentby;
     bool unbroadcast{false};
 };
 

@@ -27,6 +27,7 @@
 #include <boost/asio/thread_pool.hpp>
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -36,6 +37,112 @@
 #include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(rpc_snapshot_read_tests, TestChain100Setup)
+
+BOOST_AUTO_TEST_CASE(snapshot_graph_ids_preserve_rpc_order_and_mining_dependencies) {
+    // The graph is deliberately unchecked: this exercises snapshot graph
+    // capture/selection, not script or consensus acceptance. A has two outputs
+    // spent by join, so join must have only one dependency edge to A.
+    CMutableTransaction parent_a;
+    parent_a.vin.emplace_back(COutPoint(m_coinbase_txns[0]->GetId(), 0));
+    parent_a.vout.emplace_back(100000 * SATOSHI, CScript() << OP_TRUE);
+    parent_a.vout.emplace_back(100000 * SATOSHI, CScript() << OP_TRUE);
+    auto pad = [](CMutableTransaction &tx) {
+        while (::GetSerializeSize(tx) < MIN_TX_SIZE) {
+            tx.vout[0].scriptPubKey << OP_NOP;
+        }
+    };
+    pad(parent_a);
+    CMutableTransaction parent_b = parent_a;
+    parent_b.vin[0].prevout = COutPoint(m_coinbase_txns[1]->GetId(), 0);
+    auto distinguish_order = [](const TxId &fixed, CMutableTransaction &other) {
+        for (uint32_t nonce = 0; nonce < 256; ++nonce) {
+            other.nLockTime = nonce;
+            const auto id = other.GetId();
+            if ((fixed < id) != (std::memcmp(fixed.begin(), id.begin(), 32) < 0)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    BOOST_REQUIRE(distinguish_order(parent_a.GetId(), parent_b));
+    const auto a = MakeTransactionRef(parent_a);
+    const auto b = MakeTransactionRef(parent_b);
+    CMutableTransaction join_tx;
+    join_tx.vin.emplace_back(COutPoint(a->GetId(), 0));
+    join_tx.vin.emplace_back(COutPoint(a->GetId(), 1));
+    join_tx.vin.emplace_back(COutPoint(b->GetId(), 0));
+    join_tx.vout.emplace_back(290000 * SATOSHI, CScript() << OP_TRUE);
+    CMutableTransaction other_tx;
+    other_tx.vin.emplace_back(COutPoint(b->GetId(), 1));
+    other_tx.vout.emplace_back(98000 * SATOSHI, CScript() << OP_TRUE);
+    pad(other_tx);
+    BOOST_REQUIRE(distinguish_order(join_tx.GetId(), other_tx));
+    const auto join = MakeTransactionRef(join_tx);
+    const auto other = MakeTransactionRef(other_tx);
+    auto &pool = *m_node.mempool;
+    {
+        LOCK2(cs_main, pool.cs);
+        // Capture chain context before the unchecked additions. Their pending
+        // overlay changes must remain deferred when the graph is published.
+        node::PublishChainTipSnapshot(*m_node.chainman, &pool);
+        CTxMemPool::ScopedSnapshotDefer defer(pool);
+        pool.addUnchecked(TestMemPoolEntryHelper().Fee(Amount::zero()).FromTx(a));
+        pool.addUnchecked(TestMemPoolEntryHelper().Fee(2000 * SATOSHI).FromTx(b));
+        pool.addUnchecked(TestMemPoolEntryHelper().Fee(10000 * SATOSHI).FromTx(join));
+        pool.addUnchecked(TestMemPoolEntryHelper().Fee(2000 * SATOSHI).FromTx(other));
+    }
+    const auto pinned = node::GetGlobalSnapshotPublisher().Load();
+    BOOST_REQUIRE(pinned);
+    const auto *join_entry = pinned->FindMempoolEntry(join->GetId());
+    BOOST_REQUIRE(join_entry);
+    BOOST_REQUIRE_EQUAL(join_entry->depends.size(), 2U);
+    auto parents = std::vector<TxId>{a->GetId(), b->GetId()};
+    std::sort(parents.begin(), parents.end());
+    BOOST_CHECK(join_entry->depends == parents);
+
+    auto rpc = [&](const std::string &method, UniValue params) {
+        JSONRPCRequest request;
+        request.context = &m_node;
+        request.strMethod = method;
+        request.params = std::move(params);
+        return tableRPC.execute(GlobalConfig{}, request);
+    };
+    UniValue verbose_params(UniValue::VARR);
+    verbose_params.push_back(true);
+    const auto verbose = rpc("getrawmempool", std::move(verbose_params));
+    auto check_edges = [&](const CTransactionRef &tx, const std::string &field,
+                           std::vector<std::string> expected) {
+        std::sort(expected.begin(), expected.end());
+        UniValue params(UniValue::VARR);
+        params.push_back(tx->GetId().ToString());
+        const auto entry = rpc("getmempoolentry", std::move(params));
+        const auto &edges = entry[field].get_array();
+        const auto &verbose_edges = verbose[tx->GetId().ToString()][field].get_array();
+        BOOST_REQUIRE_EQUAL(edges.size(), expected.size());
+        BOOST_REQUIRE_EQUAL(verbose_edges.size(), expected.size());
+        for (size_t i = 0; i < expected.size(); ++i) {
+            BOOST_CHECK_EQUAL(edges[i].get_str(), expected[i]);
+            BOOST_CHECK_EQUAL(verbose_edges[i].get_str(), expected[i]);
+        }
+    };
+    check_edges(join, "depends", {a->GetId().ToString(), b->GetId().ToString()});
+    check_edges(b, "spentby", {join->GetId().ToString(), other->GetId().ToString()});
+    check_edges(a, "depends", {});
+    check_edges(other, "spentby", {});
+
+    // A cannot be mined at the minimum fee; join must remain blocked despite
+    // its higher fee. The independent B -> other edge must unblock normally.
+    BOOST_CHECK(!pinned->overlay_all_fit_candidate);
+    const auto &tmpl = pinned->GetMiningTemplate();
+    auto expected = std::vector<TxId>{b->GetId(), other->GetId()};
+    if (pinned->ctor_active) std::sort(expected.begin(), expected.end());
+    std::vector<TxId> selected;
+    for (const auto &tx : tmpl.non_coinbase_txs) selected.push_back(tx->GetId());
+    BOOST_CHECK(selected == expected);
+    BOOST_CHECK(tmpl.total_fees == 4000 * SATOSHI);
+    BOOST_CHECK(tmpl.tx_fees == std::vector<Amount>({2000 * SATOSHI, 2000 * SATOSHI}));
+    BOOST_CHECK(tmpl.tx_sigchecks == std::vector<int64_t>({1, 1}));
+}
 
 BOOST_AUTO_TEST_CASE(header_only_snapshot_rechecks_new_block_metadata) {
     auto &manager = *m_node.chainman;

@@ -342,6 +342,12 @@ BOOST_AUTO_TEST_CASE(lazy_mempool_snapshots_pin_historical_values) {
             BOOST_REQUIRE(entry);
             BOOST_CHECK_EQUAL(entry->depends.size(), j == 0 ? 0U : 1U);
             BOOST_CHECK_EQUAL(entry->spentby.size(), j == i ? 0U : 1U);
+            if (j > 0) {
+                BOOST_CHECK(entry->depends.front() == txs[j - 1]->GetId());
+            }
+            if (j < i) {
+                BOOST_CHECK(entry->spentby.front() == txs[j + 1]->GetId());
+            }
         }
     }
     const auto *old_entry = before_fee->FindMempoolEntry(txs[1]->GetId());
