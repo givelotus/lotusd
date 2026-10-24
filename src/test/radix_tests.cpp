@@ -614,6 +614,75 @@ BOOST_AUTO_TEST_CASE(tree_traversal) {
     BOOST_CHECK(!ret);
 }
 
+BOOST_AUTO_TEST_CASE(uint256_key_equality_compares_high_bits) {
+    for (uint64_t low : {uint64_t{0}, uint64_t{0x0123456789abcdef}}) {
+        const Uint256RadixKey original{arith_uint256(low)};
+        const Uint256RadixKey copy{original.base};
+        BOOST_CHECK(original == copy);
+        BOOST_CHECK(!(original != copy));
+        for (unsigned bit = 64; bit < 256; ++bit) {
+            BOOST_TEST_CONTEXT("low=" << low << " high bit=" << bit) {
+                const Uint256RadixKey other{
+                    arith_uint256(low) | (arith_uint256(1) << bit)};
+                BOOST_CHECK_EQUAL(size_t(original), size_t(other));
+                BOOST_CHECK(!(original == other));
+                BOOST_CHECK(!(other == original));
+                BOOST_CHECK(original != other);
+                BOOST_CHECK(other != original);
+            }
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(uint256_tree_same_low64_distinct_high_bits) {
+    using E = TestElementUint256;
+    using Tree = RadixTree<E>;
+    for (uint64_t low : {uint64_t{0}, uint64_t{0x0123456789abcdef}}) {
+        Tree live;
+        std::vector<RCUPtr<E>> entries;
+        entries.push_back(RCUPtr<E>::make(low));
+        for (unsigned bit : {64U, 95U, 127U, 128U, 159U, 191U, 192U, 223U, 255U}) {
+            entries.push_back(RCUPtr<E>::make(ArithToUint256(
+                arith_uint256(low) | (arith_uint256(1) << bit))));
+        }
+        // A multi-high-bit key shares the low64 and a path with live keys,
+        // but is absent. Neither lookup nor removal may match a nearby leaf.
+        const Uint256RadixKey missing{arith_uint256(low) |
+            (arith_uint256(1) << 255) | (arith_uint256(1) << 64)};
+        for (const auto &entry : entries) {
+            BOOST_CHECK(!live.get(entry->getId()));
+            BOOST_REQUIRE(live.insert(entry));
+            BOOST_CHECK(!live.insert(RCUPtr<E>::make(
+                ArithToUint256(entry->getId().base))));
+            BOOST_CHECK(live.get(entry->getId()) == entry);
+            BOOST_CHECK(!live.get(missing));
+            BOOST_CHECK(!live.remove(missing));
+        }
+        // No writer is active while sharing the immutable snapshot root.
+        const Tree snapshot(live, Tree::ImmutableSnapshotTag{});
+        for (const auto &entry : entries) {
+            BOOST_CHECK(live.get(entry->getId()) == entry);
+            BOOST_CHECK(snapshot.get(entry->getId()).get() == entry.get());
+        }
+        for (const auto &entry : entries) {
+            BOOST_REQUIRE(live.remove(entry->getId()));
+            BOOST_CHECK(!live.get(entry->getId()));
+            BOOST_CHECK(!live.remove(entry->getId()));
+            BOOST_CHECK(snapshot.get(entry->getId()).get() == entry.get());
+        }
+        BOOST_CHECK(!live.get(missing));
+        BOOST_CHECK(!snapshot.get(missing));
+        auto newly_inserted = RCUPtr<E>::make(ArithToUint256(missing.base));
+        BOOST_REQUIRE(live.insert(newly_inserted));
+        BOOST_CHECK(live.get(missing) == newly_inserted);
+        BOOST_CHECK(!snapshot.get(missing));
+        for (const auto &entry : entries) {
+            BOOST_CHECK(!live.get(entry->getId()));
+            BOOST_CHECK(snapshot.get(entry->getId()).get() == entry.get());
+        }
+    }
+}
+
 BOOST_AUTO_TEST_CASE(uint256_key_wrapper) {
     Uint256RadixKey key = uint256S(
         "AA00000000000000000000000000000000000000000000000000000000000000");
