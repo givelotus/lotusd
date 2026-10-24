@@ -670,11 +670,14 @@ void SmtBatchUpdateParallel(
 
 std::shared_ptr<const Coin> SmtFind(const std::shared_ptr<const SmtNode> &root,
                                     const Outpoint &outpoint) {
-    if (!root) {
+    // A finalized immutable root owns every descendant transitively. Pin it
+    // once; copying a shared_ptr at each level adds no lifetime protection.
+    const auto pinned_root = root;
+    if (!pinned_root) {
         return nullptr;
     }
     const Hash key = OutpointKey(outpoint);
-    std::shared_ptr<const SmtNode> curr = root;
+    const SmtNode *curr = pinned_root.get();
     unsigned depth = 0;
     while (curr && depth < 256) {
         if (curr->IsLeaf()) {
@@ -685,7 +688,7 @@ std::shared_ptr<const Coin> SmtFind(const std::shared_ptr<const SmtNode> &root,
             return nullptr;
         }
         const unsigned bit = SmtKeyBit(key, depth);
-        curr = curr->child[bit];
+        curr = curr->child[bit].get();
         ++depth;
     }
     return nullptr;

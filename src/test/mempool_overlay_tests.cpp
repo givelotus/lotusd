@@ -20,10 +20,14 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <barrier>
 #include <chrono>
 #include <cstring>
 #include <future>
 #include <random>
+#include <thread>
 #include <vector>
 #include <stdexcept>
 
@@ -114,6 +118,110 @@ BOOST_AUTO_TEST_CASE(utxo_arena_reuses_imported_subtrees_and_invalidates_mutatio
                           coin.output.value);
     }
     BOOST_CHECK(SmtRoot(base) == original_root);
+}
+
+BOOST_AUTO_TEST_CASE(smt_lookup_preserves_pinned_snapshot_and_returned_coin) {
+    using namespace lotus::v2;
+    std::vector<lotus::v2::Coin> coins(128);
+    std::shared_ptr<const SmtNode> live;
+    BOOST_CHECK(!SmtFind(live, Outpoint{}));
+    for (size_t i = 0; i < coins.size(); ++i) {
+        auto &coin = coins[i];
+        coin.outpoint.tx_id[0] = static_cast<uint8_t>(i);
+        coin.outpoint.tx_id[31] = static_cast<uint8_t>(255 - i);
+        coin.output.value = 1000 + i;
+        coin.output.legacy_script = std::vector<uint8_t>{OP_TRUE};
+        coin.creation_height = 10;
+        coin.expiration_height = 100010;
+    }
+    SmtBatchUpdateParallel(live, {}, coins);
+    auto pinned = live;
+    const auto original_digest = SmtRoot(pinned);
+    const auto retained = SmtFind(pinned, coins[0].outpoint);
+    BOOST_REQUIRE(retained);
+    for (const auto &coin : coins) {
+        const auto found = SmtFind(pinned, coin.outpoint);
+        BOOST_REQUIRE(found);
+        BOOST_CHECK(found->outpoint == coin.outpoint);
+        BOOST_CHECK_EQUAL(found->output.value, coin.output.value);
+        auto missing = coin.outpoint;
+        missing.index = 1;
+        BOOST_CHECK(!SmtFind(pinned, missing));
+    }
+    auto replacement = coins[0];
+    replacement.output.value += 500;
+    SmtInsert(live, replacement);
+    SmtErase(live, coins[1].outpoint);
+    auto added = coins[1];
+    added.outpoint.index = 1;
+    SmtBatchUpdateParallel(live, {}, std::span(&added, 1));
+    const auto replaced = SmtFind(live, replacement.outpoint);
+    BOOST_REQUIRE(replaced);
+    BOOST_CHECK_EQUAL(replaced->output.value, replacement.output.value);
+    BOOST_CHECK(!SmtFind(live, coins[1].outpoint));
+    BOOST_CHECK(SmtFind(live, added.outpoint));
+    BOOST_CHECK(!SmtFind(pinned, added.outpoint));
+    const auto original = SmtFind(pinned, coins[0].outpoint);
+    BOOST_REQUIRE(original);
+    BOOST_CHECK_EQUAL(original->output.value, coins[0].output.value);
+    BOOST_REQUIRE(SmtFind(pinned, coins[1].outpoint));
+    BOOST_CHECK(SmtRoot(pinned) == original_digest);
+    std::weak_ptr<const SmtNode> old_root = pinned;
+    pinned.reset();
+    live.reset();
+    BOOST_CHECK(old_root.expired());
+    // The result retains the Coin, not the traversed nodes: no root or node
+    // ownership remains, but its complete immutable value is still valid.
+    BOOST_CHECK(retained->outpoint == coins[0].outpoint);
+    BOOST_CHECK_EQUAL(retained->output.value, coins[0].output.value);
+    BOOST_CHECK_EQUAL(retained->expiration_height, coins[0].expiration_height);
+}
+
+BOOST_AUTO_TEST_CASE(smt_lookup_parallel_owned_snapshots_during_updates) {
+    using namespace lotus::v2;
+    std::vector<lotus::v2::Coin> coins(128);
+    for (size_t i = 0; i < coins.size(); ++i) {
+        coins[i].outpoint.tx_id[0] = static_cast<uint8_t>(i);
+        coins[i].output.value = 1000 + i;
+        coins[i].output.legacy_script = std::vector<uint8_t>{OP_TRUE};
+        coins[i].expiration_height = 100010;
+    }
+    std::shared_ptr<const SmtNode> live;
+    SmtBatchUpdateParallel(live, {}, coins);
+    const auto snapshot = live;
+    const auto digest = SmtRoot(snapshot);
+    std::atomic<size_t> errors{0};
+    std::barrier rounds(5);
+    std::array<std::jthread, 4> readers;
+    for (auto &reader : readers) {
+        reader = std::jthread([owned = snapshot, &coins, &errors, &rounds] {
+            for (size_t round = 0; round < 8; ++round) {
+                rounds.arrive_and_wait();
+                for (const auto &coin : coins) {
+                    const auto found = SmtFind(owned, coin.outpoint);
+                    auto missing = coin.outpoint;
+                    missing.index = 99;
+                    if (!found || found->outpoint != coin.outpoint ||
+                        found->output.value != coin.output.value ||
+                        SmtFind(owned, missing)) {
+                        errors.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+                rounds.arrive_and_wait();
+            }
+        });
+    }
+    for (size_t round = 0; round < 8; ++round) {
+        rounds.arrive_and_wait();
+        auto replacement = coins;
+        for (auto &coin : replacement) coin.output.value += 100 + round;
+        SmtBatchUpdateParallel(live, {}, replacement);
+        rounds.arrive_and_wait();
+    }
+    for (auto &reader : readers) reader.join();
+    BOOST_CHECK_EQUAL(errors.load(std::memory_order_relaxed), 0U);
+    BOOST_CHECK(SmtRoot(snapshot) == digest);
+    BOOST_CHECK(SmtRoot(live) != digest);
 }
 
 BOOST_AUTO_TEST_CASE(transaction_subtree_rejects_duplicate_ids) {
