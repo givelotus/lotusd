@@ -198,6 +198,7 @@ CTxMemPool::txiter CTxMemPool::addUnchecked(
     // entry_id index
     assert(&*mapTx.get<entry_id>().rbegin() == &*newit);
     m_tx_tree.insert(entry);
+    m_cached_map_tx_size.store(mapTx.size(), std::memory_order_release);
 
     // Update cachedInnerUsage to include contained transaction's usage.
     // (When we update the entry for in-mempool parents, memory usage will be
@@ -352,6 +353,7 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason) {
         memusage::DynamicUsage((*it)->GetMemPoolChildrenConst());
     m_tx_tree.remove(txid);
     mapTx.erase(it);
+    m_cached_map_tx_size.store(mapTx.size(), std::memory_order_release);
     nTransactionsUpdated++;
 }
 
@@ -507,6 +509,7 @@ void CTxMemPool::_clear() {
     m_overlay_warm.store(true, std::memory_order_relaxed);
     m_tx_tree = LiveTxTree{};
     mapTx.clear();
+    m_cached_map_tx_size.store(0, std::memory_order_release);
     mapNextTx.clear();
     mapTx.get_allocator().resource()->ReleaseUnusedChunks();
     m_utxo_fast_filter.ClearMempool();

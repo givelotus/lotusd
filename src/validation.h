@@ -473,10 +473,7 @@ struct PrecomputedBatchTxData {
     bool regular_tx_valid{false};
     bool v2_fast_path_verified{false};
     bool v2_all_confirmed_fast_inputs{false};
-    bool v2_prewarm_mempool_clean{false};
     bool batch_structure_verified_no_parents{false};
-    unsigned int v2_prewarm_txs_updated{0};
-    size_t v2_prewarm_mempool_size{0};
     BlockHash v2_snapshot_tip_hash{};
     Amount v2_precomputed_base_fee{Amount::zero()};
     std::vector<Coin> v2_resolved_coins;

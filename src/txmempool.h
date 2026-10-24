@@ -541,9 +541,8 @@ public:
      */
     void SetLoadTried(bool load_tried);
 
-    unsigned long size() const {
-        LOCK(cs);
-        return mapTx.size();
+    unsigned long size() const noexcept {
+        return m_cached_map_tx_size.load(std::memory_order_acquire);
     }
 
     uint64_t GetTotalTxSize() const EXCLUSIVE_LOCKS_REQUIRED(cs) {
@@ -854,6 +853,7 @@ public:
     }
 
 private:
+    std::atomic<size_t> m_cached_map_tx_size{0};
     mutable std::mutex m_batch_relay_cb_mutex;
     std::weak_ptr<BatchRelayCallback> m_batch_relay_cb;
     mutable lotus::v2::UtxoFastFilter m_utxo_fast_filter;

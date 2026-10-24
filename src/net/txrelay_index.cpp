@@ -297,6 +297,7 @@ void TxRelayIndex::AddBatch(std::span<const CTransactionRef> txs, Clock time) {
         }
     }
     LOCK(m_mutex);
+    RCULock lock;
     const bool key_matches =
         precomputed_key && m_current && m_current->key == *precomputed_key;
     for (size_t i = 0; i < txs.size(); ++i) {
@@ -326,6 +327,7 @@ void TxRelayIndex::AddTxIdBatch(std::span<const TxId> txids, Clock time) {
         }
     }
     LOCK(m_mutex);
+    RCULock lock;
     const bool key_matches =
         precomputed_key && m_current && m_current->key == *precomputed_key;
     for (size_t i = 0; i < txids.size(); ++i) {

@@ -1760,7 +1760,8 @@ static RPCHelpMan submitrawtxbatch() {
             }
 
             const PackageMempoolAcceptResult package_result = [&] {
-                LOCK(::cs_main);
+                LOCK2(::cs_main, mempool.cs);
+                CTxMemPool::ScopedSnapshotDefer snapshot_defer(mempool);
                 Chainstate &chainstate = chainman.ActiveChainstate();
                 // [Patch 036 optimization] Single-pass two-phase batch
                 // validation and commit under cs_main + ScopedSnapshotDefer:

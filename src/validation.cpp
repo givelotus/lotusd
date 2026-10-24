@@ -2118,11 +2118,7 @@ bool MemPoolAccept::PreChecksBatch(
         pre->v2_all_confirmed_fast_inputs && !has_intra_batch_parents &&
         pre->v2_snapshot_tip_hash == tip->GetBlockHash() &&
         m_pool.mapTx.size() > 6400) {
-        const bool pool_unchanged_since_prewarm =
-            pre->v2_prewarm_mempool_clean &&
-            pre->v2_prewarm_txs_updated == m_pool.GetTransactionsUpdated() &&
-            pre->v2_prewarm_mempool_size == m_pool.mapTx.size();
-        if (mempool_nonempty && !pool_unchanged_since_prewarm) {
+        if (mempool_nonempty) {
             if (m_pool.existsWithinReadSection(txid)) {
                 return state.Invalid(TxValidationResult::TX_DUPLICATE,
                                      "txn-already-in-mempool");
@@ -2584,36 +2580,39 @@ bool MemPoolAccept::SubmitPackage(
     // Submit each transaction to the mempool immediately after calling
     // ConsensusScriptChecks to make the outputs available for subsequent
     // transactions.
-    for (size_t idx = 0; idx < workspaces.size(); ++idx) {
-        Workspace &ws = workspaces[idx];
-        if (!scripts_already_verified && !ConsensusScriptChecks(args, ws)) {
-            results.emplace(ws.m_ptx->GetId(),
-                            MempoolAcceptResult::Failure(ws.m_state));
-            // Since PreChecks() passed, this should never fail.
-            all_submitted = false;
-            package_state.Invalid(
-                PackageValidationResult::PCKG_MEMPOOL_ERROR,
-                strprintf("BUG! PolicyScriptChecks succeeded but "
-                          "ConsensusScriptChecks failed: %s",
-                          ws.m_ptx->GetId().ToString()));
-        }
+    {
+        RCULock rcu_lock;
+        for (size_t idx = 0; idx < workspaces.size(); ++idx) {
+            Workspace &ws = workspaces[idx];
+            if (!scripts_already_verified && !ConsensusScriptChecks(args, ws)) {
+                results.emplace(ws.m_ptx->GetId(),
+                                MempoolAcceptResult::Failure(ws.m_state));
+                // Since PreChecks() passed, this should never fail.
+                all_submitted = false;
+                package_state.Invalid(
+                    PackageValidationResult::PCKG_MEMPOOL_ERROR,
+                    strprintf("BUG! PolicyScriptChecks succeeded but "
+                              "ConsensusScriptChecks failed: %s",
+                              ws.m_ptx->GetId().ToString()));
+            }
 
-        // If we call LimitMempoolSize() for each individual Finalize(), the
-        // mempool will not take the transaction's descendant feerate into
-        // account because it hasn't seen them yet. Also, we risk evicting a
-        // transaction that a subsequent package transaction depends on.
-        // Instead, allow the mempool to temporarily bypass limits, the maximum
-        // package size) while submitting transactions individually and then
-        // trim at the very end.
-        if (!Finalize(args, ws, batch_signals_ptr, &batch_iters,
-                      &batch_iters[idx], suppress_batch_signals)) {
-            results.emplace(ws.m_ptx->GetId(),
-                            MempoolAcceptResult::Failure(ws.m_state));
-            // Since LimitMempoolSize() won't be called, this should never fail.
-            all_submitted = false;
-            package_state.Invalid(PackageValidationResult::PCKG_MEMPOOL_ERROR,
-                                  strprintf("BUG! Adding to mempool failed: %s",
-                                            ws.m_ptx->GetId().ToString()));
+            // If we call LimitMempoolSize() for each individual Finalize(), the
+            // mempool will not take the transaction's descendant feerate into
+            // account because it hasn't seen them yet. Also, we risk evicting a
+            // transaction that a subsequent package transaction depends on.
+            // Instead, allow the mempool to temporarily bypass limits, the maximum
+            // package size) while submitting transactions individually and then
+            // trim at the very end.
+            if (!Finalize(args, ws, batch_signals_ptr, &batch_iters,
+                          &batch_iters[idx], suppress_batch_signals)) {
+                results.emplace(ws.m_ptx->GetId(),
+                                MempoolAcceptResult::Failure(ws.m_state));
+                // Since LimitMempoolSize() won't be called, this should never fail.
+                all_submitted = false;
+                package_state.Invalid(PackageValidationResult::PCKG_MEMPOOL_ERROR,
+                                      strprintf("BUG! Adding to mempool failed: %s",
+                                                ws.m_ptx->GetId().ToString()));
+            }
         }
     }
 
@@ -3985,7 +3984,6 @@ void PrewarmRawTxBatchSignatures(
     const bool std_deferred_only =
         lotus::v2::DeferredCheckRegistry::Consensus().Kinds().size() == 2;
     const size_t pool_size_snapshot = pool.size();
-    const unsigned int prewarm_txs_updated = pool.GetTransactionsUpdated();
     const int64_t accept_time = GetTime();
     const bool use_fast_confirmed_smt =
         std_deferred_only && !has_intra_batch_parents && utxo_root != nullptr &&
@@ -4002,7 +4000,6 @@ void PrewarmRawTxBatchSignatures(
     std::atomic<bool> worker_sig_failed{false};
 
     auto process_range = [&](size_t tid) {
-        RCULock rcu_lock;
         lotus::v2::BatchSigCollector &local_collector = worker_collectors[tid];
         std::vector<size_t> &local_cands = worker_candidates[tid];
         if (precomputed_batch != nullptr) {
@@ -4030,27 +4027,6 @@ void PrewarmRawTxBatchSignatures(
                         pre.v2_snapshot_tip_hash = snapshot_tip_hash;
                         pre.v2_all_confirmed_fast_inputs = true;
                         pre.v2_precomputed_base_fee = fast_fee;
-                        if (!has_duplicate_txid && !has_duplicate_prevout) {
-                            bool mempool_clean =
-                                !pool.existsWithinReadSection(tx.GetId());
-                            if (mempool_clean) {
-                                for (const CTxIn &txin : tx.vin) {
-                                    if (pool.mapNextTx
-                                            .containsWithinReadSection(
-                                                txin.prevout)) {
-                                        mempool_clean = false;
-                                        break;
-                                    }
-                                }
-                            }
-                            if (mempool_clean) {
-                                pre.v2_prewarm_mempool_clean = true;
-                                pre.v2_prewarm_txs_updated =
-                                    prewarm_txs_updated;
-                                pre.v2_prewarm_mempool_size =
-                                    pool_size_snapshot;
-                            }
-                        }
                         pre.pre_allocated_entry =
                             std::make_unique<CTxMemPoolEntry>(
                                 txns[idx], fast_fee, accept_time,
@@ -4874,7 +4850,6 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
         const int64_t pre_accept_time = GetTime();
         util::GetParallelRangeExecutor().Run(
             threads, 1, [&](size_t tid, size_t) {
-                RCULock rcu_lock;
                 auto *collector = &worker_collectors[tid];
                 for (size_t base = next.fetch_add(16, std::memory_order_relaxed);
                      base < work.size();
@@ -4885,20 +4860,24 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
                         if (txs[i]->nVersion == 7) {
                             if (can_try_fast_confirmed) {
                                 const CTransaction &tx = *txs[i];
-                                bool conflict_in_mempool =
-                                    native_snapshot->entry_tree
-                                        ? native_snapshot->entry_tree
-                                              ->containsWithinReadSection(
-                                                  Uint256RadixKey(tx.GetId()))
-                                        : native_pool->existsWithinReadSection(
-                                              tx.GetId());
-                                if (!conflict_in_mempool) {
-                                    for (const auto &in : tx.vin) {
-                                        if (native_pool->mapNextTx
-                                                .containsWithinReadSection(
-                                                    in.prevout)) {
-                                            conflict_in_mempool = true;
-                                            break;
+                                bool conflict_in_mempool = false;
+                                {
+                                    RCULock rcu_lock;
+                                    conflict_in_mempool =
+                                        native_snapshot->entry_tree
+                                            ? native_snapshot->entry_tree
+                                                  ->containsWithinReadSection(
+                                                      Uint256RadixKey(tx.GetId()))
+                                            : native_pool->existsWithinReadSection(
+                                                  tx.GetId());
+                                    if (!conflict_in_mempool) {
+                                        for (const auto &in : tx.vin) {
+                                            if (native_pool->mapNextTx
+                                                    .containsWithinReadSection(
+                                                        in.prevout)) {
+                                                conflict_in_mempool = true;
+                                                break;
+                                            }
                                         }
                                     }
                                 }
@@ -4939,12 +4918,17 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
                             // A locked batch caller can itself be waiting for the
                             // pool dispatcher. Missing coverage stays authoritative
                             // in Phase C instead of falling back to a lock here.
-                            if (PrepareNativeCryptoFromSnapshot(
-                                    chainman, *txs[i], native_pool,
-                                    options.limits, coins, native_flags, fee,
-                                    native_snapshot, &txs, i, &batch_txid_table,
-                                    batch_txid_mask) &&
-                                coins) {
+                            bool prepared_from_snapshot = false;
+                            {
+                                RCULock rcu_lock;
+                                prepared_from_snapshot =
+                                    PrepareNativeCryptoFromSnapshot(
+                                        chainman, *txs[i], native_pool,
+                                        options.limits, coins, native_flags, fee,
+                                        native_snapshot, &txs, i,
+                                        &batch_txid_table, batch_txid_mask);
+                            }
+                            if (prepared_from_snapshot && coins) {
                                 checks[i].native =
                                     NativeAdmissionPreparation::Prepare(
                                         *txs[i], *native_snapshot, chain_id,
@@ -5057,49 +5041,54 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
                     static_cast<uint64_t>(*batch_tip_mtp));
                 batch_overlay_synced = true;
             }
-            for (size_t i = 0; i < n; ++i) {
-                const bool fast_skip_commit_check =
-                    pool_unchanged_since_phase_b && checks[i].native &&
-                    checks[i].native->AllConfirmedInputs() &&
-                    !pool->HasOrphans() && !pool->HasConflicting();
-                if (!fast_skip_commit_check && options.skip_at_commit &&
-                    options.skip_at_commit(txs[i])) {
-                    continue;
-                }
-                g_mempool_admission_attempts.fetch_add(
-                    1, std::memory_order_relaxed);
-                coins_to_uncache.clear();
-                auto args = MemPoolAccept::ATMPArgs::SingleAccept(
-                    config, accept_time, /*bypass_limits=*/false,
-                    coins_to_uncache, /*test_accept=*/false,
-                    /*height_override=*/0);
-                args.m_limits = options.limits;
-                MempoolAcceptResult result =
-                    acceptor.AcceptSingleTransaction(
-                        txs[i], args,
-                        (verify[i] || checks[i].native) ? &checks[i] : nullptr,
-                        (pool->m_opts.signals && !suppress_staged_signals)
-                            ? &batch_signals
-                            : nullptr,
-                        batch_next_flags, batch_tip_mtp, batch_overlay_synced,
-                        suppress_staged_signals, pool_unchanged_since_phase_b);
-                const bool native_reused =
-                    checks[i].native && checks[i].native->WasReused();
-                if (!native_reused ||
-                    result.m_result_type !=
-                        MempoolAcceptResult::ResultType::VALID) {
-                    acceptor.ClearView(*txs[i]);
-                }
-                RecordMempoolAdmission(result);
-                if (result.m_result_type !=
-                    MempoolAcceptResult::ResultType::VALID) {
-                    for (const COutPoint &outpoint : coins_to_uncache) {
-                        chainstate.CoinsTip().Uncache(outpoint);
+            {
+                RCULock rcu_lock;
+                for (size_t i = 0; i < n; ++i) {
+                    const bool fast_skip_commit_check =
+                        pool_unchanged_since_phase_b && checks[i].native &&
+                        checks[i].native->AllConfirmedInputs() &&
+                        !pool->HasOrphans() && !pool->HasConflicting();
+                    if (!fast_skip_commit_check && options.skip_at_commit &&
+                        options.skip_at_commit(txs[i])) {
+                        continue;
                     }
-                }
-                results[i].emplace(std::move(result));
-                if (native_reused) {
-                    ++local.native_reused;
+                    g_mempool_admission_attempts.fetch_add(
+                        1, std::memory_order_relaxed);
+                    coins_to_uncache.clear();
+                    auto args = MemPoolAccept::ATMPArgs::SingleAccept(
+                        config, accept_time, /*bypass_limits=*/false,
+                        coins_to_uncache, /*test_accept=*/false,
+                        /*height_override=*/0);
+                    args.m_limits = options.limits;
+                    MempoolAcceptResult result =
+                        acceptor.AcceptSingleTransaction(
+                            txs[i], args,
+                            (verify[i] || checks[i].native) ? &checks[i]
+                                                            : nullptr,
+                            (pool->m_opts.signals && !suppress_staged_signals)
+                                ? &batch_signals
+                                : nullptr,
+                            batch_next_flags, batch_tip_mtp,
+                            batch_overlay_synced, suppress_staged_signals,
+                            pool_unchanged_since_phase_b);
+                    const bool native_reused =
+                        checks[i].native && checks[i].native->WasReused();
+                    if (!native_reused ||
+                        result.m_result_type !=
+                            MempoolAcceptResult::ResultType::VALID) {
+                        acceptor.ClearView(*txs[i]);
+                    }
+                    RecordMempoolAdmission(result);
+                    if (result.m_result_type !=
+                        MempoolAcceptResult::ResultType::VALID) {
+                        for (const COutPoint &outpoint : coins_to_uncache) {
+                            chainstate.CoinsTip().Uncache(outpoint);
+                        }
+                    }
+                    results[i].emplace(std::move(result));
+                    if (native_reused) {
+                        ++local.native_reused;
+                    }
                 }
             }
             local.native_inputs_checked =
