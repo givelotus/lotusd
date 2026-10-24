@@ -1479,21 +1479,35 @@ static RPCHelpMan testrawtxbatch() {
                 const std::string &txid_hex = txid_hexes[idx];
                 UniValue result_inner(UniValue::VOBJ);
                 result_inner.pushKV("txid", txid_hex);
-                auto it = package_result.m_tx_results.find(tx->GetId());
-                if (exit_early || it == package_result.m_tx_results.end()) {
+                const bool fast_accepted =
+                    idx < precomputed_batch.size() &&
+                    precomputed_batch[idx].batch_accepted;
+                auto it = fast_accepted
+                              ? package_result.m_tx_results.end()
+                              : package_result.m_tx_results.find(tx->GetId());
+                if (exit_early ||
+                    (!fast_accepted && it == package_result.m_tx_results.end())) {
                     all_allowed = false;
                     results_arr.push_back(std::move(result_inner));
                     continue;
                 }
-                const auto &tx_result = it->second;
-                const uint64_t tx_cu = static_cast<uint64_t>(std::max<int64_t>(
-                    0, tx_result.m_vsize.has_value()
-                           ? tx_result.m_vsize.value()
-                           : GetVirtualTransactionSize(*tx)));
+                const int64_t raw_vsize =
+                    fast_accepted
+                        ? precomputed_batch[idx].accepted_vsize
+                        : (it->second.m_vsize.has_value()
+                               ? it->second.m_vsize.value()
+                               : GetVirtualTransactionSize(*tx));
+                const std::optional<Amount> base_fee_opt =
+                    fast_accepted
+                        ? std::optional<Amount>(
+                              precomputed_batch[idx].accepted_base_fee)
+                        : it->second.m_base_fees;
+                const uint64_t tx_cu =
+                    static_cast<uint64_t>(std::max<int64_t>(0, raw_vsize));
                 const uint64_t paid_fee_sats =
-                    tx_result.m_base_fees.has_value()
+                    base_fee_opt.has_value()
                         ? static_cast<uint64_t>(std::max<int64_t>(
-                              0, tx_result.m_base_fees.value() / SATOSHI))
+                              0, base_fee_opt.value() / SATOSHI))
                         : 0ULL;
                 const uint64_t required_fee_sats =
                     lotus::v2::FeeHysteresisController::ComputeFeeForCu(
@@ -1518,36 +1532,46 @@ static RPCHelpMan testrawtxbatch() {
                 result_inner.pushKV("recommended_sdk_fee_sats",
                                     fee_eval.recommended_sdk_fee_sats);
 
-                if (tx_result.m_result_type ==
-                        MempoolAcceptResult::ResultType::VALID &&
+                const bool is_valid =
+                    fast_accepted ||
+                    it->second.m_result_type ==
+                        MempoolAcceptResult::ResultType::VALID;
+                if (is_valid &&
                     (fee_eval.accepted ||
                      fee_ctrl.GetRpcAdmissionRatePerKCu(now_ms) <=
                          fee_ctrl.GetConsensusFloorPerKCu())) {
-                    const Amount fee = tx_result.m_base_fees.value();
-                    const int64_t virtual_size = tx_result.m_vsize.value();
+                    const Amount fee = base_fee_opt.value();
+                    const int64_t virtual_size = raw_vsize;
                     result_inner.pushKV("allowed", true);
                     result_inner.pushKV("size", virtual_size);
                     UniValue fees(UniValue::VOBJ);
                     fees.pushKV("base", fee);
                     fees.pushKV(
                         "effective-feerate",
-                        tx_result.m_effective_feerate.value().GetFeePerK());
+                        fast_accepted
+                            ? precomputed_batch[idx]
+                                  .accepted_effective_feerate.GetFeePerK()
+                            : it->second.m_effective_feerate.value()
+                                  .GetFeePerK());
                     UniValue effective_includes_res(UniValue::VARR);
-                    const auto &inc =
-                        tx_result.m_txids_fee_calculations.value();
-                    if (inc.size() == 1 && inc[0] == tx->GetId()) {
+                    if (fast_accepted) {
                         effective_includes_res.push_back(txid_hex);
                     } else {
-                        for (const auto &txid : inc) {
-                            effective_includes_res.push_back(txid.ToString());
+                        const auto &inc =
+                            it->second.m_txids_fee_calculations.value();
+                        if (inc.size() == 1 && inc[0] == tx->GetId()) {
+                            effective_includes_res.push_back(txid_hex);
+                        } else {
+                            for (const auto &txid : inc) {
+                                effective_includes_res.push_back(
+                                    txid.ToString());
+                            }
                         }
                     }
                     fees.pushKV("effective-includes",
                                 std::move(effective_includes_res));
                     result_inner.pushKV("fees", std::move(fees));
-                } else if (tx_result.m_result_type ==
-                               MempoolAcceptResult::ResultType::VALID &&
-                           !fee_eval.accepted) {
+                } else if (is_valid && !fee_eval.accepted) {
                     all_allowed = false;
                     result_inner.pushKV("allowed", false);
                     result_inner.pushKV("reject-reason",
@@ -1564,7 +1588,7 @@ static RPCHelpMan testrawtxbatch() {
                 } else {
                     all_allowed = false;
                     result_inner.pushKV("allowed", false);
-                    const TxValidationState state = tx_result.m_state;
+                    const TxValidationState state = it->second.m_state;
                     if (state.GetResult() ==
                         TxValidationResult::TX_MISSING_INPUTS) {
                         result_inner.pushKV("reject-reason", "missing-inputs");
@@ -1756,7 +1780,9 @@ static RPCHelpMan submitrawtxbatch() {
                                       &precomputed_batch);
 
                 if (res.m_state.IsValid() &&
-                    res.m_tx_results.size() == txns.size()) {
+                    (res.m_tx_results.size() == txns.size() ||
+                     (!precomputed_batch.empty() &&
+                      precomputed_batch[0].batch_accepted))) {
                     mempool.AddUnbroadcastTxBatch(txns);
                     const auto cur_snap =
                         node::GetGlobalSnapshotPublisher().Load();
@@ -1781,22 +1807,35 @@ static RPCHelpMan submitrawtxbatch() {
                 const std::string &txid_hex = txid_hexes[idx];
                 UniValue result_inner(UniValue::VOBJ);
                 result_inner.pushKV("txid", txid_hex);
-                auto it = package_result.m_tx_results.find(tx->GetId());
-                if (exit_early || it == package_result.m_tx_results.end()) {
+                const bool fast_accepted =
+                    idx < precomputed_batch.size() &&
+                    precomputed_batch[idx].batch_accepted;
+                auto it = fast_accepted
+                              ? package_result.m_tx_results.end()
+                              : package_result.m_tx_results.find(tx->GetId());
+                if (exit_early ||
+                    (!fast_accepted && it == package_result.m_tx_results.end())) {
                     all_allowed = false;
                     results_arr.push_back(std::move(result_inner));
                     continue;
                 }
-                const auto &tx_result = it->second;
+                const int64_t raw_vsize =
+                    fast_accepted
+                        ? precomputed_batch[idx].accepted_vsize
+                        : (it->second.m_vsize.has_value()
+                               ? it->second.m_vsize.value()
+                               : GetVirtualTransactionSize(*tx));
+                const std::optional<Amount> base_fee_opt =
+                    fast_accepted
+                        ? std::optional<Amount>(
+                              precomputed_batch[idx].accepted_base_fee)
+                        : it->second.m_base_fees;
                 const uint64_t tx_cu =
-                    static_cast<uint64_t>(std::max<int64_t>(
-                        0, tx_result.m_vsize.has_value()
-                               ? tx_result.m_vsize.value()
-                               : GetVirtualTransactionSize(*tx)));
+                    static_cast<uint64_t>(std::max<int64_t>(0, raw_vsize));
                 const uint64_t paid_fee_sats =
-                    tx_result.m_base_fees.has_value()
+                    base_fee_opt.has_value()
                         ? static_cast<uint64_t>(std::max<int64_t>(
-                              0, tx_result.m_base_fees.value() / SATOSHI))
+                              0, base_fee_opt.value() / SATOSHI))
                         : 0ULL;
                 const uint64_t required_fee_sats =
                     lotus::v2::FeeHysteresisController::ComputeFeeForCu(
@@ -1821,25 +1860,35 @@ static RPCHelpMan submitrawtxbatch() {
                 result_inner.pushKV("recommended_sdk_fee_sats",
                                     fee_eval.recommended_sdk_fee_sats);
 
-                if (tx_result.m_result_type ==
-                    MempoolAcceptResult::ResultType::VALID) {
-                    const Amount fee = tx_result.m_base_fees.value();
-                    const int64_t virtual_size = tx_result.m_vsize.value();
+                if (fast_accepted ||
+                    it->second.m_result_type ==
+                        MempoolAcceptResult::ResultType::VALID) {
+                    const Amount fee = base_fee_opt.value();
+                    const int64_t virtual_size = raw_vsize;
                     result_inner.pushKV("allowed", true);
                     result_inner.pushKV("size", virtual_size);
                     UniValue fees(UniValue::VOBJ);
                     fees.pushKV("base", fee);
                     fees.pushKV(
                         "effective-feerate",
-                        tx_result.m_effective_feerate.value().GetFeePerK());
+                        fast_accepted
+                            ? precomputed_batch[idx]
+                                  .accepted_effective_feerate.GetFeePerK()
+                            : it->second.m_effective_feerate.value()
+                                  .GetFeePerK());
                     UniValue effective_includes_res(UniValue::VARR);
-                    const auto &inc =
-                        tx_result.m_txids_fee_calculations.value();
-                    if (inc.size() == 1 && inc[0] == tx->GetId()) {
+                    if (fast_accepted) {
                         effective_includes_res.push_back(txid_hex);
                     } else {
-                        for (const auto &txid : inc) {
-                            effective_includes_res.push_back(txid.ToString());
+                        const auto &inc =
+                            it->second.m_txids_fee_calculations.value();
+                        if (inc.size() == 1 && inc[0] == tx->GetId()) {
+                            effective_includes_res.push_back(txid_hex);
+                        } else {
+                            for (const auto &txid : inc) {
+                                effective_includes_res.push_back(
+                                    txid.ToString());
+                            }
                         }
                     }
                     fees.pushKV("effective-includes",
@@ -1848,7 +1897,7 @@ static RPCHelpMan submitrawtxbatch() {
                 } else {
                     all_allowed = false;
                     result_inner.pushKV("allowed", false);
-                    const TxValidationState state = tx_result.m_state;
+                    const TxValidationState state = it->second.m_state;
                     if (state.GetResult() ==
                         TxValidationResult::TX_MISSING_INPUTS) {
                         result_inner.pushKV("reject-reason", "missing-inputs");

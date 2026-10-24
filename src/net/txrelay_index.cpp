@@ -63,11 +63,20 @@ bool TxRelayIndex::InsertUnlocked(Epoch &epoch, const TxId &txid) const {
     if (!epoch.short_id_of.insert(txid, short_id)) {
         return false;
     }
-    std::vector<TxId> txids;
-    if (auto existing = epoch.by_short_id.getEntry(short_id)) {
-        txids = existing->value;
+    if (epoch.by_short_id.insert(short_id, ShortIdBucket{txid, nullptr})) {
+        return true;
     }
-    if (!txids.empty()) {
+    const auto existing = epoch.by_short_id.getEntry(short_id);
+    std::vector<TxId> extra_txids;
+    uint64_t prev_count = 0;
+    if (existing) {
+        prev_count =
+            1 + (existing->value.extra ? existing->value.extra->size() : 0);
+        if (existing->value.extra) {
+            extra_txids = *existing->value.extra;
+        }
+    }
+    if (prev_count > 0) {
         // Keep both: either may be requested under this short id.
         ++m_collisions;
         if (auto *m{node::GetNodeMetrics()}) {
@@ -78,10 +87,19 @@ bool TxRelayIndex::InsertUnlocked(Epoch &epoch, const TxId &txid) const {
                  "transaction(s) in this epoch")
             .Field(BCLog::LogField::TxId, txid)
             .Field(BCLog::LogField::ShortId, short_id)
-            .Field(BCLog::LogField::Count, uint64_t(txids.size()));
+            .Field(BCLog::LogField::Count, prev_count);
     }
-    txids.push_back(txid);
-    epoch.by_short_id.insertOrAssign(short_id, std::move(txids));
+    if (existing) {
+        extra_txids.push_back(txid);
+        epoch.by_short_id.insertOrAssign(
+            short_id,
+            ShortIdBucket{existing->value.first,
+                          std::make_shared<const std::vector<TxId>>(
+                              std::move(extra_txids))});
+    } else {
+        epoch.by_short_id.insertOrAssign(short_id,
+                                         ShortIdBucket{txid, nullptr});
+    }
     return true;
 }
 
@@ -267,12 +285,35 @@ void TxRelayIndex::RemoveFromEpoch(Epoch &epoch, const TxId &txid) {
     }
     const uint64_t short_id{removed_tx->value};
     if (const auto bucket{epoch.by_short_id.getEntry(short_id)}) {
-        std::vector<TxId> txids{bucket->value};
-        txids.erase(std::remove(txids.begin(), txids.end(), txid), txids.end());
+        if (!bucket->value.extra || bucket->value.extra->empty()) {
+            if (bucket->value.first == txid) {
+                epoch.by_short_id.erase(short_id);
+            }
+            return;
+        }
+        std::vector<TxId> txids;
+        txids.reserve(1 + bucket->value.extra->size());
+        if (bucket->value.first != txid) {
+            txids.push_back(bucket->value.first);
+        }
+        for (const TxId &other : *bucket->value.extra) {
+            if (other != txid) {
+                txids.push_back(other);
+            }
+        }
         if (txids.empty()) {
             epoch.by_short_id.erase(short_id);
+        } else if (txids.size() == 1) {
+            epoch.by_short_id.insertOrAssign(
+                short_id, ShortIdBucket{txids[0], nullptr});
         } else {
-            epoch.by_short_id.insertOrAssign(short_id, std::move(txids));
+            const TxId first = txids.front();
+            txids.erase(txids.begin());
+            epoch.by_short_id.insertOrAssign(
+                short_id,
+                ShortIdBucket{first,
+                              std::make_shared<const std::vector<TxId>>(
+                                  std::move(txids))});
         }
     }
 }
@@ -301,7 +342,11 @@ TxRelayIndex::Lookup TxRelayIndex::Find(const uint256 &epoch_id,
         return Lookup::MISSING;
     }
     if (out) {
-        out->insert(out->end(), bucket->value.begin(), bucket->value.end());
+        out->push_back(bucket->value.first);
+        if (bucket->value.extra) {
+            out->insert(out->end(), bucket->value.extra->begin(),
+                        bucket->value.extra->end());
+        }
     }
     return Lookup::HAVE;
 }

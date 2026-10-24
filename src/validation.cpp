@@ -299,7 +299,8 @@ public:
         const CTransaction &tx, const node::ChainAndMempoolSnapshot &snapshot,
         const lotus::v2::ChainId &chain, std::vector<Coin> coins,
         Amount base_fee, SignatureCache &signature_cache,
-        lotus::v2::BatchSigCollector *sig_collector = nullptr)
+        lotus::v2::BatchSigCollector *sig_collector = nullptr,
+        bool store_sig_cache = true)
         LOCKS_EXCLUDED(cs_main);
     const std::vector<Coin> &Coins() const noexcept { return m_coins; }
     Amount BaseFee() const noexcept { return m_base_fee; }
@@ -1310,7 +1311,8 @@ public:
             nullptr,
         std::optional<uint32_t> precomputed_next_flags = std::nullopt,
         std::optional<int64_t> precomputed_tip_mtp = std::nullopt,
-        bool overlay_already_synced = false)
+        bool overlay_already_synced = false,
+        bool suppress_signal_enqueue = false)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     void ClearView(const CTransaction &tx) {
@@ -1344,7 +1346,7 @@ public:
     AcceptRawTxBatch(
         const std::vector<CTransactionRef> &txns, ATMPArgs &args,
         const CFeeRate &max_raw_tx_fee_rate,
-        const std::vector<PrecomputedBatchTxData> *precomputed_batch = nullptr)
+        std::vector<PrecomputedBatchTxData> *precomputed_batch = nullptr)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     /**
@@ -1477,7 +1479,8 @@ private:
                   std::vector<ValidationSignals::MempoolAddedBatchItem>
                       *batch_signals = nullptr,
                   const std::vector<CTxMemPool::txiter> *batch_iters = nullptr,
-                  CTxMemPool::txiter *out_iter = nullptr)
+                  CTxMemPool::txiter *out_iter = nullptr,
+                  bool suppress_signal_enqueue = false)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     // Submit all transactions to the mempool and call ConsensusScriptChecks to
@@ -1488,7 +1491,9 @@ private:
     bool SubmitPackage(const ATMPArgs &args, std::vector<Workspace> &workspaces,
                        PackageValidationState &package_state,
                        std::map<TxId, MempoolAcceptResult> &results,
-                       bool scripts_already_verified = false)
+                       bool scripts_already_verified = false,
+                       std::vector<PrecomputedBatchTxData> *precomputed_batch_out =
+                           nullptr)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     // Compare a package's feerate against minimum allowed.
@@ -1888,7 +1893,7 @@ bool MemPoolAccept::PreChecksBatch(
     }
 
     ws.m_resolved_inputs.resize(tx.vin.size());
-    ws.m_batch_parent_indices.assign(tx.vin.size(), -1);
+    ws.m_batch_parent_indices.clear();
     ws.m_has_mempool_parents = false;
     const CCoinsViewCache &coins_cache = m_active_chainstate.CoinsTip();
 
@@ -1913,6 +1918,10 @@ bool MemPoolAccept::PreChecksBatch(
                             !parent_tx.vout[n].IsNull()) {
                             ws.m_resolved_inputs[i] =
                                 Coin(parent_tx.vout[n], MEMPOOL_HEIGHT, false);
+                            if (ws.m_batch_parent_indices.empty()) {
+                                ws.m_batch_parent_indices.assign(tx.vin.size(),
+                                                                 -1);
+                            }
                             ws.m_batch_parent_indices[i] =
                                 static_cast<int32_t>(parent_idx);
                             ws.m_has_mempool_parents = true;
@@ -2100,7 +2109,7 @@ bool MemPoolAccept::Finalize(
     const ATMPArgs &args, Workspace &ws,
     std::vector<ValidationSignals::MempoolAddedBatchItem> *batch_signals,
     const std::vector<CTxMemPool::txiter> *batch_iters,
-    CTxMemPool::txiter *out_iter) {
+    CTxMemPool::txiter *out_iter, bool suppress_signal_enqueue) {
     AssertLockHeld(cs_main);
     AssertLockHeld(m_pool.cs);
     const TxId &txid = ws.m_ptx->GetId();
@@ -2119,32 +2128,35 @@ bool MemPoolAccept::Finalize(
         *out_iter = it;
     }
     if (m_pool.m_opts.signals) {
-        std::shared_ptr<const std::vector<Coin>> spent_coins_ptr;
-        if (m_pool.m_opts.signals->HasSpentCoinsSubscribers()) {
-            if (!ws.m_resolved_inputs.empty()) {
-                spent_coins_ptr = std::make_shared<const std::vector<Coin>>(
-                    std::move(ws.m_resolved_inputs));
-            } else if (ws.m_precomputed && ws.m_precomputed->native &&
-                       ws.m_precomputed->native->WasReused()) {
-                spent_coins_ptr = std::shared_ptr<const std::vector<Coin>>(
-                    ws.m_precomputed->native,
-                    &ws.m_precomputed->native->Coins());
-            } else {
-                auto spentCoins = GetSpentCoins(ws.m_ptx, m_view);
-                Assume(spentCoins.has_value());
-                if (spentCoins.has_value()) {
+        const uint64_t seq = m_pool.GetAndIncrementSequence();
+        if (!suppress_signal_enqueue) {
+            std::shared_ptr<const std::vector<Coin>> spent_coins_ptr;
+            if (m_pool.m_opts.signals->HasSpentCoinsSubscribers()) {
+                if (!ws.m_resolved_inputs.empty()) {
                     spent_coins_ptr = std::make_shared<const std::vector<Coin>>(
-                        std::move(*spentCoins));
+                        std::move(ws.m_resolved_inputs));
+                } else if (ws.m_precomputed && ws.m_precomputed->native &&
+                           ws.m_precomputed->native->WasReused()) {
+                    spent_coins_ptr = std::shared_ptr<const std::vector<Coin>>(
+                        ws.m_precomputed->native,
+                        &ws.m_precomputed->native->Coins());
+                } else {
+                    auto spentCoins = GetSpentCoins(ws.m_ptx, m_view);
+                    Assume(spentCoins.has_value());
+                    if (spentCoins.has_value()) {
+                        spent_coins_ptr =
+                            std::make_shared<const std::vector<Coin>>(
+                                std::move(*spentCoins));
+                    }
                 }
             }
-        }
-        const uint64_t seq = m_pool.GetAndIncrementSequence();
-        if (batch_signals != nullptr) {
-            batch_signals->push_back(ValidationSignals::MempoolAddedBatchItem{
-                ws.m_ptx, std::move(spent_coins_ptr), seq});
-        } else {
-            m_pool.m_opts.signals->TransactionAddedToMempool(
-                ws.m_ptx, std::move(spent_coins_ptr), seq);
+            if (batch_signals != nullptr) {
+                batch_signals->push_back(ValidationSignals::MempoolAddedBatchItem{
+                    ws.m_ptx, std::move(spent_coins_ptr), seq});
+            } else {
+                m_pool.m_opts.signals->TransactionAddedToMempool(
+                    ws.m_ptx, std::move(spent_coins_ptr), seq);
+            }
         }
     }
 
@@ -2170,7 +2182,8 @@ bool MemPoolAccept::SubmitPackage(
     const ATMPArgs &args, std::vector<Workspace> &workspaces,
     PackageValidationState &package_state,
     std::map<TxId, MempoolAcceptResult> &results,
-    bool scripts_already_verified) {
+    bool scripts_already_verified,
+    std::vector<PrecomputedBatchTxData> *precomputed_batch_out) {
     AssertLockHeld(cs_main);
     AssertLockHeld(m_pool.cs);
     CTxMemPool::ScopedSnapshotDefer snap_defer(m_pool);
@@ -2188,13 +2201,20 @@ bool MemPoolAccept::SubmitPackage(
                        }));
 
     bool all_submitted = true;
+    const bool suppress_batch_signals =
+        precomputed_batch_out != nullptr && workspaces.size() >= 128 &&
+        m_pool.m_opts.signals &&
+        !m_pool.m_opts.signals->HasSpentCoinsSubscribers();
     std::vector<ValidationSignals::MempoolAddedBatchItem> batch_signals;
-    if (m_pool.m_opts.signals && workspaces.size() > 1) {
+    if (m_pool.m_opts.signals && workspaces.size() > 1 &&
+        !suppress_batch_signals) {
         batch_signals.reserve(workspaces.size());
     }
     auto *batch_signals_ptr =
-        (m_pool.m_opts.signals && workspaces.size() > 1) ? &batch_signals
-                                                         : nullptr;
+        (m_pool.m_opts.signals && workspaces.size() > 1 &&
+         !suppress_batch_signals)
+            ? &batch_signals
+            : nullptr;
     std::vector<CTxMemPool::txiter> batch_iters(workspaces.size());
     // ConsensusScriptChecks adds to the script cache and is therefore
     // consensus-critical; CheckInputsFromMempoolAndCache asserts that
@@ -2224,7 +2244,7 @@ bool MemPoolAccept::SubmitPackage(
         // package size) while submitting transactions individually and then
         // trim at the very end.
         if (!Finalize(args, ws, batch_signals_ptr, &batch_iters,
-                      &batch_iters[idx])) {
+                      &batch_iters[idx], suppress_batch_signals)) {
             results.emplace(ws.m_ptx->GetId(),
                             MempoolAcceptResult::Failure(ws.m_state));
             // Since LimitMempoolSize() won't be called, this should never fail.
@@ -2243,6 +2263,21 @@ bool MemPoolAccept::SubmitPackage(
     // It may or may not be the case that all the transactions made it into the
     // mempool. Regardless, make sure we haven't exceeded max mempool size.
     m_pool.LimitSize(m_active_chainstate.CoinsTip());
+
+    if (precomputed_batch_out != nullptr &&
+        precomputed_batch_out->size() == workspaces.size() &&
+        !args.m_package_feerates && all_submitted) {
+        for (size_t idx = 0; idx < workspaces.size(); ++idx) {
+            const Workspace &ws = workspaces[idx];
+            auto &pre = (*precomputed_batch_out)[idx];
+            pre.batch_accepted = true;
+            pre.accepted_vsize = ws.m_vsize;
+            pre.accepted_base_fee = ws.m_base_fees;
+            pre.accepted_effective_feerate = CFeeRate{
+                ws.m_modified_fees, static_cast<uint32_t>(ws.m_vsize)};
+        }
+        return true;
+    }
 
     std::vector<TxId> all_package_txids;
     if (args.m_package_feerates) {
@@ -2277,7 +2312,7 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(
     std::vector<ValidationSignals::MempoolAddedBatchItem> *batch_signals,
     std::optional<uint32_t> precomputed_next_flags,
     std::optional<int64_t> precomputed_tip_mtp,
-    bool overlay_already_synced) {
+    bool overlay_already_synced, bool suppress_signal_enqueue) {
     AssertLockHeld(cs_main);
     // mempool "read lock" (held through
     // m_pool.m_opts.signals->TransactionAddedToMempool())
@@ -2367,21 +2402,12 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(
     // remaining tx's in topological order via this function. Our new mempool
     // has fast adds, so this is ok.
     bool has_spent_outputs = false;
-    for (uint32_t out_idx = 0; out_idx < ptx->vout.size(); ++out_idx) {
-        if (m_pool.IsSpentFast(COutPoint{txid, out_idx})) {
+    m_pool.mapNextTx.forEachPrefix(
+        COutPoint{txid, 0}, OutpointRadixKey::TXID_PREFIX_NIBBLES,
+        [&](const COutPoint &, const CTransactionRef &) {
             has_spent_outputs = true;
-            break;
-        }
-    }
-    if (has_spent_outputs) {
-        has_spent_outputs = false;
-        m_pool.mapNextTx.forEachPrefix(
-            COutPoint{txid, 0}, OutpointRadixKey::TXID_PREFIX_NIBBLES,
-            [&](const COutPoint &, const CTransactionRef &) {
-                has_spent_outputs = true;
-                return false;
-            });
-    }
+            return false;
+        });
     if (has_spent_outputs) {
         LogInfoEvent(
             BCLog::ALL, "mempool_child_before_parent",
@@ -2409,7 +2435,8 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(
                                     : tip->GetMedianTimePast()));
     }
 
-    if (!Finalize(args, ws, batch_signals)) {
+    if (!Finalize(args, ws, batch_signals, nullptr, nullptr,
+                  suppress_signal_enqueue)) {
         // The only possible failure reason is fee-related (mempool full).
         // Failed for fee reasons. Provide the effective feerate and which txns
         // were included.
@@ -2548,7 +2575,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(
 PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
     const std::vector<CTransactionRef> &txns, ATMPArgs &args,
     const CFeeRate &max_raw_tx_fee_rate,
-    const std::vector<PrecomputedBatchTxData> *precomputed_batch) {
+    std::vector<PrecomputedBatchTxData> *precomputed_batch) {
     AssertLockHeld(cs_main);
 
     PackageValidationState package_state;
@@ -2673,7 +2700,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
     auto cleanup_views = []() {};
 
     // Prefetch only uncached disk UTXO pages in sorted key order before Pass 1.
-    if (txns.size() >= 8) {
+    if (txns.size() >= 8 && precomputed_batch == nullptr) {
         CCoinsViewCache &coins_tip = m_active_chainstate.CoinsTip();
         std::vector<COutPoint> batch_outpoints;
         batch_outpoints.reserve(txns.size() * 2);
@@ -2945,6 +2972,21 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
     }
 
     if (args.m_test_accept) {
+        if (precomputed_batch != nullptr &&
+            precomputed_batch->size() == workspaces.size()) {
+            for (size_t idx = 0; idx < workspaces.size(); ++idx) {
+                const Workspace &ws = workspaces[idx];
+                auto &pre = (*precomputed_batch)[idx];
+                pre.batch_accepted = true;
+                pre.accepted_vsize = ws.m_vsize;
+                pre.accepted_base_fee = ws.m_base_fees;
+                pre.accepted_effective_feerate = CFeeRate{
+                    ws.m_modified_fees, static_cast<uint32_t>(ws.m_vsize)};
+            }
+            cleanup_views();
+            return PackageMempoolAcceptResult(package_state,
+                                              std::move(results));
+        }
         for (Workspace &ws : workspaces) {
             const TxId &ws_txid = ws.m_ptx->GetId();
             const CFeeRate effective_feerate{
@@ -2959,7 +3001,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
     }
 
     SubmitPackage(args, workspaces, package_state, results,
-                  /*scripts_already_verified=*/true);
+                  /*scripts_already_verified=*/true, precomputed_batch);
     cleanup_views();
     return PackageMempoolAcceptResult(package_state, std::move(results));
 }
@@ -3569,6 +3611,9 @@ void PrewarmRawTxBatchSignatures(
                                                  tx.vin.size()));
         }
         bool sigs_staged_ok = true;
+        const bool can_fast_verify =
+            std_deferred_only && !shape->has_state_output &&
+            precomputed_batch != nullptr && idx < precomputed_batch->size();
         if (shape->has_schnorr) {
             for (size_t i = 0; i < tx.vin.size(); ++i) {
                 if (!shape->is_schnorr_in[i]) {
@@ -3580,19 +3625,27 @@ void PrewarmRawTxBatchSignatures(
                 const std::span<const uint8_t> pubkey(w.script.data() + 1, 32);
                 const std::span<const uint8_t> sig(w.arguments[0].data(),
                                                    w.arguments[0].size());
-                uint256 sig_entry;
-                sig_cache.ComputeBip340Entry(sig_entry, msg, sig, pubkey, false);
-                if (!sig_cache.Get(sig_entry, /*erase=*/false)) {
-                    if (!collector.Add(pubkey, sig, msg, sig_entry.begin(),
-                                       /*store_in_cache=*/true)) {
+                if (can_fast_verify) {
+                    if (!collector.Add(pubkey, sig, msg, nullptr,
+                                       /*store_in_cache=*/false)) {
                         sigs_staged_ok = false;
                         break;
+                    }
+                } else {
+                    uint256 sig_entry;
+                    sig_cache.ComputeBip340Entry(sig_entry, msg, sig, pubkey,
+                                                 false);
+                    if (!sig_cache.Get(sig_entry, /*erase=*/false)) {
+                        if (!collector.Add(pubkey, sig, msg, sig_entry.begin(),
+                                           /*store_in_cache=*/true)) {
+                            sigs_staged_ok = false;
+                            break;
+                        }
                     }
                 }
             }
         }
-        if (sigs_staged_ok && std_deferred_only && !shape->has_state_output &&
-            precomputed_batch != nullptr && idx < precomputed_batch->size()) {
+        if (sigs_staged_ok && can_fast_verify) {
             auto &pre = (*precomputed_batch)[idx];
             pre.v2_spent_outputs.resize(coins.size());
             for (size_t i = 0; i < coins.size(); ++i) {
@@ -3619,7 +3672,7 @@ ProcessRawTxBatch(
     Chainstate &active_chainstate, CTxMemPool &pool,
     const Package &package, bool test_accept,
     const CFeeRate &max_raw_tx_fee_rate,
-    const std::vector<PrecomputedBatchTxData> *precomputed_batch) {
+    std::vector<PrecomputedBatchTxData> *precomputed_batch) {
     AssertLockHeld(cs_main);
     assert(!package.empty());
     assert(std::all_of(package.cbegin(), package.cend(),
@@ -3634,7 +3687,23 @@ ProcessRawTxBatch(
             .AcceptRawTxBatch(package, args, max_raw_tx_fee_rate,
                               precomputed_batch);
     if (!test_accept) {
-        RecordMempoolAdmissions(result);
+        if (result.m_tx_results.empty() && precomputed_batch != nullptr) {
+            if (auto *metrics = node::GetNodeMetrics()) {
+                for (const auto &pre : *precomputed_batch) {
+                    if (pre.batch_accepted) {
+                        metrics->mempool_accepted.Inc();
+                        if (pre.accepted_vsize > 0) {
+                            const int64_t sats{pre.accepted_base_fee / SATOSHI};
+                            metrics->mempool_accepted_fee_rate.Record(
+                                uint64_t(std::max<int64_t>(0, sats)) * 1000 /
+                                uint64_t(pre.accepted_vsize));
+                        }
+                    }
+                }
+            }
+        } else {
+            RecordMempoolAdmissions(result);
+        }
     }
 
     if (test_accept || result.m_state.IsInvalid()) {
@@ -3785,22 +3854,29 @@ bool PrepareNativeCryptoFromSnapshot(
     if (!snapshot || snapshot->chainman_ptr != &chainman ||
         snapshot->mempool_ptr != expected_pool || !snapshot->chain_valid ||
         !snapshot->mempool_valid || !snapshot->has_utxo_snapshot ||
-        !snapshot->entry_tree || !snapshot->consensus_params ||
-        !snapshot->next_script_flags || snapshot->mempool_has_fee_deltas ||
-        snapshot->height < 0 || snapshot->height == std::numeric_limits<int>::max()) {
+        !snapshot->consensus_params || !snapshot->next_script_flags ||
+        snapshot->mempool_has_fee_deltas || snapshot->height < 0 ||
+        snapshot->height == std::numeric_limits<int>::max()) {
         return false;
     }
     TxValidationState state;
+    const bool already_in_mempool =
+        snapshot->entry_tree
+            ? bool(snapshot->entry_tree->get(Uint256RadixKey(tx.GetId())))
+            : expected_pool->exists(tx.GetId());
     if (!CheckRegularTransaction(tx, state) ||
         !ContextualCheckTransaction(*snapshot->consensus_params, tx, state,
-                                   snapshot->height + 1, snapshot->mediantime) ||
-        snapshot->entry_tree->get(Uint256RadixKey(tx.GetId()))) return true;
+                                    snapshot->height + 1,
+                                    snapshot->mediantime) ||
+        already_in_mempool) {
+        return true;
+    }
     std::vector<Coin> resolved;
     resolved.reserve(tx.vin.size());
     for (const auto &in : tx.vin) {
         // This hint can suppress work, never authorize admission. A stale
         // negative only wastes verification; positives can include collisions.
-        if (expected_pool->IsSpentFast(in.prevout)) return true;
+        if (expected_pool->mapNextTx.contains(in.prevout)) return true;
         lotus::v2::Outpoint outpoint{};
         std::copy_n(in.prevout.GetTxId().begin(), 32, outpoint.tx_id.begin());
         outpoint.index = in.prevout.GetN();
@@ -3812,13 +3888,20 @@ bool PrepareNativeCryptoFromSnapshot(
             resolved.emplace_back(CTxOut::FromV2Output(coin->output),
                 uint32_t(coin->creation_height), coin->coinbase,
                 coin->fee_per_output, coin->expiration_height);
-        } else {
+        } else if (snapshot->entry_tree) {
             const auto parent = snapshot->entry_tree->get(
                 Uint256RadixKey(in.prevout.GetTxId()));
             if (!parent || !parent->entry.tx ||
                 in.prevout.GetN() >= parent->entry.tx->vout.size())
                 return false;
             const auto &out = parent->entry.tx->vout[in.prevout.GetN()];
+            if (out.IsLegacy()) return false;
+            resolved.emplace_back(out, MEMPOOL_HEIGHT, false);
+        } else {
+            const auto parent = expected_pool->getEntry(in.prevout.GetTxId());
+            if (!parent || in.prevout.GetN() >= parent->GetTx().vout.size())
+                return false;
+            const auto &out = parent->GetTx().vout[in.prevout.GetN()];
             if (out.IsLegacy()) return false;
             resolved.emplace_back(out, MEMPOOL_HEIGHT, false);
         }
@@ -3841,7 +3924,7 @@ NativeAdmissionPreparation::Prepare(
     const CTransaction &tx, const node::ChainAndMempoolSnapshot &snapshot,
     const lotus::v2::ChainId &chain, std::vector<Coin> coins,
     Amount base_fee, SignatureCache &signature_cache,
-    lotus::v2::BatchSigCollector *sig_collector) {
+    lotus::v2::BatchSigCollector *sig_collector, bool store_sig_cache) {
     AssertLockNotHeld(cs_main);
     if (!snapshot.next_script_flags || tx.nVersion != 7 || tx.IsCoinBase() ||
         coins.size() != tx.vin.size()) return {};
@@ -3895,6 +3978,15 @@ NativeAdmissionPreparation::Prepare(
             const std::span<const uint8_t> pubkey(w.script.data() + 1, 32);
             const std::span<const uint8_t> sig(w.arguments[0].data(),
                                                w.arguments[0].size());
+            if (sig_collector != nullptr && !store_sig_cache) {
+                lotus::v2::BatchSigCollector *target =
+                    (tx.vin.size() == 1) ? sig_collector : &staged_sigs;
+                if (!target->Add(pubkey, sig, msg, nullptr,
+                                 /*store_in_cache=*/false)) {
+                    return {};
+                }
+                continue;
+            }
             uint256 sig_entry;
             signature_cache.ComputeBip340Entry(sig_entry, msg, sig, pubkey,
                                                false);
@@ -4106,7 +4198,9 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
                                     chainman.GetParams().V2ChainId(),
                                     std::move(*coins), fee,
                                     validation_cache.m_signature_cache,
-                                    collector);
+                                    collector,
+                                    /*store_sig_cache=*/bool(
+                                        options.test_between_phases));
                         }
                     } else {
                         ComputeAdmissionChecks(*txs[i], script_flags,
@@ -4161,7 +4255,11 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
             defer.emplace(*pool);
         }
         std::vector<ValidationSignals::MempoolAddedBatchItem> batch_signals;
-        if (pool != nullptr && pool->m_opts.signals) {
+        const bool suppress_staged_signals =
+            n >= 128 && pool != nullptr && pool->m_opts.signals &&
+            !pool->m_opts.signals->HasSpentCoinsSubscribers();
+        if (pool != nullptr && pool->m_opts.signals &&
+            !suppress_staged_signals) {
             batch_signals.reserve(n);
         }
         const int64_t accept_time = GetTime();
@@ -4206,8 +4304,11 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
                 acceptor->AcceptSingleTransaction(
                     txs[i], args,
                     (verify[i] || checks[i].native) ? &checks[i] : nullptr,
-                    pool->m_opts.signals ? &batch_signals : nullptr,
-                    batch_next_flags, batch_tip_mtp, batch_overlay_synced);
+                    (pool->m_opts.signals && !suppress_staged_signals)
+                        ? &batch_signals
+                        : nullptr,
+                    batch_next_flags, batch_tip_mtp, batch_overlay_synced,
+                    suppress_staged_signals);
             const bool native_reused =
                 checks[i].native && checks[i].native->WasReused();
             if (!native_reused ||

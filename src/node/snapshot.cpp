@@ -214,12 +214,12 @@ void PopulateMempoolScalarsLocked(ChainAndMempoolSnapshot &snap,
     snap.mempool_ptr = &mempool;
     snap.mempool_valid = true;
     snap.mempool_loaded = mempool.GetLoadTried();
-    snap.mempool_size = mempool.size();
+    snap.mempool_size = mempool.mapTx.size();
     snap.mempool_bytes = mempool.GetTotalTxSize();
     snap.finalized_txs_size = mempool.GetFinalizedTxCount();
     snap.finalized_txs_bytes = mempool.GetTotalFinalizedTxSize();
     snap.finalized_txs_sigchecks = mempool.GetTotalFinalizedTxSigchecks();
-    snap.mempool_usage = mempool.DynamicMemoryUsage();
+    snap.mempool_usage = mempool.DynamicMemoryUsageLocked();
     snap.total_fee = mempool.GetTotalFee();
     snap.max_mempool = mempool.m_opts.max_size_bytes;
     snap.min_relay_tx_fee = mempool.m_opts.min_relay_feerate;
@@ -450,6 +450,7 @@ void PopulateMiningTemplate(ChainAndMempoolSnapshot &snap,
     tmpl.roots_ready = false;
     tmpl.transactions_updated = snap.transactions_updated;
 
+    std::vector<MempoolEntrySnapshot> fallback_entries;
     std::vector<const MempoolEntrySnapshot *> id_idx;
     if (snap.entry_tree) {
         snap.entry_tree->forEachLeaf([&](const auto &value) {
@@ -459,6 +460,29 @@ void PopulateMiningTemplate(ChainAndMempoolSnapshot &snap,
         std::sort(id_idx.begin(), id_idx.end(), [](const auto *a, const auto *b) {
             return a->entry_id < b->entry_id;
         });
+    } else if (mempool_locked != nullptr) {
+        const auto &idx = mempool_locked->mapTx.get<entry_id>();
+        fallback_entries.reserve(idx.size());
+        for (const CTxMemPoolEntryRef &e : idx) {
+            fallback_entries.push_back(
+                MakeMempoolEntrySnapshot(*e, *mempool_locked));
+        }
+        id_idx.reserve(fallback_entries.size());
+        for (const auto &e : fallback_entries) {
+            id_idx.push_back(&e);
+        }
+    } else if (snap.mempool_ptr != nullptr) {
+        LOCK(snap.mempool_ptr->cs);
+        const auto &idx = snap.mempool_ptr->mapTx.get<entry_id>();
+        fallback_entries.reserve(idx.size());
+        for (const CTxMemPoolEntryRef &e : idx) {
+            fallback_entries.push_back(
+                MakeMempoolEntrySnapshot(*e, *snap.mempool_ptr));
+        }
+        id_idx.reserve(fallback_entries.size());
+        for (const auto &e : fallback_entries) {
+            id_idx.push_back(&e);
+        }
     }
     BlockFitter blockFitter(GetConfig());
     tmpl.max_generated_block_size = blockFitter.getMaxGeneratedBlockSize();
@@ -864,8 +888,16 @@ void ChainAndMempoolSnapshot::EnsureMempoolTxIds() const {
             mempool_txids.push_back(value->entry.txid);
             return true;
         });
+    } else if (mempool_ptr != nullptr) {
+        mempool_txids.reserve(mempool_size);
+        mempool_ptr->m_tx_tree.forEachLeaf([&](const auto &entry) {
+            mempool_txids.push_back(entry->GetTx().GetId());
+            return true;
+        });
     }
-    std::sort(mempool_txids.begin(), mempool_txids.end());
+    if (!std::is_sorted(mempool_txids.begin(), mempool_txids.end())) {
+        std::sort(mempool_txids.begin(), mempool_txids.end());
+    }
     mempool_txids_ready = true;
 }
 
@@ -887,13 +919,40 @@ void ChainAndMempoolSnapshot::EnsureMempoolVectors() const {
                 if (input.nFlags != 3) mempool_spent_outpoints.push_back(input.prevout);
             return true;
         });
+    } else if (mempool_ptr != nullptr) {
+        LOCK(mempool_ptr->cs);
+        if (!mempool_txids_ready) {
+            mempool_txids.reserve(mempool_ptr->mapTx.size());
+        }
+        mempool_entries.reserve(mempool_ptr->mapTx.size());
+        for (const CTxMemPoolEntryRef &e : mempool_ptr->mapTx) {
+            MempoolEntrySnapshot entry = MakeMempoolEntrySnapshot(*e, *mempool_ptr);
+            if (!mempool_txids_ready) {
+                mempool_txids.push_back(entry.txid);
+            }
+            for (const auto &input : entry.tx->vin) {
+                if (input.nFlags != 3) {
+                    mempool_spent_outpoints.push_back(input.prevout);
+                }
+            }
+            mempool_entries.push_back(std::move(entry));
+        }
     }
     if (!mempool_txids_ready) {
-        std::sort(mempool_txids.begin(), mempool_txids.end());
+        if (!std::is_sorted(mempool_txids.begin(), mempool_txids.end())) {
+            std::sort(mempool_txids.begin(), mempool_txids.end());
+        }
         mempool_txids_ready = true;
     }
-    std::sort(mempool_entries.begin(), mempool_entries.end(),
-              [](const auto &a, const auto &b) { return a.txid < b.txid; });
+    if (!std::is_sorted(mempool_entries.begin(), mempool_entries.end(),
+                        [](const auto &a, const auto &b) {
+                            return a.txid < b.txid;
+                        })) {
+        std::sort(mempool_entries.begin(), mempool_entries.end(),
+                  [](const auto &a, const auto &b) {
+                      return a.txid < b.txid;
+                  });
+    }
     std::sort(mempool_spent_outpoints.begin(), mempool_spent_outpoints.end());
     mempool_vectors_ready = true;
 }
@@ -1258,7 +1317,12 @@ void PublishChainTipSnapshot(ChainstateManager &chainman,
         mempool->SyncMerklixOverlayToTip(
             tip->GetBlockHash(), uint64_t(tip->nHeight + 1),
             uint64_t(tip->GetMedianTimePast()));
-        CaptureMempoolEntriesLocked(*next, *mempool, prev.get());
+        if (mempool->mapTx.size() <= 128) {
+            CaptureMempoolEntriesLocked(*next, *mempool, prev.get());
+        } else {
+            mempool->ClearSnapshotChanges();
+            mempool->SetSnapshotNeedsReset();
+        }
         PopulateMempoolFieldsLocked(*next, *mempool, prev.get());
         PopulateMiningTemplate(*next, mempool, prev.get(), publisher);
     } else {
@@ -1280,7 +1344,12 @@ void PublishMempoolSnapshot(const CTxMemPool &mempool)
     auto prev = publisher.Load();
     auto next = CloneChainStateOnly(prev.get());
 
-    CaptureMempoolEntriesLocked(*next, mempool, prev.get());
+    if (mempool.mapTx.size() <= 128) {
+        CaptureMempoolEntriesLocked(*next, mempool, prev.get());
+    } else {
+        mempool.ClearSnapshotChanges();
+        mempool.SetSnapshotNeedsReset();
+    }
     if (mempool.mapTx.size() <= 64) {
         PopulateMempoolFieldsLocked(*next, mempool, prev.get());
         PopulateMiningTemplate(*next, &mempool, prev.get(), publisher);

@@ -4191,22 +4191,37 @@ PeerManagerImpl::RelayReconSet(const uint256 &context_id) const {
     std::vector<CTransactionRef> txs;
     txs.reserve(lotus::v2::net::V2PeerProtocolHandler::MAX_SCOPED_TXS);
     if (snapshot && snapshot->mempool_valid &&
-        snapshot->mempool_ptr == &m_mempool && snapshot->entry_tree) {
+        snapshot->mempool_ptr == &m_mempool) {
         // Candidate radix order is the same numeric TxId order used by
         // NormalizeCtorTxList. Resolve membership against one pinned live
         // view, outside both index and mempool mutexes, and cap only AFTER
         // checking eligibility. Stale index callbacks cannot hide a later
         // valid candidate by consuming an early slot in the limit.
-        candidates->forEachLeaf([&](const auto &candidate) {
-            const auto entry = snapshot->entry_tree->getWithinReadSection(
-                Uint256RadixKey(candidate->txid));
-            if (entry && entry->entry.tx && !entry->entry.tx->IsNull() &&
-                !entry->entry.tx->IsCoinBase()) {
-                txs.push_back(entry->entry.tx);
-            }
-            return txs.size() <
-                   lotus::v2::net::V2PeerProtocolHandler::MAX_SCOPED_TXS;
-        });
+        if (snapshot->entry_tree) {
+            candidates->forEachLeaf([&](const auto &candidate) {
+                const auto entry = snapshot->entry_tree->getWithinReadSection(
+                    Uint256RadixKey(candidate->txid));
+                if (entry && entry->entry.tx && !entry->entry.tx->IsNull() &&
+                    !entry->entry.tx->IsCoinBase()) {
+                    txs.push_back(entry->entry.tx);
+                }
+                return txs.size() <
+                       lotus::v2::net::V2PeerProtocolHandler::MAX_SCOPED_TXS;
+            });
+        } else {
+            candidates->forEachLeaf([&](const auto &candidate) {
+                const auto entry = m_mempool.m_tx_tree.getWithinReadSection(
+                    Uint256RadixKey(candidate->txid));
+                if (entry) {
+                    const CTransactionRef &tx = entry->GetSharedTx();
+                    if (tx && !tx->IsNull() && !tx->IsCoinBase()) {
+                        txs.push_back(tx);
+                    }
+                }
+                return txs.size() <
+                       lotus::v2::net::V2PeerProtocolHandler::MAX_SCOPED_TXS;
+            });
+        }
         return txs;
     }
     // Initialization/test fallback: preserve the original live-pool check

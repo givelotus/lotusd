@@ -472,6 +472,10 @@ struct PrecomputedBatchTxData {
     bool regular_tx_valid{false};
     bool v2_fast_path_verified{false};
     std::vector<CTxOut> v2_spent_outputs;
+    bool batch_accepted{false};
+    int64_t accepted_vsize{0};
+    Amount accepted_base_fee{Amount::zero()};
+    CFeeRate accepted_effective_feerate{Amount::zero()};
 };
 
 void PrecomputeSingleTxData(const CTransaction &tx,
@@ -496,7 +500,7 @@ ProcessRawTxBatch(
     Chainstate &active_chainstate, CTxMemPool &pool,
     const Package &txns, bool test_accept,
     const CFeeRate &max_raw_tx_fee_rate = CFeeRate(Amount::zero()),
-    const std::vector<PrecomputedBatchTxData> *precomputed_batch = nullptr)
+    std::vector<PrecomputedBatchTxData> *precomputed_batch = nullptr)
     EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 /** Options for AcceptToMemoryPoolStaged. */

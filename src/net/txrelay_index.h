@@ -209,7 +209,11 @@ public:
     size_t Size() const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
 private:
-    using ShortIdMap = RadixTreeMap<uint64_t, std::vector<TxId>>;
+    struct ShortIdBucket {
+        TxId first{};
+        std::shared_ptr<const std::vector<TxId>> extra{};
+    };
+    using ShortIdMap = RadixTreeMap<uint64_t, ShortIdBucket>;
     using TxIdShortMap = RadixTreeMap<TxId, uint64_t>;
 
     struct Epoch {

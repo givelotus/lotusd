@@ -156,10 +156,6 @@ CTxMemPool::CTxMemPool(const Config &config, Options opts)
 CTxMemPool::~CTxMemPool() = default;
 
 bool CTxMemPool::isSpent(const COutPoint &outpoint) const {
-    if (!m_utxo_fast_filter.IsSpentInMempool(outpoint.GetTxId().begin(),
-                                             outpoint.GetN())) {
-        return false;
-    }
     return mapNextTx.contains(outpoint);
 }
 
@@ -181,7 +177,7 @@ CTxMemPool::txiter CTxMemPool::addUnchecked(
     entry->SetEntryId(nextEntryId++);
 
     // Update transaction for any feeDelta created by PrioritiseTransaction
-    {
+    if (!mapDeltas.empty()) {
         Amount feeDelta = Amount::zero();
         ApplyDelta(entry->GetTx().GetId(), feeDelta);
         // The following call to UpdateModifiedFee assumes no previous fee
@@ -209,6 +205,7 @@ CTxMemPool::txiter CTxMemPool::addUnchecked(
     cachedInnerUsage += entry->DynamicMemoryUsage();
 
     const CTransactionRef tx = entry->GetSharedTx();
+    const bool update_fast_filter = (mapTx.size() <= 256);
     const TxId *last_parent_txid = nullptr;
     for (size_t i = 0; i < tx->vin.size(); ++i) {
         const CTxIn &in = tx->vin[i];
@@ -216,8 +213,10 @@ CTxMemPool::txiter CTxMemPool::addUnchecked(
             continue;
         }
         mapNextTx.insertOrAssign(in.prevout, tx);
-        m_utxo_fast_filter.MarkSpentInMempool(in.prevout.GetTxId().begin(),
-                                              in.prevout.GetN());
+        if (update_fast_filter) {
+            m_utxo_fast_filter.MarkSpentInMempool(in.prevout.GetTxId().begin(),
+                                                  in.prevout.GetN());
+        }
         if (has_mempool_parents && had_mempool_txs &&
             (last_parent_txid == nullptr ||
              *last_parent_txid != in.prevout.GetTxId())) {
@@ -248,9 +247,12 @@ CTxMemPool::txiter CTxMemPool::addUnchecked(
         }
     }
 
-    for (uint32_t i = 0; i < tx->vout.size(); ++i) {
-        if (!tx->vout[i].IsNull() && !tx->vout[i].scriptPubKey.IsUnspendable()) {
-            m_utxo_fast_filter.AddUnspent(tx->GetId().begin(), i);
+    if (update_fast_filter) {
+        for (uint32_t i = 0; i < tx->vout.size(); ++i) {
+            if (!tx->vout[i].IsNull() &&
+                !tx->vout[i].scriptPubKey.IsUnspendable()) {
+                m_utxo_fast_filter.AddUnspent(tx->GetId().begin(), i);
+            }
         }
     }
     m_pending_overlay_adds.emplace_back(tx, entry->GetFee() / SATOSHI,
@@ -302,20 +304,30 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason) {
         }
     }
 
-    if (reason != MemPoolRemovalReason::BLOCK) {
+    if (reason != MemPoolRemovalReason::BLOCK &&
+        m_utxo_fast_filter.GetUnspentCount() > 0) {
         for (uint32_t i = 0; i < tx.vout.size(); ++i) {
             if (!tx.vout[i].IsNull() && !tx.vout[i].scriptPubKey.IsUnspendable())
                 m_utxo_fast_filter.RemoveUnspent(txid.begin(), i);
         }
     }
+    const bool has_fast_spent = m_utxo_fast_filter.GetMempoolSpentCount() > 0;
+    const bool has_fast_unspent =
+        (reason == MemPoolRemovalReason::BLOCK) &&
+        (m_utxo_fast_filter.GetUnspentCount() > 0);
     for (const CTxIn &txin : tx.vin) {
         if (txin.nFlags == 3) {
             continue;
         }
         mapNextTx.erase(txin.prevout);
-        m_utxo_fast_filter.UnmarkSpentInMempool(txin.prevout.GetTxId().begin(), txin.prevout.GetN());
-        if (reason == MemPoolRemovalReason::BLOCK)
-            m_utxo_fast_filter.RemoveUnspent(txin.prevout.GetTxId().begin(), txin.prevout.GetN());
+        if (has_fast_spent) {
+            m_utxo_fast_filter.UnmarkSpentInMempool(
+                txin.prevout.GetTxId().begin(), txin.prevout.GetN());
+        }
+        if (has_fast_unspent) {
+            m_utxo_fast_filter.RemoveUnspent(txin.prevout.GetTxId().begin(),
+                                             txin.prevout.GetN());
+        }
     }
 
     /* add logging because unchecked */
@@ -1117,10 +1129,6 @@ void CTxMemPool::ClearPrioritisation(const TxId &txid) {
 }
 
 CTransactionRef CTxMemPool::GetConflictTx(const COutPoint &prevout) const {
-    if (!m_utxo_fast_filter.IsSpentInMempool(prevout.GetTxId().begin(),
-                                             prevout.GetN())) {
-        return nullptr;
-    }
     return mapNextTx.get(prevout).value_or(nullptr);
 }
 
@@ -1194,8 +1202,8 @@ void CCoinsViewMemPool::Reset() {
     m_non_base_coins.clear();
 }
 
-size_t CTxMemPool::DynamicMemoryUsage() const {
-    LOCK(cs);
+size_t CTxMemPool::DynamicMemoryUsageLocked() const {
+    AssertLockHeld(cs);
     // Node and bucket storage belongs to the allocator's retained chunks;
     // count it even when most slots are free. Entries are separate objects.
     return mapTx.get_allocator().resource()->TotalAllocatedBytes() +
@@ -1204,11 +1212,16 @@ size_t CTxMemPool::DynamicMemoryUsage() const {
            memusage::DynamicUsage(mapDeltas) + cachedInnerUsage;
 }
 
+size_t CTxMemPool::DynamicMemoryUsage() const {
+    LOCK(cs);
+    return DynamicMemoryUsageLocked();
+}
+
 bool CTxMemPool::CanFitRawTxBatch(
     const std::vector<const CTxMemPoolEntry *> &entries) const {
     AssertLockHeld(cs);
     const size_t memory_limit = static_cast<size_t>(std::max<int64_t>(0, m_opts.max_size_bytes));
-    size_t usage = DynamicMemoryUsage();
+    size_t usage = DynamicMemoryUsageLocked();
     const size_t entry_overhead = memusage::MallocUsage(sizeof(CTxMemPoolEntry));
     const size_t initial_usage = usage;
     const CTxMemPoolEntry::Parents empty_links;
@@ -1430,8 +1443,17 @@ int CTxMemPool::Expire(std::chrono::seconds time) {
 void CTxMemPool::LimitSize(CCoinsViewCache &coins_cache) {
     AssertLockHeld(::cs_main);
     AssertLockHeld(cs);
+    const auto expire_before = GetTime<std::chrono::seconds>() - m_opts.expiry;
+    const auto &time_idx = mapTx.get<entry_time>();
+    const bool has_expired =
+        !time_idx.empty() && (*time_idx.begin())->GetTime() < expire_before;
+    if (!has_expired &&
+        DynamicMemoryUsageLocked() <=
+            static_cast<size_t>(std::max<int64_t>(0, m_opts.max_size_bytes))) {
+        return;
+    }
     ScopedSnapshotDefer snapshot_defer(*this);
-    int expired = Expire(GetTime<std::chrono::seconds>() - m_opts.expiry);
+    int expired = has_expired ? Expire(expire_before) : 0;
     if (expired != 0) {
         LogDebug(BCLog::MEMPOOL,
                  "Expired %i transactions from the memory pool\n", expired);
@@ -1510,7 +1532,7 @@ void CTxMemPool::trackPackageRemoved(const CFeeRate &rate) {
 void CTxMemPool::TrimToSize(size_t sizelimit,
                             std::vector<COutPoint> *pvNoSpendsRemaining) {
     AssertLockHeld(cs);
-    if (mapTx.empty() || DynamicMemoryUsage() <= sizelimit) {
+    if (mapTx.empty() || DynamicMemoryUsageLocked() <= sizelimit) {
         return;
     }
     ScopedSnapshotDefer snapshot_defer(*this);
@@ -1518,7 +1540,7 @@ void CTxMemPool::TrimToSize(size_t sizelimit,
     unsigned nTxnRemoved = 0;
     size_t finalizedTxsSkipped = 0;
     CFeeRate maxFeeRateRemoved(Amount::zero());
-    while (!mapTx.empty() && DynamicMemoryUsage() > sizelimit) {
+    while (!mapTx.empty() && DynamicMemoryUsageLocked() > sizelimit) {
         auto &by_modified_feerate = mapTx.get<modified_feerate>();
         // Lowest fee first
         auto rit = by_modified_feerate.rbegin();

@@ -640,6 +640,7 @@ public:
     CFeeRate estimateFee() const;
 
     size_t DynamicMemoryUsage() const;
+    size_t DynamicMemoryUsageLocked() const EXCLUSIVE_LOCKS_REQUIRED(cs);
     /** Check the entire staged batch before publishing any mutation. Unlike
      * ordinary single admission, an atomic batch does not evict existing txs. */
     bool CanFitRawTxBatch(const std::vector<const CTxMemPoolEntry *> &entries) const
@@ -746,7 +747,14 @@ public:
     bool GetBlockSinceLastRollingFeeBump() const EXCLUSIVE_LOCKS_REQUIRED(cs) { return blockSinceLastRollingFeeBump; }
 
     void MarkSnapshotEntryChanged(const TxId &id) const EXCLUSIVE_LOCKS_REQUIRED(cs) {
-        m_snapshot_changed_entries.push_back(id);
+        if (mapTx.size() <= 128) {
+            m_snapshot_changed_entries.push_back(id);
+        } else {
+            m_snapshot_needs_reset = true;
+        }
+    }
+    void SetSnapshotNeedsReset() const EXCLUSIVE_LOCKS_REQUIRED(cs) {
+        m_snapshot_needs_reset = true;
     }
     const std::vector<TxId> &SnapshotChangedEntries() const EXCLUSIVE_LOCKS_REQUIRED(cs) {
         return m_snapshot_changed_entries;
@@ -791,8 +799,12 @@ public:
     }
 
     bool IsSpentFast(const COutPoint &outpoint) const noexcept {
-        return m_utxo_fast_filter.IsSpentInMempool(
-            outpoint.GetTxId().begin(), outpoint.GetN());
+        if (m_utxo_fast_filter.GetMempoolSpentCount() > 0 &&
+            m_utxo_fast_filter.IsSpentInMempool(
+                outpoint.GetTxId().begin(), outpoint.GetN())) {
+            return true;
+        }
+        return mapNextTx.contains(outpoint);
     }
 
     bool MayExistInChainOrMempoolFast(const COutPoint &outpoint) const noexcept {
