@@ -1833,7 +1833,8 @@ static RPCHelpMan submitrawtxbatch() {
                 // Locally originated batches use the ordinary first-hop
                 // trickle; SendMessages may still coalesce the eventual relay.
                 if (node.peerman) {
-                    node.peerman->RelayTransactionBatch(txns);
+                    node.peerman->RelayTransactionBatch(txns,
+                                                        /*is_local=*/true);
                 }
             }
 

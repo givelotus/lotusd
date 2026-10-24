@@ -95,6 +95,8 @@ private:
     //! Used for determining the priority of the transaction for mining in a
     //! block
     std::atomic<Amount> m_modified_fee{Amount::zero()};
+    //! Whether this locally submitted transaction awaits initial broadcast
+    mutable std::atomic<bool> m_unbroadcast{false};
     //! Track the height and time at which tx was final
     LockPoints lockPoints;
 
@@ -117,6 +119,7 @@ public:
           nTime(other.nTime), entryHeight(other.entryHeight),
           sigChecks(other.sigChecks),
           m_modified_fee(other.m_modified_fee.load(std::memory_order_relaxed)),
+          m_unbroadcast(other.m_unbroadcast.load(std::memory_order_relaxed)),
           lockPoints(std::move(other.lockPoints)),
           refcount(other.refcount.load()) {};
 
@@ -152,6 +155,15 @@ public:
         cur.SaturatingAdd(fee_diff);
         m_modified_fee.store(cur, std::memory_order_relaxed);
     };
+
+    bool IsUnbroadcast() const noexcept {
+        return m_unbroadcast.load(std::memory_order_relaxed);
+    }
+
+    bool SetUnbroadcast(bool unbroadcast) const noexcept {
+        return m_unbroadcast.exchange(unbroadcast, std::memory_order_relaxed) !=
+               unbroadcast;
+    }
 
     const Parents &GetMemPoolParentsConst() const { return m_parents; }
     const Children &GetMemPoolChildrenConst() const { return m_children; }

@@ -363,7 +363,10 @@ private:
      * Track locally submitted transactions to periodically retry initial
      * broadcast
      */
-    std::set<TxId> m_unbroadcast_txids GUARDED_BY(cs);
+    std::atomic<size_t> m_unbroadcast_count{0};
+    mutable StdMutex m_unbroadcast_log_mutex;
+    mutable std::vector<TxId> m_unbroadcast_log
+        GUARDED_BY(m_unbroadcast_log_mutex);
 
     /**
      * Helper function to calculate all in-mempool ancestors of staged_ancestors
@@ -642,21 +645,20 @@ public:
     void RemoveUnbroadcastTx(const TxId &txid, const bool unchecked = false);
 
     /** Returns transactions in unbroadcast set */
-    std::set<TxId> GetUnbroadcastTxs() const {
-        LOCK(cs);
-        return m_unbroadcast_txids;
-    }
+    std::set<TxId> GetUnbroadcastTxs() const;
 
     /** Returns the unbroadcast count without copying the transaction IDs. */
-    size_t GetUnbroadcastTxCount() const EXCLUSIVE_LOCKS_REQUIRED(cs) {
-        AssertLockHeld(cs);
-        return m_unbroadcast_txids.size();
+    size_t GetUnbroadcastTxCount() const noexcept {
+        return m_unbroadcast_count.load(std::memory_order_relaxed);
     }
 
     /** Returns whether a txid is in the unbroadcast set */
-    bool IsUnbroadcastTx(const TxId &txid) const EXCLUSIVE_LOCKS_REQUIRED(cs) {
-        AssertLockHeld(cs);
-        return (m_unbroadcast_txids.count(txid) != 0);
+    bool IsUnbroadcastTx(const TxId &txid) const {
+        if (m_unbroadcast_count.load(std::memory_order_relaxed) == 0) {
+            return false;
+        }
+        RCUPtr<const CTxMemPoolEntry> entry = m_tx_tree.get(txid);
+        return entry && entry->IsUnbroadcast();
     }
 
     /** Guards this internal counter for external reporting */

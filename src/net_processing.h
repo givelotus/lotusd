@@ -277,7 +277,10 @@ public:
     virtual void RelayTransaction(const TxId &txid) = 0;
 
     /** Batch interface; implementations may coalesce peer locking. */
-    virtual void RelayTransactionBatch(std::span<const CTransactionRef> txs) {
+    virtual void
+    RelayTransactionBatch(std::span<const CTransactionRef> txs,
+                          std::optional<bool> is_local = std::nullopt) {
+        (void)is_local;
         for (const auto &tx : txs) {
             if (tx) RelayTransaction(tx->GetId());
         }
