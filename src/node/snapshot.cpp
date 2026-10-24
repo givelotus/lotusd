@@ -790,6 +790,8 @@ void PopulateMiningTemplate(ChainAndMempoolSnapshot &snap,
         tmpl.v2_base_state = V2TemplateBaseState{};
         tmpl.v2_base_state.utxo_root = tmpl.tip_utxo_root;
         tmpl.v2_base_state.mon_state = tmpl.tip_mon_state;
+        tmpl.v2_base_state.history_frontier = GetV2NextBlockHistoryFrontier(
+            tmpl.prev_block_hash, uint64_t(tmpl.next_height));
         tmpl.v2_base_state.height = uint64_t(tmpl.next_height);
         tmpl.v2_base_state.parent_mtp = uint64_t(tmpl.parent_mtp);
         tmpl.roots_ready = true;
@@ -919,6 +921,8 @@ void MiningTemplateSnapshot::EnsureRoots() const {
             v2_base_state = V2TemplateBaseState{};
             v2_base_state.utxo_root = tip_utxo_root;
             v2_base_state.mon_state = tip_mon_state;
+            v2_base_state.history_frontier = GetV2NextBlockHistoryFrontier(
+                prev_block_hash, uint64_t(next_height));
             v2_base_state.height = uint64_t(next_height);
             v2_base_state.parent_mtp = uint64_t(parent_mtp);
         } else {
@@ -952,6 +956,9 @@ void MiningTemplateSnapshot::EnsureRoots() const {
                         std::make_shared<const lotus::v2::UtxoOverlayArena>(
                             overlay.GetUtxoArena());
                     v2_base_state.mon_state = overlay.GetBaseMonetaryState();
+                    v2_base_state.history_frontier =
+                        GetV2NextBlockHistoryFrontier(prev_block_hash,
+                                                      uint64_t(next_height));
                     v2_base_state.non_cb_tx_count = overlay.GetTxCount();
                     v2_base_state.sum_non_cb_effective_cost =
                         overlay.GetSumNonCbEffectiveCost();
@@ -987,6 +994,8 @@ void MiningTemplateSnapshot::EnsureRoots() const {
             std::make_shared<const lotus::v2::UtxoOverlayArena>(
                 overlay.GetUtxoArena());
         v2_base_state.mon_state = overlay.GetBaseMonetaryState();
+        v2_base_state.history_frontier = GetV2NextBlockHistoryFrontier(
+            prev_block_hash, uint64_t(next_height));
         v2_base_state.non_cb_tx_count = overlay.GetTxCount();
         v2_base_state.sum_non_cb_effective_cost =
             overlay.GetSumNonCbEffectiveCost();

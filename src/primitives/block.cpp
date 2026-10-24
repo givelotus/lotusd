@@ -55,6 +55,7 @@ struct V2BlockStateSnapshot {
     std::vector<lotus::v2::Coin> inserted_coins;
     uint64_t circulating_supply{0};
     bool persisted_to_disk{false};
+    lotus::v2::HeaderHistoryFrontier history_frontier{};
 };
 
 struct CandidateV2StateCacheEntry {
@@ -62,6 +63,7 @@ struct CandidateV2StateCacheEntry {
     BlockHash hashPrevBlock{};
     lotus::v2::Hash parent_utxo_digest{};
     lotus::v2::MonetaryState parent_mon_state{};
+    lotus::v2::HeaderHistoryFrontier next_history_frontier{};
     uint64_t nHeight{0};
     uint64_t nParentMtp{0};
     uint32_t nBits{0};
@@ -72,6 +74,7 @@ struct CandidateV2StateCacheEntry {
 
 constexpr size_t kMaxCachedV2StateSnapshots = 64;
 std::map<BlockHash, V2BlockStateSnapshot> g_v2_state_snapshots;
+std::map<BlockHash, lotus::v2::HeaderHistoryFrontier> g_v2_next_frontier_by_prev;
 std::list<BlockHash> g_v2_state_lru;
 std::map<BlockHash, std::list<BlockHash>::iterator> g_v2_state_lru_pos;
 std::array<CandidateV2StateCacheEntry, 8> g_v2_candidate_cache{};
@@ -100,7 +103,8 @@ bool FlushV2BlockStatesToDiskLocked(std::unique_lock<std::mutex> &lock) {
             it != g_v2_state_snapshots.end() &&
             it->second.utxo_root == snapshot.utxo_root &&
             it->second.circulating_supply == snapshot.circulating_supply &&
-            it->second.mon_state == snapshot.mon_state) {
+            it->second.mon_state == snapshot.mon_state &&
+            it->second.history_frontier == snapshot.history_frontier) {
             it->second.persisted_to_disk = true;
         } else {
             all_written = false;
@@ -137,7 +141,8 @@ bool CacheV2BlockStateLocked(std::unique_lock<std::mutex> &lock, const BlockHash
         if (current == g_v2_state_snapshots.end() ||
             current->second.utxo_root != snapshot.utxo_root ||
             current->second.circulating_supply != snapshot.circulating_supply ||
-            current->second.mon_state != snapshot.mon_state) return false;
+            current->second.mon_state != snapshot.mon_state ||
+            current->second.history_frontier != snapshot.history_frontier) return false;
         g_v2_state_snapshots.erase(current);
         auto position = g_v2_state_lru_pos.find(oldest);
         if (position != g_v2_state_lru_pos.end()) {
@@ -243,6 +248,10 @@ bool WriteV2BlockStateFile(const std::string &directory, const BlockHash &blockH
             return false;
         }
     }
+    const std::vector<uint8_t> frontier_bytes =
+        lotus::v2::EncodeHeaderHistoryFrontier(snap.history_frontier);
+    append_u32_le(static_cast<uint32_t>(frontier_bytes.size()));
+    buf.insert(buf.end(), frontier_bytes.begin(), frontier_bytes.end());
     if (!flush_chunk()) {
         out.close();
         std::filesystem::remove(tmp_path, ec);
@@ -286,7 +295,37 @@ struct RawDiskDeltaSnapshot {
     BlockHash parent_hash{};
     std::vector<lotus::v2::Outpoint> erased_outpoints;
     std::vector<lotus::v2::Coin> inserted_coins;
+    lotus::v2::HeaderHistoryFrontier history_frontier{};
+    bool has_history_frontier{false};
 };
+
+bool ReadHistoryFrontierTrailer(std::ifstream &in, RawDiskDeltaSnapshot &out) {
+    out.history_frontier = lotus::v2::HeaderHistoryFrontier{};
+    out.has_history_frontier = false;
+    uint8_t frontier_len_buf[4]{};
+    if (!in.read(reinterpret_cast<char *>(frontier_len_buf), 4)) {
+        return true;
+    }
+    uint32_t frontier_len = 0;
+    for (unsigned i = 0; i < 4; ++i) {
+        frontier_len |= uint32_t(frontier_len_buf[i]) << (8 * i);
+    }
+    if (frontier_len < 8 || frontier_len > 4096) {
+        return false;
+    }
+    std::vector<uint8_t> frontier_bytes(frontier_len);
+    if (!in.read(reinterpret_cast<char *>(frontier_bytes.data()), frontier_len)) {
+        return false;
+    }
+    if (!lotus::v2::DecodeHeaderHistoryFrontier(frontier_bytes,
+                                                out.history_frontier)) {
+        return false;
+    }
+    out.has_history_frontier = true;
+    out.mon_state.history_root = lotus::v2::HeaderHistoryRoot(
+        GetActiveV2ChainId(), out.history_frontier);
+    return true;
+}
 
 bool ReadRawDiskSnapshotFile(const std::string &directory, const BlockHash &blockHash,
                              RawDiskDeltaSnapshot &out) {
@@ -388,7 +427,7 @@ bool ReadRawDiskSnapshotFile(const std::string &directory, const BlockHash &bloc
             }
             out.inserted_coins.push_back(std::move(coin));
         }
-        return true;
+        return ReadHistoryFrontierTrailer(in, out);
     }
     if (count > 1000000) {
         return false;
@@ -420,7 +459,7 @@ bool ReadRawDiskSnapshotFile(const std::string &directory, const BlockHash &bloc
         }
         out.inserted_coins.push_back(std::move(coin));
     }
-    return true;
+    return ReadHistoryFrontierTrailer(in, out);
 }
 
 bool LoadV2BlockStateFromDiskLocked(std::unique_lock<std::mutex> &lock, const BlockHash &blockHash,
@@ -429,11 +468,13 @@ bool LoadV2BlockStateFromDiskLocked(std::unique_lock<std::mutex> &lock, const Bl
     std::vector<RawDiskDeltaSnapshot> chain;
     BlockHash cur = blockHash;
     std::shared_ptr<const lotus::v2::SmtNode> base_root{};
+    lotus::v2::HeaderHistoryFrontier base_frontier{};
 
     while (!cur.IsNull()) {
         auto it = g_v2_state_snapshots.find(cur);
         if (it != g_v2_state_snapshots.end()) {
             base_root = it->second.utxo_root;
+            base_frontier = it->second.history_frontier;
             break;
         }
         RawDiskDeltaSnapshot raw;
@@ -459,6 +500,7 @@ bool LoadV2BlockStateFromDiskLocked(std::unique_lock<std::mutex> &lock, const Bl
             }
             // Reached unpersisted genesis ancestor; base UTXO tree is empty.
             base_root.reset();
+            base_frontier = lotus::v2::HeaderHistoryFrontier{};
             break;
         }
         const bool is_delta = raw.is_delta;
@@ -466,15 +508,28 @@ bool LoadV2BlockStateFromDiskLocked(std::unique_lock<std::mutex> &lock, const Bl
         chain.push_back(std::move(raw));
         if (!is_delta) {
             base_root.reset();
+            base_frontier = lotus::v2::HeaderHistoryFrontier{};
             break;
         }
         cur = next_parent;
     }
 
     std::shared_ptr<const lotus::v2::SmtNode> running_root = base_root;
+    lotus::v2::HeaderHistoryFrontier running_frontier = base_frontier;
     for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
         if (!it->is_delta) {
             running_root.reset();
+            running_frontier = lotus::v2::HeaderHistoryFrontier{};
+        }
+        if (it->has_history_frontier) {
+            running_frontier = it->history_frontier;
+        } else if (!it->parent_hash.IsNull()) {
+            lotus::v2::Hash256 parent_hash_v2{};
+            std::memcpy(parent_hash_v2.data(), it->parent_hash.begin(), 32);
+            running_frontier = lotus::v2::AppendHeaderToFrontier(
+                GetActiveV2ChainId(), running_frontier, parent_hash_v2);
+        } else {
+            running_frontier = lotus::v2::HeaderHistoryFrontier{};
         }
         if (it->erased_outpoints.size() + it->inserted_coins.size() >= 32) {
             lotus::v2::SmtBatchUpdateParallel(
@@ -490,6 +545,9 @@ bool LoadV2BlockStateFromDiskLocked(std::unique_lock<std::mutex> &lock, const Bl
         V2BlockStateSnapshot built;
         built.utxo_root = running_root;
         built.mon_state = it->mon_state;
+        built.history_frontier = running_frontier;
+        built.mon_state.history_root = lotus::v2::HeaderHistoryRoot(
+            GetActiveV2ChainId(), built.history_frontier);
         built.parent_hash = it->parent_hash;
         built.erased_outpoints = std::move(it->erased_outpoints);
         built.inserted_coins = std::move(it->inserted_coins);
@@ -573,25 +631,49 @@ V2BlockStateSnapshot BuildNextV2BlockState(const CBlock &block,
 
     lotus::v2::Hash parent_utxo_digest{};
     lotus::v2::MonetaryState parent_mon_state{};
+    lotus::v2::HeaderHistoryFrontier next_history_frontier{};
     {
         std::unique_lock<std::mutex> lock(g_v2_utxo_mutex);
+        lotus::v2::HeaderHistoryFrontier parent_history_frontier{};
+        bool have_parent_frontier = false;
         if (!hashPrevBlock.IsNull()) {
             auto it = g_v2_state_snapshots.find(hashPrevBlock);
             if (it != g_v2_state_snapshots.end()) {
                 state.utxo_root = it->second.utxo_root;
                 state.mon_state = it->second.mon_state;
                 state.circulating_supply = it->second.circulating_supply;
+                parent_history_frontier = it->second.history_frontier;
+                have_parent_frontier =
+                    (parent_history_frontier.count > 0 || nHeight == 1);
             } else if (LoadV2BlockStateFromDiskLocked(lock, hashPrevBlock, state)) {
+                parent_history_frontier = state.history_frontier;
+                have_parent_frontier =
+                    (parent_history_frontier.count > 0 || nHeight == 1);
                 V2BlockStateSnapshot cached = state;
                 CacheV2BlockStateLocked(lock, hashPrevBlock, std::move(cached));
                 state.parent_hash = hashPrevBlock;
                 state.erased_outpoints.clear();
                 state.inserted_coins.clear();
             }
+            if (!have_parent_frontier) {
+                auto it_next = g_v2_next_frontier_by_prev.find(hashPrevBlock);
+                if (it_next != g_v2_next_frontier_by_prev.end()) {
+                    next_history_frontier = it_next->second;
+                    have_parent_frontier = true;
+                }
+            }
+            if (next_history_frontier.count == 0) {
+                lotus::v2::Hash256 parent_hash_v2{};
+                std::memcpy(parent_hash_v2.data(), hashPrevBlock.begin(), 32);
+                next_history_frontier = lotus::v2::AppendHeaderToFrontier(
+                    GetActiveV2ChainId(), parent_history_frontier,
+                    parent_hash_v2);
+            }
         }
         // Loading the parent may mark its snapshot persisted. This derived
         // child has not been written and must still be persisted on eviction.
         state.persisted_to_disk = false;
+        state.history_frontier = next_history_frontier;
         parent_utxo_digest = SmtRoot(state.utxo_root);
         parent_mon_state = state.mon_state;
 
@@ -602,7 +684,8 @@ V2BlockStateSnapshot BuildNextV2BlockState(const CBlock &block,
                 entry.tx_count == block.vtx.size() &&
                 entry.transaction_commitment == transaction_commitment &&
                 entry.parent_utxo_digest == parent_utxo_digest &&
-                MonetaryStatesEqual(entry.parent_mon_state, parent_mon_state)) {
+                MonetaryStatesEqual(entry.parent_mon_state, parent_mon_state) &&
+                entry.next_history_frontier == next_history_frontier) {
                 return entry.snapshot;
             }
         }
@@ -761,6 +844,9 @@ V2BlockStateSnapshot BuildNextV2BlockState(const CBlock &block,
         envelope_cost, tx_linear_costs, kDefaultMonetaryProfile);
     state.mon_state = AdvanceV2MonetaryStateForBlock(state.mon_state,
                                                      block.nBits, block_cost);
+    state.history_frontier = next_history_frontier;
+    state.mon_state.history_root = lotus::v2::HeaderHistoryRoot(
+        GetActiveV2ChainId(), state.history_frontier);
     state.circulating_supply =
         state.utxo_root ? state.utxo_root->total_value : 0;
 
@@ -773,6 +859,7 @@ V2BlockStateSnapshot BuildNextV2BlockState(const CBlock &block,
         slot.hashPrevBlock = hashPrevBlock;
         slot.parent_utxo_digest = parent_utxo_digest;
         slot.parent_mon_state = parent_mon_state;
+        slot.next_history_frontier = next_history_frontier;
         slot.nHeight = nHeight;
         slot.nParentMtp = nParentMtp;
         slot.nBits = block.nBits;
@@ -888,6 +975,7 @@ void SetV2StatePersistDir(const std::string &dir_path) {
         g_v2_state_persist_dir = dir_path;
         ++g_v2_state_directory_generation;
         g_v2_state_snapshots.clear();
+        g_v2_next_frontier_by_prev.clear();
         g_v2_state_lru.clear();
         g_v2_state_lru_pos.clear();
         for (auto &slot : g_v2_candidate_cache) {
@@ -1106,9 +1194,17 @@ uint256 ComputeV2StateRootFromOverlay(
         envelope_cost + lotus::v2::MonetaryInteger(cb_eff_cost) +
         lotus::v2::MonetaryInteger(overlay.GetSumNonCbEffectiveCost());
 
-    const lotus::v2::MonetaryState next_mon_state =
+    uint256 parent_raw;
+    std::memcpy(parent_raw.begin(), overlay.GetParentBlockId().data(), 32);
+    const BlockHash parent_block_hash{parent_raw};
+    const lotus::v2::HeaderHistoryFrontier next_history_frontier =
+        GetV2NextBlockHistoryFrontier(parent_block_hash, nHeight);
+
+    lotus::v2::MonetaryState next_mon_state =
         AdvanceV2MonetaryStateForBlock(overlay.GetBaseMonetaryState(), nBits,
                                        block_cost);
+    next_mon_state.history_root = lotus::v2::HeaderHistoryRoot(
+        GetActiveV2ChainId(), next_history_frontier);
 
     const lotus::v2::Hash sroot = lotus::v2::StateRoot(
         GetActiveV2ChainId(), nHeight, utxo_digest, next_mon_state);
@@ -1117,12 +1213,11 @@ uint256 ComputeV2StateRootFromOverlay(
 
     if (record && pBlockHash != nullptr && declared_state_root != nullptr &&
         *declared_state_root == out) {
-        uint256 parent_raw;
-        std::memcpy(parent_raw.begin(), overlay.GetParentBlockId().data(), 32);
         V2BlockStateSnapshot next_state;
         next_state.utxo_root = std::move(final_utxo_root);
         next_state.mon_state = next_mon_state;
-        next_state.parent_hash = BlockHash{parent_raw};
+        next_state.history_frontier = next_history_frontier;
+        next_state.parent_hash = parent_block_hash;
         next_state.erased_outpoints = overlay.GetNetErasedOutpoints();
         next_state.inserted_coins = overlay.GetNetInsertedCoins();
         for (auto &c : cb_coins) {
@@ -1270,6 +1365,58 @@ bool RemoveTransactionFromOverlay(lotus::v2::MerklixOverlayManager &manager,
     return RemoveTransactionFromOverlay(manager.GetSpeculativeOverlay(), tx);
 }
 
+void SetV2NextBlockHistoryFrontierForPrev(
+    const BlockHash &prevBlockHash,
+    const lotus::v2::HeaderHistoryFrontier &next_frontier) {
+    if (prevBlockHash.IsNull()) {
+        return;
+    }
+    std::unique_lock<std::mutex> lock(g_v2_utxo_mutex);
+    if (g_v2_next_frontier_by_prev.size() >= 512 &&
+        !g_v2_next_frontier_by_prev.count(prevBlockHash)) {
+        g_v2_next_frontier_by_prev.clear();
+    }
+    g_v2_next_frontier_by_prev[prevBlockHash] = next_frontier;
+}
+
+lotus::v2::HeaderHistoryFrontier GetV2NextBlockHistoryFrontier(
+    const BlockHash &hashPrevBlock,
+    uint64_t nHeight) {
+    if (nHeight == 0 || hashPrevBlock.IsNull()) {
+        return {};
+    }
+    lotus::v2::HeaderHistoryFrontier parent_frontier{};
+    {
+        std::unique_lock<std::mutex> lock(g_v2_utxo_mutex);
+        bool have_parent_frontier = false;
+        auto it = g_v2_state_snapshots.find(hashPrevBlock);
+        if (it != g_v2_state_snapshots.end()) {
+            parent_frontier = it->second.history_frontier;
+            have_parent_frontier =
+                (parent_frontier.count > 0 || nHeight == 1);
+        } else {
+            V2BlockStateSnapshot disk_state{};
+            if (LoadV2BlockStateFromDiskLocked(lock, hashPrevBlock, disk_state)) {
+                parent_frontier = disk_state.history_frontier;
+                have_parent_frontier =
+                    (parent_frontier.count > 0 || nHeight == 1);
+                CacheV2BlockStateLocked(lock, hashPrevBlock,
+                                        std::move(disk_state));
+            }
+        }
+        if (!have_parent_frontier) {
+            auto it_next = g_v2_next_frontier_by_prev.find(hashPrevBlock);
+            if (it_next != g_v2_next_frontier_by_prev.end()) {
+                return it_next->second;
+            }
+        }
+    }
+    lotus::v2::Hash256 parent_hash_v2{};
+    std::memcpy(parent_hash_v2.data(), hashPrevBlock.begin(), 32);
+    return lotus::v2::AppendHeaderToFrontier(
+        GetActiveV2ChainId(), parent_frontier, parent_hash_v2);
+}
+
 V2TemplateBaseState BuildV2TemplateBaseState(
     std::span<const CTransactionRef> non_coinbase_txs,
     const BlockHash &hashPrevBlock,
@@ -1284,18 +1431,41 @@ V2TemplateBaseState BuildV2TemplateBaseState(
         return base;
     }
     if (!hashPrevBlock.IsNull()) {
-        std::unique_lock<std::mutex> lock(g_v2_utxo_mutex);
-        auto it = g_v2_state_snapshots.find(hashPrevBlock);
-        if (it != g_v2_state_snapshots.end()) {
-            base.utxo_root = it->second.utxo_root;
-            base.mon_state = it->second.mon_state;
-        } else {
-            V2BlockStateSnapshot disk_state{};
-            if (LoadV2BlockStateFromDiskLocked(lock, hashPrevBlock, disk_state)) {
-                base.utxo_root = disk_state.utxo_root;
-                base.mon_state = disk_state.mon_state;
-                CacheV2BlockStateLocked(lock, hashPrevBlock, std::move(disk_state));
+        lotus::v2::HeaderHistoryFrontier parent_frontier{};
+        bool have_parent_frontier = false;
+        {
+            std::unique_lock<std::mutex> lock(g_v2_utxo_mutex);
+            auto it = g_v2_state_snapshots.find(hashPrevBlock);
+            if (it != g_v2_state_snapshots.end()) {
+                base.utxo_root = it->second.utxo_root;
+                base.mon_state = it->second.mon_state;
+                parent_frontier = it->second.history_frontier;
+                have_parent_frontier =
+                    (parent_frontier.count > 0 || nHeight == 1);
+            } else {
+                V2BlockStateSnapshot disk_state{};
+                if (LoadV2BlockStateFromDiskLocked(lock, hashPrevBlock, disk_state)) {
+                    base.utxo_root = disk_state.utxo_root;
+                    base.mon_state = disk_state.mon_state;
+                    parent_frontier = disk_state.history_frontier;
+                    have_parent_frontier =
+                        (parent_frontier.count > 0 || nHeight == 1);
+                    CacheV2BlockStateLocked(lock, hashPrevBlock, std::move(disk_state));
+                }
             }
+            if (!have_parent_frontier) {
+                auto it_next = g_v2_next_frontier_by_prev.find(hashPrevBlock);
+                if (it_next != g_v2_next_frontier_by_prev.end()) {
+                    base.history_frontier = it_next->second;
+                    have_parent_frontier = true;
+                }
+            }
+        }
+        if (base.history_frontier.count == 0) {
+            lotus::v2::Hash256 parent_hash_v2{};
+            std::memcpy(parent_hash_v2.data(), hashPrevBlock.begin(), 32);
+            base.history_frontier = lotus::v2::AppendHeaderToFrontier(
+                GetActiveV2ChainId(), parent_frontier, parent_hash_v2);
         }
     }
     for (const auto &ptx : non_coinbase_txs) {
@@ -1400,6 +1570,8 @@ uint256 ComputeV2StateRootFromTemplate(
             base_state.sum_non_cb_effective_cost;
 
         mon_state = AdvanceV2MonetaryStateForBlock(mon_state, nBits, block_cost);
+        mon_state.history_root = lotus::v2::HeaderHistoryRoot(
+            GetActiveV2ChainId(), base_state.history_frontier);
     } else {
         utxo_root_hash = base_state.utxo_arena
                              ? base_state.utxo_arena->RootDigest()
@@ -1453,8 +1625,14 @@ bool ImportV2BlockStateCoinsAndMonetary(
     const BlockHash &blockHash,
     const std::vector<lotus::v2::Coin> &coins,
     const lotus::v2::MonetaryState &monetary_state,
-    bool is_tip) {
+    bool is_tip,
+    const lotus::v2::HeaderHistoryFrontier *history_frontier) {
     V2BlockStateSnapshot snap{{}, monetary_state, BlockHash{}, {}, {}};
+    if (history_frontier != nullptr) {
+        snap.history_frontier = *history_frontier;
+        snap.mon_state.history_root = lotus::v2::HeaderHistoryRoot(
+            GetActiveV2ChainId(), snap.history_frontier);
+    }
     snap.inserted_coins.reserve(coins.size());
     if (coins.size() >= 32) {
         std::vector<lotus::v2::Outpoint> empty_erased;
@@ -1525,7 +1703,14 @@ lotus::v2::MonetaryState AdvanceV2BlockMonetaryState(
         /*coinbase_native_outputs=*/0, /*coinbase_native_burn=*/0,
         /*coinbase_bytes=*/0, /*tx_frame_prefix_bytes=*/0, capped_cost,
         capped_cost);
-    return transition.state;
+    lotus::v2::MonetaryState next_state = transition.state;
+    if (block.nHeight > 0 && !block.hashPrevBlock.IsNull()) {
+        const lotus::v2::HeaderHistoryFrontier next_frontier =
+            GetV2NextBlockHistoryFrontier(block.hashPrevBlock, block.nHeight);
+        next_state.history_root = lotus::v2::HeaderHistoryRoot(
+            GetActiveV2ChainId(), next_frontier);
+    }
+    return next_state;
 }
 
 std::shared_ptr<const SmtNode> GetV2BlockUtxoRoot(const BlockHash &blockHash,

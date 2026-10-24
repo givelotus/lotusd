@@ -8,6 +8,7 @@
 
 #include <array>
 #include <lotus_v2/header.h>
+#include <lotus_v2/header_history.h>
 #include <lotus_v2/monetary.h>
 #include <memory>
 #include <primitives/blockhash.h>
@@ -245,6 +246,7 @@ struct V2TemplateBaseState {
     // avoids exporting O(U) shared_ptr<SmtNode> trees on every mempool update.
     std::shared_ptr<const lotus::v2::UtxoOverlayArena> utxo_arena;
     lotus::v2::MonetaryState mon_state{};
+    lotus::v2::HeaderHistoryFrontier history_frontier{};
     lotus::v2::MonetaryInteger sum_non_cb_effective_cost{0};
     size_t non_cb_tx_count{0};
     uint64_t height{0};
@@ -318,6 +320,12 @@ V2TemplateBaseState BuildV2TemplateBaseState(
     const BlockHash &hashPrevBlock,
     uint64_t nHeight,
     uint64_t nParentMtp);
+lotus::v2::HeaderHistoryFrontier GetV2NextBlockHistoryFrontier(
+    const BlockHash &hashPrevBlock,
+    uint64_t nHeight);
+void SetV2NextBlockHistoryFrontierForPrev(
+    const BlockHash &prevBlockHash,
+    const lotus::v2::HeaderHistoryFrontier &next_frontier);
 uint256 ComputeV2StateRootFromTemplate(
     const V2TemplateBaseState &base_state,
     const CTransaction &coinbase_tx,
@@ -333,7 +341,8 @@ bool ImportV2BlockStateCoinsAndMonetary(
     const BlockHash &blockHash,
     const std::vector<lotus::v2::Coin> &coins,
     const lotus::v2::MonetaryState &monetary_state,
-    bool is_tip = true);
+    bool is_tip = true,
+    const lotus::v2::HeaderHistoryFrontier *history_frontier = nullptr);
 lotus::v2::MonetaryState AdvanceV2BlockMonetaryState(
     const CBlock &block,
     const lotus::v2::MonetaryState &parent_mon_state);
