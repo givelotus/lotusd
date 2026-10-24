@@ -810,8 +810,9 @@ bool CheckInputScriptsReusing(
     ScriptCacheKey hashCacheEntry(
         tx, flags, validation_cache.ScriptExecutionCacheHasher());
     ScriptCacheElement elem(hashCacheEntry, 0);
-    const bool found_in_cache = validation_cache.m_script_execution_cache.get(
-        elem, /*erase=*/!scriptCacheStore);
+    const bool found_in_cache =
+        validation_cache.m_script_execution_cache.getUnlocked(
+            elem, /*erase=*/!scriptCacheStore);
     if (tx.nVersion == 7) {
         node::CountValidationCacheLookup(/*script_execution=*/true,
                                          found_in_cache);
@@ -841,7 +842,7 @@ bool CheckInputScriptsReusing(
         nSigChecksOut = outcome->sigchecks;
     }
     if (scriptCacheStore) {
-        validation_cache.m_script_execution_cache.insert(
+        validation_cache.m_script_execution_cache.insertUnlocked(
             ScriptCacheElement{hashCacheEntry, nSigChecksOut});
     }
     return true;
@@ -2437,7 +2438,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
         ScriptCacheKey hashCacheEntry(
             tx, scriptVerifyFlags, val_cache.ScriptExecutionCacheHasher());
         ScriptCacheElement elem(hashCacheEntry, 0);
-        if (val_cache.m_script_execution_cache.get(elem, /*erase=*/true)) {
+        if (val_cache.m_script_execution_cache.getUnlocked(elem, /*erase=*/true)) {
             TxSigCheckLimiter txLimiter;
             if (!txLimiter.consume_and_check(elem.nSigChecks)) {
                 ws.m_state.Invalid(TxValidationResult::TX_CONSENSUS,
@@ -2615,7 +2616,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
             ScriptCacheKey consensusKey(
                 *ws.m_ptx, ws.m_next_block_script_verify_flags,
                 val_cache.ScriptExecutionCacheHasher());
-            val_cache.m_script_execution_cache.insert(
+            val_cache.m_script_execution_cache.insertUnlocked(
                 ScriptCacheElement{consensusKey, ws.m_sig_checks_standard});
         }
     }
@@ -3317,7 +3318,8 @@ bool PrepareNativeCryptoFromSnapshot(
             lotus::v2::Outpoint outpoint{};
             std::copy_n(in.prevout.GetTxId().begin(), 32, outpoint.tx_id.begin());
             outpoint.index = in.prevout.GetN();
-            const auto coin = lotus::v2::SmtFind(snapshot->tip_utxo_root, outpoint);
+            const auto *coin = lotus::v2::SmtFindBorrowed(
+                snapshot->tip_utxo_root.get(), outpoint);
             // Missing leaves may mean the publisher lags the authoritative
             // view. Explicit coverage also distinguishes an empty genesis root.
             if (!coin || coin->output.legacy_script ||
@@ -5066,7 +5068,7 @@ bool CheckInputScripts(const CTransaction &tx, TxValidationState &state,
     ScriptCacheKey hashCacheEntry(
         tx, flags, validation_cache.ScriptExecutionCacheHasher());
     ScriptCacheElement elem(hashCacheEntry, 0);
-    bool found_in_cache = validation_cache.m_script_execution_cache.get(
+    bool found_in_cache = validation_cache.m_script_execution_cache.getUnlocked(
         elem, /*erase=*/!scriptCacheStore);
     node::CountValidationCacheLookup(/*script_execution=*/true, found_in_cache);
     nSigChecksOut = elem.nSigChecks;
@@ -5203,7 +5205,7 @@ bool CheckInputScripts(const CTransaction &tx, TxValidationState &state,
     if (scriptCacheStore && !pvChecks && !produced_records) {
         // We executed all of the provided scripts, and were told to cache the
         // result. Do so now.
-        validation_cache.m_script_execution_cache.insert(
+        validation_cache.m_script_execution_cache.insertUnlocked(
             ScriptCacheElement{hashCacheEntry, nSigChecksTotal});
     }
 
@@ -5768,7 +5770,7 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
                             ScriptCacheElement cached(cached_key, 0);
                             if (entry == m_mempool->mapTx.end() ||
                                 (*entry)->GetSharedTx().get() != block.vtx[idx].get() ||
-                                !m_chainman.m_validation_cache.m_script_execution_cache.get(cached, false) ||
+                                !m_chainman.m_validation_cache.m_script_execution_cache.getUnlocked(cached, false) ||
                                 cached.nSigChecks != oentry.sigchecks) {
                                 all_match = false;
                                 break;
@@ -5916,8 +5918,8 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
                     m_chainman.m_validation_cache.ScriptExecutionCacheHasher());
                 ScriptCacheElement elem(hashCacheEntry, 0);
                 const bool script_cache_hit{
-                    m_chainman.m_validation_cache.m_script_execution_cache.get(
-                        elem, /*erase=*/!fCacheResults)};
+                    m_chainman.m_validation_cache.m_script_execution_cache
+                        .getUnlocked(elem, /*erase=*/!fCacheResults)};
                 node::CountValidationCacheLookup(/*script_execution=*/true,
                                                  script_cache_hit);
                 if (script_cache_hit) {
@@ -6194,9 +6196,9 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
                 if (produced) continue;
                 const int sigchecks =
                     queued[k] ? queued[k]->SigChecks() : tx_sigchecks[k];
-                m_chainman.m_validation_cache.m_script_execution_cache.insert(
-                    ScriptCacheElement{pending_script_txs[k].cache_key,
-                                       sigchecks});
+                m_chainman.m_validation_cache.m_script_execution_cache
+                    .insertUnlocked(ScriptCacheElement{
+                        pending_script_txs[k].cache_key, sigchecks});
             }
         }
     }

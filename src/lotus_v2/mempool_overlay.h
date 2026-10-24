@@ -60,6 +60,8 @@ void SmtBatchUpdateParallel(
     std::span<const Coin> inserted);
 std::shared_ptr<const Coin> SmtFind(const std::shared_ptr<const SmtNode> &root,
                                     const Outpoint &outpoint);
+const Coin *SmtFindBorrowed(const SmtNode *root,
+                            const Outpoint &outpoint) noexcept;
 Hash SmtRoot(const std::shared_ptr<const SmtNode> &root);
 std::vector<Coin> SmtCollectExpired(
     const std::shared_ptr<const SmtNode> &root, uint64_t block_height,

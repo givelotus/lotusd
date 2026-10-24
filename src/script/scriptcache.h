@@ -164,11 +164,29 @@ public:
         return shard.cache.get(elem, /*erase=*/false);
     }
 
+    /**
+     * Lock-free shard access for single-writer callers serialized by cs_main.
+     */
+    bool getUnlocked(ScriptCacheElement &elem, const bool erase) const {
+        const Shard &const_shard = m_shards[ShardIndex(elem.getKey())];
+        if (!const_shard.has_entries.load(std::memory_order_relaxed)) {
+            return false;
+        }
+        Shard &shard = const_cast<Shard &>(const_shard);
+        return shard.cache.get(elem, erase);
+    }
+
     void insert(const ScriptCacheElement &elem) {
         Shard &shard = m_shards[ShardIndex(elem.getKey())];
         std::unique_lock<std::shared_mutex> lock(shard.mutex);
         shard.cache.insert(elem);
         shard.has_entries.store(true, std::memory_order_release);
+    }
+
+    void insertUnlocked(const ScriptCacheElement &elem) {
+        Shard &shard = m_shards[ShardIndex(elem.getKey())];
+        shard.cache.insert(elem);
+        shard.has_entries.store(true, std::memory_order_relaxed);
     }
 };
 
