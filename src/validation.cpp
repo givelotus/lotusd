@@ -526,18 +526,30 @@ ParallelTxScriptError V2DeferredFailure(const std::string &reason) {
 struct V2FastPathShape {
     std::array<lotus::v2::Hash, 16> leaf_hashes{};
     std::array<bool, 16> is_schnorr_in{};
+    std::array<uint8_t, 16> sig_modes{};
     bool has_schnorr{false};
+    bool has_mode0{false};
+    bool has_state_output{false};
 };
 
 std::optional<V2FastPathShape>
 GetV2FastPathShape(const CTransaction &tx,
                    const std::vector<Coin> &resolved_inputs) {
-    if (tx.nVersion != 7 || tx.vin.empty() || tx.vin.size() > 16) {
+    if (tx.nVersion != 7 || tx.vin.empty() || tx.vin.size() > 16 ||
+        tx.vout.empty()) {
         return std::nullopt;
     }
     static const lotus::v2::Hash kOpTrueBranchLeaf =
         lotus::v2::BranchLeaf(std::array<uint8_t, 1>{0x4e});
     V2FastPathShape shape;
+    for (const CTxOut &out : tx.vout) {
+        if (out.IsLegacy() || out.scriptPubKey.size() > 65535) {
+            return std::nullopt;
+        }
+        if ((out.nFlags & 0x04U) != 0) {
+            shape.has_state_output = true;
+        }
+    }
     auto &leaf_hashes = shape.leaf_hashes;
     auto &is_schnorr_in = shape.is_schnorr_in;
     bool &has_schnorr = shape.has_schnorr;
@@ -575,10 +587,23 @@ GetV2FastPathShape(const CTransaction &tx,
                 leaf_hashes[i] = kOpTrueBranchLeaf;
                 is_schnorr_in[i] = false;
             } else if (w.script.size() == 34 && w.script[0] == 0x20 &&
-                       w.script[33] == 0xbb && w.arguments.size() == 1 &&
-                       (w.arguments[0].size() == 64 ||
-                        (w.arguments[0].size() == 65 &&
-                         w.arguments[0][64] == 0))) {
+                       w.script[33] == 0xbb && w.arguments.size() == 1) {
+                const auto &sig_arg = w.arguments[0];
+                uint8_t mode = 0xff;
+                if (sig_arg.size() == 64) {
+                    mode = 0;
+                    shape.has_mode0 = true;
+                } else if (sig_arg.size() == 65 && sig_arg[64] == 1) {
+                    mode = 1;
+                } else if (sig_arg.size() == 65 && sig_arg[64] == 2 &&
+                           i < tx.vout.size() &&
+                           (tx.vout[i].nFlags & 0x02U) == 0 &&
+                           tx.vout[i].scriptPubKey.size() < 253) {
+                    mode = 2;
+                } else {
+                    fast_ok = false;
+                    break;
+                }
                 leaf_hashes[i] = lotus::v2::BranchLeaf(w.script);
                 if (std::memcmp(expected_branch, leaf_hashes[i].data(), 32) !=
                     0) {
@@ -587,6 +612,7 @@ GetV2FastPathShape(const CTransaction &tx,
                 }
                 has_schnorr = true;
                 is_schnorr_in[i] = true;
+                shape.sig_modes[i] = mode;
             } else {
                 fast_ok = false;
                 break;
@@ -597,6 +623,76 @@ GetV2FastPathShape(const CTransaction &tx,
         return std::nullopt;
     }
     return shape;
+}
+
+lotus::v2::Hash ComputeV2FastPathSighash(
+    const CTransaction &tx, const std::vector<Coin> &resolved_inputs,
+    const V2FastPathShape &shape, const lotus::v2::ChainId &chain_id,
+    const lotus::v2::Hash &coins_root, size_t i) {
+    const uint8_t mode = shape.sig_modes[i];
+    if (mode == 0) {
+        std::array<uint8_t, 138> preimage{};
+        std::memcpy(preimage.data(), chain_id.data(), 32);
+        preimage[32] = 0; // mode == 0
+        std::memcpy(preimage.data() + 33, tx.GetId().begin(), 32);
+        std::memcpy(preimage.data() + 65, coins_root.data(), 32);
+        preimage[97] = 1; // invocation.kind == 1
+        for (size_t b = 0; b < 4; ++b) {
+            preimage[98 + b] = static_cast<uint8_t>(i >> (8 * b));
+        }
+        // preimage[102..105] = 0 (branch_index == 0)
+        std::memcpy(preimage.data() + 106, shape.leaf_hashes[i].data(), 32);
+        return lotus::v2::TaggedHash(lotus::v2::HashDomain::Sighash, preimage);
+    }
+
+    const CTxIn &in = tx.vin[i];
+    const auto &w = in.vWitnesses[0];
+    const CTxOut &prev_out = resolved_inputs[i].GetTxOut();
+    std::array<uint8_t, 125> own_buf{};
+    std::memcpy(own_buf.data(), in.prevout.GetTxId().begin(), 32);
+    const uint32_t prev_n = in.prevout.GetN();
+    for (size_t b = 0; b < 4; ++b) {
+        own_buf[32 + b] = static_cast<uint8_t>(prev_n >> (8 * b));
+    }
+    const uint32_t seq = in.nSequence;
+    for (size_t b = 0; b < 4; ++b) {
+        own_buf[36 + b] = static_cast<uint8_t>(seq >> (8 * b));
+    }
+    own_buf[40] = 1;  // flags == 1
+    own_buf[41] = 0;  // path_index == 0
+    own_buf[42] = 1;  // witnesses.size() == 1
+    own_buf[43] = 34; // w.script.size() == 34
+    std::memcpy(own_buf.data() + 44, w.script.data(), 34);
+    own_buf[78] = 0;  // siblings.size() == 0
+    own_buf[79] = 45; // CompactSize(coin_wire.size()) == 45
+    std::memcpy(own_buf.data() + 80, prev_out.scriptPubKey.data(), 45);
+    const lotus::v2::Hash own_input_hash =
+        lotus::v2::TaggedHash(lotus::v2::HashDomain::OwnInput, own_buf);
+
+    std::array<uint8_t, 150> preimage{};
+    std::memcpy(preimage.data(), chain_id.data(), 32);
+    preimage[32] = mode;
+    preimage[33] = 7; // version == 7 LE (bytes 34..36 are 0)
+    const uint64_t lock = tx.nV2Lock;
+    for (size_t b = 0; b < 8; ++b) {
+        preimage[37 + b] = static_cast<uint8_t>(lock >> (8 * b));
+    }
+    std::memcpy(preimage.data() + 45, own_input_hash.data(), 32);
+    if (mode == 1) {
+        std::memcpy(preimage.data() + 77, tx.GetOutputsHash().begin(), 32);
+    } else {
+        const auto &out_spk = tx.vout[i].scriptPubKey;
+        const lotus::v2::Hash out_leaf = lotus::v2::OutputLeaf(
+            std::span<const uint8_t>(out_spk.data(), out_spk.size()));
+        std::memcpy(preimage.data() + 77, out_leaf.data(), 32);
+    }
+    preimage[109] = 1; // invocation.kind == 1
+    for (size_t b = 0; b < 4; ++b) {
+        preimage[110 + b] = static_cast<uint8_t>(i >> (8 * b));
+    }
+    // preimage[114..117] = 0 (branch_index == 0)
+    std::memcpy(preimage.data() + 118, shape.leaf_hashes[i].data(), 32);
+    return lotus::v2::TaggedHash(lotus::v2::HashDomain::Sighash, preimage);
 }
 
 std::optional<ParallelTxScriptError> VerifyTxScriptsFromResolvedCoins(
@@ -612,67 +708,65 @@ std::optional<ParallelTxScriptError> VerifyTxScriptsFromResolvedCoins(
     if (produced_records) *produced_records = false;
 
     if (const auto shape = GetV2FastPathShape(tx, resolved_inputs)) {
-        const auto &leaf_hashes = shape->leaf_hashes;
         const auto &is_schnorr_in = shape->is_schnorr_in;
         const bool has_schnorr = shape->has_schnorr;
-        std::array<lotus::v2::Hash, 16> coin_leaves{};
         {
             // Fast-path scripts stage no deferred records, but the deferred
             // final rules still apply (a HAS_STATE output is then
-            // unauthorized). A separate run: if a signature fails below, the
-            // general loop validates every input again from scratch.
-            V2DeferredTxChecks fast_deferred(tx);
-            for (size_t i = 0; i < tx.vin.size(); ++i) {
-                if (auto reason = fast_deferred.CompleteInput(
-                        uint32_t(i), true, lotus::v2::DeferredRecords{})) {
-                    return V2DeferredFailure(*reason);
+            // unauthorized). When no output has HAS_STATE and only the two
+            // standard consensus accumulators are registered, empty records
+            // always pass.
+            if (shape->has_state_output ||
+                lotus::v2::DeferredCheckRegistry::Consensus().Kinds().size() !=
+                    2) {
+                V2DeferredTxChecks fast_deferred(tx);
+                for (size_t i = 0; i < tx.vin.size(); ++i) {
+                    if (auto reason = fast_deferred.CompleteInput(
+                            uint32_t(i), true, lotus::v2::DeferredRecords{})) {
+                        return V2DeferredFailure(*reason);
+                    }
                 }
             }
             if (!has_schnorr) {
                 nSigChecksOut = 0;
                 return std::nullopt;
             }
-            for (size_t i = 0; i < tx.vin.size(); ++i) {
-                const CTxOut &prev_out = resolved_inputs[i].GetTxOut();
-                coin_leaves[i] = lotus::v2::CoinEntryLeaf(
-                    std::span<const uint8_t>(prev_out.scriptPubKey.data(), 45));
+            lotus::v2::Hash coins_root{};
+            if (shape->has_mode0) {
+                std::array<lotus::v2::Hash, 16> coin_leaves{};
+                for (size_t i = 0; i < tx.vin.size(); ++i) {
+                    const CTxOut &prev_out = resolved_inputs[i].GetTxOut();
+                    coin_leaves[i] = lotus::v2::CoinEntryLeaf(
+                        std::span<const uint8_t>(prev_out.scriptPubKey.data(),
+                                                 45));
+                }
+                coins_root = lotus::v2::IndexedTreeRoot(
+                    std::span<const lotus::v2::Hash>(coin_leaves.data(),
+                                                     tx.vin.size()));
             }
-            const lotus::v2::Hash coins_root = lotus::v2::IndexedTreeRoot(
-                std::span<const lotus::v2::Hash>(coin_leaves.data(),
-                                                 tx.vin.size()));
-            std::array<uint8_t, 138> preimage{};
             const auto &chain_id = GetActiveV2ChainId();
-            std::memcpy(preimage.data(), chain_id.data(), 32);
-            preimage[32] = 0; // mode == 0
-            std::memcpy(preimage.data() + 33, tx.GetId().begin(), 32);
-            std::memcpy(preimage.data() + 65, coins_root.data(), 32);
-            preimage[97] = 1; // invocation.kind == 1
-            // preimage[102..105] = 0 (branch_index == 0)
             lotus::v2::BatchSigCollector staged_sigs;
             bool sigs_ok = true;
             for (size_t i = 0; i < tx.vin.size(); ++i) {
                 if (!is_schnorr_in[i]) {
                     continue;
                 }
-                for (size_t b = 0; b < 4; ++b) {
-                    preimage[98 + b] = static_cast<uint8_t>(i >> (8 * b));
-                }
-                std::memcpy(preimage.data() + 106, leaf_hashes[i].data(), 32);
-                const lotus::v2::Hash msg = lotus::v2::TaggedHash(
-                    lotus::v2::HashDomain::Sighash, preimage);
+                const lotus::v2::Hash msg = ComputeV2FastPathSighash(
+                    tx, resolved_inputs, *shape, chain_id, coins_root, i);
                 const auto &w = tx.vin[i].vWitnesses[0];
                 const std::span<const uint8_t> pubkey(w.script.data() + 1, 32);
-                const std::span<const uint8_t> sig64(w.arguments[0].data(), 64);
+                const std::span<const uint8_t> sig(w.arguments[0].data(),
+                                                   w.arguments[0].size());
                 if (sig_collector != nullptr) {
                     lotus::v2::BatchSigCollector *target =
                         (tx.vin.size() == 1) ? sig_collector : &staged_sigs;
-                    if (!target->Add(pubkey, sig64, msg)) {
+                    if (!target->Add(pubkey, sig, msg)) {
                         sigs_ok = false;
                         break;
                     }
                 } else {
                     if (lotus::v2::VerifyBip340Signature(
-                            pubkey, sig64, msg, false) !=
+                            pubkey, sig, msg, false) !=
                         lotus::v2::SignatureStatus::Valid) {
                         sigs_ok = false;
                         break;
@@ -3495,15 +3589,8 @@ NativeAdmissionPreparation::Prepare(
         }
     }
     if (const auto shape = GetV2FastPathShape(tx, result->m_coins)) {
-        bool all_sig64 = true;
-        for (size_t i = 0; i < tx.vin.size(); ++i) {
-            if (shape->is_schnorr_in[i] &&
-                tx.vin[i].vWitnesses[0].arguments[0].size() != 64) {
-                all_sig64 = false;
-                break;
-            }
-        }
-        if (all_sig64) {
+        if (shape->has_state_output ||
+            lotus::v2::DeferredCheckRegistry::Consensus().Kinds().size() != 2) {
             V2DeferredTxChecks fast_deferred(tx);
             for (size_t i = 0; i < tx.vin.size(); ++i) {
                 if (fast_deferred
@@ -3513,69 +3600,62 @@ NativeAdmissionPreparation::Prepare(
                     return {};
                 }
             }
-            if (!shape->has_schnorr) {
-                result->m_standard_sigchecks = 0;
-                result->m_consensus_sigchecks = 0;
-                return result;
-            }
+        }
+        if (!shape->has_schnorr) {
+            result->m_standard_sigchecks = 0;
+            result->m_consensus_sigchecks = 0;
+            return result;
+        }
+        lotus::v2::Hash coins_root{};
+        if (shape->has_mode0) {
             std::array<lotus::v2::Hash, 16> coin_leaves{};
             for (size_t i = 0; i < tx.vin.size(); ++i) {
                 const CTxOut &prev_out = result->m_coins[i].GetTxOut();
                 coin_leaves[i] = lotus::v2::CoinEntryLeaf(
                     std::span<const uint8_t>(prev_out.scriptPubKey.data(), 45));
             }
-            const lotus::v2::Hash coins_root = lotus::v2::IndexedTreeRoot(
+            coins_root = lotus::v2::IndexedTreeRoot(
                 std::span<const lotus::v2::Hash>(coin_leaves.data(),
                                                  tx.vin.size()));
-            std::array<uint8_t, 138> preimage{};
-            std::memcpy(preimage.data(), chain.data(), 32);
-            preimage[32] = 0; // mode == 0
-            std::memcpy(preimage.data() + 33, tx.GetId().begin(), 32);
-            std::memcpy(preimage.data() + 65, coins_root.data(), 32);
-            preimage[97] = 1; // invocation.kind == 1
-            lotus::v2::BatchSigCollector staged_sigs;
-            for (size_t i = 0; i < tx.vin.size(); ++i) {
-                if (!shape->is_schnorr_in[i]) {
-                    continue;
-                }
-                for (size_t b = 0; b < 4; ++b) {
-                    preimage[98 + b] = static_cast<uint8_t>(i >> (8 * b));
-                }
-                std::memcpy(preimage.data() + 106,
-                            shape->leaf_hashes[i].data(), 32);
-                const lotus::v2::Hash msg = lotus::v2::TaggedHash(
-                    lotus::v2::HashDomain::Sighash, preimage);
-                const auto &w = tx.vin[i].vWitnesses[0];
-                const std::span<const uint8_t> pubkey(w.script.data() + 1, 32);
-                const std::span<const uint8_t> sig64(w.arguments[0].data(), 64);
-                uint256 sig_entry;
-                signature_cache.ComputeBip340Entry(sig_entry, msg, sig64,
-                                                   pubkey, false);
-                if (!signature_cache.Get(sig_entry, /*erase=*/false)) {
-                    if (sig_collector != nullptr) {
-                        lotus::v2::BatchSigCollector *target =
-                            (tx.vin.size() == 1) ? sig_collector : &staged_sigs;
-                        if (!target->Add(pubkey, sig64, msg, sig_entry.begin(),
-                                         /*store_in_cache=*/true)) {
-                            return {};
-                        }
-                    } else {
-                        if (lotus::v2::VerifyBip340Signature(
-                                pubkey, sig64, msg, false) !=
-                            lotus::v2::SignatureStatus::Valid) {
-                            return {};
-                        }
-                        signature_cache.Set(sig_entry);
-                    }
-                }
-            }
-            if (sig_collector != nullptr && tx.vin.size() > 1) {
-                sig_collector->Merge(std::move(staged_sigs));
-            }
-            result->m_standard_sigchecks = 0;
-            result->m_consensus_sigchecks = 0;
-            return result;
         }
+        lotus::v2::BatchSigCollector staged_sigs;
+        for (size_t i = 0; i < tx.vin.size(); ++i) {
+            if (!shape->is_schnorr_in[i]) {
+                continue;
+            }
+            const lotus::v2::Hash msg = ComputeV2FastPathSighash(
+                tx, result->m_coins, *shape, chain, coins_root, i);
+            const auto &w = tx.vin[i].vWitnesses[0];
+            const std::span<const uint8_t> pubkey(w.script.data() + 1, 32);
+            const std::span<const uint8_t> sig(w.arguments[0].data(),
+                                               w.arguments[0].size());
+            uint256 sig_entry;
+            signature_cache.ComputeBip340Entry(sig_entry, msg, sig, pubkey,
+                                               false);
+            if (!signature_cache.Get(sig_entry, /*erase=*/false)) {
+                if (sig_collector != nullptr) {
+                    lotus::v2::BatchSigCollector *target =
+                        (tx.vin.size() == 1) ? sig_collector : &staged_sigs;
+                    if (!target->Add(pubkey, sig, msg, sig_entry.begin(),
+                                     /*store_in_cache=*/true)) {
+                        return {};
+                    }
+                } else {
+                    if (lotus::v2::VerifyBip340Signature(pubkey, sig, msg,
+                                                         false) !=
+                        lotus::v2::SignatureStatus::Valid) {
+                        return {};
+                    }
+                    signature_cache.Set(sig_entry);
+                }
+            }
+        }
+        if (sig_collector != nullptr && tx.vin.size() > 1) {
+            sig_collector->Merge(std::move(staged_sigs));
+        }
+        result->m_standard_sigchecks = 0;
+        result->m_consensus_sigchecks = 0;
+        return result;
     }
     auto resolved = std::make_shared<CScriptCheck::V2ResolvedCoins>(tx.vin.size());
     for (size_t i = 0; i < tx.vin.size(); ++i) {
@@ -3588,7 +3668,8 @@ NativeAdmissionPreparation::Prepare(
         const CTxOut empty;
         CScriptCheck check(empty, tx, signature_cache,
             static_cast<unsigned int>(i), standard_flags, /*cacheIn=*/true,
-            tx.GetPrecomputedData(), &limiter, nullptr, resolved);
+            tx.GetPrecomputedData(), &limiter, nullptr, resolved,
+            sig_collector);
         check.SetV2Deferred(deferred);
         check.SetV2ChainId(chain);
         if (check().has_value()) return {};
