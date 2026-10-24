@@ -342,6 +342,7 @@ struct MempoolAdmissionLimits {
 uint64_t GetMempoolAdmissionAttempts() noexcept;
 
 class ValidationCache;
+class NativeAdmissionPreparation;
 
 /**
  * The outcome of running a transaction's input scripts with one set of
@@ -366,7 +367,9 @@ struct ScriptCheckOutcome {
  * the verification flags. Admission uses an outcome here only when the flags
  * and every spent output (amount and scriptPubKey) equal what it resolves
  * itself under the locks; otherwise it verifies the scripts as usual. Using
- * a matching outcome therefore cannot change any admission verdict.
+ * a matching outcome therefore cannot change any admission verdict. Native
+ * staged results use a separate opaque full-identity/context/coin binding;
+ * the legacy fields here do not authorize a native script verdict.
  */
 struct PrecomputedAdmissionChecks {
     /** The transaction these checks are for; any other is not served. */
@@ -380,6 +383,9 @@ struct PrecomputedAdmissionChecks {
     ScriptCheckOutcome standard;
     /** next-block flags (consensus checks, cached on success). */
     ScriptCheckOutcome consensus;
+    /** Native-only completed success. Opaque and never populated by the
+     * public advisory PrecomputeMempoolAdmission API. */
+    std::shared_ptr<const NativeAdmissionPreparation> native;
 };
 
 /** Script verification flags admission uses for the block after the tip. */
@@ -489,7 +495,7 @@ struct StagedAdmissionOptions {
      */
     size_t script_threads{1};
     /** Node-owned pool, kept alive by the caller through this call. Enables
-     * snapshot-only native warming without acquiring cs_main for identity. */
+     * snapshot-only native preparation without taking cs_main for identity. */
     const CTxMemPool *expected_mempool{nullptr};
     /**
      * Called for each transaction, in order, with cs_main held, right before
@@ -515,8 +521,15 @@ PrecomputedAdmissionChecks PrecomputeMempoolAdmission(
 
 /** Where one AcceptToMemoryPoolStaged call spent its time. */
 struct StagedAdmissionStats {
-    /** Transactions whose checks ran in the unlocked phase. */
+    /** Legacy transactions whose checks ran in the unlocked phase. */
     size_t precomputed{0};
+    /** Native transactions with completed, record-free unlocked results. */
+    size_t native_prepared{0};
+    /** Native transactions whose prepared script success was consumed. */
+    size_t native_reused{0};
+    /** Native input checks actually executed on the Phase C caller. This
+     * counts input checks, including fast paths, rather than VM opcodes. */
+    uint64_t native_inputs_checked{0};
     /** cs_main held while resolving inputs (phase A). */
     std::chrono::nanoseconds resolve_locked{0};
     /** Time waiting to acquire cs_main across phases A and C. */
@@ -535,7 +548,9 @@ struct StagedAdmissionStats {
  *     this call). Transactions that cannot be resolved, conflict with the
  *     mempool or with an earlier transaction of this call, or are not
  *     standard skip phase B.
- *  B. Without locks, on `script_threads` threads: ComputeAdmissionChecks.
+ *  B. Without locks, on `script_threads` threads: ComputeAdmissionChecks
+ *     for legacy transactions, or completed record-free native preparation
+ *     from one immutable snapshot. Missing coverage remains advisory.
  *  C. With cs_main: for each transaction in order,
  *     ChainstateManager::ProcessTransaction with its precomputed checks.
  *
@@ -544,6 +559,8 @@ struct StagedAdmissionStats {
  * serial admission in this order at commit time would produce; the
  * precomputed script outcomes are only used where the flags and spent
  * outputs match what admission resolves (see PrecomputedAdmissionChecks).
+ * Native reuse additionally matches full witness identity, exact Coin
+ * metadata, the tip/rule context and completed record-free final checks.
  * A block connected or a mempool change between A and C (including our own
  * earlier commits) is therefore handled by phase C itself.
  *
