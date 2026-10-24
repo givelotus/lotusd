@@ -5840,8 +5840,7 @@ PrecomputeTxRelayBatch(const std::vector<CTransactionRef> &txs)
     // Persistent, bounded workers; concurrent/nested submissions run inline.
     // Each range owns distinct receive-order slots. Scripts remain admission's
     // work and never run on these preprocessing workers.
-    static util::ParallelRangeExecutor relay_workers;
-    relay_workers.Run(txs.size(), /*grain=*/8,
+    util::GetParallelRangeExecutor().Run(txs.size(), /*grain=*/8,
         [&](size_t begin, size_t end) {
             for (size_t i = begin; i < end; ++i) {
                 if (!txs[i]) continue;
@@ -5852,7 +5851,7 @@ PrecomputeTxRelayBatch(const std::vector<CTransactionRef> &txs)
                 checks[i].regular_tx_valid = regular.regular_tx_valid;
                 checks[i].regular_tx_state = std::move(regular.regular_tx_state);
             }
-        });
+        }, /*max_participants=*/8);
     return checks;
 }
 

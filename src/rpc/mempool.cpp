@@ -1267,8 +1267,8 @@ static void DecodeRawTxBatchParallel(const UniValue &raw_transactions,
         // Separate from RPC dispatch and admission workers: waiting for this
         // job never depends on an RPC/admission thread becoming available.
         // Contended submissions run inline rather than queueing more work.
-        static util::ParallelRangeExecutor decoder_workers;
-        decoder_workers.Run(n, /*grain=*/8, decode);
+        util::GetParallelRangeExecutor().Run(
+            n, /*grain=*/8, decode, /*max_participants=*/8);
     }
 
     const size_t bad = first_fail.load(std::memory_order_relaxed);
