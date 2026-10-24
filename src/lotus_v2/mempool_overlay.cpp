@@ -6,13 +6,12 @@
 
 #include "tagged_hash.h"
 
+#include <util/parallel_range.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cassert>
-#include <condition_variable>
 #include <cstring>
-#include <functional>
-#include <mutex>
 #include <thread>
 
 namespace lotus::v2 {
@@ -44,108 +43,6 @@ void ReserveBucketsAmortized(Map &m, size_t extra) {
     }
 }
 
-
-class OverlayWorkerPool {
-public:
-    static OverlayWorkerPool &Instance() {
-        static OverlayWorkerPool pool;
-        return pool;
-    }
-
-    template <typename Fn>
-    void Run(size_t num_workers, Fn &&fn) {
-        if (num_workers <= 1) {
-            fn(0);
-            return;
-        }
-        std::function<void(size_t)> task_fn(std::forward<Fn>(fn));
-        std::unique_lock<std::mutex> dispatch_lock(m_dispatch_mutex);
-        EnsureWorkers(num_workers - 1);
-        const size_t active = std::min(num_workers - 1, m_threads.size());
-        if (active == 0) {
-            dispatch_lock.unlock();
-            task_fn(0);
-            return;
-        }
-        {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            m_task = &task_fn;
-            m_active_workers = active;
-            m_remaining.store(active, std::memory_order_release);
-            ++m_generation;
-        }
-        m_cv_start.notify_all();
-        task_fn(0);
-        {
-            std::unique_lock<std::mutex> lock(m_mutex);
-            m_cv_done.wait(lock, [this]() {
-                return m_remaining.load(std::memory_order_acquire) == 0;
-            });
-            m_task = nullptr;
-        }
-    }
-
-private:
-    OverlayWorkerPool() = default;
-    ~OverlayWorkerPool() {
-        {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            m_stop = true;
-            ++m_generation;
-        }
-        m_cv_start.notify_all();
-        for (auto &t : m_threads) {
-            if (t.joinable()) {
-                t.join();
-            }
-        }
-    }
-
-    void EnsureWorkers(size_t count) {
-        while (m_threads.size() < count) {
-            const size_t worker_id = m_threads.size() + 1;
-            m_threads.emplace_back([this, worker_id]() {
-                uint64_t seen_gen = 0;
-                while (true) {
-                    const std::function<void(size_t)> *fn = nullptr;
-                    {
-                        std::unique_lock<std::mutex> lock(m_mutex);
-                        m_cv_start.wait(lock, [this, &seen_gen]() {
-                            return m_stop || m_generation != seen_gen;
-                        });
-                        if (m_stop) {
-                            return;
-                        }
-                        seen_gen = m_generation;
-                        if (worker_id <= m_active_workers) {
-                            fn = m_task;
-                        }
-                    }
-                    if (fn != nullptr) {
-                        (*fn)(worker_id);
-                        if (m_remaining.fetch_sub(
-                                1, std::memory_order_acq_rel) == 1) {
-                            std::lock_guard<std::mutex> lock(m_mutex);
-                            m_cv_done.notify_one();
-                        }
-                    }
-                }
-            });
-        }
-    }
-
-    std::mutex m_dispatch_mutex;
-    std::mutex m_mutex;
-    std::condition_variable m_cv_start;
-    std::condition_variable m_cv_done;
-    std::vector<std::thread> m_threads;
-    const std::function<void(size_t)> *m_task{nullptr};
-    size_t m_active_workers{0};
-    std::atomic<size_t> m_remaining{0};
-    uint64_t m_generation{0};
-    bool m_stop{false};
-};
-
 template <typename Fn>
 void ParallelForRange(size_t count, size_t min_per_thread, Fn &&fn) {
     if (count == 0) {
@@ -161,13 +58,16 @@ void ParallelForRange(size_t count, size_t min_per_thread, Fn &&fn) {
         return;
     }
     const size_t chunk = (count + num_threads - 1) / num_threads;
-    OverlayWorkerPool::Instance().Run(num_threads, [&](size_t t) {
-        const size_t begin = t * chunk;
-        if (begin < count) {
-            const size_t end = std::min(count, begin + chunk);
-            fn(begin, end);
-        }
-    });
+    util::GetParallelRangeExecutor().Run(
+        num_threads, 1, [&](size_t first, size_t last) {
+            for (size_t t = first; t < last; ++t) {
+                const size_t begin = t * chunk;
+                if (begin < count) {
+                    const size_t end = std::min(count, begin + chunk);
+                    fn(begin, end);
+                }
+            }
+        });
 }
 
 template <typename Fn>
@@ -195,7 +95,7 @@ void ParallelFor16Shards(const std::array<bool, 16> &active_shards, Fn &&fn) {
         return;
     }
     std::atomic<size_t> next_idx{0};
-    OverlayWorkerPool::Instance().Run(num_threads, [&](size_t) {
+    util::GetParallelRangeExecutor().Run(num_threads, 1, [&](size_t, size_t) {
         while (true) {
             const size_t i = next_idx.fetch_add(1, std::memory_order_relaxed);
             if (i >= active_count) {
