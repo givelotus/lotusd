@@ -32,6 +32,8 @@ enum class HashDomain {
     OutpointKey,
     Utxo,
     State,
+    // Domain tag: "HEADER_HISTORY" ("Lotus/v2/header/history")
+    HeaderHistory,
     PreconsensusBatch,
     ContractState,
     // Simulation-only placeholder branch roots (vm_simulation.h).
