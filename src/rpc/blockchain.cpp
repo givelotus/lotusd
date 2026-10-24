@@ -3859,6 +3859,242 @@ static RPCHelpMan getfastsyncinfo() {
 }
 
 
+static const CBlockIndex *
+ResolveActiveChainBlockIndex(ChainstateManager &chainman,
+                             const UniValue &param,
+                             const std::string &arg_name)
+    EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+    CChain &active_chain = chainman.ActiveChain();
+    if (param.isNum()) {
+        const int height = param.getInt<int>();
+        if (height < 0 || height > active_chain.Height()) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                               strprintf("%s height %d out of range [0, %d]",
+                                         arg_name, height,
+                                         active_chain.Height()));
+        }
+        return active_chain[height];
+    }
+    if (!param.isStr()) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+                           strprintf("%s must be a block height or block hash",
+                                     arg_name));
+    }
+    const std::string s = param.get_str();
+    if (s.size() != 64) {
+        int height = -1;
+        if (! s.empty() &&
+            std::all_of(s.begin(), s.end(),
+                        [](unsigned char c) { return c >= '0' && c <= '9'; })) {
+            try {
+                height = std::stoi(s);
+            } catch (...) {
+                height = -1;
+            }
+        }
+        if (height < 0 || height > active_chain.Height()) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                               strprintf("Invalid %s: %s", arg_name, s));
+        }
+        return active_chain[height];
+    }
+    const BlockHash hash(ParseHashV(param, arg_name));
+    const CBlockIndex *pindex = chainman.m_blockman.LookupBlockIndex(hash);
+    if (!pindex || !active_chain.Contains(pindex)) {
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                           "Block not found in active chain");
+    }
+    return pindex;
+}
+
+static RPCHelpMan getheaderhistoryproof() {
+    return RPCHelpMan{
+        "getheaderhistoryproof",
+        "\nGenerate a Lotus V2 Merkle Mountain Range (MMR) header history inclusion proof for a block in the active chain.\n",
+        {
+            {"height_or_hash",
+             RPCArg::Type::NUM,
+             RPCArg::Optional::NO,
+             "The target block height or block hash to prove inclusion for",
+             RPCArgOptions{.skip_type_check = true,
+                           .type_str = {"", "string or numeric"}}},
+            {"anchor_height_or_hash",
+             RPCArg::Type::NUM,
+             RPCArg::Optional::OMITTED,
+             "Optional anchor block height or block hash (defaults to active chain tip)",
+             RPCArgOptions{.skip_type_check = true,
+                           .type_str = {"", "string or numeric"}}},
+        },
+        RPCResult{
+            RPCResult::Type::OBJ,
+            "",
+            "",
+            {
+                {RPCResult::Type::NUM, "leaf_height",
+                 "height of the proven header leaf"},
+                {RPCResult::Type::NUM, "height",
+                 "height of the proven header leaf"},
+                {RPCResult::Type::NUM, "total_count",
+                 "total number of headers committed in the history tree at the anchor"},
+                {RPCResult::Type::STR_HEX, "block_hash",
+                 "block hash of the proven header"},
+                {RPCResult::Type::STR_HEX, "blockhash",
+                 "block hash of the proven header"},
+                {RPCResult::Type::STR_HEX, "history_root",
+                 "the 32-byte header history commitment root"},
+                {RPCResult::Type::ARR,
+                 "siblings",
+                 "MMR authentication path plus peak bagging siblings from leaf to root",
+                 {
+                     {RPCResult::Type::STR_HEX, "sibling",
+                      "32-byte sibling hash"},
+                 }},
+                {RPCResult::Type::STR_HEX, "proof_hex",
+                 "serialized HeaderInclusionProof in hexadecimal"},
+            }},
+        RPCExamples{""},
+        [&](const RPCHelpMan &self, const Config &config,
+            const JSONRPCRequest &request) -> UniValue {
+            ChainstateManager &chainman = EnsureAnyChainman(request.context);
+            LOCK(::cs_main);
+            Chainstate &active_chainstate = chainman.ActiveChainstate();
+            active_chainstate.SyncHeaderHistoryTreeToChain();
+
+            const CBlockIndex *target_index = ResolveActiveChainBlockIndex(
+                chainman, request.params[0], "height_or_hash");
+            const CBlockIndex *anchor_index =
+                request.params[1].isNull()
+                    ? active_chainstate.m_chain.Tip()
+                    : ResolveActiveChainBlockIndex(
+                          chainman, request.params[1], "anchor_height_or_hash");
+            if (!target_index || !anchor_index) {
+                throw JSONRPCError(RPC_INTERNAL_ERROR,
+                                   "Active chain tip unavailable");
+            }
+            if (target_index->nHeight > anchor_index->nHeight) {
+                throw JSONRPCError(
+                    RPC_INVALID_PARAMETER,
+                    strprintf("Target height %d exceeds anchor height %d",
+                              target_index->nHeight, anchor_index->nHeight));
+            }
+
+            const lotus::v2::ChainId chain_id = GetActiveV2ChainId();
+            const uint64_t leaf_height =
+                static_cast<uint64_t>(target_index->nHeight);
+            const uint64_t target_count =
+                static_cast<uint64_t>(anchor_index->nHeight) + 1;
+
+            lotus::v2::HeaderInclusionProof proof{};
+            if (!active_chainstate.m_header_history_tree.BuildInclusionProofAt(
+                    chain_id, leaf_height, target_count, proof)) {
+                throw JSONRPCError(RPC_INTERNAL_ERROR,
+                                   "Failed to build header inclusion proof");
+            }
+            const lotus::v2::Hash256 history_root =
+                active_chainstate.m_header_history_tree.GetRootAt(chain_id,
+                                                                  target_count);
+            const std::vector<uint8_t> proof_bytes =
+                lotus::v2::EncodeHeaderInclusionProof(proof);
+
+            UniValue siblings_arr(UniValue::VARR);
+            for (const auto &sib : proof.siblings) {
+                siblings_arr.push_back(HexStr(sib));
+            }
+
+            UniValue res(UniValue::VOBJ);
+            res.pushKV("leaf_height", proof.leaf_height);
+            res.pushKV("height", proof.leaf_height);
+            res.pushKV("total_count", proof.total_count);
+            res.pushKV("block_hash", target_index->GetBlockHash().GetHex());
+            res.pushKV("blockhash", target_index->GetBlockHash().GetHex());
+            res.pushKV("history_root", HexStr(history_root));
+            res.pushKV("siblings", std::move(siblings_arr));
+            res.pushKV("proof_hex", HexStr(proof_bytes));
+            return res;
+        },
+    };
+}
+
+static RPCHelpMan verifyheaderhistoryproof() {
+    return RPCHelpMan{
+        "verifyheaderhistoryproof",
+        "\nVerify a serialized Lotus V2 header history inclusion proof against an expected history_root.\n",
+        {
+            {"proof_hex", RPCArg::Type::STR_HEX, RPCArg::Optional::NO,
+             "Hex-encoded HeaderInclusionProof"},
+            {"expected_root", RPCArg::Type::STR_HEX, RPCArg::Optional::NO,
+             "Expected 32-byte header history root in hexadecimal"},
+        },
+        RPCResult{
+            RPCResult::Type::OBJ,
+            "",
+            "",
+            {
+                {RPCResult::Type::BOOL, "valid",
+                 "whether the inclusion proof is cryptographically valid and canonical"},
+                {RPCResult::Type::NUM, "leaf_height",
+                 "height of the proven header leaf"},
+                {RPCResult::Type::NUM, "height",
+                 "height of the proven header leaf"},
+                {RPCResult::Type::NUM, "total_count",
+                 "total number of headers committed in the history tree"},
+                {RPCResult::Type::STR_HEX, "block_hash",
+                 "block hash of the proven header"},
+                {RPCResult::Type::STR_HEX, "blockhash",
+                 "block hash of the proven header"},
+                {RPCResult::Type::STR_HEX, "history_root",
+                 "expected 32-byte header history root"},
+            }},
+        RPCExamples{""},
+        [&](const RPCHelpMan &self, const Config &config,
+            const JSONRPCRequest &request) -> UniValue {
+            if (!request.params[0].isStr() ||
+                !IsHex(request.params[0].get_str())) {
+                throw JSONRPCError(RPC_DESERIALIZATION_ERROR,
+                                   "proof_hex must be hexadecimal");
+            }
+            if (!request.params[1].isStr() ||
+                !IsHex(request.params[1].get_str()) ||
+                request.params[1].get_str().size() != 64) {
+                throw JSONRPCError(
+                    RPC_INVALID_PARAMETER,
+                    "expected_root must be a 64-character hex string");
+            }
+
+            const std::vector<uint8_t> proof_bytes =
+                ParseHex(request.params[0].get_str());
+            lotus::v2::HeaderInclusionProof proof{};
+            if (!lotus::v2::DecodeHeaderInclusionProof(proof_bytes, proof)) {
+                throw JSONRPCError(RPC_DESERIALIZATION_ERROR,
+                                   "Invalid HeaderInclusionProof encoding");
+            }
+
+            const std::vector<uint8_t> root_bytes =
+                ParseHex(request.params[1].get_str());
+            lotus::v2::Hash256 expected_root{};
+            std::memcpy(expected_root.data(), root_bytes.data(), 32);
+
+            const bool valid = lotus::v2::VerifyHeaderInclusionProof(
+                GetActiveV2ChainId(), proof, expected_root);
+
+            uint256 bh_raw;
+            std::memcpy(bh_raw.begin(), proof.block_hash.data(), 32);
+            const BlockHash bh{bh_raw};
+
+            UniValue res(UniValue::VOBJ);
+            res.pushKV("valid", valid);
+            res.pushKV("leaf_height", proof.leaf_height);
+            res.pushKV("height", proof.leaf_height);
+            res.pushKV("total_count", proof.total_count);
+            res.pushKV("block_hash", bh.GetHex());
+            res.pushKV("blockhash", bh.GetHex());
+            res.pushKV("history_root", HexStr(expected_root));
+            return res;
+        },
+    };
+}
+
+
 void RegisterBlockchainRPCCommands(CRPCTable &t) {
     // clang-format off
     static const CRPCCommand commands[] = {
@@ -3885,6 +4121,8 @@ void RegisterBlockchainRPCCommands(CRPCTable &t) {
         { "blockchain",         dumptxoutset,                      },
         { "blockchain",         loadtxoutset,                      },
         { "blockchain",         getchainstates,                    },
+        { "blockchain",         getheaderhistoryproof,             },
+        { "blockchain",         verifyheaderhistoryproof,          },
 
         /* Not shown in help */
         { "hidden", setfastsyncpivot, },
