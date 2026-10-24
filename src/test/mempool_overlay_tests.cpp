@@ -13,6 +13,7 @@
 #include <primitives/transaction.h>
 #include <script/script.h>
 #include <test/util/random.h>
+#include <test/util/parallel_range.h>
 #include <test/util/setup_common.h>
 #include <test/util/txmempool.h>
 #include <txmempool.h>
@@ -20,6 +21,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <future>
@@ -1565,6 +1567,101 @@ BOOST_AUTO_TEST_CASE(batched_inserts_match_serial_inserts_while_growing) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(
+    overlay_roots_survive_common_executor_contention_and_recursion) {
+    using namespace lotus::v2;
+    FastRandomContext rng(/*fDeterministic=*/true);
+    const auto random_hash = [&] {
+        lotus::v2::Hash h;
+        const uint256 r = rng.rand256();
+        std::copy(r.begin(), r.end(), h.begin());
+        return h;
+    };
+    std::vector<OverlayTxEntry> entries(257);
+    std::shared_ptr<const SmtNode> base;
+    for (auto &entry : entries) {
+        entry.tx_id = random_hash();
+        entry.tx_hash = random_hash();
+        entry.linear_cost = 200;
+        entry.fee_sats = 300;
+        entry.sigchecks = 1;
+        entry.spent_outpoints.push_back({random_hash(), 0});
+        lotus::v2::Coin coin;
+        coin.outpoint = {entry.tx_id, 0};
+        coin.output.value = 1000;
+        coin.output.legacy_script = {OP_TRUE};
+        coin.creation_height = 200;
+        entry.created_coins.push_back(coin);
+        SmtInsert(base, coin);
+    }
+    const lotus::v2::Hash parent{};
+    MempoolOverlayLayer reference(parent, nullptr, GetInitialV2MonetaryState(),
+                                  200, 1700000100);
+    for (const auto &entry : entries) {
+        BOOST_REQUIRE(reference.AddTransaction(
+            entry.tx_id, entry.tx_hash, entry.linear_cost,
+            entry.spent_outpoints, entry.created_coins, entry.fee_sats,
+            entry.sigchecks));
+    }
+    std::vector<Outpoint> erased;
+    std::vector<lotus::v2::Coin> inserted;
+    auto expected_smt = base;
+    for (size_t i = 0; i < entries.size(); i += 2) {
+        const auto &coin = entries[i].created_coins.front();
+        erased.push_back(coin.outpoint);
+        auto replacement = coin;
+        replacement.outpoint.index = 1;
+        inserted.push_back(replacement);
+        SmtErase(expected_smt, coin.outpoint);
+        SmtInsert(expected_smt, replacement);
+    }
+    const auto expected_smt_digest = SmtRoot(expected_smt);
+    const auto expected_tx_digest = reference.GetSubtreeARoot();
+    const auto expected_utxo_digest = reference.GetUtxoRootDigest();
+    const auto expected_cost = reference.GetSumNonCbEffectiveCost();
+    const auto check_roots = [&] {
+        auto updated = base;
+        SmtBatchUpdateParallel(updated, erased, inserted);
+        if (SmtRoot(updated) != expected_smt_digest) return false;
+        for (const auto &outpoint : erased) {
+            if (SmtFind(updated, outpoint)) return false;
+        }
+        for (const auto &coin : inserted) {
+            const auto found = SmtFind(updated, coin.outpoint);
+            if (!found || found->output.value != coin.output.value)
+                return false;
+        }
+        MempoolOverlayLayer batched(
+            parent, nullptr, GetInitialV2MonetaryState(), 200, 1700000100);
+        auto batch_entries = entries;
+        if (batched.AddTransactionBatch(batch_entries) != entries.size())
+            return false;
+        for (size_t i : {size_t(0), size_t(128), size_t(256)}) {
+            if (!batched.RemoveTransaction(entries[i].tx_id)) return false;
+        }
+        std::vector<OverlayTxEntry> restored{entries[0], entries[128],
+                                             entries[256]};
+        if (batched.AddTransactionBatch(restored) != restored.size())
+            return false;
+        return batched.GetTxCount() == entries.size() &&
+               batched.GetSubtreeARoot() == expected_tx_digest &&
+               batched.GetUtxoRootDigest() == expected_utxo_digest &&
+               batched.GetSumNonCbEffectiveCost() == expected_cost;
+    };
+    BOOST_CHECK(check_roots());
+    ScopedParallelRangeBlocker blocker;
+    auto contended = std::async(std::launch::async, check_roots);
+    const bool completed = contended.wait_for(std::chrono::seconds(30)) ==
+                           std::future_status::ready;
+    blocker.Release();
+    BOOST_CHECK(completed);
+    BOOST_CHECK(contended.get());
+    std::atomic<unsigned> failures{0};
+    util::GetParallelRangeExecutor().Run(2, 1, [&](size_t, size_t) {
+        if (!check_roots()) ++failures;
+    });
+    BOOST_CHECK_EQUAL(failures.load(), 0U);
+}
 
 BOOST_AUTO_TEST_CASE(transaction_subtree_span_partition_matches_arena) {
     using namespace lotus::v2;
