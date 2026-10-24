@@ -320,6 +320,23 @@ public:
     /** Set the best height */
     virtual void SetBestHeight(int height) = 0;
 
+    /** Operation counts for deterministic relay complexity regression tests.
+     * These are message-thread-owned bookkeeping, not timing/RPC metrics. */
+    struct RelayInventoryWork {
+        uint64_t enqueue_rank_lookups{0};
+        uint64_t new_admission_facts{0};
+        uint64_t peer_suffix_checks{0};
+        uint64_t authoritative_lookups{0};
+        uint64_t selection_chunks{0};
+    };
+    virtual RelayInventoryWork GetRelayInventoryWorkForTest() const
+        EXCLUSIVE_LOCKS_REQUIRED(NetEventsInterface::g_msgproc_mutex) = 0;
+
+    /** Set only the stalled marker in relay tests, without a live quorum. */
+    virtual void UnitTestSetStalledTx(NodeId peer_id, const TxId &txid,
+                                      bool stalled)
+        EXCLUSIVE_LOCKS_REQUIRED(NetEventsInterface::g_msgproc_mutex) = 0;
+
     /** Public for unit testing. */
     virtual void UnitTestMisbehaving(const NodeId peer_id) = 0;
 

@@ -3,6 +3,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <net/relay_inventory_queue.h>
 #include <net/txrelay_index.h>
 #include <net/v2_protocol_handler.h>
 #include <net_processing.h>
@@ -510,12 +511,11 @@ struct Peer {
          */
         CRollingBloomFilter m_tx_inventory_known_filter
             GUARDED_BY(m_tx_inventory_mutex){50000, 0.000001};
-        /**
-         * Set of transaction ids we still have to announce. We use the
-         * mempool to sort transactions in dependency order before relay, so
-         * this does not have to be sorted.
-         */
-        std::set<TxId> m_tx_inventory_to_send GUARDED_BY(m_tx_inventory_mutex);
+        /** Pending IDs ranked by cached admission incarnation. Suffix refresh
+         * and authoritative selection restore current order before emission.
+         * Body ownership is confined to bounded chunks, not backlog. */
+        txrelay::RelayInventoryQueue m_tx_inventory_to_send
+            GUARDED_BY(m_tx_inventory_mutex);
         /**
          * Whether the peer has requested us to send our complete mempool. Only
          * permitted if the peer has NetPermissionFlags::Mempool.
@@ -990,6 +990,23 @@ public:
     void RelayProof(const avalanche::ProofId &proofid) override
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
     void SetBestHeight(int height) override { m_best_height = height; };
+    RelayInventoryWork GetRelayInventoryWorkForTest() const override
+        EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex) {
+        return m_relay_inventory_work;
+    }
+    void UnitTestSetStalledTx(NodeId peer_id, const TxId &txid,
+                              bool stalled) override
+        EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !m_peer_mutex) {
+        const auto peer = Assert(GetPeerRef(peer_id));
+        auto *relay = Assert(peer->GetTxRelay());
+        LOCK(relay->m_tx_inventory_mutex);
+        if (stalled) {
+            relay->m_avalanche_stalled_txids.insert(
+                {txid, GetTime<std::chrono::seconds>()});
+        } else {
+            relay->m_avalanche_stalled_txids.erase(txid);
+        }
+    }
     void UnitTestMisbehaving(NodeId peer_id) override
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex) {
         Misbehaving(*Assert(GetPeerRef(peer_id)), "");
@@ -1609,6 +1626,8 @@ private:
     GlobalMutex m_relay_queue_mutex;
     std::vector<RelayQueueEntry> m_relay_queue GUARDED_BY(m_relay_queue_mutex);
     std::chrono::microseconds m_next_relay_drain GUARDED_BY(g_msgproc_mutex){0};
+    uint64_t m_relay_admission_cursor GUARDED_BY(g_msgproc_mutex){0};
+    RelayInventoryWork m_relay_inventory_work GUARDED_BY(g_msgproc_mutex);
     /**
      * Recently relayed transactions and the peers they were announced to, so
      * that a child is announced to (at least) its parent's peers.
@@ -1629,6 +1648,9 @@ private:
         EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !m_peer_mutex);
     void DrainRelayQueue()
         EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !m_peer_mutex);
+    /** Apply only new live admissions to existing queued IDs, before selection. */
+    void RefreshRelayInventoryAdmissions()
+        EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, cs_main, !m_peer_mutex);
     /** Wake the message handler at each relay tick while inventory waits */
     void ScheduleRelayTick(CScheduler &scheduler);
     /**
@@ -2150,7 +2172,7 @@ static void AddKnownTx(Peer &peer, const TxId &txid) {
 
     LOCK(tx_relay->m_tx_inventory_mutex);
     tx_relay->m_tx_inventory_known_filter.insert(txid);
-    tx_relay->m_tx_inventory_to_send.erase(txid);
+    tx_relay->m_tx_inventory_to_send.Erase(txid);
 }
 
 static void AddKnownProof(Peer &peer, const avalanche::ProofId &proofid) {
@@ -4284,6 +4306,8 @@ void PeerManagerImpl::DrainRelayQueue() {
     // The nearest in-mempool parent that was relayed recently, if any.
     std::vector<const std::vector<NodeId> *> parent_route(batch.size(),
                                                           nullptr);
+    std::vector<std::optional<uint64_t>> admission_ranks(batch.size());
+    m_relay_inventory_work.enqueue_rank_lookups += batch.size();
     {
         LOCK(m_mempool.cs);
         for (size_t i = 0; i < batch.size(); ++i) {
@@ -4291,6 +4315,7 @@ void PeerManagerImpl::DrainRelayQueue() {
             if (!it) {
                 continue;
             }
+            admission_ranks[i] = (**it)->GetEntryId();
             for (const auto &parent : (**it)->GetMemPoolParentsConst()) {
                 const auto route{
                     m_relay_routes.find(parent.get()->GetTx().GetId())};
@@ -4375,7 +4400,8 @@ void PeerManagerImpl::DrainRelayQueue() {
         }
         LOCK(target.relay->m_tx_inventory_mutex);
         for (const uint32_t i : target.picks) {
-            target.relay->m_tx_inventory_to_send.insert(batch[i].txid);
+            target.relay->m_tx_inventory_to_send.SetRank(batch[i].txid,
+                                                        admission_ranks[i]);
         }
     }
 
@@ -4389,6 +4415,38 @@ void PeerManagerImpl::DrainRelayQueue() {
         m_relay_routes_order.pop_front();
     }
     m_txrelay_wake.store(true, std::memory_order_relaxed);
+}
+
+void PeerManagerImpl::RefreshRelayInventoryAdmissions() {
+    AssertLockHeld(g_msgproc_mutex);
+    AssertLockHeld(cs_main);
+    const uint64_t cursor = m_relay_admission_cursor;
+    auto admissions = WITH_LOCK(
+        m_mempool.cs, return m_mempool.ReadRelayAdmissionsAfter(cursor));
+    m_relay_inventory_work.new_admission_facts += admissions.entries.size();
+    if (!admissions.entries.empty()) {
+        // Release mempool.cs before taking peer/inventory locks: selection
+        // keeps the existing inventory -> mempool lock order. cs_main keeps
+        // admission/removal stable while applying this captured suffix.
+        LOCK(m_peer_mutex);
+        for (const auto &[id, peer] : m_peer_map) {
+            auto *relay = peer->GetTxRelay();
+            if (!relay) continue;
+            LOCK(relay->m_tx_inventory_mutex);
+            if (relay->m_tx_inventory_to_send.Empty()) continue;
+            m_relay_inventory_work.peer_suffix_checks += admissions.entries.size();
+            for (const auto &entry : admissions.entries) {
+                if (relay->m_tx_inventory_to_send.Find(entry.txid)) {
+                    relay->m_tx_inventory_to_send.SetRank(entry.txid,
+                                                         entry.entry_id);
+                }
+            }
+        }
+    }
+    // Do not advance on partial application if a queue allocation fails.
+    // This depends on serialized ID assignment AND publication; a future
+    // parallel reservation counter is not a committed publication frontier.
+    m_relay_admission_cursor = admissions.watermark;
 }
 
 void PeerManagerImpl::MarkPeerKnownTx(NodeId peer_id, const TxId &txid) {
@@ -4412,7 +4470,7 @@ void PeerManagerImpl::MarkPeerKnownTxBatch(
                 }
                 const TxId &txid = tx->GetId();
                 tx_relay->m_tx_inventory_known_filter.insert(txid);
-                tx_relay->m_tx_inventory_to_send.erase(txid);
+                tx_relay->m_tx_inventory_to_send.Erase(txid);
             }
         }
     }
@@ -6945,7 +7003,7 @@ void PeerManagerImpl::ProcessMessage(
             // otherwise be advertised as soon as it completes, potentially
             // leaking the time of arrival to a spy.
             Assume(WITH_LOCK(tx_relay->m_tx_inventory_mutex,
-                             return tx_relay->m_tx_inventory_to_send.empty() &&
+                             return tx_relay->m_tx_inventory_to_send.Empty() &&
                                     !tx_relay->m_relay_ready));
         }
 
@@ -10716,25 +10774,6 @@ void PeerManagerImpl::MaybeSendFeefilter(
     }
 }
 
-namespace {
-struct RelayInventoryCandidate {
-    std::set<TxId>::iterator inventory;
-    std::optional<uint64_t> entry_id;
-};
-
-struct CompareInvMempoolOrder {
-    bool operator()(const RelayInventoryCandidate &a,
-                    const RelayInventoryCandidate &b) const {
-        // make_heap is a max-heap: existing entries precede stale inventory,
-        // and lower admission IDs (parents before children) are sent first.
-        if (a.entry_id.has_value() != b.entry_id.has_value()) {
-            return !a.entry_id.has_value();
-        }
-        return a.entry_id && *a.entry_id > *b.entry_id;
-    }
-};
-} // namespace
-
 bool PeerManagerImpl::RejectIncomingTxs(const CNode &peer) const {
     // block-relay-only peers may never send txs to us
     if (peer.IsBlockOnlyConn()) {
@@ -11115,6 +11154,7 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
 
     {
         LOCK(cs_main);
+        RefreshRelayInventoryAdmissions();
 
         {
             LOCK(peer->m_block_inv_mutex);
@@ -11213,7 +11253,7 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
             if (fSendTrickle) {
                 LOCK(tx_relay->m_bloom_filter_mutex);
                 if (!tx_relay->m_relay_txs) {
-                    tx_relay->m_tx_inventory_to_send.clear();
+                    tx_relay->m_tx_inventory_to_send.Clear();
                 }
             }
 
@@ -11228,7 +11268,7 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
 
                 for (const auto &txinfo : vtxinfo) {
                     const TxId &txid = txinfo.tx->GetId();
-                    tx_relay->m_tx_inventory_to_send.erase(txid);
+                    tx_relay->m_tx_inventory_to_send.Erase(txid);
                     // Don't send transactions that peers will not put into
                     // their mempool
                     if (txinfo.fee < filterrate.GetFee(txinfo.vsize)) {
@@ -11251,74 +11291,84 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
 
             // Determine transactions to relay
             if (fSendTrickle) {
-                // Resolve each rank once under one coherent mempool view.
-                // Heap comparisons must not hash txids and recursively take
-                // the mempool lock for every comparison. cs_main (held above)
-                // prevents admission/removal while this relay turn runs.
-                std::vector<RelayInventoryCandidate> vInvTx;
-                vInvTx.reserve(tx_relay->m_tx_inventory_to_send.size());
-                {
-                    LOCK(m_mempool.cs);
-                    for (auto it = tx_relay->m_tx_inventory_to_send.begin();
-                         it != tx_relay->m_tx_inventory_to_send.end(); ++it) {
-                        const auto entry = m_mempool.mapTx.find(*it);
-                        vInvTx.push_back({it, entry == m_mempool.mapTx.end()
-                                                ? std::nullopt
-                                                : std::optional<uint64_t>{
-                                                      (*entry)->GetEntryId()}});
-                    }
-                }
                 const CFeeRate filterrate{
                     tx_relay->m_fee_filter_received.load()};
-                // Send out the inventory in the order of admission to our
-                // mempool, which is guaranteed to be a topological sort order.
-                // A heap is used so that not all items need sorting if only a
-                // few are being sent.
-                CompareInvMempoolOrder compareInvMempoolOrder;
-                std::make_heap(vInvTx.begin(), vInvTx.end(),
-                               compareInvMempoolOrder);
-                // Per-peer budget per tick (-txrelayratemax); the rest
-                // stays queued for the next tick.
                 const size_t tick_budget{TxRelayTickBudget()};
                 size_t nRelayedTransactions = 0;
                 std::vector<std::pair<TxId, CTransactionRef>> vRelayTxs;
-                vRelayTxs.reserve(std::min(vInvTx.size(), tick_budget));
+                vRelayTxs.reserve(std::min(
+                    tx_relay->m_tx_inventory_to_send.Size(), tick_budget));
                 LOCK(tx_relay->m_bloom_filter_mutex);
-                while (!vInvTx.empty() && nRelayedTransactions < tick_budget) {
-                    // Fetch the top element from the heap
-                    std::pop_heap(vInvTx.begin(), vInvTx.end(),
-                                  compareInvMempoolOrder);
-                    std::set<TxId>::iterator it = vInvTx.back().inventory;
-                    vInvTx.pop_back();
-                    const TxId txid = *it;
-                    // Remove it from the to-be-sent set
-                    tx_relay->m_tx_inventory_to_send.erase(it);
-                    // Check if not in the filter already
-                    if (tx_relay->m_tx_inventory_known_filter.contains(txid) &&
-                        tx_relay->m_avalanche_stalled_txids.count(txid) == 0) {
+                while (!tx_relay->m_tx_inventory_to_send.Empty() &&
+                       nRelayedTransactions < tick_budget) {
+                    // Read only a bounded top prefix, not the whole backlog.
+                    // Previously selected refs + this chunk's refs <= the
+                    // original successful-send budget, even on filtered runs.
+                    constexpr size_t MAX_SELECTION_CHUNK = 256;
+                    const auto prefix =
+                        tx_relay->m_tx_inventory_to_send.PeekPrefix(std::min(
+                            MAX_SELECTION_CHUNK,
+                            tick_budget - nRelayedTransactions));
+                    struct Prepared {
+                        std::optional<uint64_t> entry_id;
+                        CTransactionRef tx;
+                        Amount fee;
+                        size_t vsize{0};
+                    };
+                    std::vector<Prepared> prepared(prefix.size());
+                    m_relay_inventory_work.authoritative_lookups += prefix.size();
+                    ++m_relay_inventory_work.selection_chunks;
+                    {
+                        LOCK(m_mempool.cs);
+                        for (size_t i = 0; i < prefix.size(); ++i) {
+                            const auto it = m_mempool.mapTx.find(prefix[i].txid);
+                            if (it == m_mempool.mapTx.end()) continue;
+                            prepared[i].entry_id = (*it)->GetEntryId();
+                            prepared[i].tx = (*it)->GetSharedTx();
+                            prepared[i].fee = (*it)->GetFee();
+                            prepared[i].vsize = (*it)->GetTxSize();
+                        }
+                    }
+                    bool changed = false;
+                    for (size_t i = 0; i < prefix.size(); ++i) {
+                        if (prepared[i].entry_id != prefix[i].entry_id) {
+                            tx_relay->m_tx_inventory_to_send.SetRank(
+                                prefix[i].txid, prepared[i].entry_id);
+                            changed = true;
+                        }
+                    }
+                    if (changed) {
+                        // Removed entries now sort after all live entries;
+                        // re-admissions use their current incarnation rank.
+                        // Discard speculative refs before retrying selection.
                         continue;
                     }
-                    // Not in the mempool anymore? don't bother sending it.
-                    auto txinfo = m_mempool.info(txid);
-                    if (!txinfo.tx) {
-                        continue;
+                    for (size_t i = 0; i < prefix.size(); ++i) {
+                        const TxId &txid = prefix[i].txid;
+                        const auto first = tx_relay->m_tx_inventory_to_send.Pop();
+                        assert(first && first->txid == txid);
+                        // Erase before filters, exactly like the old full-pass
+                        // selection. Only emitted transactions consume budget.
+                        if (tx_relay->m_tx_inventory_known_filter.contains(txid) &&
+                            tx_relay->m_avalanche_stalled_txids.count(txid) == 0) {
+                            continue;
+                        }
+                        auto &txinfo = prepared[i];
+                        if (!txinfo.tx) continue;
+                        if (txinfo.fee < filterrate.GetFee(txinfo.vsize)) {
+                            continue;
+                        }
+                        if (tx_relay->m_bloom_filter &&
+                            !tx_relay->m_bloom_filter->IsRelevantAndUpdate(
+                                *txinfo.tx)) {
+                            continue;
+                        }
+                        tx_relay->m_recently_announced_invs.insert(txid);
+                        vRelayTxs.emplace_back(txid, std::move(txinfo.tx));
+                        ++nRelayedTransactions;
+                        tx_relay->m_tx_inventory_known_filter.insert(txid);
+                        tx_relay->m_avalanche_stalled_txids.erase(txid);
                     }
-                    // Peer told you to not send transactions at that
-                    // feerate? Don't bother sending it.
-                    if (txinfo.fee < filterrate.GetFee(txinfo.vsize)) {
-                        continue;
-                    }
-                    if (tx_relay->m_bloom_filter &&
-                        !tx_relay->m_bloom_filter->IsRelevantAndUpdate(
-                            *txinfo.tx)) {
-                        continue;
-                    }
-                    // Send
-                    tx_relay->m_recently_announced_invs.insert(txid);
-                    vRelayTxs.emplace_back(txid, std::move(txinfo.tx));
-                    nRelayedTransactions++;
-                    tx_relay->m_tx_inventory_known_filter.insert(txid);
-                    tx_relay->m_avalanche_stalled_txids.erase(txid);
                 }
 
                 if (high_bandwidth_peer && vRelayTxs.size() >= 16) {
@@ -11360,7 +11410,7 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                     }
                 }
             }
-            if (!tx_relay->m_tx_inventory_to_send.empty()) {
+            if (!tx_relay->m_tx_inventory_to_send.Empty()) {
                 // Left over (rate cap, or not yet this peer's tick): come
                 // back at the next tick.
                 m_txrelay_wake.store(true, std::memory_order_relaxed);
