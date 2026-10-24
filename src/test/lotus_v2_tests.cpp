@@ -29,6 +29,7 @@
 #include <primitives/transaction.h>
 #include <script/interpreter.h>
 #include <script/sigcache.h>
+#include <script/scriptcache.h>
 #include <script/script.h>
 #include <script/sign.h>
 #include <script/signingprovider.h>
@@ -605,9 +606,9 @@ static std::vector<uint8_t> NativeBenchmarkProgram() {
 
 static CMutableTransaction
 NativeBenchmarkSpend(const CTransaction &previous, uint32_t index,
-                     const std::vector<Amount> &values, uint8_t mode = 0) {
+                     const std::vector<Amount> &values, uint8_t mode = 0,
+                     const std::vector<uint8_t> &program = NativeBenchmarkProgram()) {
     using namespace lotus::v2;
-    const auto program = NativeBenchmarkProgram();
     CMutableTransaction tx;
     tx.nVersion = 7;
     tx.nV2Lock = 0;
@@ -830,6 +831,243 @@ BOOST_FIXTURE_TEST_CASE(v2_staged_native_signatures_warm_before_authoritative_co
     BOOST_CHECK(results[2]->m_result_type != MempoolAcceptResult::ResultType::VALID);
     BOOST_CHECK_EQUAL(stats.precomputed, 0U); // Native execution verdicts are not reused.
     BOOST_CHECK_EQUAL(m_node.mempool->size(), 1U);
+}
+
+static void RequireNativeScriptsUncached(ChainstateManager &chainman,
+                                        const CTransactionRef &tx) {
+    LOCK(cs_main);
+    const uint32_t flags = GetMempoolScriptFlags(chainman.ActiveChainstate());
+    auto &validation_cache = chainman.m_validation_cache;
+    for (const uint32_t exact_flags :
+         std::array<uint32_t, 2>{flags, flags | STANDARD_SCRIPT_VERIFY_FLAGS}) {
+        ScriptCacheElement element(ScriptCacheKey(*tx, exact_flags,
+            validation_cache.ScriptExecutionCacheHasher()), 0);
+        BOOST_REQUIRE(!validation_cache.m_script_execution_cache.get(
+            element, /*erase=*/false));
+    }
+}
+
+BOOST_FIXTURE_TEST_CASE(v2_staged_native_success_reuse_and_authoritative_fallback,
+                        TestChain100Setup) {
+    using namespace lotus::v2;
+    // Force an actual, record-free VM invocation rather than the special
+    // single-key shape: PUSH(42), DROP, then the usual signed program.
+    auto program = NativeBenchmarkProgram();
+    program.insert(program.begin(), {0x01, 0x42, 0x79});
+    Output output;
+    output.value = 1000000;
+    output.branches = {BranchLeaf(program)};
+    output.paths = {{0}};
+    const auto coin = CTxOut::FromV2Output(output);
+    const auto funding = MineV2Coinbase(std::vector<CTxOut>(10, coin));
+    auto publish = [&] {
+        LOCK(cs_main);
+        ::node::PublishChainTipSnapshot(*m_node.chainman, m_node.mempool.get());
+    };
+    auto spend = [&](uint32_t index) {
+        return MakeTransactionRef(NativeBenchmarkSpend(*funding, index,
+            {funding->vout[index].nValue - 10000 * SATOSHI}, 0, program));
+    };
+    auto admit = [&](std::vector<CTransactionRef> &txs,
+                     const std::function<void()> &between,
+                     StagedAdmissionStats &stats) {
+        // New transaction identities and explicit cache misses ensure an old
+        // script-cache hit cannot masquerade as Phase C VM fallback/reuse.
+        for (const auto &tx : txs) RequireNativeScriptsUncached(*m_node.chainman, tx);
+        StagedAdmissionOptions options;
+        options.script_threads = 2;
+        options.expected_mempool = m_node.mempool.get();
+        options.test_between_phases = between;
+        return AcceptToMemoryPoolStaged(*m_node.chainman, txs, options, &stats);
+    };
+    auto result_valid = [](const auto &results) {
+        BOOST_REQUIRE_EQUAL(results.size(), 1U);
+        BOOST_REQUIRE(results[0].has_value());
+        BOOST_REQUIRE_MESSAGE(results[0]->m_result_type ==
+            MempoolAcceptResult::ResultType::VALID, results[0]->m_state.ToString());
+    };
+    publish();
+    {
+        std::vector<CTransactionRef> txs{spend(0)};
+        StagedAdmissionStats stats;
+        result_valid(admit(txs, {}, stats));
+        BOOST_CHECK_EQUAL(stats.precomputed, 0U); // Existing legacy-only metric.
+        BOOST_CHECK_EQUAL(stats.native_prepared, 1U);
+        BOOST_CHECK_EQUAL(stats.native_reused, 1U);
+        // This counts real CScriptCheck executions on the committing caller:
+        // both current flag sets bypass VM input execution in Phase C.
+        BOOST_CHECK_EQUAL(stats.native_inputs_checked, 0U);
+    }
+    publish();
+    {
+        std::vector<CTransactionRef> txs{spend(1)};
+        const auto id = txs[0]->GetId();
+        const auto hash = txs[0]->GetHash();
+        StagedAdmissionStats stats;
+        const auto results = admit(txs, [&] {
+            auto bad = CMutableTransaction(*txs[0]);
+            bad.vin[0].vWitnesses[0].arguments[0][10] ^= 1;
+            txs[0] = MakeTransactionRef(std::move(bad));
+            BOOST_REQUIRE(txs[0]->GetId() == id);
+            BOOST_REQUIRE(txs[0]->GetHash() != hash);
+        }, stats);
+        BOOST_REQUIRE(results[0]);
+        BOOST_CHECK(results[0]->m_result_type != MempoolAcceptResult::ResultType::VALID);
+        BOOST_CHECK_EQUAL(stats.native_prepared, 1U);
+        BOOST_CHECK_EQUAL(stats.native_reused, 0U);
+        BOOST_CHECK_GT(stats.native_inputs_checked, 0U);
+    }
+    // Each metadata-only change leaves a mature, spendable coin and the same
+    // signing message. Full Coin matching must still take authoritative VM
+    // fallback. All four metadata fields are independent of CTxOut equality.
+    for (uint32_t field = 0; field < 4; ++field) {
+        publish();
+        const uint32_t index = field + 2;
+        const COutPoint previous(funding->GetId(), index);
+        std::vector<CTransactionRef> txs{spend(index)};
+        StagedAdmissionStats stats;
+        result_valid(admit(txs, [&] {
+            LOCK(cs_main);
+            auto &view = m_node.chainman->ActiveChainstate().CoinsTip();
+            const auto old = view.GetCoin(previous);
+            BOOST_REQUIRE(old);
+            ::Coin changed(old->GetTxOut(),
+                old->GetHeight() - (field == 0 ? 1 : 0),
+                field == 1 ? false : old->IsCoinBase(),
+                old->nFeePerOutput + (field == 2 ? 1 : 0),
+                field == 3 ? 9999999 : old->nExpirationHeight);
+            BOOST_REQUIRE(view.SpendCoin(previous));
+            view.AddCoin(previous, std::move(changed), false);
+        }, stats));
+        BOOST_CHECK_EQUAL(stats.native_prepared, 1U);
+        BOOST_CHECK_EQUAL(stats.native_reused, 0U);
+        BOOST_CHECK_GT(stats.native_inputs_checked, 0U);
+    }
+    publish();
+    {
+        std::vector<CTransactionRef> txs{spend(6)};
+        StagedAdmissionStats stats;
+        const auto results = admit(txs, [&] {
+            LOCK(cs_main);
+            auto &view = m_node.chainman->ActiveChainstate().CoinsTip();
+            const COutPoint previous(funding->GetId(), 6);
+            const auto old = view.GetCoin(previous);
+            BOOST_REQUIRE(old);
+            auto changed = old->GetTxOut().ToV2Output();
+            --changed.value; // A new message, so the old signature is invalid.
+            BOOST_REQUIRE(view.SpendCoin(previous));
+            view.AddCoin(previous, ::Coin(CTxOut::FromV2Output(changed),
+                old->GetHeight(), old->IsCoinBase(), old->nFeePerOutput,
+                old->nExpirationHeight), false);
+        }, stats);
+        BOOST_REQUIRE(results[0]);
+        BOOST_CHECK(results[0]->m_result_type != MempoolAcceptResult::ResultType::VALID);
+        BOOST_CHECK_EQUAL(stats.native_prepared, 1U);
+        BOOST_CHECK_EQUAL(stats.native_reused, 0U);
+        BOOST_CHECK_GT(stats.native_inputs_checked, 0U);
+    }
+    publish();
+    {
+        std::vector<CTransactionRef> txs{spend(7)};
+        StagedAdmissionStats stats;
+        // A different tip forces fallback even though this mature coin is
+        // unchanged. Reorg/context validation remains ordinary admission.
+        result_valid(admit(txs, [&] {
+            Chainstate *active = nullptr;
+            CBlockIndex *tip = nullptr;
+            {
+                LOCK(cs_main);
+                active = &m_node.chainman->ActiveChainstate();
+                tip = active->m_chain.Tip();
+            }
+            BlockValidationState state;
+            BOOST_REQUIRE(active->InvalidateBlock(state, tip));
+        }, stats));
+        BOOST_CHECK_EQUAL(stats.native_prepared, 1U);
+        BOOST_CHECK_EQUAL(stats.native_reused, 0U);
+        BOOST_CHECK_GT(stats.native_inputs_checked, 0U);
+    }
+    publish();
+    {
+        // No immutable coin coverage must mean fallback, never rejection.
+        auto &publisher = ::node::GetGlobalSnapshotPublisher();
+        const auto original = publisher.Load();
+        auto missing = std::make_shared<::node::ChainAndMempoolSnapshot>(*original);
+        missing->has_utxo_snapshot = false;
+        publisher.Publish(missing);
+        std::vector<CTransactionRef> txs{spend(8)};
+        StagedAdmissionStats stats;
+        result_valid(admit(txs, {}, stats));
+        BOOST_CHECK_EQUAL(stats.native_prepared, 0U);
+        BOOST_CHECK_EQUAL(stats.native_reused, 0U);
+        BOOST_CHECK_GT(stats.native_inputs_checked, 0U);
+    }
+}
+
+BOOST_FIXTURE_TEST_CASE(v2_staged_native_deferred_results_are_not_reused,
+                        TestChain100Setup) {
+    using namespace lotus::v2;
+    // ENFORCEOUTPUT with wildcard template and zero claim is valid but
+    // produces an OutputClaim. Its success must be recomputed in Phase C.
+    std::vector<uint8_t> claims{0x08, 0x80, 0, 0, 0, 0, 0, 0, 0, 0x10};
+    claims.insert(claims.end(), 16, 0);
+    claims.push_back(0xeb);
+    const auto signed_program = NativeBenchmarkProgram();
+    claims.insert(claims.end(), signed_program.begin(), signed_program.end());
+    Output output;
+    output.value = 1000000;
+    output.branches = {BranchLeaf(claims)};
+    output.paths = {{0}};
+    Output plain = output;
+    plain.branches = {BranchLeaf(signed_program)};
+    const auto funding = MineV2Coinbase({CTxOut::FromV2Output(output),
+                                       CTxOut::FromV2Output(plain)});
+    WITH_LOCK(cs_main, ::node::PublishChainTipSnapshot(
+        *m_node.chainman, m_node.mempool.get()));
+    StagedAdmissionOptions options;
+    options.script_threads = 2;
+    options.expected_mempool = m_node.mempool.get();
+    StagedAdmissionStats stats;
+    const auto tx = MakeTransactionRef(NativeBenchmarkSpend(*funding, 0,
+        {funding->vout[0].nValue - 10000 * SATOSHI}, 0, claims));
+    RequireNativeScriptsUncached(*m_node.chainman, tx);
+    const auto result = AcceptToMemoryPoolStaged(*m_node.chainman, {tx}, options, &stats);
+    BOOST_REQUIRE(result[0]);
+    BOOST_REQUIRE_MESSAGE(result[0]->m_result_type == MempoolAcceptResult::ResultType::VALID,
+                          result[0]->m_state.ToString());
+    BOOST_CHECK_EQUAL(stats.native_prepared, 0U);
+    BOOST_CHECK_EQUAL(stats.native_reused, 0U);
+    BOOST_CHECK_GT(stats.native_inputs_checked, 0U);
+
+    // Record-free is not enough: valid signatures plus an unauthorized state
+    // output fail the transaction's final rule, so no success may escape B.
+    auto forbidden = NativeBenchmarkSpend(*funding, 1,
+        {funding->vout[1].nValue - 10000 * SATOSHI});
+    auto state_output = forbidden.vout[0].ToV2Output();
+    state_output.flags |= OUTPUT_FLAG_HAS_STATE;
+    state_output.state_root[0] = 1;
+    forbidden.vout[0] = CTxOut::FromV2Output(state_output);
+    lotus::v2::Hash message{};
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(SigningMessage(forbidden.ToV2Transaction(),
+        DefaultTxProfile, m_node.chainman->GetParams().V2ChainId(),
+        {funding->vout[1].ToV2Output()}, 0, 0, 0, std::nullopt, message,
+        error), error);
+    std::array<uint8_t, 32> secret{};
+    secret[31] = 3;
+    BOOST_REQUIRE_MESSAGE(SignBip340Message(secret, message, 0, {},
+        forbidden.vin[0].vWitnesses[0].arguments[0], error), error);
+    WITH_LOCK(cs_main, ::node::PublishChainTipSnapshot(
+        *m_node.chainman, m_node.mempool.get()));
+    const auto forbidden_tx = MakeTransactionRef(std::move(forbidden));
+    RequireNativeScriptsUncached(*m_node.chainman, forbidden_tx);
+    const auto rejected = AcceptToMemoryPoolStaged(*m_node.chainman,
+        {forbidden_tx}, options, &stats);
+    BOOST_REQUIRE(rejected[0]);
+    BOOST_CHECK(rejected[0]->m_result_type != MempoolAcceptResult::ResultType::VALID);
+    BOOST_CHECK_EQUAL(stats.native_prepared, 0U);
+    BOOST_CHECK_EQUAL(stats.native_reused, 0U);
+    BOOST_CHECK_GT(stats.native_inputs_checked, 0U);
 }
 
 BOOST_FIXTURE_TEST_CASE(v2_snapshot_crypto_warmup_is_advisory,
