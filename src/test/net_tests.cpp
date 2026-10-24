@@ -2459,7 +2459,12 @@ BOOST_AUTO_TEST_CASE(precomputed_checksum_is_used) {
         std::equal(given.begin(), given.begin() + 20, computed.begin()));
     BOOST_CHECK_EQUAL(given[20], 9);
     BOOST_CHECK_EQUAL(given[23], 6);
-    BOOST_CHECK(msg.Copy().m_checksum == msg.m_checksum);
+    CSerializedNetMsg copy1 = msg.Copy();
+    CSerializedNetMsg copy2 = msg.Copy();
+    BOOST_CHECK(copy1.m_checksum == msg.m_checksum);
+    BOOST_CHECK(copy1.shared_data != nullptr);
+    BOOST_CHECK_EQUAL(copy1.PayloadData(), copy2.PayloadData());
+    BOOST_CHECK_EQUAL(copy1.PayloadSize(), msg.data.size());
 }
 
 namespace {

@@ -128,6 +128,28 @@ struct AddedNodeInfo {
 struct CNodeStats;
 class CClientUIInterface;
 
+struct CSendChunk {
+    std::vector<uint8_t> m_owned;
+    std::shared_ptr<const std::vector<uint8_t>> m_shared;
+
+    CSendChunk() = default;
+    CSendChunk(std::vector<uint8_t> &&vec) noexcept : m_owned(std::move(vec)) {}
+    CSendChunk(const std::vector<uint8_t> &vec) : m_owned(vec) {}
+    CSendChunk(std::shared_ptr<const std::vector<uint8_t>> shared) noexcept
+        : m_shared(std::move(shared)) {}
+
+    const std::vector<uint8_t> &vec() const noexcept {
+        return m_shared ? *m_shared : m_owned;
+    }
+    const uint8_t *data() const noexcept { return vec().data(); }
+    size_t size() const noexcept { return vec().size(); }
+    bool empty() const noexcept { return vec().empty(); }
+    auto begin() const noexcept { return vec().begin(); }
+    auto end() const noexcept { return vec().end(); }
+    uint8_t operator[](size_t i) const noexcept { return vec()[i]; }
+    operator const std::vector<uint8_t> &() const noexcept { return vec(); }
+};
+
 struct CSerializedNetMsg {
     CSerializedNetMsg() = default;
     CSerializedNetMsg(CSerializedNetMsg &&) = default;
@@ -136,15 +158,25 @@ struct CSerializedNetMsg {
     CSerializedNetMsg(const CSerializedNetMsg &msg) = delete;
     CSerializedNetMsg &operator=(const CSerializedNetMsg &) = delete;
 
+    const std::vector<uint8_t> &Payload() const noexcept {
+        return shared_data ? *shared_data : data;
+    }
+    size_t PayloadSize() const noexcept { return Payload().size(); }
+    const uint8_t *PayloadData() const noexcept { return Payload().data(); }
+
     CSerializedNetMsg Copy() const {
         CSerializedNetMsg copy;
-        copy.data = data;
+        if (!shared_data && !data.empty()) {
+            shared_data = std::make_shared<const std::vector<uint8_t>>(data);
+        }
+        copy.shared_data = shared_data;
         copy.m_type = m_type;
         copy.m_checksum = m_checksum;
         return copy;
     }
 
     std::vector<uint8_t> data;
+    mutable std::shared_ptr<const std::vector<uint8_t>> shared_data;
     std::string m_type;
     //! The first bytes of Hash(data), if already known (e.g. for a block
     //! message served to many peers); else computed when it is sent
@@ -536,7 +568,7 @@ public:
     /** Offset inside the first vSendMsg already sent */
     size_t nSendOffset GUARDED_BY(cs_vSend){0};
     uint64_t nSendBytes GUARDED_BY(cs_vSend){0};
-    std::deque<std::vector<uint8_t>> vSendMsg GUARDED_BY(cs_vSend);
+    std::deque<CSendChunk> vSendMsg GUARDED_BY(cs_vSend);
     Mutex cs_vSend;
     Mutex m_sock_mutex;
     Mutex cs_vRecv;
