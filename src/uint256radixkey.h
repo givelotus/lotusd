@@ -24,6 +24,14 @@ struct Uint256RadixKey {
     Uint256RadixKey operator&(const Uint256RadixKey &mask) const {
         return base & mask.base;
     }
+    // Leaf identity must compare all 256 bits. The size_t conversion below
+    // only supplies the radix child index after shifting and masking.
+    bool operator==(const Uint256RadixKey &other) const {
+        return base == other.base;
+    }
+    bool operator!=(const Uint256RadixKey &other) const {
+        return !(*this == other);
+    }
     operator size_t() const { return size_t(base.GetLow64()); }
 };
 
