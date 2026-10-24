@@ -882,6 +882,18 @@ public:
                                    uint64_t) override {
         m_txrelay_index.Add(tx->GetId(), GetTime<std::chrono::microseconds>());
     }
+    void TransactionsAddedToMempoolBatch(
+        const std::vector<MempoolAddedBatchItem> &items,
+        int64_t) override {
+        std::vector<CTransactionRef> txs;
+        txs.reserve(items.size());
+        for (const auto &item : items) {
+            if (item.tx) {
+                txs.push_back(item.tx);
+            }
+        }
+        m_txrelay_index.AddBatch(txs, GetTime<std::chrono::microseconds>());
+    }
     void TransactionRemovedFromMempool(const CTransactionRef &tx,
                                        MemPoolRemovalReason,
                                        uint64_t) override {

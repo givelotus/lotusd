@@ -1179,6 +1179,18 @@ public:
             nullptr)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
+    void ClearView(const CTransaction &tx) {
+        for (const auto &outpoint : m_viewmempool.GetNonBaseCoins()) {
+            m_view.Uncache(outpoint);
+        }
+        for (const CTxIn &txin : tx.vin) {
+            if (txin.nFlags != 3) {
+                m_view.Uncache(txin.prevout);
+            }
+        }
+        m_viewmempool.Reset();
+    }
+
     /**
      * Multiple transaction acceptance. Transactions may or may not be
      * interdependent, but must not conflict with each other, and the
@@ -3809,6 +3821,10 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
         const Config &config = chainstate.m_chainman.GetConfig();
         std::vector<COutPoint> coins_to_uncache;
         const uint64_t native_checks_before = g_native_input_checks;
+        std::optional<MemPoolAccept> acceptor;
+        if (pool != nullptr) {
+            acceptor.emplace(*pool, chainstate);
+        }
         for (size_t i = 0; i < n; ++i) {
             if (options.skip_at_commit && options.skip_at_commit(txs[i])) {
                 continue;
@@ -3827,11 +3843,16 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
                 /*test_accept=*/false, /*height_override=*/0);
             args.m_limits = options.limits;
             MempoolAcceptResult result =
-                MemPoolAccept(*pool, chainstate)
-                    .AcceptSingleTransaction(
-                        txs[i], args,
-                        (verify[i] || checks[i].native) ? &checks[i] : nullptr,
-                        pool->m_opts.signals ? &batch_signals : nullptr);
+                acceptor->AcceptSingleTransaction(
+                    txs[i], args,
+                    (verify[i] || checks[i].native) ? &checks[i] : nullptr,
+                    pool->m_opts.signals ? &batch_signals : nullptr);
+            const bool native_reused =
+                checks[i].native && checks[i].native->WasReused();
+            if (!native_reused ||
+                result.m_result_type != MempoolAcceptResult::ResultType::VALID) {
+                acceptor->ClearView(*txs[i]);
+            }
             RecordMempoolAdmission(result);
             if (result.m_result_type != MempoolAcceptResult::ResultType::VALID) {
                 for (const COutPoint &outpoint : coins_to_uncache) {
@@ -3839,7 +3860,7 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
                 }
             }
             results[i].emplace(std::move(result));
-            if (checks[i].native && checks[i].native->WasReused()) {
+            if (native_reused) {
                 ++local.native_reused;
             }
         }

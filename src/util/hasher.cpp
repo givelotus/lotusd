@@ -15,9 +15,14 @@ namespace {
  * admission) when each word had its own context.
  */
 std::array<uint64_t, 2> RandomSalt() {
-    FastRandomContext rng;
-    const uint64_t k0 = rng.rand64();
-    return {k0, rng.rand64()};
+    if (IsDeterministicRNGActive()) [[unlikely]] {
+        FastRandomContext rng;
+        const uint64_t k0 = rng.rand64();
+        return {k0, rng.rand64()};
+    }
+    thread_local FastRandomContext tl_rng;
+    const uint64_t k0 = tl_rng.rand64();
+    return {k0, tl_rng.rand64()};
 }
 } // namespace
 

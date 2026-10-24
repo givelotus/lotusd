@@ -236,11 +236,8 @@ void ValidationSignals::TransactionsAddedToMempoolBatch(
     const size_t count = shared_items->size();
     auto event = [shared_items, entry_time, this] {
         m_internals->Iterate([&](CValidationInterface &callbacks) {
-            for (const auto &item : *shared_items) {
-                callbacks.TransactionAddedToMempool(
-                    item.tx, item.spent_coins, item.mempool_sequence,
-                    entry_time);
-            }
+            callbacks.TransactionsAddedToMempoolBatch(*shared_items,
+                                                      entry_time);
         });
     };
     ENQUEUE_AND_LOG_EVENT(event, "%s: count=%zu", __func__, count);

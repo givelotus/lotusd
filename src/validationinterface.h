@@ -82,6 +82,21 @@ protected:
         TransactionAddedToMempool(tx, std::move(spent_coins), mempool_sequence);
     }
 
+    struct MempoolAddedBatchItem {
+        CTransactionRef tx;
+        std::shared_ptr<const std::vector<Coin>> spent_coins;
+        uint64_t mempool_sequence{0};
+    };
+
+    virtual void TransactionsAddedToMempoolBatch(
+        const std::vector<MempoolAddedBatchItem> &items,
+        int64_t entry_time) {
+        for (const auto &item : items) {
+            TransactionAddedToMempool(item.tx, item.spent_coins,
+                                      item.mempool_sequence, entry_time);
+        }
+    }
+
     /**
      * Notifies listeners of a transaction leaving mempool.
      *
@@ -257,11 +272,7 @@ public:
     void TransactionAddedToMempool(const CTransactionRef &,
                                    std::shared_ptr<const std::vector<Coin>>,
                                    uint64_t mempool_sequence);
-    struct MempoolAddedBatchItem {
-        CTransactionRef tx;
-        std::shared_ptr<const std::vector<Coin>> spent_coins;
-        uint64_t mempool_sequence{0};
-    };
+    using MempoolAddedBatchItem = CValidationInterface::MempoolAddedBatchItem;
     void TransactionsAddedToMempoolBatch(
         std::vector<MempoolAddedBatchItem> &&items);
     void TransactionRemovedFromMempool(const CTransactionRef &,
