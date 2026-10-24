@@ -33,6 +33,7 @@
 #include <script/sign.h>
 #include <script/signingprovider.h>
 #include <test/util/random.h>
+#include <test/util/parallel_range.h>
 #include <test/util/setup_common.h>
 #include <undo.h>
 #include <util/fs.h>
@@ -48,6 +49,7 @@
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -1471,6 +1473,46 @@ BOOST_FIXTURE_TEST_CASE(v2_kernel_throughput_benchmark, TestChain100Setup) {
               << std::endl;
 }
 
+BOOST_AUTO_TEST_CASE(native_signing_work_uses_common_executor_fallback) {
+    using lotus::v2::RunParallelSigningWork;
+    const auto check_inline = [] {
+        const auto caller = std::this_thread::get_id();
+        std::array<std::atomic<unsigned>, 257> visits{};
+        std::atomic<bool> on_caller{true};
+        RunParallelSigningWork(visits.size(), 8, [&](size_t begin, size_t end) {
+            if (std::this_thread::get_id() != caller) on_caller = false;
+            for (size_t i = begin; i < end; ++i)
+                ++visits[i];
+        });
+        return on_caller.load() &&
+               std::all_of(visits.begin(), visits.end(),
+                           [](const auto &n) { return n.load() == 1; });
+    };
+    ScopedParallelRangeBlocker blocker;
+    auto contended = std::async(std::launch::async, check_inline);
+    const bool completed = contended.wait_for(std::chrono::seconds(5)) ==
+                           std::future_status::ready;
+    blocker.Release();
+    BOOST_CHECK(completed);
+    BOOST_CHECK(contended.get());
+
+    std::atomic<unsigned> nested_failures{0};
+    util::GetParallelRangeExecutor().Run(2, 1, [&](size_t, size_t) {
+        if (!check_inline()) ++nested_failures;
+    });
+    BOOST_CHECK_EQUAL(nested_failures.load(), 0U);
+    BOOST_CHECK_THROW(RunParallelSigningWork(257, 8,
+                                             [](size_t, size_t) {
+                                                 throw std::runtime_error(
+                                                     "signing work failure");
+                                             }),
+                      std::runtime_error);
+    std::atomic<size_t> visits{0};
+    RunParallelSigningWork(
+        257, 8, [&](size_t begin, size_t end) { visits += end - begin; });
+    BOOST_CHECK_EQUAL(visits.load(), 257U);
+}
+
 BOOST_AUTO_TEST_CASE(v2_nullfail_and_batch_sig_collector) {
     using namespace lotus::v2;
     const VmProfile vm_profile{512, 8, 128, 16, 8, 256, 8, 100000};
@@ -1612,6 +1654,62 @@ BOOST_AUTO_TEST_CASE(v2_nullfail_and_batch_sig_collector) {
         BOOST_CHECK_EQUAL(*fail_st, 32U + corrupt_leg);
         BOOST_CHECK_EQUAL(*fail_mt, 32U + corrupt_leg);
     }
+    // Force chunk coverage during common-pool contention and recursion. The
+    // errors lie outside chunk zero and cross the native/legacy boundary.
+    BatchSigCollector two_bad_native, bad_legacy;
+    for (size_t i = 0; i < kBatchCount; ++i) {
+        auto sig = sigs[i];
+        if (i == 41 || i == 255) sig[19] ^= 0x04;
+        BOOST_REQUIRE(two_bad_native.Add(pubkey, sig, msgs[i]));
+        BOOST_REQUIRE(bad_legacy.Add(pubkey, sigs[i], msgs[i]));
+    }
+    for (size_t j = 0; j < legacy_sigs.size(); ++j) {
+        auto sig = legacy_sigs[j];
+        if (j == 19 || j == 63) sig[11] ^= 0x02;
+        BOOST_REQUIRE(bad_legacy.AddLegacySchnorr(
+            std::span<const uint8_t>(legacy_pubkey.data(),
+                                     legacy_pubkey.size()),
+            sig, legacy_msgs[j].begin()));
+    }
+    BatchSigCollector many_valid, many_bad;
+    const size_t large_count =
+        16 * (std::max<size_t>(std::thread::hardware_concurrency(), 1) + 1);
+    for (size_t i = 0; i < large_count; ++i) {
+        BOOST_REQUIRE(many_valid.Add(pubkey, sigs[i % kBatchCount],
+                                     msgs[i % kBatchCount]));
+        auto sig = sigs[i % kBatchCount];
+        if (i + 1 == large_count) sig[19] ^= 0x04;
+        BOOST_REQUIRE(many_bad.Add(pubkey, sig, msgs[i % kBatchCount]));
+    }
+    const auto check_verdicts = [&] {
+        // Preserve explicit logical requests even when larger than hardware.
+        for (size_t threads : {size_t(0), size_t(4), size_t(1024)}) {
+            if (!collector.VerifyAll(threads) ||
+                collector.FirstFailingIndex(threads).has_value() ||
+                two_bad_native.VerifyAll(threads) ||
+                two_bad_native.FirstFailingIndex(threads) != size_t(41) ||
+                bad_legacy.VerifyAll(threads) ||
+                bad_legacy.FirstFailingIndex(threads) != kBatchCount + 19) {
+                return false;
+            }
+        }
+        return many_valid.VerifyAll(large_count) &&
+               !many_valid.FirstFailingIndex(large_count).has_value() &&
+               !many_bad.VerifyAll(large_count) &&
+               many_bad.FirstFailingIndex(large_count) == large_count - 1;
+    };
+    ScopedParallelRangeBlocker blocker;
+    auto contended = std::async(std::launch::async, check_verdicts);
+    const bool completed = contended.wait_for(std::chrono::seconds(30)) ==
+                           std::future_status::ready;
+    blocker.Release();
+    BOOST_CHECK(completed);
+    BOOST_CHECK(contended.get());
+    std::atomic<unsigned> failures{0};
+    util::GetParallelRangeExecutor().Run(2, 1, [&](size_t, size_t) {
+        if (!check_verdicts()) ++failures;
+    });
+    BOOST_CHECK_EQUAL(failures.load(), 0U);
 }
 
 BOOST_FIXTURE_TEST_CASE(v2_parallel_utxo_dependency_validation,
