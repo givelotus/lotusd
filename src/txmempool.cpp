@@ -270,6 +270,7 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason) {
     // We increment mempool sequence value no matter removal reason
     // even if not directly reported below.
     uint64_t mempool_sequence = GetAndIncrementSequence();
+    m_removal_sequence.fetch_add(1, std::memory_order_release);
 
     const CTransaction &tx = (*it)->GetTx();
     const TxId &txid = tx.GetId();
@@ -475,6 +476,7 @@ void CTxMemPool::removeForFinalizedBlock(
 }
 
 void CTxMemPool::_clear() {
+    m_removal_sequence.fetch_add(1, std::memory_order_release);
     m_unbroadcast_count.store(0, std::memory_order_relaxed);
     {
         StdLockGuard guard(m_unbroadcast_log_mutex);
@@ -1299,6 +1301,18 @@ void CTxMemPool::RemoveUnbroadcastTx(const TxId &txid, const bool unchecked) {
         (unchecked ? " before confirmation that txn was sent out" : ""));
 }
 
+void CTxMemPool::FinishRemoveUnbroadcastBatch(std::span<const TxId> txids) {
+    if (txids.empty()) {
+        return;
+    }
+    m_unbroadcast_count.fetch_sub(txids.size(), std::memory_order_relaxed);
+    LOCK(cs);
+    ScopedSnapshotDefer defer(*this);
+    for (const TxId &txid : txids) {
+        node::PublishMempoolUnbroadcastSnapshot(*this, txid, false);
+    }
+}
+
 void CTxMemPool::RemoveStaged(const setEntries &stage,
                               MemPoolRemovalReason reason) {
     AssertLockHeld(cs);
@@ -1385,9 +1399,17 @@ void CTxMemPool::UpdateParent(txiter entry, txiter parent, bool add) {
 }
 
 CFeeRate CTxMemPool::GetMinFee(size_t sizelimit) const {
+    const double rate = rollingMinimumFeeRate.load(std::memory_order_relaxed);
+    if (!blockSinceLastRollingFeeBump.load(std::memory_order_relaxed) ||
+        rate == 0) {
+        return CFeeRate(int64_t(ceill(rate)) * SATOSHI);
+    }
+
     LOCK(cs);
     if (!blockSinceLastRollingFeeBump || rollingMinimumFeeRate == 0) {
-        return CFeeRate(int64_t(ceill(rollingMinimumFeeRate)) * SATOSHI);
+        return CFeeRate(int64_t(ceill(rollingMinimumFeeRate.load(
+                                    std::memory_order_relaxed))) *
+                        SATOSHI);
     }
 
     int64_t time = GetTime();
@@ -1404,7 +1426,9 @@ CFeeRate CTxMemPool::GetMinFee(size_t sizelimit) const {
             pow(2.0, (time - lastRollingFeeUpdate) / halflife);
         lastRollingFeeUpdate = time;
     }
-    return CFeeRate(int64_t(ceill(rollingMinimumFeeRate)) * SATOSHI);
+    return CFeeRate(int64_t(ceill(rollingMinimumFeeRate.load(
+                                std::memory_order_relaxed))) *
+                    SATOSHI);
 }
 
 void CTxMemPool::trackPackageRemoved(const CFeeRate &rate) {

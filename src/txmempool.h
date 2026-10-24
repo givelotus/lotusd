@@ -257,9 +257,9 @@ private:
     uint64_t cachedInnerUsage GUARDED_BY(cs);
 
     mutable int64_t lastRollingFeeUpdate GUARDED_BY(cs);
-    mutable bool blockSinceLastRollingFeeBump GUARDED_BY(cs);
+    mutable std::atomic<bool> blockSinceLastRollingFeeBump{false};
     //! minimum fee to get into the pool, decreases exponentially
-    mutable double rollingMinimumFeeRate GUARDED_BY(cs);
+    mutable std::atomic<double> rollingMinimumFeeRate{0};
 
     // In-memory counter for external mempool tracking purposes.
     // This number is incremented once every time a transaction
@@ -272,7 +272,8 @@ private:
 
     //! Used by addUnchecked to generate ever-increasing
     //! CTxMemPoolEntry::entryId's
-    uint64_t nextEntryId GUARDED_BY(cs) = 1;
+    std::atomic<uint64_t> nextEntryId{1};
+    std::atomic<uint64_t> m_removal_sequence{0};
 
     mutable Mutex cs_orphanage;
     /** Storage for orphan information */
@@ -629,6 +630,12 @@ public:
      */
     RelayAdmissions ReadRelayAdmissionsAfter(uint64_t cursor) const
         EXCLUSIVE_LOCKS_REQUIRED(cs);
+    uint64_t GetRelayAdmissionWatermark() const noexcept {
+        return nextEntryId.load(std::memory_order_acquire) - 1;
+    }
+    uint64_t GetRemovalSequence() const noexcept {
+        return m_removal_sequence.load(std::memory_order_acquire);
+    }
 
     CFeeRate estimateFee() const;
 
@@ -643,6 +650,7 @@ public:
 
     /** Removes a transaction from the unbroadcast set */
     void RemoveUnbroadcastTx(const TxId &txid, const bool unchecked = false);
+    void FinishRemoveUnbroadcastBatch(std::span<const TxId> txids);
 
     /** Returns transactions in unbroadcast set */
     std::set<TxId> GetUnbroadcastTxs() const;
