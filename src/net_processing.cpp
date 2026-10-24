@@ -91,7 +91,7 @@
  */
 static constexpr auto UNCONDITIONAL_RELAY_DELAY = 2min;
 /** Most transactions the admission thread takes into one staged batch. */
-static constexpr size_t TX_ADMISSION_MAX_BATCH{256};
+static constexpr size_t TX_ADMISSION_MAX_BATCH{2560};
 /** How long the idle admission thread waits before checking for shutdown. */
 static constexpr auto TX_ADMISSION_IDLE_WAIT{100ms};
 /**
@@ -1258,6 +1258,13 @@ private:
         m_tx_admission_done GUARDED_BY(m_tx_admission_done_mutex);
     /** Transactions queued for or in admission, by txid. */
     std::set<TxId> m_tx_admission_inflight GUARDED_BY(g_msgproc_mutex);
+    /**
+     * Short-id request keys of transactions currently in
+     * m_tx_admission_inflight, mapped to txid so INVSHORT announcements from
+     * other peers recognize them as already in-flight rather than missing.
+     */
+    std::unordered_map<TxId, TxId, SaltedTxIdHasher>
+        m_tx_admission_inflight_shortids GUARDED_BY(cs_main);
 
     void ThreadTxAdmission()
         EXCLUSIVE_LOCKS_REQUIRED(!m_tx_admission_done_mutex,
@@ -3490,6 +3497,12 @@ bool PeerManagerImpl::QueueTxForAdmission(CNode &pfrom, const PeerRef &peer,
         return true;
     }
     m_tx_admission_inflight.insert(txid);
+    for (const auto &epoch : m_txrelay_index.Epochs()) {
+        m_tx_admission_inflight_shortids.emplace(
+            TxId{txrelay::ShortIdRequestKey(
+                epoch.epoch_id, m_txrelay_index.ShortId(epoch, txid))},
+            txid);
+    }
     ++peer->m_tx_admission_pending;
     // g_msgproc_mutex serializes every producer; only the consumer can
     // change queue capacity after HasRoom, and it can only free space.
@@ -3535,7 +3548,18 @@ bool PeerManagerImpl::ProcessTxAdmissionDone() {
                 case TxAdmissionDone::Kind::DROPPED:
                     break;
             }
-            m_tx_admission_inflight.erase(d.tx->GetId());
+            const TxId &txid = d.tx->GetId();
+            m_tx_admission_inflight.erase(txid);
+            if (m_tx_admission_inflight.empty()) {
+                m_tx_admission_inflight_shortids.clear();
+            } else {
+                for (const auto &epoch : m_txrelay_index.Epochs()) {
+                    m_tx_admission_inflight_shortids.erase(
+                        TxId{txrelay::ShortIdRequestKey(
+                            epoch.epoch_id,
+                            m_txrelay_index.ShortId(epoch, txid))});
+                }
+            }
             Assume(peer.m_tx_admission_pending > 0);
             --peer.m_tx_admission_pending;
         }
@@ -5744,6 +5768,7 @@ void PeerManagerImpl::ProcessInvalidTx(NodeId nodeid,
         m_recent_rejects.insert(txid);
     }
     m_txrequest.ForgetInvId(txid);
+    ForgetShortIdRequests(txid);
 
     if (maybe_add_extra_compact_tx && RecursiveDynamicUsage(*ptx) < 100000) {
         AddToCompactExtraTransactions(ptx);
@@ -5773,6 +5798,7 @@ void PeerManagerImpl::ProcessValidTx(
     // As this version of the transaction was acceptable, we can forget about
     // any requests for it. No-op if the tx is not in txrequest.
     m_txrequest.ForgetInvId(tx->GetId());
+    ForgetShortIdRequests(tx->GetId());
 
     m_mempool.withOrphanage([&tx](TxOrphanage &orphanage) {
         orphanage.AddChildrenToWorkSet(*tx);
@@ -7375,6 +7401,33 @@ void PeerManagerImpl::ProcessMessage(
             missing_req_keys.emplace_back(
                 txrelay::ShortIdRequestKey(epoch_id, short_id));
         }
+        uint64_t missing{0};
+        if (!missing_req_keys.empty()) {
+            LOCK(cs_main);
+            const bool preferred = isPreferredDownloadPeer(pfrom);
+            for (const TxId &req_key : missing_req_keys) {
+                if (!m_tx_admission_inflight_shortids.empty()) {
+                    const auto it = m_tx_admission_inflight_shortids.find(req_key);
+                    if (it != m_tx_admission_inflight_shortids.end()) {
+                        known_txids.push_back(it->second);
+                        continue;
+                    }
+                }
+                if (interruptMsgProc) {
+                    return;
+                }
+                ++missing;
+                if (TooManyAnnouncements(pfrom, m_txrequest,
+                                         SHORTID_REQUEST_PARAMS)) {
+                    break;
+                }
+                auto reqtime = ComputeRequestTime(pfrom, m_txrequest,
+                                                  SHORTID_REQUEST_PARAMS,
+                                                  current_time, preferred);
+                m_txrequest.ReceivedInv(pfrom.GetId(), req_key, preferred,
+                                        reqtime);
+            }
+        }
         if (!known_txids.empty()) {
             if (auto *tx_relay = peer->GetTxRelay()) {
                 LOCK(tx_relay->m_tx_inventory_mutex);
@@ -7386,25 +7439,6 @@ void PeerManagerImpl::ProcessMessage(
                         tx_relay->m_tx_inventory_to_send.Erase(txid);
                     }
                 }
-            }
-        }
-        const uint64_t missing{missing_req_keys.size()};
-        if (!missing_req_keys.empty()) {
-            LOCK(cs_main);
-            const bool preferred = isPreferredDownloadPeer(pfrom);
-            for (const TxId &req_key : missing_req_keys) {
-                if (interruptMsgProc) {
-                    return;
-                }
-                if (TooManyAnnouncements(pfrom, m_txrequest,
-                                         SHORTID_REQUEST_PARAMS)) {
-                    break;
-                }
-                auto reqtime = ComputeRequestTime(pfrom, m_txrequest,
-                                                  SHORTID_REQUEST_PARAMS,
-                                                  current_time, preferred);
-                m_txrequest.ReceivedInv(pfrom.GetId(), req_key, preferred,
-                                        reqtime);
             }
         }
         if (auto *m{node::GetNodeMetrics()}) {
@@ -10293,7 +10327,14 @@ bool PeerManagerImpl::ProcessMessages(const Config &config, CNode *pfrom,
     const bool admit_in_parallel =
         parallel_admission && msg.m_type == NetMsgType::TX &&
         !RejectIncomingTxs(*pfrom) && !m_chainman.IsInitialBlockDownload();
-    if (parallel_admission && !admit_in_parallel &&
+    const bool allow_while_admission_pending =
+        admit_in_parallel ||
+        (parallel_admission &&
+         (msg.m_type == NetMsgType::SHORTTX ||
+          msg.m_type == NetMsgType::INVSHORT ||
+          msg.m_type == NetMsgType::GETSHORTTX) &&
+         !RejectIncomingTxs(*pfrom) && !m_chainman.IsInitialBlockDownload());
+    if (parallel_admission && !allow_while_admission_pending &&
         peer->m_tx_admission_pending > 0) {
         // Keep this peer's message order: handle it after the verdicts.
         peer->m_tx_admission_held_msg.emplace(std::move(msg));

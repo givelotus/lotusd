@@ -96,7 +96,7 @@ struct TxAdmissionItem {
 class TxAdmissionQueue {
 public:
     struct Limits {
-        size_t max_per_peer{256};
+        size_t max_per_peer{4096};
         size_t max_total{16384};
         size_t max_total_bytes{64 << 20};
     };

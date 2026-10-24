@@ -28,6 +28,7 @@
 #include <univalue.h>
 #include <util/fs.h>
 #include <util/moneystr.h>
+#include <util/parallel_range.h>
 #include <util/time.h>
 #include <validation.h>
 #include <validationinterface.h>
@@ -511,9 +512,22 @@ UniValue MempoolToJSON(const CTxMemPool &pool, bool verbose,
         const node::ChainAndMempoolSnapshot &snap = *CHECK_NONFATAL(snap_ptr);
         snap.EnsureMempoolVectors();
         UniValue a(UniValue::VARR);
-        a.reserve(snap.mempool_txids.size());
-        for (const TxId &txid : snap.mempool_txids) {
-            a.push_back(txid.ToString());
+        const size_t n = snap.mempool_txids.size();
+        if (n >= 4096) {
+            std::vector<UniValue> items(n);
+            util::GetParallelRangeExecutor().Run(
+                n, /*grain=*/1024, [&](size_t begin, size_t end) {
+                    for (size_t i = begin; i < end; ++i) {
+                        items[i].setStr(snap.mempool_txids[i].ToString());
+                    }
+                });
+            a.push_backV(std::make_move_iterator(items.begin()),
+                         std::make_move_iterator(items.end()));
+        } else {
+            a.reserve(n);
+            for (const TxId &txid : snap.mempool_txids) {
+                a.push_back(txid.ToString());
+            }
         }
 
         if (!include_mempool_sequence) {
