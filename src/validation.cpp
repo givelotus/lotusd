@@ -63,6 +63,7 @@
 #include <util/fs.h>
 #include <util/fs_helpers.h>
 #include <util/moneystr.h>
+#include <util/parallel_range.h>
 #include <util/signalinterrupt.h>
 #include <util/strencodings.h>
 #include <util/string.h>
@@ -455,131 +456,6 @@ bool CheckInputScriptsReusing(
     return true;
 }
 
-class ParallelScriptWorkerPool {
-public:
-    static ParallelScriptWorkerPool &Instance() {
-        static ParallelScriptWorkerPool pool;
-        return pool;
-    }
-
-    template <typename Fn>
-    void Run(size_t num_workers, Fn &&fn) {
-        if (num_workers <= 1) {
-            fn(0);
-            return;
-        }
-        std::unique_lock<std::mutex> dispatch_lock(m_dispatch_mutex);
-        RunLocked(dispatch_lock, num_workers, std::forward<Fn>(fn));
-    }
-
-    /**
-     * As Run, but returns false without running anything if another caller
-     * is using the pool (e.g. ConnectBlock's script checks), instead of
-     * waiting for it. Must not be called from a pool task.
-     */
-    template <typename Fn> bool TryRun(size_t num_workers, Fn &&fn) {
-        if (num_workers <= 1) {
-            fn(0);
-            return true;
-        }
-        std::unique_lock<std::mutex> dispatch_lock(m_dispatch_mutex,
-                                                   std::try_to_lock);
-        if (!dispatch_lock.owns_lock()) {
-            return false;
-        }
-        RunLocked(dispatch_lock, num_workers, std::forward<Fn>(fn));
-        return true;
-    }
-
-private:
-    template <typename Fn>
-    void RunLocked(std::unique_lock<std::mutex> &dispatch_lock,
-                   size_t num_workers, Fn &&fn) {
-        std::function<void(size_t)> task_fn(std::forward<Fn>(fn));
-        EnsureWorkers(num_workers - 1);
-        const size_t active = std::min(num_workers - 1, m_threads.size());
-        if (active == 0) {
-            dispatch_lock.unlock();
-            task_fn(0);
-            return;
-        }
-        {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            m_task = &task_fn;
-            m_active_workers = active;
-            m_remaining.store(active, std::memory_order_release);
-            ++m_generation;
-        }
-        m_cv_start.notify_all();
-        task_fn(0);
-        {
-            std::unique_lock<std::mutex> lock(m_mutex);
-            m_cv_done.wait(lock, [this]() {
-                return m_remaining.load(std::memory_order_acquire) == 0;
-            });
-            m_task = nullptr;
-        }
-    }
-
-    ParallelScriptWorkerPool() = default;
-    ~ParallelScriptWorkerPool() {
-        {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            m_stop = true;
-            ++m_generation;
-        }
-        m_cv_start.notify_all();
-        for (auto &t : m_threads) {
-            if (t.joinable()) {
-                t.join();
-            }
-        }
-    }
-
-    void EnsureWorkers(size_t count) {
-        while (m_threads.size() < count) {
-            const size_t worker_id = m_threads.size() + 1;
-            m_threads.emplace_back([this, worker_id]() {
-                uint64_t seen_gen = 0;
-                while (true) {
-                    const std::function<void(size_t)> *fn = nullptr;
-                    {
-                        std::unique_lock<std::mutex> lock(m_mutex);
-                        m_cv_start.wait(lock, [this, &seen_gen]() {
-                            return m_stop || m_generation != seen_gen;
-                        });
-                        if (m_stop) {
-                            return;
-                        }
-                        seen_gen = m_generation;
-                        if (worker_id <= m_active_workers) {
-                            fn = m_task;
-                        }
-                    }
-                    if (fn != nullptr) {
-                        (*fn)(worker_id);
-                        if (m_remaining.fetch_sub(
-                                1, std::memory_order_acq_rel) == 1) {
-                            std::lock_guard<std::mutex> lock(m_mutex);
-                            m_cv_done.notify_one();
-                        }
-                    }
-                }
-            });
-        }
-    }
-
-    std::mutex m_dispatch_mutex;
-    std::mutex m_mutex;
-    std::condition_variable m_cv_start;
-    std::condition_variable m_cv_done;
-    std::vector<std::thread> m_threads;
-    const std::function<void(size_t)> *m_task{nullptr};
-    size_t m_active_workers{0};
-    std::atomic<size_t> m_remaining{0};
-    uint64_t m_generation{0};
-    bool m_stop{false};
-};
 
 class MemPoolAccept {
 public:
@@ -2026,7 +1902,10 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
                 }
             };
 
-            ParallelScriptWorkerPool::Instance().Run(num_workers, worker_fn);
+            util::GetParallelRangeExecutor().Run(
+                num_workers, 1, [&](size_t begin, size_t end) {
+                    for (size_t tid = begin; tid < end; ++tid) worker_fn(tid);
+                });
 
             for (size_t k = 0; k < n_uncached; ++k) {
                 if (ws_errors[k].has_value()) {
@@ -2825,7 +2704,7 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
         std::atomic<size_t> next{0};
         const size_t threads =
             std::clamp<size_t>(options.script_threads, 1, work.size());
-        ParallelScriptWorkerPool::Instance().Run(threads, [&](size_t) {
+        util::GetParallelRangeExecutor().Run(threads, 1, [&](size_t, size_t) {
             for (size_t k = next.fetch_add(1, std::memory_order_relaxed);
                  k < work.size();
                  k = next.fetch_add(1, std::memory_order_relaxed)) {
@@ -4101,7 +3980,10 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
             metrics->script_check_transactions.Record(n_pending);
             metrics->script_check_workers.Record(num_workers);
         }
-        ParallelScriptWorkerPool::Instance().Run(num_workers, worker_fn);
+        util::GetParallelRangeExecutor().Run(
+            num_workers, 1, [&](size_t begin, size_t end) {
+                for (size_t tid = begin; tid < end; ++tid) worker_fn(tid);
+            });
 
         for (size_t k = 0; k < n_pending; ++k) {
             if (tx_errors[k].has_value()) {
@@ -6200,7 +6082,7 @@ static bool CheckBlockHeader(const CBlockHeader &block,
 void RunOnValidationWorkers(size_t max_threads, size_t n_tasks,
                             const std::function<void(size_t)> &fn) {
     std::atomic<size_t> next{0};
-    auto work = [&](size_t) {
+    auto work = [&](size_t, size_t) {
         for (size_t i;
              (i = next.fetch_add(1, std::memory_order_relaxed)) < n_tasks;) {
             fn(i);
@@ -6209,8 +6091,9 @@ void RunOnValidationWorkers(size_t max_threads, size_t n_tasks,
     const size_t threads{std::min(max_threads, n_tasks)};
     // Never wait for the pool: while ConnectBlock (or a mempool batch) uses
     // it, do the work on this thread, as before.
-    if (!ParallelScriptWorkerPool::Instance().TryRun(threads, work)) {
-        work(0);
+    if (!util::GetParallelRangeExecutor().TryRun(
+            std::max<size_t>(threads, 1), 1, work)) {
+        work(0, 1);
     }
 }
 

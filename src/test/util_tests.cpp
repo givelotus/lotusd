@@ -3390,9 +3390,59 @@ BOOST_AUTO_TEST_CASE(parallel_range_contended_submission_runs_on_caller) {
         BOOST_CHECK(std::this_thread::get_id() == caller);
         visits += end - begin;
     });
+    if (std::thread::hardware_concurrency() > 1) {
+        bool invoked = false;
+        BOOST_CHECK(!executor.TryRun(64, 8, [&](size_t, size_t) {
+            invoked = true;
+        }));
+        BOOST_CHECK(!invoked);
+    }
     release.set_value();
     first.join();
     BOOST_CHECK_EQUAL(visits, 64);
+}
+
+BOOST_AUTO_TEST_CASE(parallel_range_try_run_recursive_and_worker_indices) {
+    util::ParallelRangeExecutor executor(2);
+    std::array<std::atomic<size_t>, 17> visits{};
+    std::atomic<size_t> recursive_invocations{0};
+    BOOST_CHECK(executor.TryRun(visits.size(), 1, [&](size_t begin, size_t end) {
+        for (size_t tid = begin; tid < end; ++tid) ++visits[tid];
+        if (std::thread::hardware_concurrency() > 1 &&
+            executor.TryRun(2, 1, [&](size_t, size_t) {
+                ++recursive_invocations;
+            })) {
+            ++recursive_invocations;
+        }
+    }));
+    for (const auto &visit : visits) BOOST_CHECK_EQUAL(visit.load(), 1);
+    BOOST_CHECK_EQUAL(recursive_invocations.load(), 0);
+    BOOST_CHECK_THROW(executor.TryRun(17, 1, [](size_t begin, size_t) {
+        if (begin != 0 || std::thread::hardware_concurrency() <= 1) {
+            throw std::runtime_error("worker failure");
+        }
+    }), std::runtime_error);
+    size_t visits_after_error = 0;
+    executor.Run(1, 1, [&](size_t, size_t end) { visits_after_error += end; });
+    BOOST_CHECK_EQUAL(visits_after_error, 1);
+}
+
+BOOST_AUTO_TEST_CASE(parallel_range_per_dispatch_participant_cap) {
+    util::ParallelRangeExecutor executor(4);
+    std::atomic<size_t> calls{0}, visits{0};
+    executor.Run(64, 1, [&](size_t begin, size_t end) {
+        ++calls;
+        visits += end - begin;
+    }, 2);
+    BOOST_CHECK_EQUAL(calls.load(), std::min<size_t>(
+        2, std::max<size_t>(1, std::thread::hardware_concurrency())));
+    BOOST_CHECK_EQUAL(visits.load(), 64);
+    const auto caller = std::this_thread::get_id();
+    BOOST_CHECK(executor.TryRun(64, 1, [&](size_t begin, size_t end) {
+        BOOST_CHECK(std::this_thread::get_id() == caller);
+        BOOST_CHECK_EQUAL(begin, 0);
+        BOOST_CHECK_EQUAL(end, 64);
+    }, 1));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
