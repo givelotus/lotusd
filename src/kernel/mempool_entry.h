@@ -12,6 +12,7 @@
 #include <primitives/transaction.h>
 #include <rcu.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -93,7 +94,7 @@ private:
     const int64_t sigChecks;
     //! Used for determining the priority of the transaction for mining in a
     //! block
-    Amount m_modified_fee{Amount::zero()};
+    std::atomic<Amount> m_modified_fee{Amount::zero()};
     //! Track the height and time at which tx was final
     LockPoints lockPoints;
 
@@ -114,7 +115,8 @@ public:
           m_children(std::move(other.m_children)), nFee(other.nFee),
           nTxSize(other.nTxSize), nUsageSize(other.nUsageSize),
           nTime(other.nTime), entryHeight(other.entryHeight),
-          sigChecks(other.sigChecks), m_modified_fee(other.m_modified_fee),
+          sigChecks(other.sigChecks),
+          m_modified_fee(other.m_modified_fee.load(std::memory_order_relaxed)),
           lockPoints(std::move(other.lockPoints)),
           refcount(other.refcount.load()) {};
 
@@ -135,7 +137,9 @@ public:
     std::chrono::seconds GetTime() const { return std::chrono::seconds{nTime}; }
     unsigned int GetHeight() const { return entryHeight; }
     int64_t GetSigChecks() const { return sigChecks; }
-    Amount GetModifiedFee() const { return m_modified_fee; }
+    Amount GetModifiedFee() const {
+        return m_modified_fee.load(std::memory_order_relaxed);
+    }
     CFeeRate GetModifiedFeeRate() const {
         return CFeeRate(GetModifiedFee(), GetTxVirtualSize());
     }
@@ -144,7 +148,9 @@ public:
 
     // Updates the modified fees used for mining priority score
     void UpdateModifiedFee(Amount fee_diff) {
-        m_modified_fee.SaturatingAdd(fee_diff);
+        Amount cur = m_modified_fee.load(std::memory_order_relaxed);
+        cur.SaturatingAdd(fee_diff);
+        m_modified_fee.store(cur, std::memory_order_relaxed);
     };
 
     const Parents &GetMemPoolParentsConst() const { return m_parents; }

@@ -1694,4 +1694,43 @@ BOOST_AUTO_TEST_CASE(DeserializeTransactionRef) {
     BOOST_CHECK(decoded[0] != decoded[1]);
 }
 
+BOOST_AUTO_TEST_CASE(lock_free_tx_tree_lookups) {
+    CTxMemPool &pool = *m_node.mempool;
+    TestMemPoolEntryHelper entry;
+    CMutableTransaction mtx;
+    mtx.vin.emplace_back(TxId{uint256{uint8_t(42)}}, 0);
+    mtx.vout.emplace_back(5000 * SATOSHI, CScript() << OP_TRUE);
+    const CTransactionRef tx = MakeTransactionRef(mtx);
+    const TxId txid = tx->GetId();
+
+    {
+        LOCK2(cs_main, pool.cs);
+        pool.addUnchecked(entry.Fee(1200 * SATOSHI).Time(777).FromTx(tx));
+    }
+
+    // Exercise lock-free exists, get, info, and getEntry without pool.cs
+    BOOST_CHECK(pool.exists(txid));
+    BOOST_CHECK(!pool.exists(TxId{uint256{uint8_t(99)}}));
+    const CTransactionRef got = pool.get(txid);
+    BOOST_REQUIRE(got != nullptr);
+    BOOST_CHECK(got->GetId() == txid);
+    const TxMempoolInfo info = pool.info(txid);
+    BOOST_REQUIRE(info.tx != nullptr);
+    BOOST_CHECK(info.tx->GetId() == txid);
+    BOOST_CHECK_EQUAL(info.fee, 1200 * SATOSHI);
+    BOOST_CHECK_EQUAL(info.m_time.count(), 777);
+    const auto rcu_entry = pool.getEntry(txid);
+    BOOST_REQUIRE(rcu_entry != nullptr);
+    BOOST_CHECK(rcu_entry->GetTx().GetId() == txid);
+
+    {
+        LOCK2(cs_main, pool.cs);
+        pool.removeRecursive(*tx, MemPoolRemovalReason::MANUAL);
+    }
+    BOOST_CHECK(!pool.exists(txid));
+    BOOST_CHECK(pool.get(txid) == nullptr);
+    BOOST_CHECK(pool.info(txid).tx == nullptr);
+    BOOST_CHECK(pool.getEntry(txid) == nullptr);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

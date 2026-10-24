@@ -347,6 +347,10 @@ public:
     typedef std::set<txiter, CompareIteratorById> setEntries;
     typedef std::set<txiter, CompareIteratorByRevEntryId> setRevTopoEntries;
 
+    using LiveTxTree =
+        RadixTree<CTxMemPoolEntry, MemPoolEntryRadixTreeAdapter,
+                  GlobalConcurrentSlabAllocator<std::byte, 1024>>;
+    LiveTxTree m_tx_tree;
     RadixTree<CTxMemPoolEntry, MemPoolEntryRadixTreeAdapter> finalizedTxs;
 
 private:
@@ -569,8 +573,11 @@ public:
     }
 
     bool exists(const TxId &txid) const {
-        LOCK(cs);
-        return mapTx.count(txid) != 0;
+        return m_tx_tree.get(txid) != nullptr;
+    }
+
+    RCUPtr<const CTxMemPoolEntry> getEntry(const TxId &txid) const {
+        return m_tx_tree.get(txid);
     }
 
     bool setAvalancheFinalized(const CTxMemPoolEntryRef &tx,
