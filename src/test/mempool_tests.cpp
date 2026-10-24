@@ -28,6 +28,7 @@
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <unordered_set>
 #include <vector>
@@ -35,6 +36,129 @@
 BOOST_FIXTURE_TEST_SUITE(mempool_tests, TestingSetup)
 
 static constexpr auto REMOVAL_REASON_DUMMY = MemPoolRemovalReason::CONFLICT;
+
+static CTransactionRef RelaySuffixTx(uint32_t tag) {
+    CMutableTransaction tx;
+    tx.vin.emplace_back(TxId{uint256::ONE}, tag, CScript() << OP_TRUE);
+    tx.vout.emplace_back(1000 * SATOSHI, CScript() << OP_TRUE);
+    return MakeTransactionRef(tx);
+}
+
+BOOST_AUTO_TEST_CASE(relay_admission_suffix_initial_incremental_and_metadata) {
+    CTxMemPool pool{GetConfig(), CTxMemPool::Options{}};
+    LOCK2(cs_main, pool.cs);
+    const auto empty = pool.ReadRelayAdmissionsAfter(0);
+    BOOST_CHECK_EQUAL(empty.watermark, 0U);
+    BOOST_CHECK(empty.entries.empty());
+    BOOST_CHECK_THROW(pool.ReadRelayAdmissionsAfter(1), std::invalid_argument);
+
+    TestMemPoolEntryHelper helper;
+    const auto first = helper.Fee(100 * SATOSHI).FromTx(RelaySuffixTx(1));
+    const auto second = helper.Fee(200 * SATOSHI).FromTx(RelaySuffixTx(2));
+    pool.addUnchecked(first);
+    const auto first_read = pool.ReadRelayAdmissionsAfter(0);
+    BOOST_REQUIRE_EQUAL(first_read.entries.size(), 1U);
+    BOOST_CHECK_EQUAL(first_read.watermark, first->GetEntryId());
+    BOOST_CHECK(first_read.entries[0].txid == first->GetTx().GetId());
+    BOOST_CHECK(first_read.entries[0].fee == 100 * SATOSHI);
+    BOOST_CHECK_EQUAL(first_read.entries[0].vsize, first->GetTxSize());
+    pool.addUnchecked(second);
+    const auto suffix = pool.ReadRelayAdmissionsAfter(first_read.watermark);
+    BOOST_REQUIRE_EQUAL(suffix.entries.size(), 1U);
+    BOOST_CHECK_EQUAL(suffix.watermark, second->GetEntryId());
+    BOOST_CHECK(suffix.entries[0].txid == second->GetTx().GetId());
+    BOOST_CHECK_EQUAL(suffix.entries[0].entry_id, second->GetEntryId());
+    const auto all = pool.ReadRelayAdmissionsAfter(0);
+    BOOST_REQUIRE_EQUAL(all.entries.size(), 2U);
+    BOOST_CHECK_EQUAL(all.entries[0].entry_id, first->GetEntryId());
+    BOOST_CHECK_EQUAL(all.entries[1].entry_id, second->GetEntryId());
+
+    pool.PrioritiseTransaction(first->GetTx().GetId(), 999 * SATOSHI);
+    const auto reprioritised = pool.ReadRelayAdmissionsAfter(0);
+    BOOST_REQUIRE_EQUAL(reprioritised.entries.size(), 2U);
+    // Existing relay filters base fee, not its mutable prioritisation delta.
+    const auto info = pool.info(first->GetTx().GetId());
+    BOOST_CHECK(reprioritised.entries[0].fee == info.fee);
+    BOOST_CHECK(info.nFeeDelta == 999 * SATOSHI);
+    BOOST_CHECK_EQUAL(reprioritised.entries[0].vsize, info.vsize);
+    const auto unchanged = pool.ReadRelayAdmissionsAfter(suffix.watermark);
+    BOOST_CHECK(unchanged.entries.empty());
+    BOOST_CHECK_EQUAL(unchanged.watermark, suffix.watermark);
+}
+
+BOOST_AUTO_TEST_CASE(relay_admission_suffix_removed_gaps_clear_and_readd) {
+    CTxMemPool pool{GetConfig(), CTxMemPool::Options{}};
+    LOCK2(cs_main, pool.cs);
+    TestMemPoolEntryHelper helper;
+    const auto first_tx = RelaySuffixTx(10);
+    const auto first = helper.Fee(100 * SATOSHI).FromTx(first_tx);
+    pool.addUnchecked(first);
+    const auto original = pool.ReadRelayAdmissionsAfter(0);
+    const auto second_tx = RelaySuffixTx(11);
+    const auto second = helper.Fee(200 * SATOSHI).FromTx(second_tx);
+    pool.addUnchecked(second);
+    const uint64_t removed_id = second->GetEntryId();
+    pool.removeRecursive(*second_tx, REMOVAL_REASON_DUMMY);
+    // The allocated upper ID is now a permanent gap, not an unpublished
+    // reservation. The watermark must advance even with an empty live suffix.
+    const auto gap = pool.ReadRelayAdmissionsAfter(original.watermark);
+    BOOST_CHECK(gap.entries.empty());
+    BOOST_CHECK_EQUAL(gap.watermark, removed_id);
+    pool.clear();
+    const auto cleared = pool.ReadRelayAdmissionsAfter(0);
+    BOOST_CHECK(cleared.entries.empty());
+    BOOST_CHECK_EQUAL(cleared.watermark, removed_id);
+
+    const auto replacement = helper.Fee(700 * SATOSHI).FromTx(first_tx);
+    pool.addUnchecked(replacement);
+    const auto readded = pool.ReadRelayAdmissionsAfter(gap.watermark);
+    BOOST_REQUIRE_EQUAL(readded.entries.size(), 1U);
+    BOOST_CHECK_GT(readded.entries[0].entry_id, removed_id);
+    BOOST_CHECK_EQUAL(readded.watermark, replacement->GetEntryId());
+    BOOST_CHECK(readded.entries[0].txid == first_tx->GetId());
+    BOOST_CHECK(readded.entries[0].fee == 700 * SATOSHI);
+    // An old cursor inside the removed-ID gap still finds the new admission.
+    const auto from_gap = pool.ReadRelayAdmissionsAfter(removed_id - 1);
+    BOOST_REQUIRE_EQUAL(from_gap.entries.size(), 1U);
+    BOOST_CHECK_EQUAL(from_gap.entries[0].entry_id, replacement->GetEntryId());
+    // Copied facts survive removal/clear and cannot alias the new incarnation.
+    BOOST_REQUIRE_EQUAL(original.entries.size(), 1U);
+    BOOST_CHECK(original.entries[0].fee == 100 * SATOSHI);
+    BOOST_CHECK_EQUAL(original.entries[0].entry_id, first->GetEntryId());
+    BOOST_CHECK_THROW(pool.ReadRelayAdmissionsAfter(readded.watermark + 1),
+                      std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(relay_admission_suffix_seeks_past_existing_prefix) {
+    CTxMemPool pool{GetConfig(), CTxMemPool::Options{}};
+    LOCK2(cs_main, pool.cs);
+    TestMemPoolEntryHelper helper;
+    constexpr uint32_t prefix_size = 4096;
+    {
+        CTxMemPool::ScopedSnapshotDefer defer(pool);
+        for (uint32_t i = 0; i < prefix_size; ++i) {
+            pool.addUnchecked(helper.Fee(SATOSHI).FromTx(RelaySuffixTx(i)));
+        }
+    }
+    const auto prefix = pool.ReadRelayAdmissionsAfter(0);
+    BOOST_REQUIRE_EQUAL(prefix.entries.size(), prefix_size);
+    const auto first = helper.Fee(10 * SATOSHI).FromTx(RelaySuffixTx(prefix_size));
+    const auto second = helper.Fee(20 * SATOSHI).FromTx(RelaySuffixTx(prefix_size + 1));
+    pool.addUnchecked(first);
+    pool.addUnchecked(second);
+    const auto suffix = pool.ReadRelayAdmissionsAfter(prefix.watermark);
+    BOOST_REQUIRE_EQUAL(suffix.entries.size(), 2U);
+    BOOST_CHECK_EQUAL(suffix.entries[0].entry_id, first->GetEntryId());
+    BOOST_CHECK_EQUAL(suffix.entries[1].entry_id, second->GetEntryId());
+    BOOST_CHECK(suffix.entries[0].txid == first->GetTx().GetId());
+    BOOST_CHECK(suffix.entries[1].txid == second->GetTx().GetId());
+    // Result storage is proportional to returned facts, not the old prefix.
+    BOOST_CHECK_LT(suffix.entries.capacity(), prefix_size);
+    const auto empty = pool.ReadRelayAdmissionsAfter(suffix.watermark);
+    BOOST_CHECK(empty.entries.empty());
+    BOOST_CHECK_EQUAL(empty.entries.capacity(), 0U);
+    BOOST_CHECK_EQUAL(empty.watermark, suffix.watermark);
+}
 
 BOOST_AUTO_TEST_CASE(optional_consistency_check_default_and_override) {
     // Native fixtures deliberately keep checking every mutation. Startup's
