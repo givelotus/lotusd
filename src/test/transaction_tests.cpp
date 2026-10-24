@@ -2370,4 +2370,58 @@ BOOST_AUTO_TEST_CASE(v2_legacy_state_output) {
                 std::vector<uint8_t>(wire.begin(), wire.end()));
 }
 
+BOOST_AUTO_TEST_CASE(cached_wire_slice_serialization_matches_canonical) {
+    CMutableTransaction mtx;
+    mtx.nVersion = 7;
+    mtx.vin.emplace_back(TxId(uint256::ONE), 0);
+    mtx.vin[0].nFlags = 1;
+    lotus::v2::BranchWitness witness;
+    witness.script = {0x4e};
+    witness.arguments = {{0x01, 0x02, 0x03}};
+    mtx.vin[0].vWitnesses = {witness};
+    lotus::v2::Output out;
+    out.value = 50000;
+    out.branches = {lotus::v2::BranchLeaf(std::vector<uint8_t>{0x4e})};
+    out.paths = {{0}};
+    mtx.vout.push_back(CTxOut::FromV2Output(out));
+
+    DataStream expected{};
+    expected << mtx;
+    const size_t sz = expected.size();
+
+    CTransactionRef from_mtx = MakeTransactionRef(mtx);
+    BOOST_CHECK(from_mtx->HasCachedWireBytes());
+    const auto mtx_wire = from_mtx->GetCachedWireBytes();
+    BOOST_CHECK_EQUAL(mtx_wire.size(), sz);
+    const auto *mtx_storage =
+        reinterpret_cast<const uint8_t *>(from_mtx->vin.data());
+    BOOST_CHECK(mtx_wire.data() >= mtx_storage);
+    BOOST_CHECK(mtx_wire.data() + mtx_wire.size() <=
+                mtx_storage + from_mtx->GetStorageSize());
+
+    const std::vector<uint8_t> raw_bytes(UCharCast(expected.data()),
+                                         UCharCast(expected.data()) + sz);
+    CMutableTransaction scanned_mtx;
+    TransactionWire wire = ScanTransactionWire(raw_bytes, &scanned_mtx);
+    CTransactionRef from_wire = MakeTransactionRef(wire);
+    BOOST_CHECK(from_wire->HasCachedWireBytes());
+    const auto wire_slice = from_wire->GetCachedWireBytes();
+    BOOST_CHECK_EQUAL(wire_slice.size(), sz);
+    const auto *wire_storage =
+        reinterpret_cast<const uint8_t *>(from_wire->vin.data());
+    BOOST_CHECK(wire_slice.data() >= wire_storage);
+    BOOST_CHECK(wire_slice.data() + wire_slice.size() <=
+                wire_storage + from_wire->GetStorageSize());
+
+    DataStream actual_mtx{};
+    actual_mtx << *from_mtx;
+    BOOST_CHECK_EQUAL(HexStr(actual_mtx), HexStr(expected));
+    BOOST_CHECK_EQUAL(::GetSerializeSize(*from_mtx), sz);
+
+    DataStream actual_wire{};
+    actual_wire << *from_wire;
+    BOOST_CHECK_EQUAL(HexStr(actual_wire), HexStr(expected));
+    BOOST_CHECK_EQUAL(::GetSerializeSize(*from_wire), sz);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

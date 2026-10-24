@@ -1236,27 +1236,54 @@ static void DecodeRawTxBatchParallel(const UniValue &raw_transactions,
                                          *precomputed_out = nullptr) {
     const auto &raw_vals = raw_transactions.getValues();
     const size_t n = raw_vals.size();
-    for (const auto &rawtx : raw_vals) {
-        (void)rawtx.get_str();
-    }
     txns.resize(n);
     txid_hexes.resize(n);
     if (precomputed_out != nullptr) {
         precomputed_out->resize(n);
     }
+
+    auto decode_one = [&](size_t i) -> bool {
+        const std::string &hex = raw_vals[i].get_str();
+        if (hex.empty() || (hex.size() & 1U) != 0U) {
+            return false;
+        }
+        const size_t byte_len = hex.size() >> 1;
+        std::vector<uint8_t> &raw_buf = TransactionScratchBuffer();
+        raw_buf.resize(byte_len);
+        uint8_t *dst = raw_buf.data();
+        for (size_t k = 0; k < hex.size(); k += 2) {
+            const signed char hi = HexDigit(hex[k]);
+            const signed char lo = HexDigit(hex[k + 1]);
+            if (hi < 0 || lo < 0) {
+                return false;
+            }
+            dst[k >> 1] = static_cast<uint8_t>((hi << 4) | lo);
+        }
+        CMutableTransaction mtx;
+        TransactionWire wire;
+        try {
+            wire = ScanTransactionWire(Span<const uint8_t>{dst, byte_len}, &mtx);
+        } catch (const std::exception &) {
+            return false;
+        }
+        if (wire.bytes.size() != byte_len) {
+            return false;
+        }
+        txns[i] = MakeTransactionRef(wire);
+        if (precomputed_out != nullptr) {
+            PrecomputeSingleTxData(*txns[i], (*precomputed_out)[i]);
+        }
+        txid_hexes[i] = txns[i]->GetId().GetHex();
+        return true;
+    };
+
     if (n < 32) {
         for (size_t i = 0; i < n; ++i) {
-            CMutableTransaction mtx;
-            if (!DecodeHexTx(mtx, raw_vals[i].get_str())) {
+            if (!decode_one(i)) {
                 throw JSONRPCError(RPC_DESERIALIZATION_ERROR,
                                    "TX decode failed: " +
                                        raw_vals[i].get_str());
             }
-            txns[i] = MakeTransactionRef(std::move(mtx));
-            if (precomputed_out != nullptr) {
-                PrecomputeSingleTxData(*txns[i], (*precomputed_out)[i]);
-            }
-            txid_hexes[i] = txns[i]->GetId().GetHex();
             if (txids_arr != nullptr) {
                 txids_arr->push_back(txid_hexes[i]);
             }
@@ -1271,8 +1298,7 @@ static void DecodeRawTxBatchParallel(const UniValue &raw_transactions,
                 if (i >= first_fail.load(std::memory_order_relaxed)) {
                     break;
                 }
-                CMutableTransaction mtx;
-                if (!DecodeHexTx(mtx, raw_vals[i].get_str())) {
+                if (!decode_one(i)) {
                     size_t cur = first_fail.load(std::memory_order_relaxed);
                     while (i < cur &&
                            !first_fail.compare_exchange_weak(
@@ -1280,11 +1306,6 @@ static void DecodeRawTxBatchParallel(const UniValue &raw_transactions,
                     }
                     break;
                 }
-                txns[i] = MakeTransactionRef(std::move(mtx));
-                if (precomputed_out != nullptr) {
-                    PrecomputeSingleTxData(*txns[i], (*precomputed_out)[i]);
-                }
-                txid_hexes[i] = txns[i]->GetId().GetHex();
             }
         });
 
