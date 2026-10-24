@@ -3416,16 +3416,15 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
     // AcceptToMemoryPool does for the coins it fetches).
     std::vector<std::vector<COutPoint>> fetched(n);
     uint32_t script_flags = 0;
-    const CTxMemPool *native_pool = nullptr;
+    const CTxMemPool *native_pool = options.expected_mempool;
 
     // Native entries never reuse legacy execution verdicts. They may warm
     // signatures from immutable snapshots; Phase C validates current state.
     const bool has_legacy = std::any_of(txs.begin(), txs.end(),
         [](const auto &tx) { return tx->nVersion != 7; });
-    const bool has_native = std::any_of(txs.begin(), txs.end(),
-        [](const auto &tx) { return tx->nVersion == 7; });
-    // Phase A also captures the node-owned pool for native snapshot identity.
-    if (has_legacy || has_native) {
+    // Native-only batches use the caller-owned pool identity and do not
+    // enter cs_main until authoritative admission in Phase C.
+    if (has_legacy) {
         const auto start = SteadyClock::now();
         LOCK(cs_main);
         const auto acquired = SteadyClock::now();

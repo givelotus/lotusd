@@ -728,6 +728,7 @@ BOOST_FIXTURE_TEST_CASE(v2_staged_native_signatures_warm_before_authoritative_co
     }
     StagedAdmissionOptions options;
     options.script_threads = 2;
+    options.expected_mempool = m_node.mempool.get();
     options.test_between_phases = [&] {
         AssertLockNotHeld(cs_main);
         BOOST_CHECK(cache.Get(entries[0], false));
