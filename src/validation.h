@@ -476,6 +476,15 @@ void PrecomputeSingleTxData(const CTransaction &tx,
                             PrecomputedBatchTxData &out);
 
 /**
+ * Pre-verify and warm SignatureCache for V2 fast-path transactions in a raw
+ * transaction batch outside cs_main using the published RCU snapshot.
+ */
+void PrewarmRawTxBatchSignatures(ChainstateManager &chainman,
+                                 const CTxMemPool &pool,
+                                 const Package &txns)
+    LOCKS_EXCLUDED(cs_main);
+
+/**
  * [Patch 036 optimization] Validate and optionally commit an all-or-nothing
  * batch of raw transactions in a single pass under cs_main, coalescing RCU
  * snapshot publication via CTxMemPool::ScopedSnapshotDefer.

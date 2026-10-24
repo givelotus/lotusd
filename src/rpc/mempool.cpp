@@ -1291,7 +1291,7 @@ static void DecodeRawTxBatchParallel(const UniValue &raw_transactions,
         return true;
     };
 
-    if (n < 32) {
+    if (n <= 256) {
         for (size_t i = 0; i < n; ++i) {
             if (!decode_one(i)) {
                 throw JSONRPCError(RPC_DESERIALIZATION_ERROR,
@@ -1450,6 +1450,8 @@ static RPCHelpMan testrawtxbatch() {
             CTxMemPool &mempool = EnsureMemPool(node);
             ChainstateManager &chainman = EnsureChainman(node);
             Chainstate &chainstate = chainman.ActiveChainstate();
+
+            PrewarmRawTxBatchSignatures(chainman, mempool, txns);
 
             const PackageMempoolAcceptResult package_result = [&] {
                 LOCK(::cs_main);
@@ -1733,6 +1735,8 @@ static RPCHelpMan submitrawtxbatch() {
                 fee_ctrl.GetFeeRateInfo(now_ms);
             results_arr.reserve(txns.size());
 
+            PrewarmRawTxBatchSignatures(chainman, mempool, txns);
+
             const PackageMempoolAcceptResult package_result = [&] {
                 LOCK2(::cs_main, mempool.cs);
                 Chainstate &chainstate = chainman.ActiveChainstate();
@@ -1751,9 +1755,7 @@ static RPCHelpMan submitrawtxbatch() {
 
                 if (res.m_state.IsValid() &&
                     res.m_tx_results.size() == txns.size()) {
-                    for (const auto &tx : txns) {
-                        mempool.AddUnbroadcastTx(tx->GetId());
-                    }
+                    mempool.AddUnbroadcastTxBatch(txns);
                     const auto cur_snap =
                         node::GetGlobalSnapshotPublisher().Load();
                     if (!cur_snap || !cur_snap->chain_valid ||

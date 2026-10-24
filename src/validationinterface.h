@@ -53,6 +53,8 @@ protected:
     ~CValidationInterface() = default;
     /** Wait for prior callbacks offloaded to a subscriber's secondary queue. */
     virtual void SyncTransactionQueue() {}
+    /** Return whether this subscriber uses the spent_coins vector in TransactionAddedToMempool. */
+    virtual bool WantsSpentCoinsInMempoolNotification() const { return true; }
     /**
      * Notifies listeners when the block chain tip advances.
      *
@@ -193,6 +195,7 @@ protected:
         std::shared_ptr<const std::vector<Coin>> spent_coins) {};
 
     friend class ValidationSignals;
+    friend class ValidationSignalsImpl;
     friend class ValidationInterfaceTest;
 };
 
@@ -214,6 +217,8 @@ public:
     void FlushBackgroundCallbacks();
 
     size_t CallbacksPending();
+
+    bool HasSpentCoinsSubscribers() const noexcept;
 
     /** Register subscriber */
     void RegisterValidationInterface(CValidationInterface *callbacks);

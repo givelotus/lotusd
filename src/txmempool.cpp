@@ -1096,6 +1096,9 @@ void CTxMemPool::PrioritiseTransaction(const TxId &txid,
 
 void CTxMemPool::ApplyDelta(const TxId &txid, Amount &nFeeDelta) const {
     AssertLockHeld(cs);
+    if (mapDeltas.empty()) {
+        return;
+    }
     std::map<TxId, Amount>::const_iterator pos = mapDeltas.find(txid);
     if (pos == mapDeltas.end()) {
         return;
@@ -1208,10 +1211,37 @@ bool CTxMemPool::CanFitRawTxBatch(
     size_t usage = DynamicMemoryUsage();
     const size_t entry_overhead = memusage::MallocUsage(sizeof(CTxMemPoolEntry));
     const size_t initial_usage = usage;
-    size_t staged_nodes = 0;
     const CTxMemPoolEntry::Parents empty_links;
     const size_t edge_usage = 2 * memusage::IncrementalDynamicUsage(empty_links);
     const size_t next_tx_node_usage = sizeof(decltype(mapNextTx)::Entry);
+
+    // Fast pessimistic upper bound: assume every input is a mempool parent.
+    size_t upper_usage = initial_usage;
+    bool upper_overflow = false;
+    for (const auto *entry : entries) {
+        const size_t n_in = entry->GetTx().vin.size();
+        const size_t add = entry_overhead + entry->DynamicMemoryUsage() +
+                           n_in * (next_tx_node_usage + edge_usage);
+        if (upper_usage + add < upper_usage) {
+            upper_overflow = true;
+            break;
+        }
+        upper_usage += add;
+    }
+    if (!upper_overflow) {
+        size_t projected_upper = upper_usage +
+            mapTx.get_allocator().resource()->AdditionalChunkBytes(entries.size());
+        const auto &index = mapTx.get<0>();
+        if (mapTx.size() + entries.size() > index.bucket_count() * index.max_load_factor()) {
+            projected_upper += 2 * (index.bucket_count() + mapTx.size() + entries.size()) *
+                               sizeof(void *);
+        }
+        if (projected_upper >= initial_usage && projected_upper <= memory_limit) {
+            return true;
+        }
+    }
+
+    size_t staged_nodes = 0;
     std::set<TxId> staged;
     for (const auto *entry : entries) {
         usage += entry_overhead + entry->DynamicMemoryUsage();
@@ -1250,6 +1280,36 @@ void CTxMemPool::AddUnbroadcastTx(const TxId &txid) {
         }
         LOCK(cs);
         node::PublishMempoolUnbroadcastSnapshot(*this, txid, true);
+    }
+}
+
+void CTxMemPool::AddUnbroadcastTxBatch(std::span<const CTransactionRef> txs) {
+    AssertLockHeld(cs);
+    if (txs.empty()) {
+        return;
+    }
+    size_t added = 0;
+    {
+        StdLockGuard guard(m_unbroadcast_log_mutex);
+        m_unbroadcast_log.reserve(m_unbroadcast_log.size() + txs.size());
+        for (const auto &tx : txs) {
+            if (!tx) {
+                continue;
+            }
+            const TxId &txid = tx->GetId();
+            RCUPtr<const CTxMemPoolEntry> entry = m_tx_tree.get(txid);
+            if (entry && entry->SetUnbroadcast(true)) {
+                ++added;
+                m_unbroadcast_log.push_back(txid);
+                MarkSnapshotEntryChanged(txid);
+            }
+        }
+    }
+    if (added > 0) {
+        m_unbroadcast_count.fetch_add(added, std::memory_order_relaxed);
+        if (!DeferSnapshotIfActive()) {
+            node::PublishMempoolSnapshot(*this);
+        }
     }
 }
 
@@ -1329,9 +1389,12 @@ void CTxMemPool::RemoveStaged(const setEntries &stage,
 
 int CTxMemPool::Expire(std::chrono::seconds time) {
     AssertLockHeld(cs);
-    ScopedSnapshotDefer snapshot_defer(*this);
     indexed_transaction_set::index<entry_time>::type::iterator it =
         mapTx.get<entry_time>().begin();
+    if (it == mapTx.get<entry_time>().end() || (*it)->GetTime() >= time) {
+        return 0;
+    }
+    ScopedSnapshotDefer snapshot_defer(*this);
     setEntries toremove;
     size_t skippedFinalizedTxs{0};
     while (it != mapTx.get<entry_time>().end() && (*it)->GetTime() < time) {
@@ -1442,6 +1505,9 @@ void CTxMemPool::trackPackageRemoved(const CFeeRate &rate) {
 void CTxMemPool::TrimToSize(size_t sizelimit,
                             std::vector<COutPoint> *pvNoSpendsRemaining) {
     AssertLockHeld(cs);
+    if (mapTx.empty() || DynamicMemoryUsage() <= sizelimit) {
+        return;
+    }
     ScopedSnapshotDefer snapshot_defer(*this);
 
     unsigned nTxnRemoved = 0;

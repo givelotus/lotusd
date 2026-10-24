@@ -197,9 +197,8 @@ void CaptureMempoolEntriesLocked(ChainAndMempoolSnapshot &snap,
         for (const auto &entry : mempool.mapTx) capture(*entry);
     } else {
         for (const TxId &id : mempool.SnapshotChangedEntries()) {
-            const auto it = mempool.mapTx.find(id);
-            if (it != mempool.mapTx.end()) {
-                capture(**it);
+            if (const auto entry = mempool.getEntry(id)) {
+                capture(*entry);
             } else {
                 tree->remove(Uint256RadixKey(id));
             }

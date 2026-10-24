@@ -647,6 +647,8 @@ public:
 
     /** Adds a transaction to the unbroadcast set */
     void AddUnbroadcastTx(const TxId &txid);
+    void AddUnbroadcastTxBatch(std::span<const CTransactionRef> txs)
+        EXCLUSIVE_LOCKS_REQUIRED(cs);
 
     /** Removes a transaction from the unbroadcast set */
     void RemoveUnbroadcastTx(const TxId &txid, const bool unchecked = false);
@@ -736,9 +738,9 @@ public:
     bool GetBlockSinceLastRollingFeeBump() const EXCLUSIVE_LOCKS_REQUIRED(cs) { return blockSinceLastRollingFeeBump; }
 
     void MarkSnapshotEntryChanged(const TxId &id) const EXCLUSIVE_LOCKS_REQUIRED(cs) {
-        m_snapshot_changed_entries.insert(id);
+        m_snapshot_changed_entries.push_back(id);
     }
-    const std::set<TxId> &SnapshotChangedEntries() const EXCLUSIVE_LOCKS_REQUIRED(cs) {
+    const std::vector<TxId> &SnapshotChangedEntries() const EXCLUSIVE_LOCKS_REQUIRED(cs) {
         return m_snapshot_changed_entries;
     }
     uint64_t GetSnapshotResetSequence() const EXCLUSIVE_LOCKS_REQUIRED(cs) {
@@ -792,7 +794,7 @@ public:
 
 private:
     mutable lotus::v2::UtxoFastFilter m_utxo_fast_filter;
-    mutable std::set<TxId> m_snapshot_changed_entries GUARDED_BY(cs);
+    mutable std::vector<TxId> m_snapshot_changed_entries GUARDED_BY(cs);
     mutable uint64_t m_snapshot_reset_seq GUARDED_BY(cs){1};
     mutable bool m_snapshot_initialized GUARDED_BY(cs){false};
     mutable bool m_snapshot_needs_reset GUARDED_BY(cs){true};

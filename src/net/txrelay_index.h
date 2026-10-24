@@ -258,7 +258,7 @@ private:
     mutable Mutex m_mutex;
     //! Bounded mutation count, independent of churn or rebuild duration.
     static constexpr size_t MAX_EPOCH_CHANGES{65'536};
-    bool m_rebuilding GUARDED_BY(m_mutex){false};
+    std::atomic<bool> m_rebuilding{false};
     bool m_epoch_overflow GUARDED_BY(m_mutex){false};
     std::vector<std::pair<TxId, bool>> m_epoch_changes GUARDED_BY(m_mutex);
     std::shared_ptr<Epoch> m_current GUARDED_BY(m_mutex);

@@ -221,6 +221,14 @@ void TxRelayIndex::AddUnlocked(const TxId &txid, Clock time) {
 }
 
 void TxRelayIndex::Add(const TxId &txid, Clock time) {
+    if (!m_rebuilding.load(std::memory_order_acquire)) {
+        if (const auto snap{LoadEpochs()};
+            snap && snap->current &&
+            snap->current->short_id_of.contains(txid) &&
+            !m_rebuilding.load(std::memory_order_acquire)) {
+            return;
+        }
+    }
     LOCK(m_mutex);
     AddUnlocked(txid, time);
 }
@@ -228,6 +236,21 @@ void TxRelayIndex::Add(const TxId &txid, Clock time) {
 void TxRelayIndex::AddBatch(std::span<const CTransactionRef> txs, Clock time) {
     if (txs.empty()) {
         return;
+    }
+    if (!m_rebuilding.load(std::memory_order_acquire)) {
+        if (const auto snap{LoadEpochs()}; snap && snap->current) {
+            bool any_missing = false;
+            for (const auto &tx : txs) {
+                if (tx && !snap->current->short_id_of.contains(tx->GetId())) {
+                    any_missing = true;
+                    break;
+                }
+            }
+            if (!any_missing &&
+                !m_rebuilding.load(std::memory_order_acquire)) {
+                return;
+            }
+        }
     }
     LOCK(m_mutex);
     for (const auto &tx : txs) {
