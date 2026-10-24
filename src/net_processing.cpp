@@ -1005,6 +1005,7 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!m_tx_admission_done_mutex, !g_msgproc_mutex);
     ~PeerManagerImpl() override
         EXCLUSIVE_LOCKS_REQUIRED(!m_tx_admission_done_mutex, !g_msgproc_mutex) {
+        m_batch_relay_cb.reset();
         StopTxAdmission();
     }
     void CheckForStaleTipAndEvictPeers() override;
@@ -1267,6 +1268,7 @@ private:
         std::optional<MempoolAcceptResult> result;
     };
 
+    std::shared_ptr<CTxMemPool::BatchRelayCallback> m_batch_relay_cb;
     std::unique_ptr<node::TxAdmissionQueue> m_tx_admission_queue;
     node::TxAdmissionRetainedBudget m_tx_admission_retained_budget{128U << 20};
     std::thread m_tx_admission_thread;
@@ -3437,6 +3439,12 @@ PeerManagerImpl::PeerManagerImpl(CConnman &connman, AddrMan &addrman,
     m_v2_protocol_handler.SetTxRelayEpochProvider(this);
     m_v2_protocol_handler.SetServeUtxoShards(
         gArgs.GetBoolArg("-serveutxoshards", true));
+    m_batch_relay_cb = std::make_shared<CTxMemPool::BatchRelayCallback>(
+        [this](std::span<const CTransactionRef> txs, bool is_local)
+             NO_THREAD_SAFETY_ANALYSIS {
+            RelayTransactionBatch(txs, is_local);
+        });
+    m_mempool.SetBatchRelayCallback(m_batch_relay_cb);
     if (m_opts.parallel_admission) {
         m_tx_admission_queue = std::make_unique<node::TxAdmissionQueue>(
             node::TxAdmissionQueue::Limits{});

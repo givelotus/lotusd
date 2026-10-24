@@ -261,10 +261,14 @@ CTxMemPool::txiter CTxMemPool::addUnchecked(
 
     nTransactionsUpdated++;
     totalTxSize += entry->GetTxSize();
-    node::SetMempoolMetrics(mapTx.size(), totalTxSize);
     m_total_fee += entry->GetFee();
     MarkSnapshotEntryChanged(tx->GetId());
-    node::PublishMempoolSnapshot(*this);
+    if (m_snapshot_defer_depth > 0) {
+        m_snapshot_dirty = true;
+    } else {
+        node::SetMempoolMetrics(mapTx.size(), totalTxSize);
+        node::PublishMempoolSnapshot(*this);
+    }
     return newit;
 }
 
@@ -1381,6 +1385,7 @@ CTxMemPool::ScopedSnapshotDefer::~ScopedSnapshotDefer() {
     AssertLockHeld(m_pool.cs);
     assert(m_pool.m_snapshot_defer_depth > 0);
     if (--m_pool.m_snapshot_defer_depth == 0) {
+        node::SetMempoolMetrics(m_pool.mapTx.size(), m_pool.totalTxSize);
         if (m_pool.m_snapshot_dirty && m_flush_on_exit) {
             m_pool.m_snapshot_dirty = false;
             node::PublishMempoolSnapshot(m_pool);

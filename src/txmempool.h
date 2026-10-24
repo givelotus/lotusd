@@ -832,7 +832,30 @@ public:
             outpoint.GetTxId().begin(), outpoint.GetN());
     }
 
+    using BatchRelayCallback =
+        std::function<void(std::span<const CTransactionRef>, bool is_local)>;
+    void SetBatchRelayCallback(std::weak_ptr<BatchRelayCallback> cb) {
+        std::lock_guard<std::mutex> lock(m_batch_relay_cb_mutex);
+        m_batch_relay_cb = std::move(cb);
+    }
+    void NotifyBatchRelay(std::span<const CTransactionRef> txs,
+                          bool is_local) const {
+        if (txs.empty()) {
+            return;
+        }
+        std::shared_ptr<BatchRelayCallback> cb;
+        {
+            std::lock_guard<std::mutex> lock(m_batch_relay_cb_mutex);
+            cb = m_batch_relay_cb.lock();
+        }
+        if (cb && *cb) {
+            (*cb)(txs, is_local);
+        }
+    }
+
 private:
+    mutable std::mutex m_batch_relay_cb_mutex;
+    std::weak_ptr<BatchRelayCallback> m_batch_relay_cb;
     mutable lotus::v2::UtxoFastFilter m_utxo_fast_filter;
     mutable std::vector<TxId> m_snapshot_changed_entries GUARDED_BY(cs);
     mutable uint64_t m_snapshot_reset_seq GUARDED_BY(cs){1};

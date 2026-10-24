@@ -1760,9 +1760,8 @@ static RPCHelpMan submitrawtxbatch() {
             }
 
             const PackageMempoolAcceptResult package_result = [&] {
-                LOCK2(::cs_main, mempool.cs);
+                LOCK(::cs_main);
                 Chainstate &chainstate = chainman.ActiveChainstate();
-                CTxMemPool::ScopedSnapshotDefer snap_defer(mempool);
                 // [Patch 036 optimization] Single-pass two-phase batch
                 // validation and commit under cs_main + ScopedSnapshotDefer:
                 // Phase 1 runs PreChecks + maxfeerate across all workspaces
@@ -1805,18 +1804,8 @@ static RPCHelpMan submitrawtxbatch() {
                                 return p.batch_accepted;
                             });
 
-            bool relayed_early = false;
-            if (all_allowed &&
-                (all_fast_accepted ||
-                 package_result.m_tx_results.size() == txns.size())) {
-                if (node.validation_signals && txns.size() <= 64) {
-                    node.validation_signals->SyncWithValidationInterfaceQueue();
-                }
-                if (node.peerman) {
-                    node.peerman->RelayTransactionBatch(txns,
-                                                        /*is_local=*/true);
-                }
-                relayed_early = true;
+            if (all_allowed && node.validation_signals && txns.size() <= 64) {
+                node.validation_signals->SyncWithValidationInterfaceQueue();
             }
 
             if (all_fast_accepted) {
@@ -2017,18 +2006,6 @@ static RPCHelpMan submitrawtxbatch() {
                         }
                     }
                     results_arr.push_back(std::move(result_inner));
-                }
-            }
-
-            if (all_allowed && !relayed_early) {
-                if (node.validation_signals && txns.size() <= 64) {
-                    node.validation_signals->SyncWithValidationInterfaceQueue();
-                }
-                // Locally originated batches use the ordinary first-hop
-                // trickle; SendMessages may still coalesce the eventual relay.
-                if (node.peerman) {
-                    node.peerman->RelayTransactionBatch(txns,
-                                                        /*is_local=*/true);
                 }
             }
 

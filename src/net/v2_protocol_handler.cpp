@@ -1934,6 +1934,7 @@ void V2PeerProtocolHandler::HandleShortTx(
             }
 
             accepted_txs.reserve(missing_txs.size());
+            m_peerman.MarkPeerKnownTxBatch(pfrom.GetId(), missing_txs);
             const PackageMempoolAcceptResult batch_res = ProcessRawTxBatch(
                 m_chainman.ActiveChainstate(), m_mempool, missing_txs,
                 /*test_accept=*/false);
@@ -1942,7 +1943,6 @@ void V2PeerProtocolHandler::HandleShortTx(
                     const TxId &txid = tx->GetId();
                     if (m_mempool.exists(txid)) {
                         valid_txs.push_back(tx);
-                        accepted_txs.push_back(tx);
                     }
                 }
             } else {
@@ -1979,7 +1979,9 @@ void V2PeerProtocolHandler::HandleShortTx(
         SetScopedTransactions(scope, resp.context_id, std::move(merged));
     }
 
-    m_peerman.RelayTransactionBatch(accepted_txs);
+    if (!accepted_txs.empty()) {
+        m_peerman.RelayTransactionBatch(accepted_txs);
+    }
 }
 
 V2ProtocolHandlerStats V2PeerProtocolHandler::GetStats() const {

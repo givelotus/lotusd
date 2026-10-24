@@ -285,6 +285,7 @@ class NativeAdmissionPreparation {
     const bool m_all_confirmed_inputs{false};
     int m_standard_sigchecks{0};
     int m_consensus_sigchecks{0};
+    mutable std::unique_ptr<CTxMemPoolEntry> m_pre_entry;
     mutable bool m_reused GUARDED_BY(cs_main){false};
 
     NativeAdmissionPreparation(const CTransaction &tx,
@@ -292,7 +293,9 @@ class NativeAdmissionPreparation {
                               const lotus::v2::ChainId &chain,
                               std::vector<Coin> coins, Amount base_fee,
                               bool verify_coins_tip = true,
-                              bool all_confirmed_inputs = false)
+                              bool all_confirmed_inputs = false,
+                              std::unique_ptr<CTxMemPoolEntry> pre_entry =
+                                  nullptr)
         : m_txid(tx.GetId()),
           m_txhash(verify_coins_tip ? tx.GetHash() : TxHash{}),
           m_chainman(snapshot.chainman_ptr), m_pool(snapshot.mempool_ptr),
@@ -301,7 +304,8 @@ class NativeAdmissionPreparation {
           m_next_flags(*snapshot.next_script_flags), m_chain_id(chain),
           m_coins(std::move(coins)), m_base_fee(base_fee),
           m_verify_coins_tip(verify_coins_tip),
-          m_all_confirmed_inputs(all_confirmed_inputs) {}
+          m_all_confirmed_inputs(all_confirmed_inputs),
+          m_pre_entry(std::move(pre_entry)) {}
 
 public:
     static std::shared_ptr<const NativeAdmissionPreparation> Prepare(
@@ -312,14 +316,29 @@ public:
         bool store_sig_cache = true)
         LOCKS_EXCLUDED(cs_main);
     static std::shared_ptr<const NativeAdmissionPreparation>
-    PrepareFastConfirmed(const CTransaction &tx,
+    PrepareFastConfirmed(const CTransactionRef &ptx,
                          const node::ChainAndMempoolSnapshot &snapshot,
-                         const lotus::v2::ChainId &chain, Amount base_fee)
+                         const lotus::v2::ChainId &chain, Amount base_fee,
+                         int64_t accept_time)
         LOCKS_EXCLUDED(cs_main) {
+        auto pre_entry = std::make_unique<CTxMemPoolEntry>(
+            ptx, base_fee, accept_time,
+            static_cast<unsigned int>(snapshot.height), 0, LockPoints{});
         return std::shared_ptr<const NativeAdmissionPreparation>(
-            new NativeAdmissionPreparation(tx, snapshot, chain, {}, base_fee,
+            new NativeAdmissionPreparation(*ptx, snapshot, chain, {}, base_fee,
                                            /*verify_coins_tip=*/false,
-                                           /*all_confirmed_inputs=*/true));
+                                           /*all_confirmed_inputs=*/true,
+                                           std::move(pre_entry)));
+    }
+    std::unique_ptr<CTxMemPoolEntry>
+    TakePreAllocatedEntry(Amount fee, unsigned int height,
+                          int64_t sigchecks) const noexcept {
+        if (m_pre_entry && m_pre_entry->GetFee() == fee &&
+            m_pre_entry->GetHeight() == height &&
+            m_pre_entry->GetSigChecks() == sigchecks) {
+            return std::move(m_pre_entry);
+        }
+        return nullptr;
     }
     const std::vector<Coin> &Coins() const noexcept { return m_coins; }
     Amount BaseFee() const noexcept { return m_base_fee; }
@@ -1899,6 +1918,13 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws,
                                      "too-many-sigchecks");
             }
             native.MarkReused();
+            ws.m_entry = native.TakePreAllocatedEntry(
+                ws.m_base_fees,
+                args.m_heightOverride
+                    ? args.m_heightOverride
+                    : static_cast<unsigned int>(
+                          m_active_chainstate.m_chain.Height()),
+                ws.m_sig_checks_standard);
             return FinalizeDeferredPreChecks(args, ws);
         }
     }
@@ -2092,7 +2118,11 @@ bool MemPoolAccept::PreChecksBatch(
         pre->v2_all_confirmed_fast_inputs && !has_intra_batch_parents &&
         pre->v2_snapshot_tip_hash == tip->GetBlockHash() &&
         m_pool.mapTx.size() > 6400) {
-        if (mempool_nonempty) {
+        const bool pool_unchanged_since_prewarm =
+            pre->v2_prewarm_mempool_clean &&
+            pre->v2_prewarm_txs_updated == m_pool.GetTransactionsUpdated() &&
+            pre->v2_prewarm_mempool_size == m_pool.mapTx.size();
+        if (mempool_nonempty && !pool_unchanged_since_prewarm) {
             if (m_pool.existsWithinReadSection(txid)) {
                 return state.Invalid(TxValidationResult::TX_DUPLICATE,
                                      "txn-already-in-mempool");
@@ -2122,6 +2152,15 @@ bool MemPoolAccept::PreChecksBatch(
             m_pool.ApplyDelta(txid, ws.m_modified_fees);
         }
         ws.m_lock_points = LockPoints{};
+        if (pre->pre_allocated_entry &&
+            pre->pre_allocated_entry->GetFee() == ws.m_base_fees &&
+            pre->pre_allocated_entry->GetHeight() ==
+                (args.m_heightOverride
+                     ? args.m_heightOverride
+                     : static_cast<unsigned int>(tip->nHeight)) &&
+            pre->pre_allocated_entry->GetSigChecks() == 0) {
+            ws.m_entry = std::move(pre->pre_allocated_entry);
+        }
         return true;
     }
 
@@ -2326,10 +2365,13 @@ bool MemPoolAccept::FinalizeDeferredPreChecks(ATMPArgs &args, Workspace &ws) {
     TxValidationState &state = ws.m_state;
     const unsigned int nSize = tx.GetTotalSize();
 
-    ws.m_entry = std::make_unique<CTxMemPoolEntry>(
-        ptx, ws.m_base_fees, nAcceptTime,
-        heightOverride ? heightOverride : m_active_chainstate.m_chain.Height(),
-        ws.m_sig_checks_standard, ws.m_lock_points.value());
+    if (!ws.m_entry) {
+        ws.m_entry = std::make_unique<CTxMemPoolEntry>(
+            ptx, ws.m_base_fees, nAcceptTime,
+            heightOverride ? heightOverride
+                           : m_active_chainstate.m_chain.Height(),
+            ws.m_sig_checks_standard, ws.m_lock_points.value());
+    }
 
     ws.m_vsize = ws.m_entry->GetTxVirtualSize();
 
@@ -3833,7 +3875,9 @@ void PrecomputeSingleTxData(const CTransaction &tx,
     out.regular_tx_checked = true;
     out.regular_tx_valid = CheckRegularTransaction(tx, out.regular_tx_state);
     if (out.regular_tx_valid) {
-        (void)tx.GetPrecomputedData();
+        if (tx.nVersion != 7) {
+            (void)tx.GetPrecomputedData();
+        }
         (void)RecursiveDynamicUsage(tx);
     }
 }
@@ -3940,9 +3984,12 @@ void PrewarmRawTxBatchSignatures(
     const int spend_height = snapshot->height + 1;
     const bool std_deferred_only =
         lotus::v2::DeferredCheckRegistry::Consensus().Kinds().size() == 2;
+    const size_t pool_size_snapshot = pool.size();
+    const unsigned int prewarm_txs_updated = pool.GetTransactionsUpdated();
+    const int64_t accept_time = GetTime();
     const bool use_fast_confirmed_smt =
         std_deferred_only && !has_intra_batch_parents && utxo_root != nullptr &&
-        precomputed_batch != nullptr && pool.size() > 6400;
+        precomputed_batch != nullptr && pool_size_snapshot > 6400;
     const unsigned int hw_threads =
         std::max(1u, std::thread::hardware_concurrency());
     const size_t num_workers =
@@ -3952,8 +3999,10 @@ void PrewarmRawTxBatchSignatures(
     std::vector<lotus::v2::BatchSigCollector> worker_collectors(num_workers);
     std::vector<std::vector<size_t>> worker_candidates(num_workers);
     std::atomic<size_t> next_idx{0};
+    std::atomic<bool> worker_sig_failed{false};
 
     auto process_range = [&](size_t tid) {
+        RCULock rcu_lock;
         lotus::v2::BatchSigCollector &local_collector = worker_collectors[tid];
         std::vector<size_t> &local_cands = worker_candidates[tid];
         if (precomputed_batch != nullptr) {
@@ -3981,6 +4030,32 @@ void PrewarmRawTxBatchSignatures(
                         pre.v2_snapshot_tip_hash = snapshot_tip_hash;
                         pre.v2_all_confirmed_fast_inputs = true;
                         pre.v2_precomputed_base_fee = fast_fee;
+                        if (!has_duplicate_txid && !has_duplicate_prevout) {
+                            bool mempool_clean =
+                                !pool.existsWithinReadSection(tx.GetId());
+                            if (mempool_clean) {
+                                for (const CTxIn &txin : tx.vin) {
+                                    if (pool.mapNextTx
+                                            .containsWithinReadSection(
+                                                txin.prevout)) {
+                                        mempool_clean = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (mempool_clean) {
+                                pre.v2_prewarm_mempool_clean = true;
+                                pre.v2_prewarm_txs_updated =
+                                    prewarm_txs_updated;
+                                pre.v2_prewarm_mempool_size =
+                                    pool_size_snapshot;
+                            }
+                        }
+                        pre.pre_allocated_entry =
+                            std::make_unique<CTxMemPoolEntry>(
+                                txns[idx], fast_fee, accept_time,
+                                static_cast<unsigned int>(snapshot->height), 0,
+                                LockPoints{});
                         local_cands.push_back(idx);
                         continue;
                     }
@@ -4120,6 +4195,13 @@ void PrewarmRawTxBatchSignatures(
                 }
             }
         }
+        if (!local_collector.Empty()) {
+            if (!local_collector.VerifyAll(1)) {
+                worker_sig_failed.store(true, std::memory_order_relaxed);
+            } else if (!use_fast_confirmed_smt) {
+                sig_cache.SetBatch(local_collector);
+            }
+        }
     };
 
     if (num_workers == 1) {
@@ -4133,16 +4215,8 @@ void PrewarmRawTxBatchSignatures(
             });
     }
 
-    lotus::v2::BatchSigCollector collector;
-    for (auto &wc : worker_collectors) {
-        collector.Merge(std::move(wc));
-    }
-
-    bool batch_verified = collector.Empty();
-    if (!batch_verified && collector.VerifyAll()) {
-        sig_cache.SetBatch(collector);
-        batch_verified = true;
-    }
+    const bool batch_verified =
+        !worker_sig_failed.load(std::memory_order_relaxed);
     if (batch_verified && precomputed_batch != nullptr) {
         for (const auto &local_cands : worker_candidates) {
             for (const size_t idx : local_cands) {
@@ -4189,6 +4263,12 @@ ProcessRawTxBatch(
             }
         } else {
             RecordMempoolAdmissions(result);
+        }
+        if (result.m_state.IsValid() &&
+            (result.m_tx_results.size() == package.size() ||
+             (precomputed_batch != nullptr && !precomputed_batch->empty() &&
+              (*precomputed_batch)[0].batch_accepted))) {
+            pool.NotifyBatchRelay(package, /*is_local=*/mark_unbroadcast);
         }
     }
 
@@ -4790,8 +4870,11 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
         const size_t threads =
             std::clamp<size_t>(max_threads, 1, (work.size() + 15) / 16);
         std::vector<lotus::v2::BatchSigCollector> worker_collectors(threads);
+        std::atomic<bool> worker_sig_failed{false};
+        const int64_t pre_accept_time = GetTime();
         util::GetParallelRangeExecutor().Run(
             threads, 1, [&](size_t tid, size_t) {
+                RCULock rcu_lock;
                 auto *collector = &worker_collectors[tid];
                 for (size_t base = next.fetch_add(16, std::memory_order_relaxed);
                      base < work.size();
@@ -4802,24 +4885,20 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
                         if (txs[i]->nVersion == 7) {
                             if (can_try_fast_confirmed) {
                                 const CTransaction &tx = *txs[i];
-                                bool conflict_in_mempool = false;
-                                {
-                                    RCULock rcu_lock;
-                                    conflict_in_mempool =
-                                        native_snapshot->entry_tree
-                                            ? native_snapshot->entry_tree
-                                                  ->containsWithinReadSection(
-                                                      Uint256RadixKey(tx.GetId()))
-                                            : native_pool->existsWithinReadSection(
-                                                  tx.GetId());
-                                    if (!conflict_in_mempool) {
-                                        for (const auto &in : tx.vin) {
-                                            if (native_pool->mapNextTx
-                                                    .containsWithinReadSection(
-                                                        in.prevout)) {
-                                                conflict_in_mempool = true;
-                                                break;
-                                            }
+                                bool conflict_in_mempool =
+                                    native_snapshot->entry_tree
+                                        ? native_snapshot->entry_tree
+                                              ->containsWithinReadSection(
+                                                  Uint256RadixKey(tx.GetId()))
+                                        : native_pool->existsWithinReadSection(
+                                              tx.GetId());
+                                if (!conflict_in_mempool) {
+                                    for (const auto &in : tx.vin) {
+                                        if (native_pool->mapNextTx
+                                                .containsWithinReadSection(
+                                                    in.prevout)) {
+                                            conflict_in_mempool = true;
+                                            break;
                                         }
                                     }
                                 }
@@ -4846,8 +4925,9 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
                                         checks[i].native =
                                             NativeAdmissionPreparation::
                                                 PrepareFastConfirmed(
-                                                    tx, *native_snapshot,
-                                                    chain_id, fast_fee);
+                                                    txs[i], *native_snapshot,
+                                                    chain_id, fast_fee,
+                                                    pre_accept_time);
                                     }
                                     continue;
                                 }
@@ -4880,38 +4960,36 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
                         }
                     }
                 }
+                if (!collector->Empty()) {
+                    if (!collector->VerifyAll(1)) {
+                        worker_sig_failed.store(true, std::memory_order_relaxed);
+                    } else if (options.test_between_phases) {
+                        validation_cache.m_signature_cache.SetBatch(*collector);
+                    }
+                }
             });
-        lotus::v2::BatchSigCollector combined_sigs;
-        for (auto &wc : worker_collectors) {
-            combined_sigs.Merge(std::move(wc));
-        }
-        if (!combined_sigs.Empty()) {
-            if (combined_sigs.VerifyAll()) {
-                validation_cache.m_signature_cache.SetBatch(combined_sigs);
-            } else {
-                for (const size_t i : work) {
-                    if (checks[i].native) {
-                        std::optional<std::vector<Coin>> coins =
-                            checks[i].native->Coins();
-                        Amount fee = checks[i].native->BaseFee();
-                        if (coins->empty()) {
-                            uint32_t native_flags{0};
-                            coins.reset();
-                            PrepareNativeCryptoFromSnapshot(
-                                chainman, *txs[i], native_pool, options.limits,
-                                coins, native_flags, fee, native_snapshot, &txs,
-                                i, &batch_txid_table, batch_txid_mask);
-                        }
-                        if (coins && !coins->empty()) {
-                            checks[i].native =
-                                NativeAdmissionPreparation::Prepare(
-                                    *txs[i], *native_snapshot, chain_id,
-                                    std::move(*coins), fee,
-                                    validation_cache.m_signature_cache,
-                                    nullptr);
-                        } else {
-                            checks[i].native.reset();
-                        }
+        if (worker_sig_failed.load(std::memory_order_relaxed)) {
+            for (const size_t i : work) {
+                if (checks[i].native) {
+                    std::optional<std::vector<Coin>> coins =
+                        checks[i].native->Coins();
+                    Amount fee = checks[i].native->BaseFee();
+                    if (coins->empty()) {
+                        uint32_t native_flags{0};
+                        coins.reset();
+                        PrepareNativeCryptoFromSnapshot(
+                            chainman, *txs[i], native_pool, options.limits,
+                            coins, native_flags, fee, native_snapshot, &txs, i,
+                            &batch_txid_table, batch_txid_mask);
+                    }
+                    if (coins && !coins->empty()) {
+                        checks[i].native =
+                            NativeAdmissionPreparation::Prepare(
+                                *txs[i], *native_snapshot, chain_id,
+                                std::move(*coins), fee,
+                                validation_cache.m_signature_cache, nullptr);
+                    } else {
+                        checks[i].native.reset();
                     }
                 }
             }
