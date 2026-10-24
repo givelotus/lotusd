@@ -6,6 +6,7 @@
 #define BITCOIN_NET_TXRELAY_INDEX_H
 
 #include <primitives/blockhash.h>
+#include <primitives/transaction.h>
 #include <primitives/txid.h>
 #include <radix.h>
 #include <radix_map.h>
@@ -124,6 +125,8 @@ public:
 
     /** A transaction entered the mempool (idempotent) */
     void Add(const TxId &txid, Clock time) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    void AddBatch(std::span<const CTransactionRef> txs, Clock time)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
     /** A transaction left the mempool (the previous epoch keeps it) */
     void Remove(const TxId &txid) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
@@ -227,7 +230,9 @@ private:
     }
 
     //! Index txid in epoch (which the caller owns or guards with m_mutex)
-    void InsertUnlocked(Epoch &epoch, const TxId &txid) const;
+    bool InsertUnlocked(Epoch &epoch, const TxId &txid) const;
+    void AddUnlocked(const TxId &txid, Clock time)
+        EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
     static void RemoveFromEpoch(Epoch &epoch, const TxId &txid);
     void RecordEpochChange(const TxId &txid, bool present)
         EXCLUSIVE_LOCKS_REQUIRED(m_mutex);

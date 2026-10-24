@@ -226,6 +226,32 @@ public:
         return true;
     }
 
+    bool UpdateRankIfPresent(const TxId &txid,
+                             std::optional<uint64_t> entry_id) {
+        const auto it = m_entries.find(txid);
+        if (it == m_entries.end()) return false;
+        Node *node = &*it;
+        auto &record = node->second;
+        if (record.entry_id == entry_id) return false;
+        if (entry_id) {
+            if (!record.entry_id) {
+                m_heap.push_back(node);
+                UnlinkStale(node);
+                record.entry_id = entry_id;
+                record.heap_index = m_heap.size() - 1;
+                SiftUp(record.heap_index);
+            } else {
+                record.entry_id = entry_id;
+                FixHeap(record.heap_index);
+            }
+        } else {
+            RemoveHeap(record.heap_index);
+            record.entry_id.reset();
+            AppendStale(node);
+        }
+        return true;
+    }
+
     std::optional<Candidate> Peek() const {
         const Node *node = First();
         if (!node) return std::nullopt;

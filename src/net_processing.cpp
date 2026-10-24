@@ -3935,11 +3935,7 @@ void PeerManagerImpl::RelayTransactionBatch(
         }
     }
     const auto now{GetTime<std::chrono::microseconds>()};
-    for (const auto &tx : txs) {
-        if (tx) {
-            m_txrelay_index.Add(tx->GetId(), now);
-        }
-    }
+    m_txrelay_index.AddBatch(txs, now);
     const auto queued{RelayTickNow()};
     {
         LOCK(m_relay_queue_mutex);
@@ -4483,10 +4479,8 @@ void PeerManagerImpl::RefreshRelayInventoryAdmissions() {
             if (relay->m_tx_inventory_to_send.Empty()) continue;
             m_relay_inventory_work.peer_suffix_checks += admissions.entries.size();
             for (const auto &entry : admissions.entries) {
-                if (relay->m_tx_inventory_to_send.Find(entry.txid)) {
-                    relay->m_tx_inventory_to_send.SetRank(entry.txid,
-                                                         entry.entry_id);
-                }
+                relay->m_tx_inventory_to_send.UpdateRankIfPresent(
+                    entry.txid, entry.entry_id);
             }
         }
     }
@@ -7305,9 +7299,11 @@ void PeerManagerImpl::ProcessMessage(
             }
         }
         const auto current_time{GetTime<std::chrono::microseconds>()};
-        LOCK(cs_main);
         std::vector<TxId> have;
-        uint64_t missing{0};
+        std::vector<TxId> known_txids;
+        std::vector<TxId> missing_req_keys;
+        known_txids.reserve(short_ids.size());
+        missing_req_keys.reserve(short_ids.size());
         for (const uint64_t short_id : short_ids) {
             if (interruptMsgProc) {
                 return;
@@ -7315,16 +7311,45 @@ void PeerManagerImpl::ProcessMessage(
             have.clear();
             if (m_txrelay_index.Find(epoch_id, short_id, &have) ==
                 txrelay::TxRelayIndex::Lookup::HAVE) {
-                // The peer has it: never announce it back.
                 for (const TxId &txid : have) {
-                    AddKnownTx(*peer, txid);
+                    known_txids.push_back(txid);
                 }
                 continue;
             }
-            ++missing;
-            AddTxAnnouncement(
-                pfrom, TxId{txrelay::ShortIdRequestKey(epoch_id, short_id)},
-                current_time, SHORTID_REQUEST_PARAMS);
+            missing_req_keys.emplace_back(
+                txrelay::ShortIdRequestKey(epoch_id, short_id));
+        }
+        if (!known_txids.empty()) {
+            if (auto *tx_relay = peer->GetTxRelay()) {
+                LOCK(tx_relay->m_tx_inventory_mutex);
+                for (const TxId &txid : known_txids) {
+                    tx_relay->m_tx_inventory_known_filter.insert(txid);
+                }
+                if (!tx_relay->m_tx_inventory_to_send.Empty()) {
+                    for (const TxId &txid : known_txids) {
+                        tx_relay->m_tx_inventory_to_send.Erase(txid);
+                    }
+                }
+            }
+        }
+        const uint64_t missing{missing_req_keys.size()};
+        if (!missing_req_keys.empty()) {
+            LOCK(cs_main);
+            const bool preferred = isPreferredDownloadPeer(pfrom);
+            for (const TxId &req_key : missing_req_keys) {
+                if (interruptMsgProc) {
+                    return;
+                }
+                if (TooManyAnnouncements(pfrom, m_txrequest,
+                                         SHORTID_REQUEST_PARAMS)) {
+                    break;
+                }
+                auto reqtime = ComputeRequestTime(pfrom, m_txrequest,
+                                                  SHORTID_REQUEST_PARAMS,
+                                                  current_time, preferred);
+                m_txrequest.ReceivedInv(pfrom.GetId(), req_key, preferred,
+                                        reqtime);
+            }
         }
         if (auto *m{node::GetNodeMetrics()}) {
             m->txrelay_announce_recv.Add(size_t(node::TxRelayKind::SHORT),
@@ -11490,16 +11515,13 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                     std::vector<Prepared> prepared(prefix.size());
                     m_relay_inventory_work.authoritative_lookups += prefix.size();
                     ++m_relay_inventory_work.selection_chunks;
-                    {
-                        LOCK(m_mempool.cs);
-                        for (size_t i = 0; i < prefix.size(); ++i) {
-                            const auto it = m_mempool.mapTx.find(prefix[i].txid);
-                            if (it == m_mempool.mapTx.end()) continue;
-                            prepared[i].entry_id = (*it)->GetEntryId();
-                            prepared[i].tx = (*it)->GetSharedTx();
-                            prepared[i].fee = (*it)->GetFee();
-                            prepared[i].vsize = (*it)->GetTxSize();
-                        }
+                    for (size_t i = 0; i < prefix.size(); ++i) {
+                        const auto entry = m_mempool.getEntry(prefix[i].txid);
+                        if (!entry) continue;
+                        prepared[i].entry_id = entry->GetEntryId();
+                        prepared[i].tx = entry->GetSharedTx();
+                        prepared[i].fee = entry->GetFee();
+                        prepared[i].vsize = entry->GetTxSize();
                     }
                     bool changed = false;
                     for (size_t i = 0; i < prefix.size(); ++i) {
