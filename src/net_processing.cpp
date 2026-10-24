@@ -56,6 +56,7 @@
 #include <txmempool.h>
 #include <txorphanage.h>
 #include <util/check.h>
+#include <util/parallel_range.h>
 #include <util/strencodings.h>
 #include <util/thread.h>
 #include <util/trace.h>
@@ -5832,35 +5833,26 @@ void PeerManagerImpl::FinishTxAdmission(CNode &pfrom, Peer &peer,
 }
 
 std::vector<PrecomputedAdmissionChecks>
-PrecomputeTxRelayBatch(const std::vector<CTransactionRef> &txs) {
+PrecomputeTxRelayBatch(const std::vector<CTransactionRef> &txs)
+    LOCKS_EXCLUDED(cs_main) {
     AssertLockNotHeld(cs_main);
     std::vector<PrecomputedAdmissionChecks> checks(txs.size());
-    std::atomic<size_t> next{0};
-    auto worker = [&] {
-        for (size_t i = next.fetch_add(1, std::memory_order_relaxed);
-             i < txs.size();
-             i = next.fetch_add(1, std::memory_order_relaxed)) {
-            if (!txs[i]) continue;
-            PrecomputedBatchTxData regular;
-            PrecomputeSingleTxData(*txs[i], regular);
-            checks[i].txid = txs[i]->GetId();
-            checks[i].regular_tx_checked = regular.regular_tx_checked;
-            checks[i].regular_tx_valid = regular.regular_tx_valid;
-            checks[i].regular_tx_state = std::move(regular.regular_tx_state);
-        }
-    };
-    // Bound both threads and work per dispatch. The caller is one worker;
-    // small bursts do not create threads. Scripts remain admission's work.
-    const size_t workers = std::min<size_t>(
-        std::max(1U, std::min(8U, std::thread::hardware_concurrency())),
-        std::max<size_t>(1, (txs.size() + 7) / 8));
-    std::vector<std::future<void>> tasks;
-    tasks.reserve(workers - 1);
-    for (size_t i = 1; i < workers; ++i) {
-        tasks.push_back(std::async(std::launch::async, worker));
-    }
-    worker();
-    for (auto &task : tasks) task.get();
+    // Persistent, bounded workers; concurrent/nested submissions run inline.
+    // Each range owns distinct receive-order slots. Scripts remain admission's
+    // work and never run on these preprocessing workers.
+    static util::ParallelRangeExecutor relay_workers;
+    relay_workers.Run(txs.size(), /*grain=*/8,
+        [&](size_t begin, size_t end) {
+            for (size_t i = begin; i < end; ++i) {
+                if (!txs[i]) continue;
+                PrecomputedBatchTxData regular;
+                PrecomputeSingleTxData(*txs[i], regular);
+                checks[i].txid = txs[i]->GetId();
+                checks[i].regular_tx_checked = regular.regular_tx_checked;
+                checks[i].regular_tx_valid = regular.regular_tx_valid;
+                checks[i].regular_tx_state = std::move(regular.regular_tx_state);
+            }
+        });
     return checks;
 }
 
