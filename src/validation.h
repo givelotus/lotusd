@@ -30,6 +30,7 @@
 #include <kernel/cs_main.h>
 #include <node/blockprefetch.h>
 #include <lotus_v2/deferred_checks.h>
+#include <lotus_v2/header_history.h>
 #include <node/blockstorage.h>
 #include <policy/packages.h>
 #include <script/script_error.h>
@@ -1156,6 +1157,13 @@ public:
     //! The current chain of blockheaders we consult and build on.
     //! @see CChain, CBlockIndex.
     CChain m_chain;
+
+    //! Full header history commitment tree for the active chain.
+    lotus::v2::HeaderHistoryTree m_header_history_tree GUARDED_BY(::cs_main);
+    bool m_coinsdb_in_memory{false};
+
+    void SyncHeaderHistoryTreeToChain() EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+    fs::path HeaderHistoryTreePath() const;
 
     /**
      * The blockhash which is the base of the snapshot this chainstate was

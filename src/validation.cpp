@@ -3726,6 +3726,7 @@ bool Chainstate::ActivateVerifiedFastSyncPivot(
 
     if (m_chain.Tip() != pindex_pivot) {
         m_chain.SetTip(*pindex_pivot);
+        SyncHeaderHistoryTreeToChain();
         setBlockIndexCandidates.insert(pindex_pivot);
         PruneBlockIndexCandidates();
         if (m_mempool) {
@@ -3735,11 +3736,14 @@ bool Chainstate::ActivateVerifiedFastSyncPivot(
                 static_cast<uint64_t>(pindex_pivot->GetMedianTimePast()));
         }
         UpdateTip(pindex_pivot);
-    } else if (m_mempool) {
-        LOCK(m_mempool->cs);
-        m_mempool->ConnectBlockReset(
-            pivot_hash, static_cast<uint64_t>(pindex_pivot->nHeight + 1),
-            static_cast<uint64_t>(pindex_pivot->GetMedianTimePast()));
+    } else {
+        SyncHeaderHistoryTreeToChain();
+        if (m_mempool) {
+            LOCK(m_mempool->cs);
+            m_mempool->ConnectBlockReset(
+                pivot_hash, static_cast<uint64_t>(pindex_pivot->nHeight + 1),
+                static_cast<uint64_t>(pindex_pivot->GetMedianTimePast()));
+        }
     }
 
     ActivateFastSyncPivot(pindex_pivot->nHeight);
@@ -4250,6 +4254,14 @@ void Chainstate::InitCoinsDB(size_t cache_size_bytes, bool in_memory,
         leveldb_name += node::SNAPSHOT_CHAINSTATE_SUFFIX;
     }
 
+    m_coinsdb_in_memory = in_memory;
+    if (should_wipe && !in_memory && !m_chainman.m_options.datadir.empty()) {
+        std::error_code ec;
+        fs::remove(
+            m_chainman.m_options.datadir / "v2_state" / "header_history_tree.bin",
+            ec);
+    }
+
     SetV2StatePersistDir(
         in_memory ? std::string{}
                   : fs::PathToString(m_chainman.m_options.datadir / "v2_state"));
@@ -4264,6 +4276,76 @@ void Chainstate::InitCoinsDB(size_t cache_size_bytes, bool in_memory,
                  .obfuscate = true,
                  .options = m_chainman.m_options.coins_db},
         m_chainman.m_options.coins_view);
+}
+
+fs::path Chainstate::HeaderHistoryTreePath() const {
+    if (m_chainman.m_options.datadir.empty()) {
+        return {};
+    }
+    return m_chainman.m_options.datadir / "v2_state" / "header_history_tree.bin";
+}
+
+void Chainstate::SyncHeaderHistoryTreeToChain() {
+    AssertLockHeld(::cs_main);
+    const fs::path tree_path = HeaderHistoryTreePath();
+    if (m_header_history_tree.Count() == 0 && !tree_path.empty()) {
+        (void)m_header_history_tree.LoadFromFile(tree_path);
+    }
+    const CBlockIndex *tip = m_chain.Tip();
+    if (!tip || tip->nHeight < 0) {
+        m_header_history_tree.Clear();
+        return;
+    }
+    const lotus::v2::ChainId chain_id = GetActiveV2ChainId();
+    const uint64_t target_count = static_cast<uint64_t>(tip->nHeight) + 1;
+
+    auto block_hash_v2 = [](const CBlockIndex *pindex) noexcept {
+        lotus::v2::Hash256 out{};
+        const BlockHash bh = pindex->GetBlockHash();
+        std::memcpy(out.data(), bh.begin(), 32);
+        return out;
+    };
+
+    if (m_header_history_tree.Count() == target_count &&
+        m_header_history_tree.GetLeafBlockHash(target_count - 1) ==
+            block_hash_v2(tip)) {
+        return;
+    }
+
+    if (m_header_history_tree.Count() + 1 == target_count &&
+        (target_count == 1 ||
+         (tip->pprev &&
+          m_header_history_tree.GetLeafBlockHash(target_count - 2) ==
+              block_hash_v2(tip->pprev)))) {
+        m_header_history_tree.Append(chain_id, block_hash_v2(tip));
+        return;
+    }
+
+    if (m_header_history_tree.Count() == target_count + 1 &&
+        m_header_history_tree.GetLeafBlockHash(target_count - 1) ==
+            block_hash_v2(tip)) {
+        m_header_history_tree.PopBack();
+        return;
+    }
+
+    while (m_header_history_tree.Count() > target_count) {
+        m_header_history_tree.PopBack();
+    }
+    while (m_header_history_tree.Count() > 0) {
+        const uint64_t h = m_header_history_tree.Count() - 1;
+        const CBlockIndex *pindex = m_chain[static_cast<int>(h)];
+        if (pindex &&
+            m_header_history_tree.GetLeafBlockHash(h) == block_hash_v2(pindex)) {
+            break;
+        }
+        m_header_history_tree.PopBack();
+    }
+    while (m_header_history_tree.Count() < target_count) {
+        const uint64_t h = m_header_history_tree.Count();
+        const CBlockIndex *pindex = m_chain[static_cast<int>(h)];
+        assert(pindex != nullptr);
+        m_header_history_tree.Append(chain_id, block_hash_v2(pindex));
+    }
 }
 
 void Chainstate::InitCoinsCache(size_t cache_size_bytes) {
@@ -6344,6 +6426,32 @@ bool Chainstate::FlushStateToDisk(BlockValidationState &state,
                         throw std::runtime_error(
                             "Unable to persist native block states before coins flush");
                     }
+                    SyncHeaderHistoryTreeToChain();
+                    if (const CBlockIndex *best_idx =
+                            m_blockman.LookupBlockIndex(
+                                CoinsTip().GetBestBlock())) {
+                        if (m_chain.Tip() && best_idx->pprev == m_chain.Tip() &&
+                            m_header_history_tree.Count() ==
+                                static_cast<uint64_t>(best_idx->nHeight)) {
+                            lotus::v2::Hash256 bh_v2{};
+                            const BlockHash bh = best_idx->GetBlockHash();
+                            std::memcpy(bh_v2.data(), bh.begin(), 32);
+                            m_header_history_tree.Append(GetActiveV2ChainId(),
+                                                         bh_v2);
+                        } else if (m_chain.Tip() &&
+                                   m_chain.Tip()->pprev == best_idx &&
+                                   m_header_history_tree.Count() ==
+                                       static_cast<uint64_t>(
+                                           m_chain.Tip()->nHeight + 1)) {
+                            m_header_history_tree.PopBack();
+                        }
+                    }
+                    const fs::path tree_path = HeaderHistoryTreePath();
+                    if (!tree_path.empty() &&
+                        !m_header_history_tree.SaveToFile(tree_path)) {
+                        throw std::runtime_error(
+                            "Unable to persist header history tree before coins flush");
+                    }
                     const auto flush_start{SteadyClock::now()};
                     empty_cache ? CoinsTip().Flush() : CoinsTip().Sync();
                     full_flush_completed = true;
@@ -6589,6 +6697,7 @@ bool Chainstate::DisconnectTip(BlockValidationState &state,
     }
 
     m_chain.SetTip(*pindexDelete->pprev);
+    SyncHeaderHistoryTreeToChain();
 
     UpdateTip(pindexDelete->pprev);
     // Let wallets know transactions went from 1-confirmed to
@@ -6813,6 +6922,7 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
 
     // Update m_chain & related variables.
     m_chain.SetTip(*pindexNew);
+    SyncHeaderHistoryTreeToChain();
     UpdateTip(pindexNew);
 
     const auto time_6{SteadyClock::now()};
@@ -7398,6 +7508,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState &state,
             // state now, then it's better to know immediately rather than
             // randomly have it cause a problem in a race.
             m_chainman.CheckBlockIndex();
+            SyncHeaderHistoryTreeToChain();
 
             if (blocks_connected) {
                 const CBlockIndex *pindexFork = m_chain.FindFork(starting_tip);
@@ -9184,6 +9295,7 @@ bool Chainstate::LoadChainTip() {
     const CBlockIndex *tip = m_chain.Tip();
 
     if (tip && tip->GetBlockHash() == coins_cache.GetBestBlock()) {
+        SyncHeaderHistoryTreeToChain();
         return true;
     }
 
@@ -9194,6 +9306,7 @@ bool Chainstate::LoadChainTip() {
         return false;
     }
     m_chain.SetTip(*pindex);
+    SyncHeaderHistoryTreeToChain();
     PruneBlockIndexCandidates();
 
     tip = m_chain.Tip();
@@ -9630,6 +9743,7 @@ bool Chainstate::ReplayBlocks() {
     cache.SetBestBlock(pindexNew->GetBlockHash());
     // local CCoinsViewCache goes out of scope
     cache.Flush(/*reallocate_cache=*/false);
+    SyncHeaderHistoryTreeToChain();
     m_chainman.GetNotifications().progress(bilingual_str{}, 100, false);
     return true;
 }
@@ -9858,6 +9972,7 @@ bool Chainstate::LoadGenesisBlock() {
         return false;
     }
 
+    SyncHeaderHistoryTreeToChain();
     return true;
 }
 
@@ -11223,6 +11338,11 @@ bool ChainstateManager::PopulateAndValidateSnapshot(
     // The remainder of this function requires modifying data protected by
     // cs_main.
     LOCK(::cs_main);
+    snapshot_chainstate.SyncHeaderHistoryTreeToChain();
+    if (const fs::path tree_path = snapshot_chainstate.HeaderHistoryTreePath();
+        !tree_path.empty()) {
+        (void)snapshot_chainstate.m_header_history_tree.SaveToFile(tree_path);
+    }
 
     // Fake various pieces of CBlockIndex state:
     CBlockIndex *index = nullptr;
