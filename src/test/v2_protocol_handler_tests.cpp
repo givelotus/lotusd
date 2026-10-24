@@ -44,6 +44,7 @@
 #include <array>
 #include <chrono>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #include <script/signingprovider.h>
@@ -1823,6 +1824,122 @@ BOOST_AUTO_TEST_CASE(single_tx_relays_wait_for_the_relay_tick) {
         peerman->FinalizeNode(config, node);
     }
     SetMockTime(0);
+}
+
+BOOST_FIXTURE_TEST_CASE(shorttx_uses_bounded_admission_and_orders_following_ping,
+                        TestChain100Setup) {
+    struct ResetMockTime {
+        ~ResetMockTime() { SetMockTime(0); }
+    } reset_mock_time;
+    const Config &config = m_node.chainman->GetConfig();
+    SetMockTime(m_node.chainman->ActiveChain().Tip()->GetBlockTime());
+    BOOST_REQUIRE(!m_node.chainman->IsInitialBlockDownload());
+    constexpr size_t count = 768; // More than an active batch plus a peer FIFO.
+    for (const bool parallel : {false, true}) {
+        const std::vector<uint8_t> program{0x4e}; // Native OP_1.
+        lotus::v2::Output output;
+        output.value = 100000;
+        output.branches = {lotus::v2::BranchLeaf(program)};
+        output.paths = {{0}};
+        const CTxOut funding = CTxOut::FromV2Output(output);
+        std::vector<CTransactionRef> txs;
+        {
+            LOCK(cs_main);
+            for (size_t i = 0; i < count; ++i) {
+                uint256 id;
+                WriteLE64(id.begin(), 10000 + size_t(parallel) * count + i);
+                const COutPoint previous(TxId(id), 0);
+                m_node.chainman->ActiveChainstate().CoinsTip().AddCoin(
+                    previous, Coin(funding, 100, false), false);
+                CMutableTransaction tx;
+                tx.nVersion = 7;
+                tx.nV2Lock = 0;
+                CTxIn input(previous);
+                input.nFlags = 1;
+                input.nPathIndex = 0;
+                lotus::v2::BranchWitness witness;
+                witness.script = program;
+                input.vWitnesses = {witness};
+                tx.vin.push_back(std::move(input));
+                auto next = output;
+                next.value -= 10000;
+                tx.vout.push_back(CTxOut::FromV2Output(next));
+                txs.push_back(MakeTransactionRef(std::move(tx)));
+            }
+            const auto control = ProcessRawTxBatch(
+                m_node.chainman->ActiveChainstate(), *m_node.mempool, txs, true);
+            BOOST_REQUIRE_MESSAGE(control.m_state.IsValid(), control.m_state.ToString());
+            BOOST_REQUIRE_EQUAL(m_node.mempool->size(), 0U);
+        }
+        auto connman = std::make_unique<ConnmanTestMsg>(
+            config, 123, 456, *m_node.addrman);
+        auto node = std::make_unique<CNode>(
+            1200 + parallel, nullptr, CAddress(), 0, 0, 0, CAddress(), "",
+            ConnectionType::OUTBOUND_FULL_RELAY, false);
+        PeerManager::Options peer_options;
+        peer_options.deterministic_rng = true;
+        peer_options.parallel_admission = parallel;
+        peer_options.parallel_admission_threads = 2;
+        auto peerman = PeerManager::make(
+            *connman, *m_node.addrman, nullptr, *m_node.chainman,
+            *m_node.mempool, nullptr, peer_options);
+        CConnman::Options options;
+        options.m_msgproc = {peerman.get()};
+        options.nSendBufferMaxSize = 1024 * 1024;
+        connman->Init(options);
+        {
+            LOCK(NetEventsInterface::g_msgproc_mutex);
+            connman->Handshake(*node, true, NODE_NETWORK, NODE_NETWORK,
+                               PROTOCOL_VERSION, true);
+            WITH_LOCK(node->cs_vSend, node->vSendMsg.clear());
+            auto received = txs;
+            received.push_back(txs.front()); // An in-flight duplicate is harmless.
+            {
+                LOCK(cs_main);
+                // With the chain lock pinned, queued work cannot commit yet.
+                // The serial control still admits through its recursive lock.
+                peerman->ProcessShortTxResponse(*node, received);
+                BOOST_CHECK_EQUAL(m_node.mempool->size(), parallel ? 0U : count);
+            }
+            auto ping = NetMsg::Make(NetMsgType::PING, uint64_t{12345});
+            BOOST_REQUIRE(connman->ReceiveMsgFrom(*node, ping));
+            const auto deadline = SteadyClock::now() + std::chrono::seconds{15};
+            bool pong = false;
+            while (!pong && SteadyClock::now() < deadline) {
+                connman->ProcessMessagesOnce(*node);
+                V1TransportDeserializer decoder(config, node->GetId());
+                {
+                    LOCK(node->cs_vSend);
+                    for (const auto &chunk : node->vSendMsg) {
+                        Span<const uint8_t> bytes{chunk};
+                        while (!bytes.empty()) {
+                            BOOST_REQUIRE_GE(decoder.Read(config, bytes), 0);
+                            if (!decoder.Complete()) continue;
+                            bool rejected = false;
+                            auto message = decoder.GetMessage(0us, rejected);
+                            BOOST_REQUIRE(!rejected);
+                            if (message.m_type == NetMsgType::PONG) {
+                                uint64_t nonce;
+                                message.m_recv >> nonce;
+                                BOOST_CHECK_EQUAL(nonce, 12345U);
+                                pong = true;
+                            }
+                        }
+                    }
+                }
+                if (!pong) std::this_thread::sleep_for(std::chrono::milliseconds{1});
+            }
+            BOOST_REQUIRE(pong);
+            BOOST_CHECK_EQUAL(m_node.mempool->size(), count);
+            for (const auto &tx : txs) BOOST_CHECK(m_node.mempool->exists(tx->GetId()));
+            BOOST_CHECK(!node->fDisconnect);
+            peerman->FinalizeNode(config, *node);
+        }
+        // Stop/join the worker before releasing the node, outside g_msgproc_mutex.
+        peerman.reset();
+        LOCK2(cs_main, m_node.mempool->cs);
+        m_node.mempool->clear();
+    }
 }
 
 BOOST_AUTO_TEST_CASE(malformed_later_tx_does_not_discard_decoded_prefix) {
