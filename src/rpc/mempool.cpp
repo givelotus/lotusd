@@ -514,15 +514,26 @@ UniValue MempoolToJSON(const CTxMemPool &pool, bool verbose,
         UniValue a(UniValue::VARR);
         const size_t n = snap.mempool_txids.size();
         if (n >= 4096) {
-            std::vector<UniValue> items(n);
+            static constexpr char kHexDigits[16] = {
+                '0', '1', '2', '3', '4', '5', '6', '7',
+                '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
+            std::string raw(n * 67 - 1, ',');
             util::GetParallelRangeExecutor().Run(
                 n, /*grain=*/1024, [&](size_t begin, size_t end) {
+                    char *base = raw.data();
                     for (size_t i = begin; i < end; ++i) {
-                        items[i].setStr(snap.mempool_txids[i].ToString());
+                        char *dst = base + i * 67;
+                        dst[0] = '"';
+                        const uint8_t *p = snap.mempool_txids[i].data();
+                        for (int b = 0; b < 32; ++b) {
+                            const uint8_t v = p[31 - b];
+                            dst[1 + b * 2] = kHexDigits[v >> 4];
+                            dst[2 + b * 2] = kHexDigits[v & 0x0f];
+                        }
+                        dst[65] = '"';
                     }
                 });
-            a.push_backV(std::make_move_iterator(items.begin()),
-                         std::make_move_iterator(items.end()));
+            a.setRawArrayStr(std::move(raw));
         } else {
             a.reserve(n);
             for (const TxId &txid : snap.mempool_txids) {
@@ -1291,7 +1302,7 @@ static void DecodeRawTxBatchParallel(const UniValue &raw_transactions,
         return true;
     };
 
-    if (n <= 256) {
+    if (n < 32) {
         for (size_t i = 0; i < n; ++i) {
             if (!decode_one(i)) {
                 throw JSONRPCError(RPC_DESERIALIZATION_ERROR,
@@ -1307,7 +1318,7 @@ static void DecodeRawTxBatchParallel(const UniValue &raw_transactions,
 
     std::atomic<size_t> first_fail{n};
     lotus::v2::RunParallelSigningWork(
-        n, /*min_grain=*/8, [&](size_t begin, size_t end) {
+        n, /*min_grain=*/16, [&](size_t begin, size_t end) {
             for (size_t i = begin; i < end; ++i) {
                 if (i >= first_fail.load(std::memory_order_relaxed)) {
                     break;

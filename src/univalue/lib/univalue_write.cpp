@@ -44,16 +44,23 @@ struct UniValueStreamWriter {
 };
 
 void UniValueStreamWriter::escapeJson(const std::string &inS) {
-    size_t len = inS.length();
+    const char *data = inS.data();
+    const size_t len = inS.length();
+    size_t seg_start = 0;
     for (size_t i = 0; i < len; i++) {
-        const char ch = inS[i];
-        const char *const escStr = escapes[uint8_t(ch)];
-
+        const char *const escStr = escapes[uint8_t(data[i])];
         if (escStr) {
+            if (i > seg_start) {
+                str.append(data + seg_start, i - seg_start);
+            }
             write(escStr);
-        } else {
-            put(ch);
+            seg_start = i + 1;
         }
+    }
+    if (seg_start == 0) {
+        str.append(data, len);
+    } else if (seg_start < len) {
+        str.append(data + seg_start, len - seg_start);
     }
 }
 
@@ -92,12 +99,23 @@ void UniValueStreamWriter::writeAny(unsigned int prettyIndent,
 void UniValueStreamWriter::writeArray(unsigned int prettyIndent,
                                       unsigned int indentLevel,
                                       const UniValue &obj) {
+    if (prettyIndent == 0 && obj.values.empty() && !obj.val.empty()) {
+        str.reserve(str.size() + obj.val.size() + 32);
+        put('[');
+        write(obj.val);
+        put(']');
+        return;
+    }
     put('[');
     if (prettyIndent) {
         put('\n');
     }
 
     const size_t nValues = obj.values.size();
+    if (prettyIndent == 0 && nValues >= 16 &&
+        obj.values[0].typ == UniValue::VSTR) {
+        str.reserve(str.size() + nValues * (obj.values[0].val.size() + 3) + 16);
+    }
     for (size_t i = 0; i < nValues; ++i) {
         if (prettyIndent) {
             indentStr(prettyIndent, indentLevel);

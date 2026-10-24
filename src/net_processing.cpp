@@ -1293,9 +1293,11 @@ private:
      * Prepare and queue a received transaction. Returns false if it has to
      * wait (earlier copy in admission, or no room); the caller holds it.
      */
-    bool QueueTxForAdmission(CNode &pfrom, const PeerRef &peer,
-                             const CTransactionRef &ptx, bool count_full,
-                             bool notify = true)
+    bool QueueTxForAdmission(
+        CNode &pfrom, const PeerRef &peer, const CTransactionRef &ptx,
+        bool count_full, bool notify = true,
+        const std::vector<txrelay::EpochKey> *epochs = nullptr,
+        const std::shared_ptr<TxAdmissionSender> *shared_sender = nullptr)
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
                                  g_msgproc_mutex);
@@ -1310,7 +1312,9 @@ private:
      * relay, reconsiderable 1p1c packages). Returns whether the transaction
      * should be submitted to the mempool.
      */
-    bool PrepareTxAdmission(CNode &pfrom, const CTransactionRef &ptx)
+    bool PrepareTxAdmission(
+        CNode &pfrom, const CTransactionRef &ptx,
+        const std::vector<txrelay::EpochKey> *epochs = nullptr)
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
                                  g_msgproc_mutex);
@@ -2248,6 +2252,26 @@ static void AddKnownTx(Peer &peer, const TxId &txid) {
     LOCK(tx_relay->m_tx_inventory_mutex);
     tx_relay->m_tx_inventory_known_filter.insert(txid);
     tx_relay->m_tx_inventory_to_send.Erase(txid);
+}
+
+static void AddKnownTxBatch(Peer &peer, std::span<const CTransactionRef> txs) {
+    if (txs.empty()) {
+        return;
+    }
+    auto tx_relay = peer.GetTxRelay();
+    if (!tx_relay) {
+        return;
+    }
+
+    LOCK(tx_relay->m_tx_inventory_mutex);
+    for (const auto &tx : txs) {
+        if (!tx) {
+            continue;
+        }
+        const TxId &txid = tx->GetId();
+        tx_relay->m_tx_inventory_known_filter.insert(txid);
+        tx_relay->m_tx_inventory_to_send.Erase(txid);
+    }
 }
 
 static void AddKnownProof(Peer &peer, const avalanche::ProofId &proofid) {
@@ -3510,9 +3534,11 @@ void PeerManagerImpl::ThreadTxAdmission() {
     }
 }
 
-bool PeerManagerImpl::QueueTxForAdmission(CNode &pfrom, const PeerRef &peer,
-                                          const CTransactionRef &ptx,
-                                          bool count_full, bool notify) {
+bool PeerManagerImpl::QueueTxForAdmission(
+    CNode &pfrom, const PeerRef &peer, const CTransactionRef &ptx,
+    bool count_full, bool notify,
+    const std::vector<txrelay::EpochKey> *epochs,
+    const std::shared_ptr<TxAdmissionSender> *shared_sender) {
     AssertLockHeld(g_msgproc_mutex);
     const TxId &txid = ptx->GetId();
     if (m_tx_admission_inflight.count(txid)) {
@@ -3527,24 +3553,36 @@ bool PeerManagerImpl::QueueTxForAdmission(CNode &pfrom, const PeerRef &peer,
         }
         return false;
     }
-    if (!PrepareTxAdmission(pfrom, ptx)) {
+    if (!PrepareTxAdmission(pfrom, ptx, epochs)) {
         return true;
     }
     m_tx_admission_inflight.insert(txid);
-    m_txrelay_index.ForEachEpoch(
-        [&](const txrelay::EpochKey &epoch)
-            EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex) {
+    if (epochs) {
+        for (const txrelay::EpochKey &epoch : *epochs) {
             m_tx_admission_inflight_shortids.emplace(
                 TxId{txrelay::ShortIdRequestKey(
                     epoch.epoch_id, m_txrelay_index.ShortId(epoch, txid))},
                 txid);
-        });
+        }
+    } else {
+        m_txrelay_index.ForEachEpoch(
+            [&](const txrelay::EpochKey &epoch)
+                EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex) {
+                m_tx_admission_inflight_shortids.emplace(
+                    TxId{txrelay::ShortIdRequestKey(
+                        epoch.epoch_id, m_txrelay_index.ShortId(epoch, txid))},
+                    txid);
+            });
+    }
     ++peer->m_tx_admission_pending;
     // g_msgproc_mutex serializes every producer; only the consumer can
     // change queue capacity after HasRoom, and it can only free space.
     const bool pushed = m_tx_admission_queue->Push(
-        node::TxAdmissionItem{pfrom.GetId(), ptx, SteadyClock::now(),
-                              std::make_shared<TxAdmissionSender>(pfrom, peer)},
+        node::TxAdmissionItem{
+            pfrom.GetId(), ptx, SteadyClock::now(),
+            shared_sender && *shared_sender
+                ? *shared_sender
+                : std::make_shared<TxAdmissionSender>(pfrom, peer)},
         notify);
     Assert(pushed);
     return true;
@@ -3571,6 +3609,7 @@ bool PeerManagerImpl::ProcessTxAdmissionDone() {
             break;
         }
     }
+    const auto epochs = m_txrelay_index.Epochs();
     const auto now_sec = GetTime<std::chrono::seconds>();
     auto handle_done_item = [&](TxAdmissionDone &d, bool cs_main_held)
         EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !m_peer_mutex,
@@ -3592,7 +3631,7 @@ bool PeerManagerImpl::ProcessTxAdmissionDone() {
                 break;
             case TxAdmissionDone::Kind::REPLAY:
                 Assert(cs_main_held);
-                if (PrepareTxAdmission(node, d.tx)) {
+                if (PrepareTxAdmission(node, d.tx, &epochs)) {
                     const MempoolAcceptResult result =
                         m_chainman.ProcessTransaction(d.tx);
                     FinishTxAdmission(node, peer, d.tx, result, &relay_batch);
@@ -3606,14 +3645,12 @@ bool PeerManagerImpl::ProcessTxAdmissionDone() {
         if (m_tx_admission_inflight.empty()) {
             m_tx_admission_inflight_shortids.clear();
         } else {
-            m_txrelay_index.ForEachEpoch(
-                [&](const txrelay::EpochKey &epoch)
-                    EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex) {
-                        m_tx_admission_inflight_shortids.erase(
-                            TxId{txrelay::ShortIdRequestKey(
-                                epoch.epoch_id,
-                                m_txrelay_index.ShortId(epoch, txid))});
-                    });
+            for (const txrelay::EpochKey &epoch : epochs) {
+                m_tx_admission_inflight_shortids.erase(
+                    TxId{txrelay::ShortIdRequestKey(
+                        epoch.epoch_id,
+                        m_txrelay_index.ShortId(epoch, txid))});
+            }
         }
         Assume(peer.m_tx_admission_pending > 0);
         --peer.m_tx_admission_pending;
@@ -3631,6 +3668,14 @@ bool PeerManagerImpl::ProcessTxAdmissionDone() {
         }
     }
     if (!relay_batch.empty()) {
+        if (TxRequestSize() > 0) {
+            LOCK(cs_txrequest);
+            if (m_txrequest.Size() > 0) {
+                for (const CTransactionRef &tx : relay_batch) {
+                    m_txrequest.ForgetInvId(tx->GetId());
+                }
+            }
+        }
         RelayTransactionBatch(relay_batch, /*is_local=*/false);
     }
     return true;
@@ -4150,9 +4195,7 @@ std::vector<CTransactionRef> PeerManagerImpl::ResolveRelayShortIds(
     const uint256 &context_id, const std::vector<uint64_t> &short_ids) const {
     std::vector<TxId> txids;
     txids.reserve(short_ids.size());
-    for (const uint64_t short_id : short_ids) {
-        m_txrelay_index.Find(context_id, short_id, &txids);
-    }
+    m_txrelay_index.ResolveShortIds(context_id, short_ids, txids);
     std::vector<CTransactionRef> txs;
     txs.reserve(txids.size());
     const bool check_unbroadcast = m_mempool.GetUnbroadcastTxCount() > 0;
@@ -4382,21 +4425,21 @@ void PeerManagerImpl::ProcessShortTxResponse(
     // process this already-decoded response serially, retaining no extra FIFO.
     if (reservation) {
         peer->m_tx_admission_held_budgets.push_back(std::move(*reservation));
-        for (const auto &tx : txs) {
-            if (tx) AddKnownTx(*peer, tx->GetId());
-        }
+        AddKnownTxBatch(*peer, txs);
+        const auto epochs = m_txrelay_index.Epochs();
+        const auto sender = std::make_shared<TxAdmissionSender>(node, peer);
         bool any_queued = false;
         for (const auto &tx : txs) {
             if (!tx) continue;
             if (!force_relay &&
                 (m_mempool.exists(tx->GetId()) ||
                  m_tx_admission_inflight.count(tx->GetId()))) {
-                PrepareTxAdmission(node, tx);
+                PrepareTxAdmission(node, tx, &epochs);
                 continue;
             }
             if (!peer->m_tx_admission_held_txs.empty() ||
                 !QueueTxForAdmission(node, peer, tx, /*count_full=*/true,
-                                     /*notify=*/false)) {
+                                     /*notify=*/false, &epochs, &sender)) {
                 peer->m_tx_admission_held_txs.push_back(tx);
             } else {
                 any_queued = true;
@@ -4729,6 +4772,7 @@ void PeerManagerImpl::MarkPeerKnownTxBatch(
         }
     }
     if (TxRequestSize() > 0) {
+        const auto epochs = m_txrelay_index.Epochs();
         LOCK(cs_txrequest);
         if (m_txrequest.Size() > 0) {
             for (const auto &tx : txs) {
@@ -4737,13 +4781,11 @@ void PeerManagerImpl::MarkPeerKnownTxBatch(
                 }
                 const TxId &txid = tx->GetId();
                 m_txrequest.ForgetInvId(txid);
-                m_txrelay_index.ForEachEpoch(
-                    [&](const txrelay::EpochKey &epoch) {
-                        AssertLockHeld(cs_txrequest);
-                        m_txrequest.ForgetInvId(TxId{txrelay::ShortIdRequestKey(
-                            epoch.epoch_id,
-                            m_txrelay_index.ShortId(epoch, txid))});
-                    });
+                for (const txrelay::EpochKey &epoch : epochs) {
+                    m_txrequest.ForgetInvId(TxId{txrelay::ShortIdRequestKey(
+                        epoch.epoch_id,
+                        m_txrelay_index.ShortId(epoch, txid))});
+                }
             }
         }
     }
@@ -5960,11 +6002,9 @@ void PeerManagerImpl::ProcessValidTx(
 
     // As this version of the transaction was acceptable, we can forget about
     // any requests for it. No-op if the tx is not in txrequest.
-    if (TxRequestSize() > 0) {
+    if (!from_admission && TxRequestSize() > 0) {
         WITH_LOCK(cs_txrequest, m_txrequest.ForgetInvId(tx->GetId()));
-        if (!from_admission) {
-            ForgetShortIdRequests(tx->GetId());
-        }
+        ForgetShortIdRequests(tx->GetId());
     }
 
     if (m_mempool.HasOrphans()) {
@@ -6011,17 +6051,34 @@ void PeerManagerImpl::ProcessSingleTx(
     FinishTxAdmission(pfrom, peer, ptx, result, relay_batch);
 }
 
-bool PeerManagerImpl::PrepareTxAdmission(CNode &pfrom,
-                                         const CTransactionRef &ptx) {
+bool PeerManagerImpl::PrepareTxAdmission(
+    CNode &pfrom, const CTransactionRef &ptx,
+    const std::vector<txrelay::EpochKey> *epochs) {
     AssertLockHeld(g_msgproc_mutex);
     const CTransaction &tx = *ptx;
     const TxId &txid = tx.GetId();
 
     if (TxRequestSize() > 0) {
-        WITH_LOCK(cs_txrequest,
-                  m_txrequest.ReceivedResponse(pfrom.GetId(), txid));
-        // Whichever way it came, it answers announcements of its short id.
-        ForgetShortIdRequests(txid);
+        LOCK(cs_txrequest);
+        m_txrequest.ReceivedResponse(pfrom.GetId(), txid);
+        if (m_txrequest.Size() > 0) {
+            // Whichever way it came, it answers announcements of its short id.
+            if (epochs) {
+                for (const txrelay::EpochKey &epoch : *epochs) {
+                    m_txrequest.ForgetInvId(TxId{txrelay::ShortIdRequestKey(
+                        epoch.epoch_id,
+                        m_txrelay_index.ShortId(epoch, txid))});
+                }
+            } else {
+                m_txrelay_index.ForEachEpoch(
+                    [&](const txrelay::EpochKey &epoch)
+                        EXCLUSIVE_LOCKS_REQUIRED(cs_txrequest) {
+                        m_txrequest.ForgetInvId(TxId{txrelay::ShortIdRequestKey(
+                            epoch.epoch_id,
+                            m_txrelay_index.ShortId(epoch, txid))});
+                    });
+            }
+        }
     }
     const bool already_have =
         AlreadyHaveTx(txid, /*include_reconsiderable=*/true);
@@ -6090,6 +6147,9 @@ void PeerManagerImpl::FinishTxAdmission(
     const TxValidationState &state = result.m_state;
 
     if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
+        if (TxRequestSize() > 0) {
+            WITH_LOCK(cs_txrequest, m_txrequest.ForgetInvId(txid));
+        }
         ProcessValidTx(pfrom.GetId(), ptx, relay_batch, /*from_admission=*/true);
         pfrom.m_last_tx_time = GetTime<std::chrono::seconds>();
     } else if (state.GetResult() == TxValidationResult::TX_MISSING_INPUTS) {
@@ -7590,25 +7650,13 @@ void PeerManagerImpl::ProcessMessage(
             }
         }
         const auto current_time{GetTime<std::chrono::microseconds>()};
-        std::vector<TxId> have;
         std::vector<TxId> known_txids;
         std::vector<TxId> missing_req_keys;
         known_txids.reserve(short_ids.size());
         missing_req_keys.reserve(short_ids.size());
-        for (const uint64_t short_id : short_ids) {
-            if (interruptMsgProc) {
-                return;
-            }
-            have.clear();
-            if (m_txrelay_index.Find(epoch_id, short_id, &have) ==
-                txrelay::TxRelayIndex::Lookup::HAVE) {
-                for (const TxId &txid : have) {
-                    known_txids.push_back(txid);
-                }
-                continue;
-            }
-            missing_req_keys.emplace_back(
-                txrelay::ShortIdRequestKey(epoch_id, short_id));
+        if (!m_txrelay_index.PartitionShortIds(epoch_id, short_ids, known_txids,
+                                               missing_req_keys)) {
+            return;
         }
         uint64_t missing{0};
         if (!missing_req_keys.empty()) {
@@ -10487,12 +10535,15 @@ bool PeerManagerImpl::ProcessMessages(const Config &config, CNode *pfrom,
         // Transactions waiting for an earlier copy's verdict or for room in
         // the admission queue go first, in order.
         if (!peer->m_tx_admission_held_txs.empty()) {
+            const auto epochs = m_txrelay_index.Epochs();
+            const auto sender =
+                std::make_shared<TxAdmissionSender>(*pfrom, peer);
             bool any_queued = false;
             while (!peer->m_tx_admission_held_txs.empty() &&
                    QueueTxForAdmission(*pfrom, peer,
                                        peer->m_tx_admission_held_txs.front(),
                                        /*count_full=*/false,
-                                       /*notify=*/false)) {
+                                       /*notify=*/false, &epochs, &sender)) {
                 peer->m_tx_admission_held_txs.pop_front();
                 any_queued = true;
             }
@@ -10633,15 +10684,16 @@ bool PeerManagerImpl::ProcessMessages(const Config &config, CNode *pfrom,
                 }
                 received.push_back(std::move(ptx));
             }
-            for (const auto &ptx : received) {
-                AddKnownTx(*peer, ptx->GetId());
-            }
+            AddKnownTxBatch(*peer, received);
+            const auto epochs = m_txrelay_index.Epochs();
+            const auto sender =
+                std::make_shared<TxAdmissionSender>(*pfrom, peer);
             bool any_queued = false;
             for (auto &ptx : received) {
                 if (!peer->m_tx_admission_held_txs.empty() ||
                     !QueueTxForAdmission(*pfrom, peer, ptx,
                                          /*count_full=*/true,
-                                         /*notify=*/false)) {
+                                         /*notify=*/false, &epochs, &sender)) {
                     peer->m_tx_admission_held_txs.push_back(std::move(ptx));
                 } else {
                     any_queued = true;

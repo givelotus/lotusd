@@ -78,6 +78,7 @@ private:
     uint64_t entryId = 0;
 
     const CTransactionRef tx;
+    const TxId m_txid;
     mutable Parents m_parents;
     mutable Children m_children;
     //! Cached to avoid expensive parent-transaction lookups
@@ -105,7 +106,7 @@ private:
 public:
     CTxMemPoolEntry(const CTransactionRef &_tx, const Amount fee, int64_t time,
                     unsigned int entry_height, int64_t sigchecks, LockPoints lp)
-        : tx{_tx}, nFee{fee}, nTxSize(tx->GetTotalSize()),
+        : tx{_tx}, m_txid{tx->GetId()}, nFee{fee}, nTxSize(tx->GetTotalSize()),
           nUsageSize{RecursiveDynamicUsage(tx)}, nTime(time),
           entryHeight{entry_height}, sigChecks(sigchecks), m_modified_fee{nFee},
           lockPoints(lp) {}
@@ -113,6 +114,7 @@ public:
     CTxMemPoolEntry(const CTxMemPoolEntry &other) = delete;
     CTxMemPoolEntry(CTxMemPoolEntry &&other)
         : entryId(other.entryId), tx(std::move(other.tx)),
+          m_txid(other.m_txid),
           m_parents(std::move(other.m_parents)),
           m_children(std::move(other.m_children)), nFee(other.nFee),
           nTxSize(other.nTxSize), nUsageSize(other.nUsageSize),
@@ -128,6 +130,7 @@ public:
     //! mempool
     void SetEntryId(uint64_t eid) { entryId = eid; }
 
+    const TxId &GetTxId() const noexcept { return m_txid; }
     const CTransaction &GetTx() const { return *this->tx; }
     CTransactionRef GetSharedTx() const { return this->tx; }
     Amount GetFee() const { return nFee; }

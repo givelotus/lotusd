@@ -250,17 +250,18 @@ struct MempoolAcceptResult {
 
     static MempoolAcceptResult
     FeeFailure(TxValidationState state, CFeeRate effective_feerate,
-               const std::vector<TxId> &txids_fee_calculations) {
+               std::vector<TxId> txids_fee_calculations) {
         return MempoolAcceptResult(state, effective_feerate,
-                                   txids_fee_calculations);
+                                   std::move(txids_fee_calculations));
     }
 
     /** Constructor for success case */
     static MempoolAcceptResult
     Success(int64_t vsize, Amount fees, CFeeRate effective_feerate,
-            const std::vector<TxId> &txids_fee_calculations) {
+            std::vector<TxId> txids_fee_calculations) {
         return MempoolAcceptResult(ResultType::VALID, vsize, fees,
-                                   effective_feerate, txids_fee_calculations);
+                                   effective_feerate,
+                                   std::move(txids_fee_calculations));
     }
 
     /**
@@ -286,18 +287,18 @@ private:
     explicit MempoolAcceptResult(
         ResultType result_type, int64_t vsize, Amount fees,
         CFeeRate effective_feerate,
-        const std::vector<TxId> &txids_fee_calculations)
+        std::vector<TxId> txids_fee_calculations)
         : m_result_type(result_type), m_vsize{vsize}, m_base_fees(fees),
           m_effective_feerate(effective_feerate),
-          m_txids_fee_calculations(txids_fee_calculations) {}
+          m_txids_fee_calculations(std::move(txids_fee_calculations)) {}
 
     /** Constructor for fee-related failure case */
     explicit MempoolAcceptResult(
         TxValidationState state, CFeeRate effective_feerate,
-        const std::vector<TxId> &txids_fee_calculations)
+        std::vector<TxId> txids_fee_calculations)
         : m_result_type(ResultType::INVALID), m_state(state),
           m_effective_feerate(effective_feerate),
-          m_txids_fee_calculations(txids_fee_calculations) {}
+          m_txids_fee_calculations(std::move(txids_fee_calculations)) {}
 
     /** Constructor for already-in-mempool case. */
     explicit MempoolAcceptResult(int64_t vsize, Amount fees)
@@ -471,6 +472,8 @@ struct PrecomputedBatchTxData {
     bool regular_tx_checked{false};
     bool regular_tx_valid{false};
     bool v2_fast_path_verified{false};
+    BlockHash v2_snapshot_tip_hash{};
+    std::vector<Coin> v2_resolved_coins;
     std::vector<CTxOut> v2_spent_outputs;
     bool batch_accepted{false};
     int64_t accepted_vsize{0};

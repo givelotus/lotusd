@@ -891,12 +891,9 @@ void ChainAndMempoolSnapshot::EnsureMempoolTxIds() const {
     } else if (mempool_ptr != nullptr) {
         mempool_txids.reserve(mempool_size);
         mempool_ptr->m_tx_tree.forEachLeaf([&](const auto &entry) {
-            mempool_txids.push_back(entry->GetTx().GetId());
+            mempool_txids.push_back(entry->GetTxId());
             return true;
         });
-    }
-    if (!std::is_sorted(mempool_txids.begin(), mempool_txids.end())) {
-        std::sort(mempool_txids.begin(), mempool_txids.end());
     }
     mempool_txids_ready = true;
 }

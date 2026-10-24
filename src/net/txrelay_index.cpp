@@ -351,6 +351,50 @@ TxRelayIndex::Lookup TxRelayIndex::Find(const uint256 &epoch_id,
     return Lookup::HAVE;
 }
 
+bool TxRelayIndex::ResolveShortIds(const uint256 &epoch_id,
+                                   std::span<const uint64_t> short_ids,
+                                   std::vector<TxId> &out) const {
+    const auto snap{LoadEpochs()};
+    const Epoch *epoch{snap ? snap->Get(epoch_id) : nullptr};
+    if (!epoch) {
+        return false;
+    }
+    for (const uint64_t short_id : short_ids) {
+        if (const auto bucket{epoch->by_short_id.getEntry(short_id)}) {
+            out.push_back(bucket->value.first);
+            if (bucket->value.extra) {
+                out.insert(out.end(), bucket->value.extra->begin(),
+                           bucket->value.extra->end());
+            }
+        }
+    }
+    return true;
+}
+
+bool TxRelayIndex::PartitionShortIds(const uint256 &epoch_id,
+                                     std::span<const uint64_t> short_ids,
+                                     std::vector<TxId> &known_txids,
+                                     std::vector<TxId> &missing_req_keys) const {
+    const auto snap{LoadEpochs()};
+    const Epoch *epoch{snap ? snap->Get(epoch_id) : nullptr};
+    if (!epoch) {
+        return false;
+    }
+    for (const uint64_t short_id : short_ids) {
+        if (const auto bucket{epoch->by_short_id.getEntry(short_id)}) {
+            known_txids.push_back(bucket->value.first);
+            if (bucket->value.extra) {
+                known_txids.insert(known_txids.end(),
+                                   bucket->value.extra->begin(),
+                                   bucket->value.extra->end());
+            }
+        } else {
+            missing_req_keys.emplace_back(ShortIdRequestKey(epoch_id, short_id));
+        }
+    }
+    return true;
+}
+
 std::vector<TxId> TxRelayIndex::AdmittedSince(Clock since, Clock until) const {
     LOCK(m_mutex);
     std::vector<TxId> out;

@@ -81,8 +81,8 @@ static const uint32_t MEMPOOL_HEIGHT = 0x7FFFFFFF;
 struct mempoolentry_txid {
     typedef TxId result_type;
 
-    result_type operator()(const CTxMemPoolEntryRef &entry) const {
-        return entry->GetTx().GetId();
+    const TxId &operator()(const CTxMemPoolEntryRef &entry) const {
+        return entry->GetTxId();
     }
 
     result_type operator()(const CTransactionRef &tx) const {
@@ -95,7 +95,7 @@ struct mempoolentry_txid {
  */
 struct MemPoolEntryRadixTreeAdapter {
     Uint256RadixKey getId(const CTxMemPoolEntry &entry) const {
-        return entry.GetSharedTx()->GetId();
+        return entry.GetTxId();
     }
 };
 

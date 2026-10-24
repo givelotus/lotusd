@@ -83,6 +83,11 @@ public:
     void setFloat(double val);
     void setStr(std::string str);
     void setArray();
+    void setRawArrayStr(std::string preencoded_elements) {
+        clear();
+        typ = VARR;
+        val = std::move(preencoded_elements);
+    }
     void setObject();
 
     enum VType getType() const { return typ; }

@@ -154,6 +154,28 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /**
+     * Resolve a batch of short ids under one pinned epoch snapshot.
+     * Appends all matching transaction ids to `out`. Returns false if
+     * `epoch_id` is not an active indexed epoch.
+     */
+    bool ResolveShortIds(const uint256 &epoch_id,
+                         std::span<const uint64_t> short_ids,
+                         std::vector<TxId> &out) const
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
+    /**
+     * Partition a batch of short ids under one pinned epoch snapshot into
+     * `known_txids` (present in the index) and `missing_req_keys`
+     * (`ShortIdRequestKey(epoch_id, short_id)` for each missing short id).
+     * Returns false if `epoch_id` is not an active indexed epoch.
+     */
+    bool PartitionShortIds(const uint256 &epoch_id,
+                           std::span<const uint64_t> short_ids,
+                           std::vector<TxId> &known_txids,
+                           std::vector<TxId> &missing_req_keys) const
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
+    /**
      * Transactions admitted at or after `since` (and before `until`), still
      * in the mempool
      */

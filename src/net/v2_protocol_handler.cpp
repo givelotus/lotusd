@@ -1691,8 +1691,9 @@ ShortTxResponse DecodeShortTxResponse(DataStream &stream) {
                 // preparation is context-free and never admits a transaction.
                 if (tx) {
                     (void)tx->GetId();
-                    PrecomputedBatchTxData regular;
-                    PrecomputeSingleTxData(*tx, regular);
+                    if (!tx->vin.empty()) {
+                        (void)tx->GetPrecomputedData();
+                    }
                 }
                 response.txs[i] = std::move(tx);
             } catch (...) {
