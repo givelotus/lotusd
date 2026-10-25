@@ -4494,4 +4494,341 @@ BOOST_AUTO_TEST_CASE(root_count_one_xor_requires_bucket_proof) {
         "a nonresolving count-one XOR hint must not terminate bucket recovery");
 }
 
+BOOST_AUTO_TEST_CASE(
+    rateless_gf64_miniblock_multipeer_different_sets_reconciliation) {
+    // =========================================================================
+    // 1. Asymmetric 3-Way Collision Breaking via BCH d_min=7 Cross-Peer Peel:
+    //    Three distinct missing short IDs {x1, x2, x3} all map to cell 0 in
+    //    (miniblock_id = 0, decimation_level = 0).
+    //    - Peer A (peer_id = 1) has {x1, x2, x3} -> 3-way collision in cell 0,
+    //      unsolvable from Peer A's Miniblock 0 alone.
+    //    - Peer B (peer_id = 2) has {x1, x2} -> 2-way collision in cell 0,
+    //      algebraically solved via RecoverGF64Syndromes(s1, s3, s5).
+    //    - Cross-peer projection peels {x1, x2} from Peer A's cell 0 and
+    //      immediately unlocks x3!
+    // =========================================================================
+    {
+        std::vector<uint64_t> cell0_sids;
+        for (uint64_t cand = 1; cell0_sids.size() < 3; ++cand) {
+            if (MapShortIdToMiniblockCell(cand, /*miniblock_id=*/0,
+                                          /*decimation_level=*/0) == 0) {
+                cell0_sids.push_back(cand);
+            }
+        }
+        const uint64_t x1 = cell0_sids[0];
+        const uint64_t x2 = cell0_sids[1];
+        const uint64_t x3 = cell0_sids[2];
+
+        RatelessMiniblockDecoder decoder(/*local_short_ids=*/{});
+        const std::vector<uint64_t> set_a{x1, x2, x3};
+        const std::vector<uint64_t> set_b{x1, x2};
+        const RatelessMiniblock mb_peer_a = BuildRatelessMiniblockFromShortIds(
+            ReconScope::LIVE_MEMPOOL, uint256{}, uint256{}, uint256{},
+            /*salt_k0=*/1, /*salt_k1=*/2, set_a, /*miniblock_id=*/0,
+            /*decimation_level=*/0);
+        const RatelessMiniblock mb_peer_b = BuildRatelessMiniblockFromShortIds(
+            ReconScope::LIVE_MEMPOOL, uint256{}, uint256{}, uint256{},
+            /*salt_k0=*/1, /*salt_k1=*/2, set_b, /*miniblock_id=*/0,
+            /*decimation_level=*/0);
+
+        // Adversarial Jamming Attack: Peer_Evil (peer_id = 666) injects 16
+        // miniblocks at decimation_level = 8 containing 512 valid-syndrome fake
+        // 1-element cells (so ~16 fake short IDs map into Cell 0 of Miniblock 0
+        // and none hit any zero cell of Peer_Evil's other miniblocks!) BEFORE
+        // Peer A and Peer B send their miniblocks.
+        uint64_t next_fake = 100'000ULL;
+        size_t total_evil_injected = 0;
+        for (uint32_t evil_mb_id = 100; evil_mb_id < 116; ++evil_mb_id) {
+            std::vector<uint64_t> one_per_cell;
+            one_per_cell.reserve(RatelessMiniblock::NUM_CELLS);
+            for (uint8_t c = 0; c < RatelessMiniblock::NUM_CELLS; ++c) {
+                while (true) {
+                    const uint64_t cand = next_fake++;
+                    if (MapShortIdToMiniblockCell(cand, evil_mb_id,
+                                                  /*decimation_level=*/8) !=
+                        c) {
+                        continue;
+                    }
+                    bool hits_other_evil_mb = false;
+                    for (uint32_t other_id = 100; other_id < 116; ++other_id) {
+                        if (other_id != evil_mb_id &&
+                            MapShortIdToMiniblockCell(
+                                cand, other_id, /*decimation_level=*/8)
+                                .has_value()) {
+                            hits_other_evil_mb = true;
+                            break;
+                        }
+                    }
+                    if (!hits_other_evil_mb) {
+                        one_per_cell.push_back(cand);
+                        break;
+                    }
+                }
+            }
+            const RatelessMiniblock evil_mb =
+                BuildRatelessMiniblockFromShortIds(
+                    ReconScope::LIVE_MEMPOOL, uint256{}, uint256{}, uint256{},
+                    /*salt_k0=*/1, /*salt_k1=*/2, one_per_cell, evil_mb_id,
+                    /*decimation_level=*/8);
+            total_evil_injected +=
+                decoder.AddPeerMiniblock(/*peer_id=*/666, evil_mb).size();
+        }
+        BOOST_CHECK_EQUAL(total_evil_injected, 512U);
+        BOOST_CHECK_EQUAL(decoder.GetPeerMissingShortIds(/*peer_id=*/666).size(),
+                          512U);
+
+        // Feeding Peer A's 3-way collided miniblock alone cannot resolve cell 0
+        const auto from_a = decoder.AddPeerMiniblock(/*peer_id=*/1, mb_peer_a);
+        BOOST_CHECK(from_a.empty());
+        BOOST_CHECK(!decoder.IsPeerConverged(/*peer_id=*/1));
+
+        // Despite 512 fake IDs polluting m_discovered_missing_sids, isolated
+        // per-donor-peer projection from Peer B (peer_id = 2) still peels
+        // {x1, x2} out of Peer A's cell 0 and unlocks x3!
+        const auto from_b = decoder.AddPeerMiniblock(/*peer_id=*/2, mb_peer_b);
+        BOOST_CHECK_EQUAL(from_b.size(), 3U);
+        BOOST_CHECK(decoder.IsPeerConverged(/*peer_id=*/2));
+        BOOST_CHECK(decoder.IsPeerConverged(/*peer_id=*/1));
+        BOOST_CHECK_EQUAL(decoder.GetPeerMissingShortIds(/*peer_id=*/1).size(),
+                          3U);
+        BOOST_CHECK_EQUAL(decoder.GetPeerMissingShortIds(/*peer_id=*/2).size(),
+                          2U);
+
+        // Removing Peer_Evil (peer_id = 666) purges all 512 fake IDs while
+        // preserving {x1, x2, x3} confirmed on Honest Peers 1 and 2!
+        decoder.RemovePeer(/*peer_id=*/666);
+        BOOST_CHECK(decoder.GetPeerMissingShortIds(/*peer_id=*/666).empty());
+
+        const auto &all_found = decoder.GetDiscoveredMissingShortIds();
+        BOOST_CHECK_EQUAL(all_found.size(), 3U);
+        BOOST_CHECK(all_found.count(x1) == 1U);
+        BOOST_CHECK(all_found.count(x2) == 1U);
+        BOOST_CHECK(all_found.count(x3) == 1U);
+    }
+
+    // =========================================================================
+    // 2. Mixed Missing (+1) + Local-Extra (-1) Cell (delta_count == 0):
+    //    Local has {loc_extra} and Peer A has {rem_missing} mapping to the
+    //    exact same cell in (miniblock_id = 0, decimation_level = 0).
+    //    Even though delta_count == 0, |delta_count| + 2*k == 2 solves cleanly!
+    // =========================================================================
+    {
+        std::vector<uint64_t> cell3_sids;
+        for (uint64_t cand = 100; cell3_sids.size() < 2; ++cand) {
+            if (MapShortIdToMiniblockCell(cand, /*miniblock_id=*/0,
+                                          /*decimation_level=*/0) == 3) {
+                cell3_sids.push_back(cand);
+            }
+        }
+        const uint64_t loc_extra = cell3_sids[0];
+        const uint64_t rem_missing = cell3_sids[1];
+
+        RatelessMiniblockDecoder decoder(/*local_short_ids=*/{loc_extra});
+        const std::vector<uint64_t> peer_sids{rem_missing};
+        const RatelessMiniblock mb_peer = BuildRatelessMiniblockFromShortIds(
+            ReconScope::LIVE_MEMPOOL, uint256{}, uint256{}, uint256{},
+            /*salt_k0=*/11, /*salt_k1=*/22, peer_sids, /*miniblock_id=*/0,
+            /*decimation_level=*/0);
+
+        const auto newly_recovered =
+            decoder.AddPeerMiniblock(/*peer_id=*/1, mb_peer);
+        BOOST_REQUIRE_EQUAL(newly_recovered.size(), 1U);
+        BOOST_CHECK_EQUAL(newly_recovered[0], rem_missing);
+        BOOST_CHECK(decoder.IsPeerConverged(/*peer_id=*/1));
+    }
+
+    // =========================================================================
+    // 3. Multi-Peer Unconverged Set Reconciliation (S_A != S_B != S_C != S_D !=
+    //    S_local) over 10,000 Transactions + Byzantine Peer_Evil Defense:
+    //    - Base union S_union has 10,000 transactions.
+    //    - Local node has 9,500 transactions from S_union (missing 500) PLUS
+    //      20 local-only extra transactions.
+    //    - Honest Peers 10, 11, 12, 13 each have different subsets of S_union
+    //      and different subsets of the 20 local-only extras.
+    //    - Byzantine Peer_Evil (peer_id = 999) injects out-of-range
+    //      decimation_level = 99, duplicate (miniblock_id, decimation_level),
+    //      and forged syndromes attempting to poison Honest Peer 10.
+    // =========================================================================
+    {
+        FastRandomContext rng(uint256{0x42});
+        constexpr size_t TOTAL_UNION_TXS = 10'000;
+        constexpr size_t MISSING_FROM_LOCAL = 500;
+        constexpr size_t LOCAL_EXTRA_TXS = 20;
+
+        std::vector<uint64_t> s_union;
+        s_union.reserve(TOTAL_UNION_TXS);
+        std::unordered_set<uint64_t> used_sids;
+        used_sids.reserve(TOTAL_UNION_TXS + LOCAL_EXTRA_TXS + 64);
+        while (s_union.size() < TOTAL_UNION_TXS) {
+            const uint64_t sid = rng.rand64();
+            if (sid != 0 && used_sids.insert(sid).second) {
+                s_union.push_back(sid);
+            }
+        }
+
+        std::vector<uint64_t> local_extras;
+        local_extras.reserve(LOCAL_EXTRA_TXS);
+        while (local_extras.size() < LOCAL_EXTRA_TXS) {
+            const uint64_t sid = rng.rand64();
+            if (sid != 0 && used_sids.insert(sid).second) {
+                local_extras.push_back(sid);
+            }
+        }
+
+        // Local node has s_union[0 .. 9499] + all 20 local_extras.
+        // Missing from local are s_union[9500 .. 9999] (500 short IDs).
+        std::vector<uint64_t> s_local(
+            s_union.begin(),
+            s_union.begin() + (TOTAL_UNION_TXS - MISSING_FROM_LOCAL));
+        s_local.insert(s_local.end(), local_extras.begin(), local_extras.end());
+
+        std::unordered_set<uint64_t> expected_missing(
+            s_union.begin() + (TOTAL_UNION_TXS - MISSING_FROM_LOCAL),
+            s_union.end());
+        BOOST_REQUIRE_EQUAL(expected_missing.size(), MISSING_FROM_LOCAL);
+
+        // Construct 4 honest peers (peer_ids 10, 11, 12, 13) with distinct sets:
+        // - Each peer p in {0,1,2,3} is missing a different 10-tx slice of
+        //   s_union[0..9499] AND a different 80-tx slice of the 500 missing
+        //   txs (so every missing tx is held by at least 3 of the 4 peers,
+        //   and no single peer has all 500 missing txs!).
+        // - Each peer also holds a different 5-tx slice of local_extras.
+        std::array<std::vector<uint64_t>, 4> peer_sets;
+        for (size_t p = 0; p < 4; ++p) {
+            peer_sets[p].reserve(TOTAL_UNION_TXS);
+            for (size_t i = 0; i < TOTAL_UNION_TXS - MISSING_FROM_LOCAL; ++i) {
+                if (i >= p * 10 && i < (p + 1) * 10) {
+                    continue; // Peer p is missing this slice of shared txs
+                }
+                peer_sets[p].push_back(s_union[i]);
+            }
+            for (size_t m = 0; m < MISSING_FROM_LOCAL; ++m) {
+                if (m >= p * 80 && m < (p + 1) * 80) {
+                    continue; // Peer p is missing this slice of local-missing txs
+                }
+                peer_sets[p].push_back(
+                    s_union[TOTAL_UNION_TXS - MISSING_FROM_LOCAL + m]);
+            }
+            for (size_t e = p * 5; e < (p + 1) * 5; ++e) {
+                peer_sets[p].push_back(local_extras[e]);
+            }
+        }
+
+        RatelessMiniblockDecoder decoder(s_local);
+
+        // Inject Byzantine miniblocks from Peer_Evil (peer_id = 999):
+        // (a) Out-of-range decimation_level = 99 (clamped by MAX_DECIMATION_LEVEL)
+        // (b) Duplicate (miniblock_id = 0, decimation_level = 99) (ignored by
+        //     duplicate guard)
+        // (c) Forged cell root that is NOT in any honest peer (blocked from
+        //     poisoning honest peers by Zero-Cell Veto)
+        uint64_t evil_forged_sid = 0;
+        for (uint64_t cand = 1;; ++cand) {
+            if (!used_sids.count(cand) &&
+                MapShortIdToMiniblockCell(cand, /*miniblock_id=*/77,
+                                          /*decimation_level=*/0) == 0) {
+                evil_forged_sid = cand;
+                break;
+            }
+        }
+        const std::vector<uint64_t> evil_sids{evil_forged_sid};
+        RatelessMiniblock evil_mb_clamp = BuildRatelessMiniblockFromShortIds(
+            ReconScope::LIVE_MEMPOOL, uint256{}, uint256{}, uint256{}, 1, 2,
+            evil_sids, /*miniblock_id=*/0, /*decimation_level=*/99);
+        evil_mb_clamp.decimation_level = 99;
+        (void)decoder.AddPeerMiniblock(/*peer_id=*/999, evil_mb_clamp);
+        BOOST_CHECK(
+            decoder.AddPeerMiniblock(/*peer_id=*/999, evil_mb_clamp).empty());
+
+        // Stream RatelessMiniblocks round-robin from Honest Peers 10, 11, 12, 13
+        // until all 500 missing short IDs are recovered.
+        double decode_us = 0.0;
+        size_t total_miniblocks_streamed = 0;
+        size_t honest_recovered_count = 0;
+
+        for (uint32_t seq = 0;
+             seq < 32 && honest_recovered_count < MISSING_FROM_LOCAL; ++seq) {
+            for (size_t p = 0;
+                 p < 4 && honest_recovered_count < MISSING_FROM_LOCAL; ++p) {
+                const uint32_t mb_id = static_cast<uint32_t>(seq * 4 + p);
+                const uint8_t dec_level =
+                    SelectMiniblockDecimationLevel(MISSING_FROM_LOCAL, mb_id);
+                const RatelessMiniblock mb = BuildRatelessMiniblockFromShortIds(
+                    ReconScope::LIVE_MEMPOOL, uint256{}, uint256{}, uint256{},
+                    /*salt_k0=*/0x1234ULL, /*salt_k1=*/0x5678ULL, peer_sets[p],
+                    mb_id, dec_level);
+                ++total_miniblocks_streamed;
+                const auto t_dec0 = std::chrono::steady_clock::now();
+                const auto newly = decoder.AddPeerMiniblock(
+                    static_cast<NodeId>(10 + p), mb);
+                const auto t_dec1 = std::chrono::steady_clock::now();
+                decode_us += std::chrono::duration<double, std::micro>(
+                                 t_dec1 - t_dec0)
+                                 .count();
+                for (const uint64_t sid : newly) {
+                    if (expected_missing.count(sid)) {
+                        ++honest_recovered_count;
+                    }
+                }
+            }
+        }
+
+        BOOST_CHECK_EQUAL(honest_recovered_count, MISSING_FROM_LOCAL);
+        for (const uint64_t sid : expected_missing) {
+            BOOST_CHECK(decoder.GetDiscoveredMissingShortIds().count(sid) ==
+                        1U);
+        }
+        const size_t cell_payload_bytes =
+            RatelessMiniblock::NUM_CELLS * 28U; // 32 cells * 28 bytes = 896 B
+        const size_t total_wire_bytes =
+            total_miniblocks_streamed * cell_payload_bytes;
+        const double wire_bytes_per_missing_tx =
+            static_cast<double>(total_wire_bytes) /
+            static_cast<double>(MISSING_FROM_LOCAL);
+
+        BOOST_TEST_MESSAGE(
+            "4-Peer Rateless GF(2^64) Miniblock Reconciliation (10,000 txs, "
+            "500 missing, 20 local-extra): recovered="
+            << honest_recovered_count << "/" << MISSING_FROM_LOCAL
+            << " miniblocks=" << total_miniblocks_streamed
+            << " total_wire_bytes=" << total_wire_bytes
+            << " bytes_per_missing_tx=" << wire_bytes_per_missing_tx
+            << " decode_us=" << decode_us);
+        // Should require <= 24 miniblocks total across the 4 peers
+        BOOST_CHECK_LE(total_miniblocks_streamed, 24U);
+    }
+
+    // =========================================================================
+    // 4. V2PeerProtocolHandler::BuildRatelessMiniblock Integration Check
+    // =========================================================================
+    {
+        LOCK(NetEventsInterface::g_msgproc_mutex);
+        const Config &config = m_node.chainman->GetConfig();
+        auto connman = std::make_unique<ConnmanTestMsg>(config, 0x77, 0x88,
+                                                        *m_node.addrman);
+        auto peerman = PeerManager::make(*connman, *m_node.addrman, nullptr,
+                                         *m_node.chainman, *m_node.mempool,
+                                         nullptr, {});
+        V2PeerProtocolHandler handler(*m_node.chainman, *m_node.mempool,
+                                      *connman, *peerman);
+        FastRandomContext rng(uint256{0x99});
+        const uint256 ctx = rng.rand256();
+        const auto [k0, k1] =
+            DeriveReconSipHashKey(ReconScope::BLOCK_RECON, ctx, 0);
+        CTransactionRef tx = MakeNonCoinbaseTx(rng, 0x42);
+        BOOST_REQUIRE(tx != nullptr);
+        handler.SetScopedTransactions(ReconScope::BLOCK_RECON, ctx, {tx});
+
+        const RatelessMiniblock mb = handler.BuildRatelessMiniblock(
+            ReconScope::BLOCK_RECON, ctx, k0, k1, /*miniblock_id=*/0,
+            /*decimation_level=*/0);
+        RatelessMiniblockDecoder dec(/*local_short_ids=*/{});
+        const auto recovered = dec.AddPeerMiniblock(/*peer_id=*/1, mb);
+        BOOST_REQUIRE_EQUAL(recovered.size(), 1U);
+        BOOST_CHECK_EQUAL(recovered[0],
+                          ComputeMerklixShortId(k0, k1, tx->GetId()));
+        BOOST_CHECK(dec.IsPeerConverged(/*peer_id=*/1));
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
