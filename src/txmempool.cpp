@@ -2087,8 +2087,9 @@ int CTxMemPool::Expire(std::chrono::seconds time) {
     setEntries toremove;
     size_t skippedFinalizedTxs{0};
     while (it != mapTx.get<entry_time>().end() && (*it)->GetTime() < time) {
-        if (isAvalancheFinalizedPreConsensus((*it)->GetTx().GetId())) {
-            // Don't expire finalized transactions
+        if (isAvalancheFinalizedPreConsensus((*it)->GetTx().GetId()) ||
+            (*it)->GetPreconsensusState() >= TxPreconsensusState::SNOWBALLED) {
+            // Don't expire snowballed or finalized transactions
             ++skippedFinalizedTxs;
         } else {
             toremove.insert(mapTx.project<0>(it));
@@ -2216,8 +2217,10 @@ void CTxMemPool::TrimToSize(size_t sizelimit,
         // Lowest fee first
         auto rit = by_modified_feerate.rbegin();
 
-        // We don't evict finalized transactions, even if they have lower fee
-        while (isAvalancheFinalizedPreConsensus((*rit)->GetTx().GetId())) {
+        // We don't evict snowballed or finalized transactions, even if they have lower fee
+        while (isAvalancheFinalizedPreConsensus((*rit)->GetTx().GetId()) ||
+               (*rit)->GetPreconsensusState() >=
+                   TxPreconsensusState::SNOWBALLED) {
             ++finalizedTxsSkipped;
             ++rit;
             if (rit == by_modified_feerate.rend()) {

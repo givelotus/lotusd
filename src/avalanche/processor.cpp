@@ -2012,20 +2012,33 @@ bool Processor::stepEpochSnowballReconciliation(
         auto &overlay_mgr = mempool->GetMerklixOverlay();
         const lotus::v2::MempoolOverlayLayer *activeLayer =
             &overlay_mgr.GetSpeculativeOverlay();
+        bool foundFrozenLayer = false;
         for (const auto &layer : overlay_mgr.GetFrozenEpochs()) {
             if (layer.GetLayerId() == epochSeq) {
                 activeLayer = &layer;
+                foundFrozenLayer = true;
                 break;
             }
         }
-        txCount = static_cast<uint32_t>(activeLayer->GetTxCount());
+        if (!foundFrozenLayer && !overlay_mgr.GetFrozenEpochs().empty()) {
+            const auto &lastFrozen = overlay_mgr.GetFrozenEpochs().back();
+            if (activeLayer->GetSubtreeARoot() ==
+                    lastFrozen.GetSubtreeARoot() ||
+                activeLayer->GetTxCount() <= lastFrozen.GetTxCount()) {
+                txCount = 0;
+            } else {
+                txCount = static_cast<uint32_t>(activeLayer->GetTxCount());
+            }
+        } else {
+            txCount = static_cast<uint32_t>(activeLayer->GetTxCount());
+        }
         if (txCount > 0) {
             const auto subA = activeLayer->GetSubtreeARoot();
             const auto utxoR = activeLayer->GetUtxoRootDigest();
             std::memcpy(subARoot.begin(), subA.data(), 32);
             std::memcpy(utxoRootHash.begin(), utxoR.data(), 32);
+            overlay_mgr.AdvanceUnionRound();
         }
-        overlay_mgr.AdvanceUnionRound();
     }
 
     if (txCount == 0) {
@@ -2164,8 +2177,13 @@ bool Processor::reconcileEpochWithPeerMempools(
         localActiveSketchRoot = mempool->GetActiveSketchRoot();
     }
 
-    const uint32_t sampleSize =
-        static_cast<uint32_t>(std::max<size_t>(1, sampledPeerMempools.size()));
+    uint32_t validSampledPeers = 0;
+    for (CTxMemPool *peerPool : sampledPeerMempools) {
+        if (peerPool && peerPool != mempool) {
+            ++validSampledPeers;
+        }
+    }
+    const uint32_t sampleSize = std::max<uint32_t>(1U, validSampledPeers);
     std::map<TxId, CandidatePeerTx> peerTxById;
     std::vector<TxId> peerTxOrder;
     std::map<TxId, CandidatePeerTx> nextLayerPeerTxById;

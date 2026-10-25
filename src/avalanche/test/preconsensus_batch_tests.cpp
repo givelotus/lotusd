@@ -2146,6 +2146,107 @@ BOOST_FIXTURE_TEST_CASE(
             BOOST_CHECK(winners == canonicalWinners);
         }
     }
+
+    // Case C: Parent-Child Conflict Quarantine & Topological BatchId(E)
+    // Resolution across all 6 arrival permutations of {p1, p2, p2_child}:
+    //   p1       spends {uParent}
+    //   p2       spends {uParent} and creates output (p2->GetId(), 0)
+    //   p2_child spends {(p2->GetId(), 0)}
+    // Verify:
+    //   1. In ALL 6 arrival orders (including p1 -> p2 -> p2_child where p2 is
+    //      the incoming `entry`), all 3 transactions {p1, p2, p2_child} are
+    //      quarantined out of Epoch 1!
+    //   2. Under a BatchId where p1 wins over p2, BOTH p2 AND p2_child are
+    //      rejected in `rejected_losers` (p2_child is never promoted when its
+    //      parent p2 lost!).
+    //   3. Under a BatchId where p2 wins over p1 (even if score(p2_child) <
+    //      score(p2)), BOTH p2 AND p2_child are promoted in `promoted_winners`
+    //      with parent p2 promoted BEFORE child p2_child!
+    const COutPoint uParent(TxId(GetRandHash()), 30);
+    CTransactionRef p1 = makeTxSpending({uParent}, 10 * COIN, 101);
+    CTransactionRef p2 = makeTxSpending({uParent}, 11 * COIN, 202);
+    const COutPoint p2Out(p2->GetId(), 0);
+    CTransactionRef p2_child = makeTxSpending({p2Out}, 9 * COIN, 303);
+
+    lotus::v2::Hash h_p1{}, h_p2{}, h_child{};
+    std::memcpy(h_p1.data(), p1->GetId().begin(), 32);
+    std::memcpy(h_p2.data(), p2->GetId().begin(), 32);
+    std::memcpy(h_child.data(), p2_child->GetId().begin(), 32);
+
+    // Find a batchId where p1 beats p2, and a batchId where p2 beats p1 (and
+    // p2_child has an even smaller score than p2 to test parent-before-child
+    // ordering!).
+    uint256 batchP1Wins = uint256::ZERO;
+    uint256 batchP2Wins = uint256::ZERO;
+    for (int attempt = 0;
+         attempt < 10000 && (batchP1Wins.IsNull() || batchP2Wins.IsNull());
+         ++attempt) {
+        const uint256 candBatch = GetRandHash();
+        lotus::v2::Hash hb{};
+        std::memcpy(hb.data(), candBatch.begin(), 32);
+        const auto s1 =
+            lotus::v2::ComputePreconsensusTiebreakScore(hb, h_p1);
+        const auto s2 =
+            lotus::v2::ComputePreconsensusTiebreakScore(hb, h_p2);
+        const auto sc =
+            lotus::v2::ComputePreconsensusTiebreakScore(hb, h_child);
+        if (s1 < s2 && batchP1Wins.IsNull()) {
+            batchP1Wins = candBatch;
+        }
+        if (sc < s2 && s2 < s1 && batchP2Wins.IsNull()) {
+            batchP2Wins = candBatch;
+        }
+    }
+    BOOST_REQUIRE(!batchP1Wins.IsNull());
+    BOOST_REQUIRE(!batchP2Wins.IsNull());
+
+    std::array<CTransactionRef, 3> pcTxs = {p1, p2, p2_child};
+    for (const uint256 &testBatch : {batchP1Wins, batchP2Wins}) {
+        const bool expectP1Wins = (testBatch == batchP1Wins);
+        std::array<size_t, 3> pcPerm = {0, 1, 2};
+        do {
+            CTxMemPool pool(config, CTxMemPool::Options{});
+            LOCK2(cs_main, pool.cs);
+            pool.ConnectBlockReset(tipHash, uint64_t(chaintip->nHeight + 1),
+                                   uint64_t(chaintip->GetMedianTimePast()));
+            pool.UnionTransactionIntoActiveEpoch(txClean, 1000, 1);
+            for (size_t idx : pcPerm) {
+                pool.UnionTransactionIntoActiveEpoch(pcTxs[idx], 1000, 1);
+            }
+            BOOST_CHECK_EQUAL(pool.GetQuarantinedConflictTxCount(), 3U);
+            BOOST_CHECK_EQUAL(
+                pool.GetOverlayManager().GetSpeculativeOverlay().GetTxCount(),
+                1U);
+
+            BOOST_REQUIRE_EQUAL(pool.FreezeEpochBatch().GetLayerId(), 1U);
+            pool.MarkEpochFinalized(1);
+            const auto res = pool.ResolveEpochQuarantineWithBatchId(testBatch);
+            if (expectP1Wins) {
+                BOOST_REQUIRE_EQUAL(res.promoted_winners.size(), 1U);
+                BOOST_REQUIRE_EQUAL(res.rejected_losers.size(), 2U);
+                const auto w0 = std::static_pointer_cast<const CTransaction>(
+                    res.promoted_winners[0].tx_ref);
+                BOOST_CHECK_EQUAL(w0->GetId(), p1->GetId());
+                BOOST_CHECK(pool.exists(p1->GetId()));
+                BOOST_CHECK(!pool.exists(p2->GetId()));
+                BOOST_CHECK(!pool.exists(p2_child->GetId()));
+            } else {
+                BOOST_REQUIRE_EQUAL(res.promoted_winners.size(), 2U);
+                BOOST_REQUIRE_EQUAL(res.rejected_losers.size(), 1U);
+                const auto w0 = std::static_pointer_cast<const CTransaction>(
+                    res.promoted_winners[0].tx_ref);
+                const auto w1 = std::static_pointer_cast<const CTransaction>(
+                    res.promoted_winners[1].tx_ref);
+                // Parent p2 MUST be promoted before child p2_child even though
+                // score(p2_child) < score(p2)!
+                BOOST_CHECK_EQUAL(w0->GetId(), p2->GetId());
+                BOOST_CHECK_EQUAL(w1->GetId(), p2_child->GetId());
+                BOOST_CHECK(pool.exists(p2->GetId()));
+                BOOST_CHECK(pool.exists(p2_child->GetId()));
+                BOOST_CHECK(!pool.exists(p1->GetId()));
+            }
+        } while (std::next_permutation(pcPerm.begin(), pcPerm.end()));
+    }
 }
 
 // ============================================================================

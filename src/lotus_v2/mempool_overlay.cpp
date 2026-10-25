@@ -2810,20 +2810,26 @@ EpochUnionOutcome MerklixOverlayManager::UnionEpochTransaction(
     // (T1, T2, T3) and multi-input bridging spends (T1 on U1, T2 on {U1, U2},
     // T3 on U2) always converge to the exact same (active_txs_, quarantined_txs_,
     // conflicted_outpoints_) regardless of arrival order.
-    std::vector<Outpoint> newly_conflicted;
     for (const auto &op : entry.spent_outpoints) {
-        if (conflicted_outpoints_.insert(op).second) {
-            newly_conflicted.push_back(op);
-        }
+        conflicted_outpoints_.insert(op);
+    }
+    // Any transaction spending an output created by a quarantined transaction
+    // must also be quarantined regardless of arrival order (T1 -> T2 -> T_child
+    // vs T2 -> T_child -> T1).
+    for (const auto &coin : entry.created_coins) {
+        conflicted_outpoints_.insert(coin.outpoint);
     }
     if (quarantined_txs_.emplace(entry.tx_id, entry).second) {
         total_quarantined_events_.fetch_add(1, std::memory_order_relaxed);
     }
 
-    // Also include all spent outpoints of `entry` in the initial search wave
-    // even if some were already in `conflicted_outpoints_`, in case an active
-    // transaction in `active_epoch` was added before the conflict.
+    // Include both spent outpoints and created outpoints of `entry` in the
+    // initial search wave in case an active transaction in `active_epoch` was
+    // added before the conflict.
     std::vector<Outpoint> wave = entry.spent_outpoints;
+    for (const auto &coin : entry.created_coins) {
+        wave.push_back(coin.outpoint);
+    }
     while (!wave.empty()) {
         std::vector<Hash> colliding_ids =
             active_epoch.FindTransactionsSpending(wave);
@@ -2875,6 +2881,18 @@ MerklixOverlayManager::ResolveQuarantinedTxsWithBatchId(
         OverlayTxEntry entry;
     };
 
+    std::unordered_map<Outpoint, Hash, OutpointHasher> pending_output_producers;
+    for (const auto &[tx_id, entry] : quarantined_txs_) {
+        for (const auto &coin : entry.created_coins) {
+            pending_output_producers.emplace(coin.outpoint, tx_id);
+        }
+    }
+    for (const auto &def_entry : deferred_next_epoch_txs_) {
+        for (const auto &coin : def_entry.created_coins) {
+            pending_output_producers.emplace(coin.outpoint, def_entry.tx_id);
+        }
+    }
+
     std::vector<ScoredCandidate> candidates;
     candidates.reserve(quarantined_txs_.size());
     for (auto &[tx_id, entry] : quarantined_txs_) {
@@ -2892,52 +2910,82 @@ MerklixOverlayManager::ResolveQuarantinedTxsWithBatchId(
               });
 
     std::unordered_set<Outpoint, OutpointHasher> claimed_outpoints;
-    for (auto &cand : candidates) {
-        bool conflicts = false;
-        for (const auto &op : cand.entry.spent_outpoints) {
-            if (claimed_outpoints.find(op) != claimed_outpoints.end() ||
-                speculative_layer_.SpendsOutpoint(op)) {
-                conflicts = true;
-                break;
+    std::map<Hash, bool, CtorTxIdCompare> promoted_tx_ids;
+    std::map<Hash, bool, CtorTxIdCompare> rejected_tx_ids;
+
+    auto resolve_entry_list = [&](auto &list, auto get_entry) {
+        std::vector<uint8_t> decided(list.size(), 0);
+        bool made_progress = true;
+        while (made_progress) {
+            made_progress = false;
+            for (size_t i = 0; i < list.size(); ++i) {
+                if (decided[i]) {
+                    continue;
+                }
+                OverlayTxEntry &entry = get_entry(list[i]);
+                bool has_conflict = false;
+                bool waiting_on_parent = false;
+                for (const auto &op : entry.spent_outpoints) {
+                    if (claimed_outpoints.find(op) != claimed_outpoints.end() ||
+                        speculative_layer_.SpendsOutpoint(op)) {
+                        has_conflict = true;
+                        break;
+                    }
+                    auto it_prod = pending_output_producers.find(op);
+                    if (it_prod != pending_output_producers.end() &&
+                        it_prod->second != entry.tx_id) {
+                        const Hash &parent_id = it_prod->second;
+                        if (rejected_tx_ids.count(parent_id) > 0) {
+                            has_conflict = true;
+                            break;
+                        }
+                        if (promoted_tx_ids.count(parent_id) == 0) {
+                            waiting_on_parent = true;
+                        }
+                    }
+                }
+                if (has_conflict) {
+                    decided[i] = 1;
+                    rejected_tx_ids.emplace(entry.tx_id, true);
+                    result.rejected_losers.push_back(std::move(entry));
+                    made_progress = true;
+                    break;
+                }
+                if (!waiting_on_parent) {
+                    decided[i] = 1;
+                    promoted_tx_ids.emplace(entry.tx_id, true);
+                    for (const auto &op : entry.spent_outpoints) {
+                        claimed_outpoints.insert(op);
+                    }
+                    speculative_layer_.AddTransaction(
+                        entry.tx_id, entry.tx_hash, entry.linear_cost,
+                        entry.spent_outpoints, entry.created_coins,
+                        entry.fee_sats, entry.sigchecks, entry.tx_ref,
+                        entry.payload_bytes);
+                    result.promoted_winners.push_back(std::move(entry));
+                    made_progress = true;
+                    break;
+                }
             }
         }
-        if (!conflicts) {
-            for (const auto &op : cand.entry.spent_outpoints) {
-                claimed_outpoints.insert(op);
+        for (size_t i = 0; i < list.size(); ++i) {
+            if (!decided[i]) {
+                OverlayTxEntry &entry = get_entry(list[i]);
+                rejected_tx_ids.emplace(entry.tx_id, true);
+                result.rejected_losers.push_back(std::move(entry));
             }
-            speculative_layer_.AddTransaction(
-                cand.entry.tx_id, cand.entry.tx_hash, cand.entry.linear_cost,
-                cand.entry.spent_outpoints, cand.entry.created_coins,
-                cand.entry.fee_sats, cand.entry.sigchecks, cand.entry.tx_ref,
-                cand.entry.payload_bytes);
-            result.promoted_winners.push_back(std::move(cand.entry));
-        } else {
-            result.rejected_losers.push_back(std::move(cand.entry));
         }
-    }
+    };
+
+    resolve_entry_list(
+        candidates,
+        [](ScoredCandidate &cand) -> OverlayTxEntry & { return cand.entry; });
 
     // Also promote any Phase 2 late-drip deferred transactions into the new
-    // open epoch E+1 if their inputs are unspent.
-    for (auto &def_entry : deferred_next_epoch_txs_) {
-        bool conflicts = false;
-        for (const auto &op : def_entry.spent_outpoints) {
-            if (claimed_outpoints.find(op) != claimed_outpoints.end() ||
-                speculative_layer_.SpendsOutpoint(op)) {
-                conflicts = true;
-                break;
-            }
-        }
-        if (!conflicts) {
-            for (const auto &op : def_entry.spent_outpoints) {
-                claimed_outpoints.insert(op);
-            }
-            speculative_layer_.AddTransaction(
-                def_entry.tx_id, def_entry.tx_hash, def_entry.linear_cost,
-                def_entry.spent_outpoints, def_entry.created_coins,
-                def_entry.fee_sats, def_entry.sigchecks, def_entry.tx_ref,
-                def_entry.payload_bytes);
-        }
-    }
+    // open epoch E+1 if their inputs are unspent and their parents succeeded.
+    resolve_entry_list(
+        deferred_next_epoch_txs_,
+        [](OverlayTxEntry &def_entry) -> OverlayTxEntry & { return def_entry; });
 
     quarantined_txs_.clear();
     conflicted_outpoints_.clear();
