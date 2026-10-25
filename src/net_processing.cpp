@@ -9067,8 +9067,10 @@ void PeerManagerImpl::ProcessMessage(
             // Default vote for unknown inv type
             uint32_t vote = -1;
 
-            // We don't vote definitively until we have an established quorum
-            if (!quorum_established) {
+            // We don't vote definitively until we have an established quorum,
+            // except for pre-consensus mempool epoch batches where connected V2
+            // peers answer based on local batch acceptance.
+            if (!quorum_established && inv.type != MSG_AVA_MEMPOOL_BATCH) {
                 votes.emplace_back(vote, inv.hash);
                 continue;
             }
@@ -9908,20 +9910,12 @@ void PeerManagerImpl::ProcessMessage(
         bool locally_accepted = false;
         {
             LOCK(m_mempool.cs);
-            const auto &spec =
-                m_mempool.GetMerklixOverlay().GetSpeculativeOverlay();
-            lotus::v2::Hash sub_a{};
-            std::memcpy(sub_a.data(), announcement.subtree_a_root.begin(), 32);
-            if (spec.GetTxCount() == announcement.tx_count &&
-                spec.GetSubtreeARoot() == sub_a) {
+            std::vector<CTransactionRef> ordered_txs;
+            if (m_mempool.VerifyOrAdoptEpochBatch(
+                    announcement.prev_block_hash, announcement.epoch_seq,
+                    announcement.subtree_a_root, announcement.utxo_root,
+                    announcement.tx_count, &ordered_txs)) {
                 locally_accepted = true;
-                std::vector<CTransactionRef> ordered_txs;
-                ordered_txs.reserve(spec.GetTxCount());
-                for (const auto &[_, oentry] : spec.GetOrderedTxs()) {
-                    ordered_txs.push_back(
-                        std::static_pointer_cast<const CTransaction>(
-                            oentry.tx_ref));
-                }
                 m_v2_protocol_handler.RegisterCandidateOverlay(
                     announcement.prev_block_hash, std::move(ordered_txs));
             }
@@ -9955,47 +9949,6 @@ void PeerManagerImpl::ProcessMessage(
             return;
         }
         m_avalanche->addTreasuryContender(prevblockhash, outputs, totalReward);
-        return;
-    }
-
-    if (msg_type == NetMsgType::AVABATCH) {
-        if (!m_avalanche) {
-            return;
-        }
-        avalanche::MempoolBatchAnnouncement announcement;
-        vRecv >> announcement;
-        if (announcement.tx_count == 0 || !announcement.IsValid()) {
-            return;
-        }
-        const bool known_prev = WITH_LOCK(
-            cs_main, return m_chainman.m_blockman.LookupBlockIndex(
-                                announcement.prev_block_hash) != nullptr);
-        if (!known_prev) {
-            return;
-        }
-        bool locally_accepted = false;
-        {
-            LOCK(m_mempool.cs);
-            const auto &spec =
-                m_mempool.GetMerklixOverlay().GetSpeculativeOverlay();
-            lotus::v2::Hash sub_a{};
-            std::memcpy(sub_a.data(), announcement.subtree_a_root.begin(), 32);
-            if (spec.GetTxCount() == announcement.tx_count &&
-                spec.GetSubtreeARoot() == sub_a) {
-                locally_accepted = true;
-                std::vector<CTransactionRef> ordered_txs;
-                ordered_txs.reserve(spec.GetTxCount());
-                for (const auto &[_, oentry] : spec.GetOrderedTxs()) {
-                    ordered_txs.push_back(
-                        std::static_pointer_cast<const CTransaction>(
-                            oentry.tx_ref));
-                }
-                m_v2_protocol_handler.RegisterCandidateOverlay(
-                    announcement.prev_block_hash, std::move(ordered_txs));
-            }
-        }
-        m_avalanche->registerMempoolBatch(announcement,
-                                          /*locallyAccepted=*/locally_accepted);
         return;
     }
 
