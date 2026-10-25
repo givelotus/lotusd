@@ -76,6 +76,9 @@ static void TxToJSON(const CTransaction &tx, const BlockHash &hashBlock,
                                  pindex->nHeight);
                 entry.pushKV("time", pindex->GetBlockTime());
                 entry.pushKV("blocktime", pindex->GetBlockTime());
+                entry.pushKV("preconsensus_state",
+                             std::string(TxPreconsensusStateToString(
+                                 TxPreconsensusState::CONFIRMED)));
             } else {
                 entry.pushKV("confirmations", 0);
             }
@@ -133,6 +136,13 @@ static RPCHelpMan getrawtransaction() {
                         {RPCResult::Type::NUM, "time", "Same as \"blocktime\""},
                         {RPCResult::Type::STR_HEX, "hex",
                          "The serialized, hex-encoded data for 'txid'"},
+                        {RPCResult::Type::STR, "preconsensus_state",
+                         /*optional=*/true,
+                         "Preconsensus lifecycle state: \"mempool\", "
+                         "\"frozen\", \"finalized\", or \"confirmed\""},
+                        {RPCResult::Type::NUM, "epoch_seq", /*optional=*/true,
+                         "Preconsensus epoch sequence number (0 if not yet "
+                         "frozen into an epoch)"},
                     },
                     DecodeTxDoc(/*txid_field_doc=*/"The transaction id (same "
                                                    "as provided)",
@@ -200,6 +210,13 @@ static RPCHelpMan getrawtransaction() {
                             }
                             UniValue result(UniValue::VOBJ);
                             TxToUniv(*entry->tx, BlockHash(), result, true);
+                            result.pushKV(
+                                "preconsensus_state",
+                                std::string(TxPreconsensusStateToString(
+                                    static_cast<TxPreconsensusState>(
+                                        entry->preconsensus_state))));
+                            result.pushKV("epoch_seq",
+                                          uint64_t{entry->epoch_seq});
                             return result;
                         }
                     }
@@ -237,6 +254,10 @@ static RPCHelpMan getrawtransaction() {
                                               1 + snap->height - hdr->height);
                                 result.pushKV("time", hdr->time);
                                 result.pushKV("blocktime", hdr->time);
+                                result.pushKV(
+                                    "preconsensus_state",
+                                    std::string(TxPreconsensusStateToString(
+                                        TxPreconsensusState::CONFIRMED)));
                                 return result;
                             }
                         }
@@ -282,6 +303,10 @@ static RPCHelpMan getrawtransaction() {
                                                       hdr->height);
                                     result.pushKV("time", hdr->time);
                                     result.pushKV("blocktime", hdr->time);
+                                    result.pushKV(
+                                        "preconsensus_state",
+                                        std::string(TxPreconsensusStateToString(
+                                            TxPreconsensusState::CONFIRMED)));
                                     return result;
                                 }
                             }
@@ -346,6 +371,15 @@ static RPCHelpMan getrawtransaction() {
                 result.pushKV("in_active_chain", in_active_chain);
             }
             TxToJSON(*tx, hash_block, result, chainman.ActiveChainstate());
+            if (hash_block.IsNull() && node.mempool) {
+                TxPreconsensusState pre_state{TxPreconsensusState::MEMPOOL};
+                uint32_t epoch_seq{0};
+                node.mempool->GetTxPreconsensusInfo(txid, pre_state, epoch_seq);
+                result.pushKV("preconsensus_state",
+                              std::string(TxPreconsensusStateToString(
+                                  pre_state)));
+                result.pushKV("epoch_seq", uint64_t{epoch_seq});
+            }
             return result;
         },
     };

@@ -407,6 +407,12 @@ static std::vector<RPCResult> MempoolEntryDescription() {
         RPCResult{RPCResult::Type::BOOL, "unbroadcast",
                   "Whether this transaction is currently unbroadcast (initial "
                   "broadcast not yet acknowledged by any peers)"},
+        RPCResult{RPCResult::Type::STR, "preconsensus_state",
+                  "Preconsensus lifecycle state: \"mempool\", \"frozen\", "
+                  "\"finalized\", or \"confirmed\""},
+        RPCResult{RPCResult::Type::NUM, "epoch_seq",
+                  "Preconsensus epoch sequence number (0 if not yet frozen into "
+                  "an epoch)"},
     };
 }
 
@@ -445,6 +451,10 @@ static void entryToJSON(const CTxMemPool &pool, UniValue &info,
 
     info.pushKV("spentby", std::move(spent));
     info.pushKV("unbroadcast", pool.IsUnbroadcastTx(tx.GetId()));
+    info.pushKV("preconsensus_state",
+                std::string(TxPreconsensusStateToString(
+                    e->GetPreconsensusState())));
+    info.pushKV("epoch_seq", uint64_t{e->GetEpochSeq()});
 }
 
 static void entrySnapshotToJSON(UniValue &info,
@@ -472,6 +482,10 @@ static void entrySnapshotToJSON(UniValue &info,
     }
     info.pushKV("spentby", std::move(spent));
     info.pushKV("unbroadcast", e.unbroadcast);
+    info.pushKV("preconsensus_state",
+                std::string(TxPreconsensusStateToString(
+                    static_cast<TxPreconsensusState>(e.preconsensus_state))));
+    info.pushKV("epoch_seq", uint64_t{e.epoch_seq});
 }
 
 static std::shared_ptr<const node::ChainAndMempoolSnapshot>
@@ -826,6 +840,27 @@ UniValue MempoolInfoToJSON(const CTxMemPool &pool) {
     ret.pushKV("p2p_relay_feerate_sats_per_kb",
                fee_info.p2p_relay_feerate_per_kcu);
     ret.pushKV("unbroadcastcount", uint64_t{snap.unbroadcast_count});
+    ret.pushKV("snowballed_epochs", uint64_t{pool.GetSnowballedEpochCount()});
+    ret.pushKV("snowballed_txs", uint64_t{pool.GetSnowballedTxCount()});
+    ret.pushKV("finalized_epochs", uint64_t{pool.GetFinalizedEpochCount()});
+    ret.pushKV("finalized_txs", uint64_t{pool.GetFinalizedEpochTxCount()});
+    ret.pushKV("finalized_epoch_txs",
+               uint64_t{pool.GetFinalizedEpochTxCount()});
+    ret.pushKV("quarantined_conflict_txs",
+               uint64_t{pool.GetQuarantinedConflictTxCount()});
+    ret.pushKV("quarantine_winners_promoted",
+               pool.GetQuarantineWinnersPromoted());
+    ret.pushKV("quarantine_losers_evicted",
+               pool.GetQuarantineLosersEvicted());
+    ret.pushKV("late_drip_deferred_txs",
+               uint64_t{pool.GetLateDripDeferredTxCount()});
+    ret.pushKV("last_layer_convergence_ms",
+               pool.GetLastLayerConvergenceMs());
+    ret.pushKV("snapblock_reconstructed",
+               pool.GetSnapblockReconstructedCount());
+    ret.pushKV("snapblock_overlay_fastpath",
+               pool.GetSnapblockOverlayFastpathCount());
+    ret.pushKV("snapblock_failures", pool.GetSnapblockFailuresCount());
     return ret;
 }
 
@@ -875,6 +910,42 @@ static RPCHelpMan getmempoolinfo() {
                 {RPCResult::Type::NUM, "unbroadcastcount",
                  "Current number of transactions that haven't passed initial "
                  "broadcast yet"},
+                {RPCResult::Type::NUM, "snowballed_epochs",
+                 "Current number of snowballed preconsensus epochs"},
+                {RPCResult::Type::NUM, "snowballed_txs",
+                 "Current number of transactions in snowballed preconsensus "
+                 "epochs"},
+                {RPCResult::Type::NUM, "finalized_epochs",
+                 "Current number of finalized preconsensus epochs"},
+                {RPCResult::Type::NUM, "finalized_txs",
+                 "Current number of transactions in finalized preconsensus "
+                 "epochs"},
+                {RPCResult::Type::NUM, "finalized_epoch_txs",
+                 "Current number of transactions in finalized preconsensus "
+                 "epochs"},
+                {RPCResult::Type::NUM, "quarantined_conflict_txs",
+                 "Current number of transactions quarantined due to same-epoch "
+                 "Option B double-spend conflicts"},
+                {RPCResult::Type::NUM, "quarantine_winners_promoted",
+                 "Cumulative number of Option B quarantined conflict winners "
+                 "promoted via BatchId(E) resolution"},
+                {RPCResult::Type::NUM, "quarantine_losers_evicted",
+                 "Cumulative number of Option B quarantined conflict losers "
+                 "evicted via BatchId(E) resolution"},
+                {RPCResult::Type::NUM, "late_drip_deferred_txs",
+                 "Current number of transactions deferred to Epoch E+1 by "
+                 "the two-phase anti-drip union gate"},
+                {RPCResult::Type::NUM, "last_layer_convergence_ms",
+                 "Convergence duration in milliseconds of the last snowballed "
+                 "layer"},
+                {RPCResult::Type::NUM, "snapblock_reconstructed",
+                 "Cumulative count of SEALEDHEADER snapblocks reconstructed"},
+                {RPCResult::Type::NUM, "snapblock_overlay_fastpath",
+                 "Cumulative count of SEALEDHEADER snapblocks reconstructed via "
+                 "O(1) Merklix overlay fast-path"},
+                {RPCResult::Type::NUM, "snapblock_failures",
+                 "Cumulative count of SEALEDHEADER snapblock fast-path misses / "
+                 "fallbacks / rejections"},
             }},
         RPCExamples{HelpExampleCli("getmempoolinfo", "") +
                     HelpExampleRpc("getmempoolinfo", "")},
