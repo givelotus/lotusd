@@ -240,28 +240,39 @@ BlockAssembler::CreateNewBlock(const CTxOut &payout) {
         m_avalanche && add_finalized_txs &&
         m_avalanche->isPreconsensusActivated(pindexPrev);
 
+    avalanche::MempoolBatchAnnouncement finalized_batch;
+    const bool has_finalized_batch =
+        m_avalanche &&
+        m_avalanche->getFinalizedBatchForBlock(pindexPrev->GetBlockHash(),
+                                               finalized_batch);
+
     bool use_speculative_overlay = false;
+    std::optional<lotus::v2::MempoolOverlayLayer> selected_overlay;
 
     if (m_mempool) {
         LOCK(m_mempool->cs);
         m_mempool->SyncMerklixOverlayToTip(
             pindexPrev->GetBlockHash(), uint64_t(nHeight),
             uint64_t(pindexPrev->GetMedianTimePast()));
-        const auto &spec_overlay =
-            m_mempool->GetMerklixOverlay().GetSpeculativeOverlay();
-        if (!shouldAddFinalizedTxs && spec_overlay.GetTxCount() > 0 &&
-            spec_overlay.GetTxCount() == m_mempool->size()) {
-            bool all_overlay_txs_eligible = true;
+        const auto &overlay_mgr = m_mempool->GetMerklixOverlay();
+        const auto &spec_overlay = overlay_mgr.GetSpeculativeOverlay();
+        const auto &frozen_epochs = overlay_mgr.GetFrozenEpochs();
+
+        auto try_use_overlay_layer =
+            [&](const lotus::v2::MempoolOverlayLayer &layer)
+                EXCLUSIVE_LOCKS_REQUIRED(m_mempool->cs) -> bool {
+            if (layer.GetTxCount() == 0) {
+                return false;
+            }
             // Bulk reuse must satisfy the same fee and cumulative resource
             // limits as individual selection, without mutating its counters
             // until every overlay transaction has qualified.
             auto overlay_fitter = blockFitter;
-            for (const auto &[_, oentry] : spec_overlay.GetOrderedTxs()) {
+            for (const auto &[_, oentry] : layer.GetOrderedTxs()) {
                 const auto tx = std::static_pointer_cast<const CTransaction>(
                     oentry.tx_ref);
                 if (!tx) {
-                    all_overlay_txs_eligible = false;
-                    break;
+                    return false;
                 }
                 const auto entry = m_mempool->mapTx.find(tx->GetId());
                 if (entry == m_mempool->mapTx.end() ||
@@ -272,33 +283,63 @@ BlockAssembler::CreateNewBlock(const CTxOut &payout) {
                     !overlay_fitter.testTxFits(tx->GetTotalSize(),
                                               oentry.sigchecks) ||
                     !CheckTx(*tx)) {
-                    all_overlay_txs_eligible = false;
-                    break;
+                    return false;
                 }
                 overlay_fitter.addTx(tx->GetTotalSize(), oentry.sigchecks,
                                     oentry.fee_sats * SATOSHI);
             }
-            if (all_overlay_txs_eligible) {
-                use_speculative_overlay = true;
-                pblocktemplate->entries.reserve(spec_overlay.GetTxCount() + 1);
-                for (const auto &[_, oentry] : spec_overlay.GetOrderedTxs()) {
-                    auto tx = std::static_pointer_cast<const CTransaction>(
-                        oentry.tx_ref);
-                    const Amount fee = oentry.fee_sats * SATOSHI;
-                    pblocktemplate->entries.emplace_back(tx, fee,
-                                                         oentry.sigchecks);
-                    blockFitter.addTx(tx->GetTotalSize(), oentry.sigchecks,
-                                      fee);
+            selected_overlay.emplace(layer);
+            use_speculative_overlay = true;
+            pblocktemplate->entries.reserve(layer.GetTxCount() + 1);
+            for (const auto &[_, oentry] : layer.GetOrderedTxs()) {
+                auto tx = std::static_pointer_cast<const CTransaction>(
+                    oentry.tx_ref);
+                const Amount fee = oentry.fee_sats * SATOSHI;
+                pblocktemplate->entries.emplace_back(tx, fee,
+                                                     oentry.sigchecks);
+                blockFitter.addTx(tx->GetTotalSize(), oentry.sigchecks, fee);
+            }
+            return true;
+        };
+
+        if (has_finalized_batch) {
+            lotus::v2::Hash fin_sub_a{};
+            std::memcpy(fin_sub_a.data(),
+                        finalized_batch.subtree_a_root.begin(), 32);
+            for (auto it = frozen_epochs.rbegin(); it != frozen_epochs.rend();
+                 ++it) {
+                if (it->GetSubtreeARoot() == fin_sub_a &&
+                    try_use_overlay_layer(*it)) {
+                    break;
+                }
+            }
+            if (!use_speculative_overlay &&
+                spec_overlay.GetSubtreeARoot() == fin_sub_a) {
+                try_use_overlay_layer(spec_overlay);
+            }
+        }
+
+        if (!use_speculative_overlay && !shouldAddFinalizedTxs) {
+            for (auto it = frozen_epochs.rbegin(); it != frozen_epochs.rend();
+                 ++it) {
+                if (try_use_overlay_layer(*it)) {
+                    break;
                 }
             }
         }
+
+        if (!use_speculative_overlay && !shouldAddFinalizedTxs &&
+            spec_overlay.GetTxCount() > 0 &&
+            spec_overlay.GetTxCount() == m_mempool->size()) {
+            try_use_overlay_layer(spec_overlay);
+        }
+
         if (!use_speculative_overlay) {
             if (shouldAddFinalizedTxs) {
                 addFinalizedTxs(*m_mempool);
             } else {
                 addTxs(*m_mempool);
             }
-
         }
     }
 
@@ -404,12 +445,9 @@ BlockAssembler::CreateNewBlock(const CTxOut &payout) {
     // Fill in size and roots.
     pblock->SetSize(nSerializeSize);
     pblock->hashMerkleRoot = BlockMerkleRoot(*pblock);
-    if (use_speculative_overlay && m_mempool) {
-        LOCK(m_mempool->cs);
-        const auto &spec_overlay =
-            m_mempool->GetMerklixOverlay().GetSpeculativeOverlay();
+    if (use_speculative_overlay && selected_overlay.has_value()) {
         pblock->hashStateRoot = ComputeV2StateRootFromOverlay(
-            *pblock->vtx[0], spec_overlay, pblock->nBits, uint64_t(nHeight),
+            *pblock->vtx[0], *selected_overlay, pblock->nBits, uint64_t(nHeight),
             uint64_t(pindexPrev->GetMedianTimePast()), false);
     } else {
         pblock->hashStateRoot = ComputeV2BlockStateRoot(
