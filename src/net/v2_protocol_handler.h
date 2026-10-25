@@ -335,6 +335,11 @@ struct V2ProtocolHandlerStats {
     uint64_t sealedheader_fallback_getdata{0};
     uint64_t sealedheader_invalid{0};
     uint64_t sealedheader_rejected{0};
+
+    uint64_t SnapblockFailures() const noexcept {
+        return sealedheader_fallback_getdata + sealedheader_invalid +
+               sealedheader_rejected;
+    }
     uint64_t merklixsync_received{0};
     uint64_t getmerklixbuck_received{0};
     uint64_t merklixbuck_received{0};

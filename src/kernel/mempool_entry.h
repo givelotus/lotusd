@@ -28,6 +28,37 @@ struct LockPoints {
     int64_t time{0};
 };
 
+/**
+ * 4-state transaction pre-consensus lifecycle:
+ *   0. MEMPOOL    — Validated in local mempool; not yet converged in an epoch.
+ *   1. SNOWBALLED — Included in an epoch that reached beta_snow consecutive
+ *                   matching Snowball-Union rounds.
+ *   2. FINALIZED  — Included in an epoch batch finalized by Avalanche (or
+ *                   transitively finalized by a later epoch E' >= E).
+ *   3. CONFIRMED  — Included in a connected block on the active chain.
+ */
+enum class TxPreconsensusState : uint8_t {
+    MEMPOOL = 0,
+    SNOWBALLED = 1,
+    FINALIZED = 2,
+    CONFIRMED = 3,
+};
+
+inline const char *
+TxPreconsensusStateToString(TxPreconsensusState state) noexcept {
+    switch (state) {
+    case TxPreconsensusState::MEMPOOL:
+        return "mempool";
+    case TxPreconsensusState::SNOWBALLED:
+        return "snowballed";
+    case TxPreconsensusState::FINALIZED:
+        return "finalized";
+    case TxPreconsensusState::CONFIRMED:
+        return "confirmed";
+    }
+    return "mempool";
+}
+
 struct CompareIteratorById {
     // SFINAE for T where T is either a std::reference_wrapper<T> (e.g. a
     // CTxMemPoolEntryRef) or an iterator to a pointer type (e.g., a txiter)
@@ -98,6 +129,11 @@ private:
     std::atomic<Amount> m_modified_fee{Amount::zero()};
     //! Whether this locally submitted transaction awaits initial broadcast
     mutable std::atomic<bool> m_unbroadcast{false};
+    //! Lock-free pre-consensus lifecycle state (TxPreconsensusState)
+    mutable std::atomic<uint8_t> m_preconsensus_state{
+        static_cast<uint8_t>(TxPreconsensusState::MEMPOOL)};
+    //! Pre-consensus epoch sequence number (0 if not yet assigned to an epoch)
+    mutable std::atomic<uint32_t> m_epoch_seq{0};
     //! Track the height and time at which tx was final
     LockPoints lockPoints;
 
@@ -122,6 +158,9 @@ public:
           sigChecks(other.sigChecks),
           m_modified_fee(other.m_modified_fee.load(std::memory_order_relaxed)),
           m_unbroadcast(other.m_unbroadcast.load(std::memory_order_relaxed)),
+          m_preconsensus_state(
+              other.m_preconsensus_state.load(std::memory_order_relaxed)),
+          m_epoch_seq(other.m_epoch_seq.load(std::memory_order_relaxed)),
           lockPoints(std::move(other.lockPoints)),
           refcount(other.refcount.load()) {};
 
@@ -166,6 +205,36 @@ public:
     bool SetUnbroadcast(bool unbroadcast) const noexcept {
         return m_unbroadcast.exchange(unbroadcast, std::memory_order_relaxed) !=
                unbroadcast;
+    }
+
+    TxPreconsensusState GetPreconsensusState() const noexcept {
+        return static_cast<TxPreconsensusState>(
+            m_preconsensus_state.load(std::memory_order_relaxed));
+    }
+
+    void SetPreconsensusState(TxPreconsensusState state) const noexcept {
+        m_preconsensus_state.store(static_cast<uint8_t>(state),
+                                   std::memory_order_relaxed);
+    }
+
+    bool AdvancePreconsensusState(TxPreconsensusState next_state) const noexcept {
+        const uint8_t target = static_cast<uint8_t>(next_state);
+        uint8_t cur = m_preconsensus_state.load(std::memory_order_relaxed);
+        while (cur < target) {
+            if (m_preconsensus_state.compare_exchange_weak(
+                    cur, target, std::memory_order_relaxed)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    uint32_t GetEpochSeq() const noexcept {
+        return m_epoch_seq.load(std::memory_order_relaxed);
+    }
+
+    void SetEpochSeq(uint32_t epoch_seq) const noexcept {
+        m_epoch_seq.store(epoch_seq, std::memory_order_relaxed);
     }
 
     const Parents &GetMemPoolParentsConst() const { return m_parents; }

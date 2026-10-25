@@ -539,6 +539,7 @@ std::shared_ptr<const CBlock> V2PeerProtocolHandler::MatchCandidateOverlay(
     }
     if (overlay_matched) {
         if (used_overlay_fastpath) {
+            m_mempool.RecordSnapblockOverlayFastpath();
             LOCK(m_mutex);
             ++m_stats.sealedheader_overlay_fastpath;
         }
@@ -657,6 +658,7 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
         vRecv >> sealed;
     } catch (const std::exception &) {
         node::CountSealedHeader(node::SealedHeaderOutcome::INVALID);
+        m_mempool.RecordSnapblockFailure();
         LOCK(m_mutex);
         ++m_stats.sealedheader_invalid;
         ++m_stats.malformed_messages;
@@ -670,6 +672,7 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
 
     if (!sealed.IsValid()) {
         node::CountSealedHeader(node::SealedHeaderOutcome::INVALID);
+        m_mempool.RecordSnapblockFailure();
         LOCK(m_mutex);
         ++m_stats.sealedheader_invalid;
         ++m_stats.malformed_messages;
@@ -681,6 +684,7 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
     if (::GetSerializeSize(*sealed.coinbase_tx) >
         MAX_SEALEDHEADER_COINBASE_BYTES) {
         node::CountSealedHeader(node::SealedHeaderOutcome::REJECTED);
+        m_mempool.RecordSnapblockFailure();
         LOCK(m_mutex);
         ++m_stats.sealedheader_invalid;
         ++m_stats.sealedheader_rejected;
@@ -696,6 +700,7 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
                                            /*min_pow_checked=*/true,
                                            header_state, &pindex)) {
         node::CountSealedHeader(node::SealedHeaderOutcome::REJECTED);
+        m_mempool.RecordSnapblockFailure();
         LOCK(m_mutex);
         ++m_stats.sealedheader_invalid;
         ++m_stats.sealedheader_rejected;
@@ -707,6 +712,7 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
 
     if (pindex && WITH_LOCK(cs_main, return pindex->nStatus.hasData())) {
         node::CountSealedHeader(node::SealedHeaderOutcome::ALREADY_HAVE);
+        m_mempool.RecordSnapblockReconstructed();
         LOCK(m_mutex);
         ++m_stats.sealedheader_reconstructed;
         return;
@@ -716,6 +722,7 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
         MatchCandidateOverlay(sealed.header, sealed.coinbase_tx);
     if (reconstructed) {
         node::CountSealedHeader(node::SealedHeaderOutcome::REBUILT);
+        m_mempool.RecordSnapblockReconstructed();
         {
             LOCK(m_mutex);
             ++m_stats.sealedheader_reconstructed;
@@ -730,6 +737,7 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
     // MSG_CMPCT_BLOCK via getdata from pfrom without penalizing the peer.
     const CInv fallback_inv(MSG_CMPCT_BLOCK, block_hash);
     node::CountSealedHeader(node::SealedHeaderOutcome::FALLBACK);
+    m_mempool.RecordSnapblockFailure();
     {
         LOCK(m_mutex);
         ++m_stats.sealedheader_fallback_getdata;

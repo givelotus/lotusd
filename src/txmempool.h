@@ -746,6 +746,163 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(cs);
 
     /**
+     * Advance all mempool transactions in frozen epoch layers <= epoch_seq
+     * (or the active speculative overlay if no epochs are frozen yet) to at
+     * least TxPreconsensusState::SNOWBALLED, locking the active epoch against
+     * further double-spends.
+     */
+    size_t MarkEpochSnowballed(uint32_t epoch_seq)
+        EXCLUSIVE_LOCKS_REQUIRED(cs);
+
+    /**
+     * Advance all mempool transactions in frozen epoch layers <= epoch_seq
+     * (transitively finalizing all prior epochs <= epoch_seq) to
+     * TxPreconsensusState::FINALIZED and insert them into finalizedTxs.
+     */
+    size_t MarkEpochFinalized(uint32_t epoch_seq)
+        EXCLUSIVE_LOCKS_REQUIRED(cs);
+
+    /**
+     * Deterministically resolve Option B quarantined conflicts from Epoch E
+     * using finalized_batch_id = BatchId(E), promoting winning transactions into
+     * Epoch E+1 and evicting rejected losers from the mempool.
+     */
+    lotus::v2::QuarantineResolutionResult
+    ResolveEpochQuarantineWithBatchId(const uint256 &finalized_batch_id)
+        EXCLUSIVE_LOCKS_REQUIRED(cs);
+
+    /**
+     * Union a transaction into the active pre-consensus epoch (with Snowball
+     * immutability check, Phase 2 anti-drip filtering, and Option B same-epoch
+     * conflict quarantine) and synchronize mapTx / RCU snapshot state.
+     */
+    lotus::v2::EpochUnionOutcome UnionTransactionIntoActiveEpoch(
+        const CTransactionRef &ptx,
+        int64_t fee_sats = 0,
+        int64_t sigchecks = 0,
+        uint32_t peer_sample_support = 1,
+        uint32_t peer_sample_size = 1) EXCLUSIVE_LOCKS_REQUIRED(cs);
+
+    /**
+     * Verify whether the local mempool/overlay contains (or can crystallize)
+     * an epoch batch matching (expected_subtree_a_root, expected_utxo_root,
+     * expected_tx_count) at epoch_seq, committing the verified layer into
+     * frozen_epochs_ if needed while preserving any newer E+1 transactions in
+     * speculative_layer_.
+     */
+    bool VerifyOrAdoptEpochBatch(
+        const BlockHash &prev_block_hash,
+        uint32_t epoch_seq,
+        const uint256 &expected_subtree_a_root,
+        const uint256 &expected_utxo_root,
+        uint32_t expected_tx_count,
+        std::vector<CTransactionRef> *out_ordered_txs = nullptr)
+        EXCLUSIVE_LOCKS_REQUIRED(cs);
+
+    /**
+     * Reconcile and adopt an explicit list of transactions for an announced
+     * epoch batch (e.g. pulled by a non-staking or straggler node from a peer),
+     * verifying (expected_subtree_a_root, expected_utxo_root) and committing
+     * the verified layer into frozen_epochs_ while preserving any extra local
+     * transactions in speculative_layer_ for Epoch E+1.
+     */
+    bool ReconcileEpochBatchTransactions(
+        uint32_t epoch_seq,
+        const uint256 &expected_subtree_a_root,
+        const uint256 &expected_utxo_root,
+        std::span<const CTransactionRef> batch_txs,
+        int64_t default_fee_sats = 1000) EXCLUSIVE_LOCKS_REQUIRED(cs);
+
+    bool ReconcileEpochBatchTransactions(
+        const BlockHash &prev_block_hash,
+        uint32_t epoch_seq,
+        const uint256 &expected_subtree_a_root,
+        const uint256 &expected_utxo_root,
+        std::span<const std::tuple<CTransactionRef, int64_t, int64_t>> batch_txs)
+        EXCLUSIVE_LOCKS_REQUIRED(cs);
+
+    bool StageIncomingTransaction(
+        const CTransactionRef &ptx,
+        int64_t fee_sats = 0,
+        int64_t sigchecks = 0) EXCLUSIVE_LOCKS_REQUIRED(cs);
+
+    uint256 GetParentBaseRoot() const EXCLUSIVE_LOCKS_REQUIRED(cs);
+    uint256 GetActiveSketchRoot() const EXCLUSIVE_LOCKS_REQUIRED(cs);
+    uint64_t GetLastLayerConvergenceMs() const noexcept
+        NO_THREAD_SAFETY_ANALYSIS {
+        return m_merklix_overlay.GetLastLayerConvergenceMs();
+    }
+    lotus::v2::LayerSyncRelation ClassifyPeerLayerSketch(
+        const uint256 &peer_parent_base_root,
+        const uint256 &peer_active_sketch_root) const
+        EXCLUSIVE_LOCKS_REQUIRED(cs);
+
+    std::vector<std::tuple<CTransactionRef, int64_t, int64_t>>
+    GetActiveEpochTransactionsWithMetadata() const EXCLUSIVE_LOCKS_REQUIRED(cs);
+
+    std::vector<std::tuple<CTransactionRef, int64_t, int64_t>>
+    GetActiveLayerDeltaTransactionsWithMetadata() const
+        EXCLUSIVE_LOCKS_REQUIRED(cs);
+
+    void SyncEpochPreconsensusCounters() const EXCLUSIVE_LOCKS_REQUIRED(cs);
+
+    bool GetTxPreconsensusInfo(const TxId &txid,
+                               TxPreconsensusState &state_out,
+                               uint32_t &epoch_seq_out) const {
+        bool found = false;
+        m_tx_tree.withLeaf(txid, [&](const CTxMemPoolEntry &entry) {
+            state_out = entry.GetPreconsensusState();
+            epoch_seq_out = entry.GetEpochSeq();
+            found = true;
+        });
+        return found;
+    }
+
+    size_t GetSnowballedEpochCount() const noexcept {
+        return m_snowballed_epoch_count.load(std::memory_order_relaxed);
+    }
+    size_t GetFinalizedEpochCount() const noexcept {
+        return m_finalized_epoch_count.load(std::memory_order_relaxed);
+    }
+    size_t GetSnowballedTxCount() const noexcept {
+        return m_snowballed_tx_count.load(std::memory_order_relaxed);
+    }
+    size_t GetFinalizedEpochTxCount() const noexcept {
+        return m_finalized_epoch_tx_count.load(std::memory_order_relaxed);
+    }
+    size_t GetQuarantinedConflictTxCount() const noexcept {
+        return m_quarantined_conflict_tx_count.load(std::memory_order_relaxed);
+    }
+    uint64_t GetQuarantineWinnersPromoted() const noexcept {
+        return m_quarantine_winners_promoted.load(std::memory_order_relaxed);
+    }
+    uint64_t GetQuarantineLosersEvicted() const noexcept {
+        return m_quarantine_losers_evicted.load(std::memory_order_relaxed);
+    }
+    uint64_t GetLateDripDeferredTxCount() const noexcept {
+        return m_late_drip_deferred_tx_count.load(std::memory_order_relaxed);
+    }
+
+    void RecordSnapblockReconstructed() const noexcept {
+        m_snapblock_reconstructed.fetch_add(1, std::memory_order_relaxed);
+    }
+    void RecordSnapblockOverlayFastpath() const noexcept {
+        m_snapblock_overlay_fastpath.fetch_add(1, std::memory_order_relaxed);
+    }
+    void RecordSnapblockFailure() const noexcept {
+        m_snapblock_failures.fetch_add(1, std::memory_order_relaxed);
+    }
+    uint64_t GetSnapblockReconstructedCount() const noexcept {
+        return m_snapblock_reconstructed.load(std::memory_order_relaxed);
+    }
+    uint64_t GetSnapblockOverlayFastpathCount() const noexcept {
+        return m_snapblock_overlay_fastpath.load(std::memory_order_relaxed);
+    }
+    uint64_t GetSnapblockFailuresCount() const noexcept {
+        return m_snapblock_failures.load(std::memory_order_relaxed);
+    }
+
+    /**
      * O(1) immutable Subtree A view of the complete current mempool: the
      * speculative overlay's slab Merklix tree after deferred overlay updates
      * are applied, pinned together with its membership version and bottom-k
@@ -854,6 +1011,17 @@ public:
 
 private:
     std::atomic<size_t> m_cached_map_tx_size{0};
+    mutable std::atomic<size_t> m_snowballed_epoch_count{0};
+    mutable std::atomic<size_t> m_finalized_epoch_count{0};
+    mutable std::atomic<size_t> m_snowballed_tx_count{0};
+    mutable std::atomic<size_t> m_finalized_epoch_tx_count{0};
+    mutable std::atomic<size_t> m_quarantined_conflict_tx_count{0};
+    mutable std::atomic<uint64_t> m_quarantine_winners_promoted{0};
+    mutable std::atomic<uint64_t> m_quarantine_losers_evicted{0};
+    mutable std::atomic<uint64_t> m_late_drip_deferred_tx_count{0};
+    mutable std::atomic<uint64_t> m_snapblock_reconstructed{0};
+    mutable std::atomic<uint64_t> m_snapblock_overlay_fastpath{0};
+    mutable std::atomic<uint64_t> m_snapblock_failures{0};
     mutable std::mutex m_batch_relay_cb_mutex;
     std::weak_ptr<BatchRelayCallback> m_batch_relay_cb;
     mutable lotus::v2::UtxoFastFilter m_utxo_fast_filter;

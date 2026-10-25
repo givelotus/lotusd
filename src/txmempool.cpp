@@ -351,6 +351,23 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason) {
     cachedInnerUsage -=
         memusage::DynamicUsage((*it)->GetMemPoolParentsConst()) +
         memusage::DynamicUsage((*it)->GetMemPoolChildrenConst());
+    const TxPreconsensusState prev_state = (*it)->GetPreconsensusState();
+    if (prev_state == TxPreconsensusState::SNOWBALLED) {
+        const size_t cur = m_snowballed_tx_count.load(std::memory_order_relaxed);
+        if (cur > 0) {
+            m_snowballed_tx_count.store(cur - 1, std::memory_order_relaxed);
+        }
+    } else if (prev_state == TxPreconsensusState::FINALIZED) {
+        const size_t cur =
+            m_finalized_epoch_tx_count.load(std::memory_order_relaxed);
+        if (cur > 0) {
+            m_finalized_epoch_tx_count.store(cur - 1,
+                                             std::memory_order_relaxed);
+        }
+    }
+    if (reason == MemPoolRemovalReason::BLOCK) {
+        (*it)->SetPreconsensusState(TxPreconsensusState::CONFIRMED);
+    }
     m_tx_tree.remove(txid);
     mapTx.erase(it);
     m_cached_map_tx_size.store(mapTx.size(), std::memory_order_release);
@@ -510,6 +527,9 @@ void CTxMemPool::_clear() {
     m_tx_tree = LiveTxTree{};
     mapTx.clear();
     m_cached_map_tx_size.store(0, std::memory_order_release);
+    m_snowballed_tx_count.store(0, std::memory_order_relaxed);
+    m_finalized_epoch_tx_count.store(0, std::memory_order_relaxed);
+    m_quarantined_conflict_tx_count.store(0, std::memory_order_relaxed);
     mapNextTx.clear();
     mapTx.get_allocator().resource()->ReleaseUnusedChunks();
     m_utxo_fast_filter.ClearMempool();
@@ -576,12 +596,620 @@ void CTxMemPool::FlushPendingOverlayAdds() const {
     AddTransactionsToOverlayBatch(m_merklix_overlay, current);
 }
 
+void CTxMemPool::SyncEpochPreconsensusCounters() const {
+    AssertLockHeld(cs);
+    m_quarantined_conflict_tx_count.store(
+        m_merklix_overlay.GetQuarantinedTxCount(), std::memory_order_relaxed);
+    m_late_drip_deferred_tx_count.store(
+        m_merklix_overlay.GetDeferredNextEpochTxs().size(),
+        std::memory_order_relaxed);
+}
+
 const lotus::v2::MempoolOverlayLayer &CTxMemPool::FreezeEpochBatch() {
     AssertLockHeld(cs);
     FlushPendingOverlayAdds();
     const auto &frozen = m_merklix_overlay.FreezeEpochBatch();
+    const uint32_t layer_epoch = static_cast<uint32_t>(frozen.GetLayerId());
+    for (const auto &[tx_hash_arr, oentry] : frozen.GetOrderedTxs()) {
+        uint256 raw_id;
+        std::memcpy(raw_id.begin(), tx_hash_arr.data(), 32);
+        auto it = mapTx.find(TxId(raw_id));
+        if (it != mapTx.end() && (*it)->GetEpochSeq() == 0) {
+            (*it)->SetEpochSeq(layer_epoch);
+            MarkSnapshotEntryChanged((*it)->GetTxId());
+        }
+    }
+    SyncEpochPreconsensusCounters();
     node::PublishMempoolSnapshot(*this);
     return frozen;
+}
+
+size_t CTxMemPool::MarkEpochSnowballed(uint32_t epoch_seq) {
+    AssertLockHeld(cs);
+    FlushPendingOverlayAdds();
+
+    size_t transitioned = 0;
+    auto mark_layer = [&](const lotus::v2::MempoolOverlayLayer &layer,
+                          uint32_t assigned_epoch)
+        EXCLUSIVE_LOCKS_REQUIRED(cs) {
+        for (const auto &[tx_hash_arr, _] : layer.GetOrderedTxs()) {
+            uint256 raw_id;
+            std::memcpy(raw_id.begin(), tx_hash_arr.data(), 32);
+            auto it = mapTx.find(TxId(raw_id));
+            if (it == mapTx.end()) {
+                continue;
+            }
+            if ((*it)->GetEpochSeq() == 0) {
+                (*it)->SetEpochSeq(assigned_epoch);
+            }
+            const TxPreconsensusState prev = (*it)->GetPreconsensusState();
+            if (prev == TxPreconsensusState::MEMPOOL &&
+                (*it)->AdvancePreconsensusState(
+                    TxPreconsensusState::SNOWBALLED)) {
+                m_snowballed_tx_count.fetch_add(1, std::memory_order_relaxed);
+                MarkSnapshotEntryChanged((*it)->GetTxId());
+                ++transitioned;
+            }
+        }
+    };
+
+    const auto &frozen_epochs = m_merklix_overlay.GetFrozenEpochs();
+    bool matched_target_epoch = false;
+    for (const auto &layer : frozen_epochs) {
+        if (layer.GetLayerId() <= epoch_seq) {
+            if (layer.GetLayerId() == epoch_seq) {
+                matched_target_epoch = true;
+            }
+            mark_layer(layer, static_cast<uint32_t>(
+                                  layer.GetLayerId() > 0 ? layer.GetLayerId()
+                                                         : epoch_seq));
+        }
+    }
+    if (!matched_target_epoch &&
+        m_merklix_overlay.GetSpeculativeOverlay().GetTxCount() > 0) {
+        const auto &frozen = m_merklix_overlay.FreezeEpochBatch();
+        mark_layer(frozen, epoch_seq > 0 ? epoch_seq : 1U);
+    }
+    if (epoch_seq > m_snowballed_epoch_count.load(std::memory_order_relaxed)) {
+        m_snowballed_epoch_count.store(epoch_seq, std::memory_order_relaxed);
+    }
+
+    SyncEpochPreconsensusCounters();
+    node::PublishMempoolSnapshot(*this);
+    return transitioned;
+}
+
+size_t CTxMemPool::MarkEpochFinalized(uint32_t epoch_seq) {
+    AssertLockHeld(cs);
+    FlushPendingOverlayAdds();
+
+    size_t transitioned = 0;
+    auto finalize_layer = [&](const lotus::v2::MempoolOverlayLayer &layer,
+                              uint32_t assigned_epoch)
+        EXCLUSIVE_LOCKS_REQUIRED(cs) {
+        for (const auto &[tx_hash_arr, _] : layer.GetOrderedTxs()) {
+            uint256 raw_id;
+            std::memcpy(raw_id.begin(), tx_hash_arr.data(), 32);
+            auto it = mapTx.find(TxId(raw_id));
+            if (it == mapTx.end()) {
+                continue;
+            }
+            if ((*it)->GetEpochSeq() == 0) {
+                (*it)->SetEpochSeq(assigned_epoch);
+            }
+            const TxPreconsensusState prev = (*it)->GetPreconsensusState();
+            if (prev < TxPreconsensusState::FINALIZED) {
+                (*it)->SetPreconsensusState(TxPreconsensusState::FINALIZED);
+                if (prev == TxPreconsensusState::SNOWBALLED) {
+                    const size_t cur = m_snowballed_tx_count.load(
+                        std::memory_order_relaxed);
+                    if (cur > 0) {
+                        m_snowballed_tx_count.store(cur - 1,
+                                                    std::memory_order_relaxed);
+                    }
+                }
+                m_finalized_epoch_tx_count.fetch_add(1,
+                                                     std::memory_order_relaxed);
+                if (finalizedTxs.insert(*it)) {
+                    m_finalizedTxsFitter.addTx((*it)->GetTxSize(),
+                                               (*it)->GetSigChecks(),
+                                               (*it)->GetFee());
+                }
+                MarkSnapshotEntryChanged((*it)->GetTxId());
+                ++transitioned;
+            }
+        }
+    };
+
+    const auto &frozen_epochs = m_merklix_overlay.GetFrozenEpochs();
+    bool matched_any_frozen = false;
+    for (const auto &layer : frozen_epochs) {
+        if (layer.GetLayerId() <= epoch_seq) {
+            matched_any_frozen = true;
+            finalize_layer(
+                layer, static_cast<uint32_t>(
+                           layer.GetLayerId() > 0 ? layer.GetLayerId()
+                                                  : epoch_seq));
+        }
+    }
+    if (!matched_any_frozen) {
+        finalize_layer(m_merklix_overlay.GetSpeculativeOverlay(),
+                       epoch_seq > 0 ? epoch_seq : 1U);
+    }
+    if (epoch_seq > m_finalized_epoch_count.load(std::memory_order_relaxed)) {
+        m_finalized_epoch_count.store(epoch_seq, std::memory_order_relaxed);
+    }
+
+    SyncEpochPreconsensusCounters();
+    node::PublishMempoolSnapshot(*this);
+    return transitioned;
+}
+
+lotus::v2::QuarantineResolutionResult
+CTxMemPool::ResolveEpochQuarantineWithBatchId(
+    const uint256 &finalized_batch_id) {
+    AssertLockHeld(cs);
+    FlushPendingOverlayAdds();
+    const std::vector<lotus::v2::OverlayTxEntry> deferred_before =
+        m_merklix_overlay.GetDeferredNextEpochTxs();
+    lotus::v2::Hash batch_hash{};
+    std::memcpy(batch_hash.data(), finalized_batch_id.begin(), 32);
+    auto res = m_merklix_overlay.ResolveQuarantinedTxsWithBatchId(batch_hash);
+    m_quarantine_winners_promoted.fetch_add(res.promoted_winners.size(),
+                                            std::memory_order_relaxed);
+    m_quarantine_losers_evicted.fetch_add(res.rejected_losers.size(),
+                                          std::memory_order_relaxed);
+    for (const auto &loser : res.rejected_losers) {
+        uint256 raw_id;
+        std::memcpy(raw_id.begin(), loser.tx_id.data(), 32);
+        auto it = mapTx.find(TxId(raw_id));
+        if (it != mapTx.end()) {
+            removeRecursive((*it)->GetTx(), MemPoolRemovalReason::CONFLICT);
+        }
+    }
+
+    auto ensure_in_mempool = [&](const lotus::v2::OverlayTxEntry &oentry)
+        EXCLUSIVE_LOCKS_REQUIRED(cs) {
+        if (!oentry.tx_ref ||
+            !m_merklix_overlay.GetSpeculativeOverlay().Contains(oentry.tx_id)) {
+            return;
+        }
+        const auto ptx =
+            std::static_pointer_cast<const CTransaction>(oentry.tx_ref);
+        if (!ptx) {
+            return;
+        }
+        if (mapTx.find(ptx->GetId()) == mapTx.end()) {
+            removeConflicts(*ptx);
+            const uint32_t height = static_cast<uint32_t>(
+                std::max<uint64_t>(1, m_merklix_overlay.GetSpeculativeOverlay()
+                                          .GetHeight()));
+            auto entry = CTxMemPoolEntryRef::make(
+                ptx, Amount(oentry.fee_sats * SATOSHI), GetTime(), height,
+                oentry.sigchecks, LockPoints{});
+            [&]() NO_THREAD_SAFETY_ANALYSIS {
+                addUnchecked(std::move(entry));
+            }();
+        }
+        auto it = mapTx.find(ptx->GetId());
+        if (it != mapTx.end()) {
+            (*it)->SetEpochSeq(0);
+            (*it)->SetPreconsensusState(TxPreconsensusState::MEMPOOL);
+            MarkSnapshotEntryChanged((*it)->GetTxId());
+        }
+    };
+
+    for (const auto &winner : res.promoted_winners) {
+        ensure_in_mempool(winner);
+    }
+    for (const auto &def_entry : deferred_before) {
+        ensure_in_mempool(def_entry);
+    }
+
+    FlushPendingOverlayAdds();
+    SyncEpochPreconsensusCounters();
+    node::PublishMempoolSnapshot(*this);
+    return res;
+}
+
+lotus::v2::EpochUnionOutcome CTxMemPool::UnionTransactionIntoActiveEpoch(
+    const CTransactionRef &ptx,
+    int64_t fee_sats,
+    int64_t sigchecks,
+    uint32_t peer_sample_support,
+    uint32_t peer_sample_size) {
+    AssertLockHeld(cs);
+    if (!ptx || ptx->IsCoinBase()) {
+        return lotus::v2::EpochUnionOutcome::REJECTED_EPOCH_LOCKED;
+    }
+    FlushPendingOverlayAdds();
+    const auto outcome = UnionTransactionIntoOverlay(
+        m_merklix_overlay, ptx, fee_sats, sigchecks, peer_sample_support,
+        peer_sample_size);
+
+    if (outcome == lotus::v2::EpochUnionOutcome::ADMITTED ||
+        outcome == lotus::v2::EpochUnionOutcome::DEFERRED_LATE_DRIP) {
+        if (mapTx.find(ptx->GetId()) == mapTx.end()) {
+            bool has_mapnext_conflict = false;
+            for (const CTxIn &txin : ptx->vin) {
+                if (txin.nFlags != 3 && mapNextTx.contains(txin.prevout)) {
+                    has_mapnext_conflict = true;
+                    break;
+                }
+            }
+            if (!has_mapnext_conflict) {
+                const uint32_t height = static_cast<uint32_t>(
+                    std::max<uint64_t>(
+                        1,
+                        m_merklix_overlay.GetSpeculativeOverlay().GetHeight()));
+                auto entry = CTxMemPoolEntryRef::make(
+                    ptx, Amount(fee_sats * SATOSHI), GetTime(), height,
+                    sigchecks, LockPoints{});
+                [&]() NO_THREAD_SAFETY_ANALYSIS {
+                    addUnchecked(std::move(entry));
+                }();
+                // For DEFERRED_LATE_DRIP, keep the transaction out of the
+                // active epoch overlay until the current epoch finalizes; clear
+                // m_pending_overlay_adds so FlushPendingOverlayAdds does not
+                // bypass the Phase 2 anti-drip deferral.
+                if (outcome ==
+                    lotus::v2::EpochUnionOutcome::DEFERRED_LATE_DRIP) {
+                    m_pending_overlay_adds.clear();
+                } else {
+                    FlushPendingOverlayAdds();
+                }
+            }
+        }
+    } else if (outcome == lotus::v2::EpochUnionOutcome::QUARANTINED_CONFLICT) {
+        // Remove any quarantined transactions from mapTx during Epoch E so
+        // mapNextTx does not hold a biased first-seen lock; the deterministic
+        // BatchId(E) winner will be inserted into mapTx upon Epoch E
+        // finalization in ResolveEpochQuarantineWithBatchId.
+        for (const auto &[q_hash, _] : m_merklix_overlay.GetQuarantinedTxs()) {
+            uint256 raw_id;
+            std::memcpy(raw_id.begin(), q_hash.data(), 32);
+            auto it = mapTx.find(TxId(raw_id));
+            if (it != mapTx.end()) {
+                removeRecursive((*it)->GetTx(), MemPoolRemovalReason::CONFLICT);
+            }
+        }
+    }
+
+    SyncEpochPreconsensusCounters();
+    node::PublishMempoolSnapshot(*this);
+    return outcome;
+}
+
+bool CTxMemPool::VerifyOrAdoptEpochBatch(
+    const BlockHash &prev_block_hash,
+    uint32_t epoch_seq,
+    const uint256 &expected_subtree_a_root,
+    const uint256 &expected_utxo_root,
+    uint32_t expected_tx_count,
+    std::vector<CTransactionRef> *out_ordered_txs) {
+    AssertLockHeld(cs);
+    FlushPendingOverlayAdds();
+
+    lotus::v2::Hash target_sub_a{};
+    std::memcpy(target_sub_a.data(), expected_subtree_a_root.begin(), 32);
+    lotus::v2::Hash target_utxo{};
+    std::memcpy(target_utxo.data(), expected_utxo_root.begin(), 32);
+    lotus::v2::Hash expected_parent{};
+    std::memcpy(expected_parent.data(), prev_block_hash.begin(), 32);
+
+    auto extract_txs = [&](const lotus::v2::MempoolOverlayLayer &layer) {
+        if (!out_ordered_txs) {
+            return;
+        }
+        out_ordered_txs->clear();
+        out_ordered_txs->reserve(layer.GetTxCount());
+        for (const auto &[_, oentry] : layer.GetOrderedTxs()) {
+            if (oentry.tx_ref) {
+                out_ordered_txs->push_back(
+                    std::static_pointer_cast<const CTransaction>(
+                        oentry.tx_ref));
+            }
+        }
+    };
+
+    for (const auto &frozen : m_merklix_overlay.GetFrozenEpochs()) {
+        if (frozen.GetTxCount() == expected_tx_count &&
+            frozen.GetSubtreeARoot() == target_sub_a) {
+            extract_txs(frozen);
+            return true;
+        }
+    }
+
+    const auto &spec = m_merklix_overlay.GetSpeculativeOverlay();
+    if (spec.GetTxCount() == expected_tx_count &&
+        spec.GetSubtreeARoot() == target_sub_a) {
+        extract_txs(spec);
+        return true;
+    }
+
+    // If our mempool has >= expected_tx_count transactions (e.g. a non-staking
+    // or miner node that has already received extra E+1 transactions in
+    // addition to Epoch E's transactions), test whether the first
+    // expected_tx_count eligible transactions in arrival order match
+    // expected_subtree_a_root.
+    if (expected_tx_count > 0 && mapTx.size() >= expected_tx_count) {
+        std::vector<std::tuple<CTransactionRef, int64_t, int64_t>> cand_txs;
+        cand_txs.reserve(expected_tx_count);
+        for (const auto &entry : mapTx.get<entry_id>()) {
+            if (entry->GetEpochSeq() > epoch_seq) {
+                continue;
+            }
+            lotus::v2::Hash tid{};
+            std::memcpy(tid.data(), entry->GetTxId().begin(), 32);
+            if (m_merklix_overlay.GetQuarantinedTxs().count(tid) > 0) {
+                continue;
+            }
+            cand_txs.emplace_back(entry->GetSharedTx(),
+                                  entry->GetFee() / SATOSHI,
+                                  entry->GetSigChecks());
+            if (cand_txs.size() == expected_tx_count) {
+                break;
+            }
+        }
+        if (cand_txs.size() == expected_tx_count) {
+            lotus::v2::MempoolOverlayLayer cand_layer(
+                spec.GetParentBlockId() != lotus::v2::Hash{}
+                    ? spec.GetParentBlockId()
+                    : expected_parent,
+                spec.GetBaseUtxoRoot(), spec.GetBaseMonetaryState(),
+                spec.GetHeight(), spec.GetParentMtp(), epoch_seq);
+            AddTransactionsToOverlayBatch(cand_layer, cand_txs);
+            if (cand_layer.GetSubtreeARoot() == target_sub_a &&
+                (expected_utxo_root.IsNull() ||
+                 spec.GetBaseUtxoRoot() == nullptr ||
+                 cand_layer.GetUtxoRootDigest() == target_utxo)) {
+                for (const auto &[ptx, _, __] : cand_txs) {
+                    auto it = mapTx.find(ptx->GetId());
+                    if (it != mapTx.end() && (*it)->GetEpochSeq() == 0) {
+                        (*it)->SetEpochSeq(epoch_seq);
+                        MarkSnapshotEntryChanged((*it)->GetTxId());
+                    }
+                }
+                auto &frozen_vec = m_merklix_overlay.GetFrozenEpochsMutable();
+                bool replaced = false;
+                for (auto &existing : frozen_vec) {
+                    if (existing.GetLayerId() == epoch_seq) {
+                        existing = cand_layer;
+                        replaced = true;
+                        break;
+                    }
+                }
+                if (!replaced) {
+                    frozen_vec.push_back(cand_layer);
+                }
+                extract_txs(cand_layer);
+                node::PublishMempoolSnapshot(*this);
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool CTxMemPool::ReconcileEpochBatchTransactions(
+    uint32_t epoch_seq,
+    const uint256 &expected_subtree_a_root,
+    const uint256 &expected_utxo_root,
+    std::span<const CTransactionRef> batch_txs,
+    int64_t default_fee_sats) {
+    AssertLockHeld(cs);
+    if (batch_txs.empty()) {
+        return false;
+    }
+    FlushPendingOverlayAdds();
+
+    lotus::v2::Hash target_sub_a{};
+    std::memcpy(target_sub_a.data(), expected_subtree_a_root.begin(), 32);
+    lotus::v2::Hash target_utxo{};
+    std::memcpy(target_utxo.data(), expected_utxo_root.begin(), 32);
+
+    const auto &spec = m_merklix_overlay.GetSpeculativeOverlay();
+    const uint32_t height =
+        static_cast<uint32_t>(std::max<uint64_t>(1, spec.GetHeight()));
+
+    std::vector<std::tuple<CTransactionRef, int64_t, int64_t>> cand_txs;
+    cand_txs.reserve(batch_txs.size());
+    for (const auto &ptx : batch_txs) {
+        if (!ptx || ptx->IsCoinBase()) {
+            return false;
+        }
+        int64_t fee_sats = default_fee_sats;
+        int64_t sigchecks = 1;
+        auto it = mapTx.find(ptx->GetId());
+        if (it != mapTx.end()) {
+            fee_sats = (*it)->GetFee() / SATOSHI;
+            sigchecks = (*it)->GetSigChecks();
+        }
+        cand_txs.emplace_back(ptx, fee_sats, sigchecks);
+    }
+
+    lotus::v2::MempoolOverlayLayer cand_layer(
+        spec.GetParentBlockId(), spec.GetBaseUtxoRoot(),
+        spec.GetBaseMonetaryState(), spec.GetHeight(), spec.GetParentMtp(),
+        epoch_seq);
+    AddTransactionsToOverlayBatch(cand_layer, cand_txs);
+    if (cand_layer.GetSubtreeARoot() != target_sub_a) {
+        return false;
+    }
+    if (!expected_utxo_root.IsNull() && spec.GetBaseUtxoRoot() != nullptr &&
+        cand_layer.GetUtxoRootDigest() != target_utxo) {
+        return false;
+    }
+
+    // Ensure every batch transaction is present in mapTx and speculative_layer_
+    for (const auto &[ptx, fee_sats, sigchecks] : cand_txs) {
+        if (mapTx.find(ptx->GetId()) == mapTx.end()) {
+            removeConflicts(*ptx);
+            auto entry = CTxMemPoolEntryRef::make(
+                ptx, Amount(fee_sats * SATOSHI), GetTime(), height,
+                sigchecks, LockPoints{});
+            [&]() NO_THREAD_SAFETY_ANALYSIS {
+                addUnchecked(std::move(entry));
+            }();
+        }
+        auto it = mapTx.find(ptx->GetId());
+        if (it != mapTx.end()) {
+            (*it)->SetEpochSeq(epoch_seq);
+            MarkSnapshotEntryChanged((*it)->GetTxId());
+        }
+    }
+    FlushPendingOverlayAdds();
+
+    auto &frozen_vec = m_merklix_overlay.GetFrozenEpochsMutable();
+    bool replaced = false;
+    for (auto &existing : frozen_vec) {
+        if (existing.GetLayerId() == epoch_seq) {
+            existing = std::move(cand_layer);
+            replaced = true;
+            break;
+        }
+    }
+    if (!replaced) {
+        frozen_vec.push_back(std::move(cand_layer));
+    }
+
+    SyncEpochPreconsensusCounters();
+    node::PublishMempoolSnapshot(*this);
+    return true;
+}
+
+bool CTxMemPool::ReconcileEpochBatchTransactions(
+    const BlockHash &prev_block_hash,
+    uint32_t epoch_seq,
+    const uint256 &expected_subtree_a_root,
+    const uint256 &expected_utxo_root,
+    std::span<const std::tuple<CTransactionRef, int64_t, int64_t>> batch_txs) {
+    AssertLockHeld(cs);
+    (void)prev_block_hash;
+    std::vector<CTransactionRef> txs;
+    txs.reserve(batch_txs.size());
+    int64_t default_fee_sats = 1000;
+    for (const auto &[ptx, fee_sats, _] : batch_txs) {
+        txs.push_back(ptx);
+        default_fee_sats = fee_sats;
+    }
+    return ReconcileEpochBatchTransactions(epoch_seq, expected_subtree_a_root,
+                                           expected_utxo_root, txs,
+                                           default_fee_sats);
+}
+
+bool CTxMemPool::StageIncomingTransaction(const CTransactionRef &ptx,
+                                          int64_t fee_sats,
+                                          int64_t sigchecks) {
+    AssertLockHeld(cs);
+    if (!ptx || ptx->IsCoinBase()) {
+        return false;
+    }
+    FlushPendingOverlayAdds();
+    if (!StageTransactionIntoOverlay(m_merklix_overlay, ptx, fee_sats,
+                                     sigchecks)) {
+        return false;
+    }
+    if (mapTx.find(ptx->GetId()) == mapTx.end()) {
+        bool has_mapnext_conflict = false;
+        for (const CTxIn &txin : ptx->vin) {
+            if (txin.nFlags != 3 && mapNextTx.contains(txin.prevout)) {
+                has_mapnext_conflict = true;
+                break;
+            }
+        }
+        if (!has_mapnext_conflict) {
+            const uint32_t height = static_cast<uint32_t>(
+                std::max<uint64_t>(
+                    1, m_merklix_overlay.GetSpeculativeOverlay().GetHeight()));
+            auto entry = CTxMemPoolEntryRef::make(
+                ptx, Amount(fee_sats * SATOSHI), GetTime(), height, sigchecks,
+                LockPoints{});
+            [&]() NO_THREAD_SAFETY_ANALYSIS {
+                addUnchecked(std::move(entry));
+            }();
+            // Keep staged in incoming_mempool_txs_ until ActiveSketchLayer
+            // crystallizes; clear m_pending_overlay_adds so FlushPendingOverlayAdds
+            // does not prematurely push into ActiveSketchLayer.
+            m_pending_overlay_adds.clear();
+        }
+    }
+    node::PublishMempoolSnapshot(*this);
+    return true;
+}
+
+uint256 CTxMemPool::GetParentBaseRoot() const {
+    AssertLockHeld(cs);
+    FlushPendingOverlayAdds();
+    const auto h = m_merklix_overlay.GetParentBaseRoot();
+    uint256 out;
+    std::memcpy(out.begin(), h.data(), 32);
+    return out;
+}
+
+uint256 CTxMemPool::GetActiveSketchRoot() const {
+    AssertLockHeld(cs);
+    FlushPendingOverlayAdds();
+    const auto h = m_merklix_overlay.GetActiveSketchRoot();
+    uint256 out;
+    std::memcpy(out.begin(), h.data(), 32);
+    return out;
+}
+
+lotus::v2::LayerSyncRelation CTxMemPool::ClassifyPeerLayerSketch(
+    const uint256 &peer_parent_base_root,
+    const uint256 &peer_active_sketch_root) const {
+    AssertLockHeld(cs);
+    FlushPendingOverlayAdds();
+    lotus::v2::Hash p_base{};
+    lotus::v2::Hash p_active{};
+    std::memcpy(p_base.data(), peer_parent_base_root.begin(), 32);
+    std::memcpy(p_active.data(), peer_active_sketch_root.begin(), 32);
+    return m_merklix_overlay.ClassifyPeerLayerSketch(p_base, p_active);
+}
+
+std::vector<std::tuple<CTransactionRef, int64_t, int64_t>>
+CTxMemPool::GetActiveEpochTransactionsWithMetadata() const {
+    AssertLockHeld(cs);
+    FlushPendingOverlayAdds();
+    const auto &spec = m_merklix_overlay.GetSpeculativeOverlay();
+    std::vector<std::tuple<CTransactionRef, int64_t, int64_t>> out;
+    out.reserve(spec.GetTxCount());
+    for (const auto &[_, oentry] : spec.GetOrderedTxs()) {
+        if (!oentry.tx_ref) {
+            continue;
+        }
+        auto ptx = std::static_pointer_cast<const CTransaction>(oentry.tx_ref);
+        if (ptx) {
+            out.emplace_back(std::move(ptx), oentry.fee_sats, oentry.sigchecks);
+        }
+    }
+    return out;
+}
+
+std::vector<std::tuple<CTransactionRef, int64_t, int64_t>>
+CTxMemPool::GetActiveLayerDeltaTransactionsWithMetadata() const {
+    AssertLockHeld(cs);
+    FlushPendingOverlayAdds();
+    const auto &spec = m_merklix_overlay.GetSpeculativeOverlay();
+    const auto &frozen = m_merklix_overlay.GetFrozenEpochs();
+    const lotus::v2::MempoolOverlayLayer *base =
+        frozen.empty() ? nullptr : &frozen.back();
+    std::vector<std::tuple<CTransactionRef, int64_t, int64_t>> out;
+    for (const auto &[tx_hash, oentry] : spec.GetOrderedTxs()) {
+        if (base != nullptr && base->Contains(tx_hash)) {
+            continue;
+        }
+        if (!oentry.tx_ref) {
+            continue;
+        }
+        auto ptx = std::static_pointer_cast<const CTransaction>(oentry.tx_ref);
+        if (ptx) {
+            out.emplace_back(std::move(ptx), oentry.fee_sats, oentry.sigchecks);
+        }
+    }
+    return out;
 }
 
 std::shared_ptr<const lotus::v2::txmerklix::Snapshot>
@@ -629,6 +1257,10 @@ void CTxMemPool::ConnectBlockReset(const BlockHash &new_tip_hash,
                                    uint64_t next_mtp) {
     AssertLockHeld(cs);
     m_overlay_warm.store(false, std::memory_order_relaxed);
+    m_snowballed_epoch_count.store(0, std::memory_order_relaxed);
+    m_finalized_epoch_count.store(0, std::memory_order_relaxed);
+    m_snowballed_tx_count.store(0, std::memory_order_relaxed);
+    m_finalized_epoch_tx_count.store(0, std::memory_order_relaxed);
     lotus::v2::Hash tip_id{};
     std::memcpy(tip_id.data(), new_tip_hash.begin(), 32);
     std::shared_ptr<const lotus::v2::SmtNode> utxo_root;

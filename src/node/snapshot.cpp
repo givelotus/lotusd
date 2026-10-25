@@ -168,6 +168,9 @@ MempoolEntrySnapshot MakeMempoolEntrySnapshot(const CTxMemPoolEntry &e,
     // admission order.
     std::sort(entry_snap.spentby.begin(), entry_snap.spentby.end());
     entry_snap.unbroadcast = e.IsUnbroadcast();
+    entry_snap.preconsensus_state =
+        static_cast<uint8_t>(e.GetPreconsensusState());
+    entry_snap.epoch_seq = e.GetEpochSeq();
     return entry_snap;
 }
 
@@ -260,6 +263,11 @@ static void RefreshUnbroadcast(std::vector<MempoolEntrySnapshot> &entries,
     EXCLUSIVE_LOCKS_REQUIRED(mempool.cs) {
     for (MempoolEntrySnapshot &entry : entries) {
         entry.unbroadcast = mempool.IsUnbroadcastTx(entry.txid);
+        if (const auto e = mempool.getEntry(entry.txid)) {
+            entry.preconsensus_state =
+                static_cast<uint8_t>(e->GetPreconsensusState());
+            entry.epoch_seq = e->GetEpochSeq();
+        }
     }
 }
 
@@ -396,6 +404,9 @@ void PopulateMempoolVectorsLocked(ChainAndMempoolSnapshot &snap,
                 prev_entry->spentby.size() == children.size()) {
                 MempoolEntrySnapshot entry_snap = *prev_entry;
                 entry_snap.unbroadcast = e->IsUnbroadcast();
+                entry_snap.preconsensus_state =
+                    static_cast<uint8_t>(e->GetPreconsensusState());
+                entry_snap.epoch_seq = e->GetEpochSeq();
                 snap.mempool_entries.push_back(std::move(entry_snap));
                 continue;
             }
