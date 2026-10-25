@@ -1772,13 +1772,158 @@ bool RatelessMiniblockDecoder::TryCrossPeerProjectCell(
     return false;
 }
 
+bool RatelessMiniblockDecoder::ValidateRatelessMiniblock(
+    const RatelessMiniblock &mb) noexcept {
+    if (mb.decimation_level > RatelessMiniblock::MAX_DECIMATION_LEVEL) {
+        return false;
+    }
+    uint64_t sum_count = 0;
+    for (uint8_t c = 0; c < RatelessMiniblock::NUM_CELLS; ++c) {
+        const auto &cell = mb.cells[c];
+        sum_count += cell.count;
+        if (cell.count == 0) {
+            if (cell.s1 != 0 || cell.s3 != 0 || cell.s5 != 0) {
+                return false;
+            }
+            continue;
+        }
+        if (cell.count >= 1 && cell.count <= 2) {
+            if (cell.s1 == 0) {
+                return false;
+            }
+            auto roots = RecoverGF64Syndromes(cell.s1, cell.s3, cell.s5);
+            if (!roots.has_value() || roots->size() != cell.count) {
+                return false;
+            }
+            for (size_t i = 0; i < roots->size(); ++i) {
+                const uint64_t r = (*roots)[i];
+                if (r == 0) {
+                    return false;
+                }
+                for (size_t j = i + 1; j < roots->size(); ++j) {
+                    if ((*roots)[j] == r) {
+                        return false;
+                    }
+                }
+                const auto mapped_cell = MapShortIdToMiniblockCell(
+                    r, mb.miniblock_id, mb.decimation_level);
+                if (!mapped_cell.has_value() || *mapped_cell != c) {
+                    return false;
+                }
+            }
+        }
+    }
+    if (mb.total_tx_count != 0) {
+        if (mb.decimation_level == 0 && sum_count != mb.total_tx_count) {
+            return false;
+        }
+        if (sum_count > mb.total_tx_count) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void RatelessMiniblockDecoder::MarkPeerFraudulent(NodeId peer_id) {
+    m_fraudulent_peers.insert(peer_id);
+    RemovePeer(peer_id);
+}
+
 std::vector<uint64_t>
 RatelessMiniblockDecoder::AddPeerMiniblock(NodeId peer_id,
                                            const RatelessMiniblock &remote_mb) {
-    const uint8_t decimation_level =
-        remote_mb.decimation_level > RatelessMiniblock::MAX_DECIMATION_LEVEL
-            ? RatelessMiniblock::MAX_DECIMATION_LEVEL
-            : remote_mb.decimation_level;
+    if (IsPeerFraudulent(peer_id)) {
+        return {};
+    }
+    // Type 1 Fraud Proof: single-miniblock raw cell algebraic validity
+    if (!ValidateRatelessMiniblock(remote_mb)) {
+        MarkPeerFraudulent(peer_id);
+        return {};
+    }
+    const uint8_t decimation_level = remote_mb.decimation_level;
+
+    // Type 2 Fraud Proof: L=0 32-Cell Partition Conservation Law
+    PeerSetInvariant mb_agg{};
+    uint32_t raw_zero_mask = 0;
+    std::vector<uint64_t> mb_raw_claimed_sids;
+    for (uint8_t c = 0; c < RatelessMiniblock::NUM_CELLS; ++c) {
+        const auto &cell = remote_mb.cells[c];
+        mb_agg.total_count += cell.count;
+        mb_agg.total_s1 ^= cell.s1;
+        mb_agg.total_s3 ^= cell.s3;
+        mb_agg.total_s5 ^= cell.s5;
+        if (cell.count == 0) {
+            raw_zero_mask |= (1U << c);
+        } else if (cell.count <= 2) {
+            auto roots = RecoverGF64Syndromes(cell.s1, cell.s3, cell.s5);
+            if (roots.has_value()) {
+                for (const uint64_t r : *roots) {
+                    mb_raw_claimed_sids.push_back(r);
+                }
+            }
+        }
+    }
+    if (decimation_level == 0) {
+        auto it_inv = m_peer_l0_invariants.find(peer_id);
+        if (it_inv == m_peer_l0_invariants.end()) {
+            m_peer_l0_invariants.emplace(peer_id, mb_agg);
+        } else {
+            const PeerSetInvariant &expected = it_inv->second;
+            if (expected.total_count != mb_agg.total_count ||
+                expected.total_s1 != mb_agg.total_s1 ||
+                expected.total_s3 != mb_agg.total_s3 ||
+                expected.total_s5 != mb_agg.total_s5) {
+                MarkPeerFraudulent(peer_id);
+                return {};
+            }
+        }
+    } else {
+        auto it_inv = m_peer_l0_invariants.find(peer_id);
+        if (it_inv != m_peer_l0_invariants.end() &&
+            mb_agg.total_count > it_inv->second.total_count) {
+            MarkPeerFraudulent(peer_id);
+            return {};
+        }
+    }
+
+    // Type 3 Fraud Proof: Cross-Miniblock Raw Zero-Cell vs Claimed Element
+    // Contradiction on the same peer
+    auto &peer_raw_claimed = m_peer_raw_claimed_sids[peer_id];
+    for (const auto &existing : m_miniblocks) {
+        if (existing.peer_id != peer_id) {
+            continue;
+        }
+        for (const uint64_t r : mb_raw_claimed_sids) {
+            const auto c = MapShortIdToMiniblockCell(
+                r, existing.miniblock_id, existing.decimation_level);
+            if (c.has_value() &&
+                (existing.raw_zero_cell_mask & (1U << *c)) != 0) {
+                MarkPeerFraudulent(peer_id);
+                return {};
+            }
+        }
+    }
+    if (raw_zero_mask != 0) {
+        for (const uint64_t r : peer_raw_claimed) {
+            const auto c = MapShortIdToMiniblockCell(
+                r, remote_mb.miniblock_id, decimation_level);
+            if (c.has_value() && (raw_zero_mask & (1U << *c)) != 0) {
+                MarkPeerFraudulent(peer_id);
+                return {};
+            }
+        }
+        auto it_conf = m_peer_confirmed_has.find(peer_id);
+        if (it_conf != m_peer_confirmed_has.end()) {
+            for (const uint64_t r : it_conf->second) {
+                const auto c = MapShortIdToMiniblockCell(
+                    r, remote_mb.miniblock_id, decimation_level);
+                if (c.has_value() && (raw_zero_mask & (1U << *c)) != 0) {
+                    MarkPeerFraudulent(peer_id);
+                    return {};
+                }
+            }
+        }
+    }
 
     size_t peer_mb_count = 0;
     for (const auto &existing : m_miniblocks) {
@@ -1794,10 +1939,15 @@ RatelessMiniblockDecoder::AddPeerMiniblock(NodeId peer_id,
         return {};
     }
 
+    for (const uint64_t r : mb_raw_claimed_sids) {
+        peer_raw_claimed.insert(r);
+    }
+
     StoredMiniblock stored;
     stored.peer_id = peer_id;
     stored.miniblock_id = remote_mb.miniblock_id;
     stored.decimation_level = decimation_level;
+    stored.raw_zero_cell_mask = raw_zero_mask;
     for (size_t c = 0; c < RatelessMiniblock::NUM_CELLS; ++c) {
         stored.cells[c].delta_count =
             static_cast<int64_t>(remote_mb.cells[c].count);
@@ -1915,6 +2065,8 @@ void RatelessMiniblockDecoder::RemovePeer(NodeId peer_id) {
     m_peer_confirmed_has.erase(peer_id);
     m_peer_known_missing_remote.erase(peer_id);
     m_peer_known_missing_local.erase(peer_id);
+    m_peer_l0_invariants.erase(peer_id);
+    m_peer_raw_claimed_sids.erase(peer_id);
 
     m_discovered_missing_sids.clear();
     for (const auto &[_, sids] : m_peer_confirmed_has) {

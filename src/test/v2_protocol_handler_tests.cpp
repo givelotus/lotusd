@@ -4864,6 +4864,101 @@ BOOST_AUTO_TEST_CASE(
                           ComputeMerklixShortId(k0, k1, tx->GetId()));
         BOOST_CHECK(dec.IsPeerConverged(/*peer_id=*/1));
     }
+
+    // =========================================================================
+    // 5. Algebraic Miniblock Fraud Proofs (Type 1 Raw Cell Invalidity, Type 2
+    //    L=0 Partition Conservation Law, Type 3 Cross-Miniblock Zero-Cell
+    //    Contradiction) + Automatic Peer Shunning & Purge:
+    // =========================================================================
+    {
+        RatelessMiniblockDecoder dec(/*local_short_ids=*/{});
+        const std::vector<uint64_t> honest_sids{1001ULL, 2002ULL};
+        const RatelessMiniblock valid_mb0 = BuildRatelessMiniblockFromShortIds(
+            ReconScope::LIVE_MEMPOOL, uint256{}, uint256{}, uint256{}, 1, 2,
+            honest_sids, /*miniblock_id=*/0, /*decimation_level=*/0);
+        BOOST_CHECK(RatelessMiniblockDecoder::ValidateRatelessMiniblock(
+            valid_mb0));
+
+        // Type 1 Fraud (a): count == 0 with non-zero syndrome
+        RatelessMiniblock bad_zero_cell = valid_mb0;
+        for (uint8_t c = 0; c < RatelessMiniblock::NUM_CELLS; ++c) {
+            if (bad_zero_cell.cells[c].count == 0) {
+                bad_zero_cell.cells[c].s1 = 0xdeadbeefULL;
+                break;
+            }
+        }
+        BOOST_CHECK(!RatelessMiniblockDecoder::ValidateRatelessMiniblock(
+            bad_zero_cell));
+        BOOST_CHECK(dec.AddPeerMiniblock(/*peer_id=*/701, bad_zero_cell).empty());
+        BOOST_CHECK(dec.IsPeerFraudulent(/*peer_id=*/701));
+
+        // Type 1 Fraud (b): count == 1 cell whose root maps to a different cell
+        RatelessMiniblock bad_cell_mapping = valid_mb0;
+        for (uint8_t c = 0; c < RatelessMiniblock::NUM_CELLS; ++c) {
+            if (bad_cell_mapping.cells[c].count == 1) {
+                const uint8_t wrong_c =
+                    static_cast<uint8_t>((c + 1) % RatelessMiniblock::NUM_CELLS);
+                bad_cell_mapping.cells[wrong_c] = bad_cell_mapping.cells[c];
+                bad_cell_mapping.cells[c] = {};
+                break;
+            }
+        }
+        BOOST_CHECK(!RatelessMiniblockDecoder::ValidateRatelessMiniblock(
+            bad_cell_mapping));
+        BOOST_CHECK(
+            dec.AddPeerMiniblock(/*peer_id=*/702, bad_cell_mapping).empty());
+        BOOST_CHECK(dec.IsPeerFraudulent(/*peer_id=*/702));
+
+        // Type 2 Fraud: Peer 703 sends a valid L=0 miniblock 0 for {1001, 2002},
+        // and then sends a valid-looking L=0 miniblock 1 for {1001, 2002, 3003},
+        // violating the 32-cell L=0 (TotalCount, TotalS1, TotalS3, TotalS5)
+        // partition conservation law!
+        BOOST_CHECK_EQUAL(dec.AddPeerMiniblock(/*peer_id=*/703, valid_mb0).size(),
+                          2U);
+        BOOST_CHECK(!dec.IsPeerFraudulent(/*peer_id=*/703));
+        const std::vector<uint64_t> tampered_sids{1001ULL, 2002ULL, 3003ULL};
+        const RatelessMiniblock tampered_mb1 =
+            BuildRatelessMiniblockFromShortIds(
+                ReconScope::LIVE_MEMPOOL, uint256{}, uint256{}, uint256{}, 1, 2,
+                tampered_sids, /*miniblock_id=*/1, /*decimation_level=*/0);
+        BOOST_CHECK(RatelessMiniblockDecoder::ValidateRatelessMiniblock(
+            tampered_mb1));
+        BOOST_CHECK(dec.AddPeerMiniblock(/*peer_id=*/703, tampered_mb1).empty());
+        BOOST_CHECK(dec.IsPeerFraudulent(/*peer_id=*/703));
+        // Peer 703's previously accepted short IDs are automatically purged!
+        BOOST_CHECK(dec.GetPeerMissingShortIds(/*peer_id=*/703).empty());
+        BOOST_CHECK(dec.GetDiscoveredMissingShortIds().empty());
+
+        // Type 3 Fraud: Peer 704 sends an L=1 miniblock 0 claiming element x_c,
+        // and then sends an L=1 miniblock 1 where x_c maps to a raw count == 0
+        // cell!
+        uint64_t x_contradict = 0;
+        for (uint64_t cand = 5000;; ++cand) {
+            if (MapShortIdToMiniblockCell(cand, /*miniblock_id=*/0,
+                                          /*decimation_level=*/1)
+                    .has_value() &&
+                MapShortIdToMiniblockCell(cand, /*miniblock_id=*/1,
+                                          /*decimation_level=*/1)
+                    .has_value()) {
+                x_contradict = cand;
+                break;
+            }
+        }
+        const std::vector<uint64_t> c_sids{x_contradict};
+        const RatelessMiniblock mb_claim = BuildRatelessMiniblockFromShortIds(
+            ReconScope::LIVE_MEMPOOL, uint256{}, uint256{}, uint256{}, 1, 2,
+            c_sids, /*miniblock_id=*/0, /*decimation_level=*/1);
+        const RatelessMiniblock mb_empty = BuildRatelessMiniblockFromShortIds(
+            ReconScope::LIVE_MEMPOOL, uint256{}, uint256{}, uint256{}, 1, 2,
+            /*short_ids=*/{}, /*miniblock_id=*/1, /*decimation_level=*/1);
+        BOOST_CHECK_EQUAL(dec.AddPeerMiniblock(/*peer_id=*/704, mb_claim).size(),
+                          1U);
+        BOOST_CHECK(!dec.IsPeerFraudulent(/*peer_id=*/704));
+        BOOST_CHECK(dec.AddPeerMiniblock(/*peer_id=*/704, mb_empty).empty());
+        BOOST_CHECK(dec.IsPeerFraudulent(/*peer_id=*/704));
+        BOOST_CHECK(dec.GetPeerMissingShortIds(/*peer_id=*/704).empty());
+        BOOST_CHECK(dec.GetDiscoveredMissingShortIds().empty());
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

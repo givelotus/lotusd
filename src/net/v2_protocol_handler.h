@@ -472,6 +472,29 @@ public:
      */
     void RemovePeer(NodeId peer_id);
 
+    /**
+     * Stateless single-miniblock algebraic fraud check (Type 1 Fraud Proof):
+     *   - Rejects decimation_level > MAX_DECIMATION_LEVEL.
+     *   - Rejects any cell with count == 0 and non-zero (s1, s3, s5).
+     *   - Rejects any cell with 1 <= count <= 3 whose syndromes (s1, s3, s5)
+     *     fail to decode into `count` distinct non-zero roots in GF(2^64) that
+     *     all map to that exact cell in (miniblock_id, decimation_level).
+     */
+    static bool ValidateRatelessMiniblock(const RatelessMiniblock &mb) noexcept;
+
+    /**
+     * True if peer_id has been caught sending algebraically invalid or
+     * mutually contradictory miniblocks (Type 1, Type 2 L=0 Partition
+     * Conservation, or Type 3 Cross-Miniblock Zero-Cell Contradiction).
+     */
+    bool IsPeerFraudulent(NodeId peer_id) const noexcept {
+        return m_fraudulent_peers.count(peer_id) > 0;
+    }
+
+    const std::unordered_set<NodeId> &GetFraudulentPeers() const noexcept {
+        return m_fraudulent_peers;
+    }
+
 private:
     struct ResidualCell {
         int64_t delta_count{0};
@@ -488,9 +511,18 @@ private:
         NodeId peer_id{-1};
         uint32_t miniblock_id{0};
         uint8_t decimation_level{0};
+        uint32_t raw_zero_cell_mask{0};
         std::array<ResidualCell, RatelessMiniblock::NUM_CELLS> cells{};
     };
 
+    struct PeerSetInvariant {
+        uint64_t total_count{0};
+        uint64_t total_s1{0};
+        uint64_t total_s3{0};
+        uint64_t total_s5{0};
+    };
+
+    void MarkPeerFraudulent(NodeId peer_id);
     bool TryResolveCell(size_t mb_idx, uint8_t cell_idx,
                         std::vector<uint64_t> &newly_discovered);
     bool TryCrossPeerProjectCell(size_t mb_idx, uint8_t cell_idx,
@@ -513,6 +545,10 @@ private:
         m_peer_known_missing_local;
     std::unordered_map<NodeId, std::unordered_set<uint64_t>>
         m_peer_known_missing_remote;
+    std::unordered_map<NodeId, PeerSetInvariant> m_peer_l0_invariants;
+    std::unordered_map<NodeId, std::unordered_set<uint64_t>>
+        m_peer_raw_claimed_sids;
+    std::unordered_set<NodeId> m_fraudulent_peers;
     std::vector<StoredMiniblock> m_miniblocks;
 };
 
