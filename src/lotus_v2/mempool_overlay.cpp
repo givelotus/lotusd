@@ -2982,10 +2982,26 @@ MerklixOverlayManager::ResolveQuarantinedTxsWithBatchId(
         [](ScoredCandidate &cand) -> OverlayTxEntry & { return cand.entry; });
 
     // Also promote any Phase 2 late-drip deferred transactions into the new
-    // open epoch E+1 if their inputs are unspent and their parents succeeded.
+    // open epoch E+1 if their inputs are unspent and their parents succeeded,
+    // sorted deterministically by ComputePreconsensusTiebreakScore.
+    std::vector<ScoredCandidate> deferred_candidates;
+    deferred_candidates.reserve(deferred_next_epoch_txs_.size());
+    for (auto &def_entry : deferred_next_epoch_txs_) {
+        deferred_candidates.push_back(ScoredCandidate{
+            ComputePreconsensusTiebreakScore(finalized_batch_id,
+                                             def_entry.tx_id),
+            std::move(def_entry)});
+    }
+    std::sort(deferred_candidates.begin(), deferred_candidates.end(),
+              [](const ScoredCandidate &a, const ScoredCandidate &b) {
+                  if (a.score != b.score) {
+                      return a.score < b.score;
+                  }
+                  return CtorTxIdCompare{}(a.entry.tx_id, b.entry.tx_id);
+              });
     resolve_entry_list(
-        deferred_next_epoch_txs_,
-        [](OverlayTxEntry &def_entry) -> OverlayTxEntry & { return def_entry; });
+        deferred_candidates,
+        [](ScoredCandidate &cand) -> OverlayTxEntry & { return cand.entry; });
 
     quarantined_txs_.clear();
     conflicted_outpoints_.clear();

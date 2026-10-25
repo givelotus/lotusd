@@ -666,7 +666,7 @@ size_t CTxMemPool::MarkEpochSnowballed(uint32_t epoch_seq) {
         }
     }
     if (!matched_target_epoch &&
-        m_merklix_overlay.GetSpeculativeOverlay().GetTxCount() > 0) {
+        m_merklix_overlay.GetActiveLayerDeltaTxCount() > 0) {
         const auto &frozen = m_merklix_overlay.FreezeEpochBatch();
         mark_layer(frozen, epoch_seq > 0 ? epoch_seq : 1U);
     }
@@ -722,17 +722,20 @@ size_t CTxMemPool::MarkEpochFinalized(uint32_t epoch_seq) {
     };
 
     const auto &frozen_epochs = m_merklix_overlay.GetFrozenEpochs();
-    bool matched_any_frozen = false;
+    bool matched_target_epoch = false;
     for (const auto &layer : frozen_epochs) {
         if (layer.GetLayerId() <= epoch_seq) {
-            matched_any_frozen = true;
+            if (layer.GetLayerId() == epoch_seq) {
+                matched_target_epoch = true;
+            }
             finalize_layer(
                 layer, static_cast<uint32_t>(
                            layer.GetLayerId() > 0 ? layer.GetLayerId()
                                                   : epoch_seq));
         }
     }
-    if (!matched_any_frozen) {
+    if (!matched_target_epoch &&
+        m_merklix_overlay.GetActiveLayerDeltaTxCount() > 0) {
         finalize_layer(m_merklix_overlay.GetSpeculativeOverlay(),
                        epoch_seq > 0 ? epoch_seq : 1U);
     }
@@ -750,8 +753,6 @@ CTxMemPool::ResolveEpochQuarantineWithBatchId(
     const uint256 &finalized_batch_id) {
     AssertLockHeld(cs);
     FlushPendingOverlayAdds();
-    const std::vector<lotus::v2::OverlayTxEntry> deferred_before =
-        m_merklix_overlay.GetDeferredNextEpochTxs();
     lotus::v2::Hash batch_hash{};
     std::memcpy(batch_hash.data(), finalized_batch_id.begin(), 32);
     auto res = m_merklix_overlay.ResolveQuarantinedTxsWithBatchId(batch_hash);
@@ -802,11 +803,12 @@ CTxMemPool::ResolveEpochQuarantineWithBatchId(
     for (const auto &winner : res.promoted_winners) {
         ensure_in_mempool(winner);
     }
-    for (const auto &def_entry : deferred_before) {
-        ensure_in_mempool(def_entry);
-    }
 
-    FlushPendingOverlayAdds();
+    // ResolveQuarantinedTxsWithBatchId already applied promoted_winners and
+    // rejected_losers to speculative_layer_, so discard the deferred queues
+    // populated by removeRecursive / addUnchecked above.
+    m_pending_overlay_adds.clear();
+    m_pending_overlay_removes.clear();
     SyncEpochPreconsensusCounters();
     node::PublishMempoolSnapshot(*this);
     return res;
@@ -873,6 +875,7 @@ lotus::v2::EpochUnionOutcome CTxMemPool::UnionTransactionIntoActiveEpoch(
                 removeRecursive((*it)->GetTx(), MemPoolRemovalReason::CONFLICT);
             }
         }
+        m_pending_overlay_removes.clear();
     }
 
     SyncEpochPreconsensusCounters();
