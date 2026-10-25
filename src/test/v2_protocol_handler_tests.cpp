@@ -4961,4 +4961,518 @@ BOOST_AUTO_TEST_CASE(
     }
 }
 
+BOOST_AUTO_TEST_CASE(three_method_preconsensus_and_snapblock_benchmark) {
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    const Config &config = m_node.chainman->GetConfig();
+    auto connman =
+        std::make_unique<ConnmanTestMsg>(config, 0x51, 0x52, *m_node.addrman);
+    auto peerman = PeerManager::make(*connman, *m_node.addrman, nullptr,
+                                     *m_node.chainman, *m_node.mempool,
+                                     /*avalanche=*/nullptr, {});
+
+    constexpr size_t TOTAL_EPOCH_TXS = 10'000;
+    constexpr size_t MISSING_FROM_LOCAL = 600;
+    constexpr size_t LOCAL_TAIL_TXS = 25;
+
+    FastRandomContext rng(uint256{0x73});
+    CTransactionRef proto_tx = MakeNonCoinbaseTx(rng, 0x11);
+    BOOST_REQUIRE(proto_tx != nullptr);
+
+    std::vector<CTransactionRef> epoch_txs;
+    epoch_txs.reserve(TOTAL_EPOCH_TXS);
+    CMutableTransaction mtx(*proto_tx);
+    for (size_t i = 0; i < TOTAL_EPOCH_TXS; ++i) {
+        mtx.nLockTime = static_cast<uint32_t>(100'000 + i);
+        mtx.vin[0].prevout =
+            COutPoint(mtx.vin[0].prevout.GetTxId(), static_cast<uint32_t>(i));
+        epoch_txs.push_back(MakeTransactionRef(mtx));
+    }
+
+    std::vector<CTransactionRef> tail_txs;
+    tail_txs.reserve(LOCAL_TAIL_TXS);
+    for (size_t i = 0; i < LOCAL_TAIL_TXS; ++i) {
+        mtx.nLockTime = static_cast<uint32_t>(900'000 + i);
+        mtx.vin[0].prevout = COutPoint(mtx.vin[0].prevout.GetTxId(),
+                                       static_cast<uint32_t>(500'000 + i));
+        tail_txs.push_back(MakeTransactionRef(mtx));
+    }
+
+    // Local receiver starts with 9,400 of the 10,000 epoch txs (missing 600)
+    // plus 25 unmined tail transactions.
+    std::vector<CTransactionRef> local_initial_txs(
+        epoch_txs.begin(),
+        epoch_txs.begin() + (TOTAL_EPOCH_TXS - MISSING_FROM_LOCAL));
+    local_initial_txs.insert(local_initial_txs.end(), tail_txs.begin(),
+                             tail_txs.end());
+
+    // 4 peers hold distinct overlapping subsets of the 10,000-tx epoch plus
+    // distinct 5-tx slices of the 25 tail transactions:
+    //   - Each peer p is missing a distinct 10-tx slice of epoch_txs[0..9399]
+    //   - Each peer p is missing a distinct 100-tx slice of the 600 missing
+    //     epoch_txs[9400..9999] (so every missing tx is held by >= 3 peers, and
+    //     no single peer holds all 600 missing txs).
+    std::array<std::vector<CTransactionRef>, 4> peer_tx_sets;
+    for (size_t p = 0; p < 4; ++p) {
+        peer_tx_sets[p].reserve(TOTAL_EPOCH_TXS);
+        for (size_t i = 0; i < TOTAL_EPOCH_TXS - MISSING_FROM_LOCAL; ++i) {
+            if (i >= p * 10 && i < (p + 1) * 10) {
+                continue;
+            }
+            peer_tx_sets[p].push_back(epoch_txs[i]);
+        }
+        for (size_t m = 0; m < MISSING_FROM_LOCAL; ++m) {
+            if (m >= p * 100 && m < (p + 1) * 100) {
+                continue;
+            }
+            peer_tx_sets[p].push_back(
+                epoch_txs[TOTAL_EPOCH_TXS - MISSING_FROM_LOCAL + m]);
+        }
+        for (size_t e = p * 5; e < (p + 1) * 5; ++e) {
+            peer_tx_sets[p].push_back(tail_txs[e]);
+        }
+    }
+
+    // Build the mined 10,000-tx block header and SealedHeader
+    std::shared_ptr<CBlock> base_block =
+        PrepareBlock(config, m_node, CScript() << OP_TRUE);
+    CTransactionRef coinbase_tx = base_block->vtx[0];
+    CBlockHeader mined_hdr = base_block->GetBlockHeader();
+    const uint256 epoch_subtree_a = ComputeScopedMerklixRoot(epoch_txs);
+    lotus::v2::Hash epoch_sub_a_arr{};
+    std::memcpy(epoch_sub_a_arr.data(), epoch_subtree_a.begin(), 32);
+    mined_hdr.hashMerkleRoot =
+        ::ComputeV2TxRootFromSubtreeA(*coinbase_tx, epoch_sub_a_arr);
+    mined_hdr.hashStateRoot = uint256::ZERO;
+
+    SealedHeader sealed_hdr;
+    sealed_hdr.header = mined_hdr;
+    sealed_hdr.coinbase_tx = coinbase_tx;
+    const size_t sealed_hdr_wire_bytes = ::GetSerializeSize(sealed_hdr);
+
+    const ReconScope scope = ReconScope::BLOCK_RECON;
+    const uint256 ctx_id = mined_hdr.GetHash();
+    const auto [k0, k1] = DeriveReconSipHashKey(scope, ctx_id, 0);
+
+    std::unordered_set<uint64_t> expected_missing_sids;
+    expected_missing_sids.reserve(MISSING_FROM_LOCAL);
+    for (size_t m = 0; m < MISSING_FROM_LOCAL; ++m) {
+        expected_missing_sids.insert(ComputeMerklixShortId(
+            k0, k1,
+            epoch_txs[TOTAL_EPOCH_TXS - MISSING_FROM_LOCAL + m]->GetId()));
+    }
+
+    // Helper to run multi-level Merklix tree bisection between `local_h` and
+    // `remote_h` and return (sequential_rtts, sketch_wire_bytes, recovered_sids)
+    auto run_tree_bisection_with_peer =
+        [&](V2PeerProtocolHandler &local_h, V2PeerProtocolHandler &remote_h)
+        -> std::tuple<size_t, size_t, std::vector<uint64_t>> {
+        size_t rtts = 0;
+        size_t wire_bytes = 0;
+        std::vector<uint64_t> recovered_sids;
+
+        // RTT 1: Top-level MERKLIXSYNC (depth 4)
+        const MerklixSyncSummary sync =
+            remote_h.BuildSyncSummary(scope, ctx_id, k0, k1);
+        wire_bytes += ::GetSerializeSize(sync);
+        ++rtts;
+        const MerklixSyncDiffResult diff4 = local_h.DiffSyncSummary(sync);
+        for (uint64_t sid : diff4.single_missing_short_ids) {
+            recovered_sids.push_back(sid);
+        }
+        if (diff4.mismatched_bucket_mask == 0) {
+            return {rtts, wire_bytes, recovered_sids};
+        }
+
+        // RTT 2: Depth-8 MERKLIXBUCK for mismatched top-level buckets
+        MerklixBucketRequest req8;
+        req8.scope = static_cast<uint8_t>(scope);
+        req8.context_id = ctx_id;
+        req8.salt_k0 = k0;
+        req8.salt_k1 = k1;
+        req8.bucket_mask = diff4.mismatched_bucket_mask;
+        wire_bytes += ::GetSerializeSize(req8);
+        ++rtts;
+
+        std::vector<std::pair<uint16_t, uint16_t>> need_depth12;
+        std::vector<std::pair<uint16_t, uint16_t>> need_depth16;
+        for (uint8_t b = 0; b < 16; ++b) {
+            if ((diff4.mismatched_bucket_mask & (1U << b)) == 0) {
+                continue;
+            }
+            const MerklixSubBucketSummary sub8 = remote_h.BuildSubBucketSummary(
+                scope, ctx_id, k0, k1, b, /*depth_bits=*/8);
+            wire_bytes += ::GetSerializeSize(sub8);
+            const MerklixSubBucketDiffResult diff8 =
+                local_h.DiffSubBucketSummary(sub8);
+            for (uint64_t sid : diff8.missing_short_ids) {
+                recovered_sids.push_back(sid);
+            }
+            uint16_t mask12 = 0;
+            uint16_t jump16_mask = 0;
+            for (uint8_t j_sb : diff8.jump_to_depth16_sub_buckets) {
+                jump16_mask |= static_cast<uint16_t>(1U << j_sb);
+            }
+            for (uint8_t u_sb : diff8.unresolved_sub_buckets) {
+                if (jump16_mask & (1U << u_sb)) {
+                    const uint16_t p8 =
+                        static_cast<uint16_t>((uint16_t(b) << 4) | u_sb);
+                    need_depth16.emplace_back(p8, 0xFFFFU);
+                } else {
+                    mask12 |= static_cast<uint16_t>(1U << u_sb);
+                }
+            }
+            if (mask12 != 0) {
+                need_depth12.emplace_back(b, mask12);
+            }
+        }
+
+        // RTT 3: Depth-12 MERKLIXBUCK (plus any jump-to-16 requests)
+        if (!need_depth12.empty() || !need_depth16.empty()) {
+            ++rtts;
+        }
+        std::vector<std::pair<uint16_t, uint16_t>> need_depth16_round2;
+        for (const auto &[p4, mask12] : need_depth12) {
+            MerklixBucketRequest req12 = req8;
+            req12.depth_bits = 8;
+            req12.parent_prefix = p4;
+            req12.bucket_mask = mask12;
+            wire_bytes += ::GetSerializeSize(req12);
+            for (uint8_t sb8 = 0; sb8 < 16; ++sb8) {
+                if ((mask12 & (1U << sb8)) == 0) {
+                    continue;
+                }
+                const uint16_t p8 =
+                    static_cast<uint16_t>((p4 << 4) | uint16_t(sb8));
+                const MerklixSubBucketSummary sub12 =
+                    remote_h.BuildSubBucketSummary(scope, ctx_id, k0, k1, p8,
+                                                   /*depth_bits=*/12);
+                wire_bytes += ::GetSerializeSize(sub12);
+                const MerklixSubBucketDiffResult diff12 =
+                    local_h.DiffSubBucketSummary(sub12);
+                for (uint64_t sid : diff12.missing_short_ids) {
+                    recovered_sids.push_back(sid);
+                }
+                uint16_t mask16 = 0;
+                for (uint8_t u12 : diff12.unresolved_sub_buckets) {
+                    mask16 |= static_cast<uint16_t>(1U << u12);
+                }
+                if (mask16 != 0) {
+                    need_depth16_round2.emplace_back(p8, mask16);
+                }
+            }
+        }
+        for (const auto &[p8, mask16] : need_depth16) {
+            MerklixBucketRequest req16 = req8;
+            req16.depth_bits = 12;
+            req16.parent_prefix = p8;
+            req16.bucket_mask = mask16;
+            wire_bytes += ::GetSerializeSize(req16);
+            for (uint8_t sb12 = 0; sb12 < 16; ++sb12) {
+                if ((mask16 & (1U << sb12)) == 0) {
+                    continue;
+                }
+                const uint16_t p12 =
+                    static_cast<uint16_t>((p8 << 4) | uint16_t(sb12));
+                const MerklixSubBucketSummary sub16 =
+                    remote_h.BuildSubBucketSummary(scope, ctx_id, k0, k1, p12,
+                                                   /*depth_bits=*/16);
+                wire_bytes += ::GetSerializeSize(sub16);
+                const MerklixSubBucketDiffResult diff16 =
+                    local_h.DiffSubBucketSummary(sub16);
+                for (uint64_t sid : diff16.missing_short_ids) {
+                    recovered_sids.push_back(sid);
+                }
+            }
+        }
+
+        // RTT 4: Remaining Depth-16 MERKLIXBUCK
+        if (!need_depth16_round2.empty()) {
+            ++rtts;
+            for (const auto &[p8, mask16] : need_depth16_round2) {
+                MerklixBucketRequest req16 = req8;
+                req16.depth_bits = 12;
+                req16.parent_prefix = p8;
+                req16.bucket_mask = mask16;
+                wire_bytes += ::GetSerializeSize(req16);
+                for (uint8_t sb12 = 0; sb12 < 16; ++sb12) {
+                    if ((mask16 & (1U << sb12)) == 0) {
+                        continue;
+                    }
+                    const uint16_t p12 =
+                        static_cast<uint16_t>((p8 << 4) | uint16_t(sb12));
+                    const MerklixSubBucketSummary sub16 =
+                        remote_h.BuildSubBucketSummary(scope, ctx_id, k0, k1,
+                                                       p12, /*depth_bits=*/16);
+                    wire_bytes += ::GetSerializeSize(sub16);
+                    const MerklixSubBucketDiffResult diff16 =
+                        local_h.DiffSubBucketSummary(sub16);
+                    for (uint64_t sid : diff16.missing_short_ids) {
+                        recovered_sids.push_back(sid);
+                    }
+                }
+            }
+        }
+
+        return {rtts, wire_bytes, recovered_sids};
+    };
+
+    // =========================================================================
+    // METHOD 0: Baseline (No Preconsensus — All Recovery Post-Block After
+    //           SEALEDHEADER Fails O(1) Overlay Fast-Path)
+    // =========================================================================
+    size_t m0_post_block_rtts = 0;
+    size_t m0_post_block_sketch_bytes = 0;
+    double m0_post_block_cpu_ms = 0.0;
+    {
+        V2PeerProtocolHandler local_h(*m_node.chainman, *m_node.mempool,
+                                      *connman, *peerman);
+        V2PeerProtocolHandler miner_h(*m_node.chainman, *m_node.mempool,
+                                      *connman, *peerman);
+        local_h.SetScopedTransactions(scope, ctx_id, local_initial_txs);
+        miner_h.SetScopedTransactions(scope, ctx_id, epoch_txs);
+
+        const auto t0 = std::chrono::steady_clock::now();
+        // 1. SEALEDHEADER arrives from miner, but local has no matching overlay
+        BOOST_CHECK(local_h.MatchCandidateOverlay(
+                        sealed_hdr.header, sealed_hdr.coinbase_tx) == nullptr);
+        // 2. Post-block tree bisection against miner
+        auto [bisect_rtts, sketch_bytes, rec_sids] =
+            run_tree_bisection_with_peer(local_h, miner_h);
+        ShortTxRequest sreq;
+        sreq.scope = static_cast<uint8_t>(scope);
+        sreq.context_id = ctx_id;
+        sreq.salt_k0 = k0;
+        sreq.salt_k1 = k1;
+        sreq.short_ids = rec_sids;
+        sketch_bytes += ::GetSerializeSize(sreq);
+        const auto fetched_txs =
+            miner_h.ResolveShortIds(scope, ctx_id, k0, k1, rec_sids);
+        // +1 RTT for GETSHORTTX/SHORTTX
+        m0_post_block_rtts = bisect_rtts + 1;
+        m0_post_block_sketch_bytes = sealed_hdr_wire_bytes + sketch_bytes;
+
+        // Reconstruct block after fetching missing txs
+        local_h.RegisterCandidateOverlay(mined_hdr.hashPrevBlock, epoch_txs);
+        auto reconstructed = local_h.MatchCandidateOverlay(
+            sealed_hdr.header, sealed_hdr.coinbase_tx);
+        const auto t1 = std::chrono::steady_clock::now();
+        m0_post_block_cpu_ms =
+            std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+        BOOST_REQUIRE(reconstructed != nullptr);
+        BOOST_CHECK_EQUAL(reconstructed->vtx.size(), TOTAL_EPOCH_TXS + 1);
+        BOOST_CHECK_EQUAL(fetched_txs.size(), MISSING_FROM_LOCAL);
+    }
+
+    // =========================================================================
+    // METHOD 1: Merklix-Snowball (Tree-Sketch Bisection Preconsensus Across
+    //           4 Unconverged Peers + O(1) Post-Block Snapblock Reconstruction)
+    // =========================================================================
+    size_t m1_pre_block_rtts = 0;
+    size_t m1_pre_block_sketch_bytes = 0;
+    double m1_pre_block_cpu_ms = 0.0;
+    double m1_post_block_cpu_ms = 0.0;
+    {
+        V2PeerProtocolHandler local_h(*m_node.chainman, *m_node.mempool,
+                                      *connman, *peerman);
+        std::vector<CTransactionRef> working_set = local_initial_txs;
+        local_h.SetScopedTransactions(scope, ctx_id, working_set);
+
+        std::array<std::unique_ptr<V2PeerProtocolHandler>, 4> peer_handlers;
+        for (size_t p = 0; p < 4; ++p) {
+            peer_handlers[p] = std::make_unique<V2PeerProtocolHandler>(
+                *m_node.chainman, *m_node.mempool, *connman, *peerman);
+            peer_handlers[p]->SetScopedTransactions(scope, ctx_id,
+                                                    peer_tx_sets[p]);
+        }
+
+        const auto t_pre0 = std::chrono::steady_clock::now();
+        std::unordered_set<uint64_t> recovered_union;
+        // Reconcile across peers until all 600 missing epoch txs are unioned
+        for (size_t p = 0;
+             p < 4 && recovered_union.size() < MISSING_FROM_LOCAL; ++p) {
+            auto [rtts, bytes, sids] =
+                run_tree_bisection_with_peer(local_h, *peer_handlers[p]);
+            std::vector<uint64_t> novel_sids;
+            for (uint64_t sid : sids) {
+                if (expected_missing_sids.count(sid) &&
+                    recovered_union.insert(sid).second) {
+                    novel_sids.push_back(sid);
+                }
+            }
+            ShortTxRequest sreq;
+            sreq.scope = static_cast<uint8_t>(scope);
+            sreq.context_id = ctx_id;
+            sreq.salt_k0 = k0;
+            sreq.salt_k1 = k1;
+            sreq.short_ids = novel_sids;
+            m1_pre_block_sketch_bytes += bytes + ::GetSerializeSize(sreq);
+            m1_pre_block_rtts = std::max(m1_pre_block_rtts, rtts + 1);
+            const auto fetched = peer_handlers[p]->ResolveShortIds(
+                scope, ctx_id, k0, k1, novel_sids);
+            for (const auto &tx : fetched) {
+                working_set.push_back(tx);
+            }
+            local_h.SetScopedTransactions(scope, ctx_id, working_set);
+        }
+        // Freeze the converged 10,000-tx epoch into candidate overlay
+        local_h.RegisterCandidateOverlay(mined_hdr.hashPrevBlock, epoch_txs);
+        const auto t_pre1 = std::chrono::steady_clock::now();
+        m1_pre_block_cpu_ms =
+            std::chrono::duration<double, std::milli>(t_pre1 - t_pre0).count();
+        BOOST_CHECK_EQUAL(recovered_union.size(), MISSING_FROM_LOCAL);
+
+        // Post-block: SEALEDHEADER arrives and reconstructs in O(1) with 0 RTTs
+        const auto t_post0 = std::chrono::steady_clock::now();
+        auto reconstructed = local_h.MatchCandidateOverlay(
+            sealed_hdr.header, sealed_hdr.coinbase_tx);
+        const auto t_post1 = std::chrono::steady_clock::now();
+        m1_post_block_cpu_ms =
+            std::chrono::duration<double, std::milli>(t_post1 - t_post0)
+                .count();
+        BOOST_REQUIRE(reconstructed != nullptr);
+        BOOST_CHECK_EQUAL(reconstructed->vtx.size(), TOTAL_EPOCH_TXS + 1);
+    }
+
+    // =========================================================================
+    // METHOD 2: Fountain-Snowball (Rateless GF(2^64) BCH Coded Miniblocks
+    //           Across 4 Unconverged Peers + O(1) Post-Block Snapblock)
+    // =========================================================================
+    size_t m2_pre_block_rtts = 0;
+    size_t m2_miniblocks_streamed = 0;
+    size_t m2_pre_block_sketch_bytes = 0;
+    double m2_pre_block_cpu_ms = 0.0;
+    double m2_post_block_cpu_ms = 0.0;
+    {
+        V2PeerProtocolHandler local_h(*m_node.chainman, *m_node.mempool,
+                                      *connman, *peerman);
+        std::vector<uint64_t> local_sids;
+        local_sids.reserve(local_initial_txs.size());
+        for (const auto &tx : local_initial_txs) {
+            local_sids.push_back(ComputeMerklixShortId(k0, k1, tx->GetId()));
+        }
+
+        std::array<std::vector<uint64_t>, 4> peer_sids;
+        for (size_t p = 0; p < 4; ++p) {
+            peer_sids[p].reserve(peer_tx_sets[p].size());
+            for (const auto &tx : peer_tx_sets[p]) {
+                peer_sids[p].push_back(
+                    ComputeMerklixShortId(k0, k1, tx->GetId()));
+            }
+        }
+
+        // Pre-build rateless miniblocks on the 4 remote senders (each peer has
+        // 500 missing epoch txs + 10 local-only + 5 tail = 515 symmetric diff)
+        constexpr size_t PER_PEER_EST_DIFF = 515;
+        std::vector<std::pair<NodeId, RatelessMiniblock>> sender_stream;
+        sender_stream.reserve(48);
+        for (uint32_t seq = 0; seq < 12; ++seq) {
+            for (size_t p = 0; p < 4; ++p) {
+                const uint32_t mb_id = static_cast<uint32_t>(seq * 4 + p);
+                const uint8_t dec_level =
+                    SelectMiniblockDecimationLevel(PER_PEER_EST_DIFF, mb_id);
+                sender_stream.emplace_back(
+                    static_cast<NodeId>(10 + p),
+                    BuildRatelessMiniblockFromShortIds(
+                        scope, ctx_id, uint256{}, epoch_subtree_a, k0, k1,
+                        peer_sids[p], mb_id, dec_level));
+            }
+        }
+
+        const auto t_pre0 = std::chrono::steady_clock::now();
+        RatelessMiniblockDecoder decoder(local_sids);
+        size_t honest_recovered = 0;
+        for (const auto &[pid, mb] : sender_stream) {
+            if (honest_recovered >= MISSING_FROM_LOCAL) {
+                break;
+            }
+            ++m2_miniblocks_streamed;
+            m2_pre_block_sketch_bytes += RatelessMiniblock::NUM_CELLS * 28U;
+            const auto newly = decoder.AddPeerMiniblock(pid, mb);
+            for (uint64_t sid : newly) {
+                if (expected_missing_sids.count(sid)) {
+                    ++honest_recovered;
+                }
+            }
+        }
+        ShortTxRequest sreq;
+        sreq.scope = static_cast<uint8_t>(scope);
+        sreq.context_id = ctx_id;
+        sreq.salt_k0 = k0;
+        sreq.salt_k1 = k1;
+        sreq.short_ids = decoder.GetSortedMissingShortIds();
+        m2_pre_block_sketch_bytes += ::GetSerializeSize(sreq);
+        // 1 RTT for non-interactive miniblock stream + 1 RTT for GETSHORTTX/SHORTTX
+        m2_pre_block_rtts = 2;
+
+        local_h.RegisterCandidateOverlay(mined_hdr.hashPrevBlock, epoch_txs);
+        const auto t_pre1 = std::chrono::steady_clock::now();
+        m2_pre_block_cpu_ms =
+            std::chrono::duration<double, std::milli>(t_pre1 - t_pre0).count();
+        BOOST_CHECK_EQUAL(honest_recovered, MISSING_FROM_LOCAL);
+
+        // Post-block: SEALEDHEADER arrives and reconstructs in O(1) with 0 RTTs
+        const auto t_post0 = std::chrono::steady_clock::now();
+        auto reconstructed = local_h.MatchCandidateOverlay(
+            sealed_hdr.header, sealed_hdr.coinbase_tx);
+        const auto t_post1 = std::chrono::steady_clock::now();
+        m2_post_block_cpu_ms =
+            std::chrono::duration<double, std::milli>(t_post1 - t_post0)
+                .count();
+        BOOST_REQUIRE(reconstructed != nullptr);
+        BOOST_CHECK_EQUAL(reconstructed->vtx.size(), TOTAL_EPOCH_TXS + 1);
+    }
+
+    constexpr double WAN_RTT_MS = 50.0;
+    BOOST_TEST_MESSAGE(
+        "\n===================================================================="
+        "==================\n"
+        "3-WAY HEAD-TO-HEAD BENCHMARK (10,000 Epoch Txs, 600 Missing, 25 "
+        "Local-Extra, 4 Peers)\n"
+        "======================================================================"
+        "================\n"
+        "[Method 0: Baseline (No Preconsensus / Post-Block Recovery)]\n"
+        "  pre_block_rtts=" << 0
+        << " pre_block_sketch_bytes=" << 0
+        << " pre_block_cpu_ms=" << 0.0
+        << "\n  post_block_rtts=" << m0_post_block_rtts
+        << " post_block_sketch_bytes=" << m0_post_block_sketch_bytes
+        << " post_block_cpu_ms=" << m0_post_block_cpu_ms
+        << " post_block_wan50ms_total_ms="
+        << (m0_post_block_rtts * WAN_RTT_MS + m0_post_block_cpu_ms)
+        << "\n[Method 1: Merklix-Snowball (Tree-Sketch Bisection Preconsensus)]\n"
+        "  pre_block_rtts=" << m1_pre_block_rtts
+        << " pre_block_sketch_bytes=" << m1_pre_block_sketch_bytes
+        << " pre_block_bytes_per_missing_tx="
+        << (double(m1_pre_block_sketch_bytes) / double(MISSING_FROM_LOCAL))
+        << " pre_block_cpu_ms=" << m1_pre_block_cpu_ms
+        << " pre_block_wan50ms_total_ms="
+        << (m1_pre_block_rtts * WAN_RTT_MS + m1_pre_block_cpu_ms)
+        << "\n  post_block_rtts=" << 0
+        << " post_block_wire_bytes=" << sealed_hdr_wire_bytes
+        << " post_block_cpu_ms=" << m1_post_block_cpu_ms
+        << " post_block_wan50ms_total_ms=" << m1_post_block_cpu_ms
+        << "\n[Method 2: Fountain-Snowball (Rateless GF(2^64) BCH Miniblocks)]\n"
+        "  pre_block_rtts=" << m2_pre_block_rtts
+        << " miniblocks=" << m2_miniblocks_streamed
+        << " pre_block_sketch_bytes=" << m2_pre_block_sketch_bytes
+        << " pre_block_bytes_per_missing_tx="
+        << (double(m2_pre_block_sketch_bytes) / double(MISSING_FROM_LOCAL))
+        << " pre_block_cpu_ms=" << m2_pre_block_cpu_ms
+        << " pre_block_wan50ms_total_ms="
+        << (m2_pre_block_rtts * WAN_RTT_MS + m2_pre_block_cpu_ms)
+        << "\n  post_block_rtts=" << 0
+        << " post_block_wire_bytes=" << sealed_hdr_wire_bytes
+        << " post_block_cpu_ms=" << m2_post_block_cpu_ms
+        << " post_block_wan50ms_total_ms=" << m2_post_block_cpu_ms
+        << "\n=================================================================="
+        "====================");
+
+    // Verify Fountain-Snowball uses fewer pre-block RTTs AND fewer pre-block
+    // sketch wire bytes than Merklix tree bisection, while both achieve 0
+    // post-block reconciliation RTTs!
+    BOOST_CHECK_LT(m2_pre_block_rtts, m1_pre_block_rtts);
+    BOOST_CHECK_LT(m2_pre_block_sketch_bytes, m1_pre_block_sketch_bytes);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

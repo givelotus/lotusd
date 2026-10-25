@@ -1425,13 +1425,22 @@ bool RatelessMiniblockDecoder::TryResolveCell(
     size_t mb_idx, uint8_t cell_idx, std::vector<uint64_t> &newly_discovered) {
     StoredMiniblock &mb = m_miniblocks[mb_idx];
     const ResidualCell &cell = mb.cells[cell_idx];
-    if (cell.IsZero()) {
+    if (cell.IsZero() || cell.delta_count < -2 || cell.delta_count > 2) {
         return false;
     }
-    auto recovered = RecoverGF64Syndromes(cell.s1, cell.s3, cell.s5);
-    if (!recovered.has_value() || recovered->empty() ||
-        (recovered->size() == 2 && (*recovered)[0] == (*recovered)[1])) {
-        return false;
+    std::optional<std::vector<uint64_t>> recovered;
+    if (cell.delta_count == 1 || cell.delta_count == -1) {
+        if (cell.s1 == 0 || cell.s3 != GF64Cube(cell.s1) ||
+            cell.s5 != GF64Pow5(cell.s1)) {
+            return false;
+        }
+        recovered = std::vector<uint64_t>{cell.s1};
+    } else {
+        recovered = RecoverGF64Syndromes(cell.s1, cell.s3, cell.s5);
+        if (!recovered.has_value() || recovered->size() != 2 ||
+            (*recovered)[0] == (*recovered)[1]) {
+            return false;
+        }
     }
     const NodeId peer_id = mb.peer_id;
     const auto &confirmed_has = m_peer_confirmed_has[peer_id];
@@ -1525,11 +1534,22 @@ bool RatelessMiniblockDecoder::TryCrossPeerProjectCell(
             return true;
         }
 
-        auto recovered = RecoverGF64Syndromes(proj.s1, proj.s3, proj.s5);
-        if (!recovered.has_value() || recovered->empty() ||
-            recovered->size() > 2 ||
-            (recovered->size() == 2 && (*recovered)[0] == (*recovered)[1])) {
+        if (proj.delta_count < -2 || proj.delta_count > 2) {
             return false;
+        }
+        std::optional<std::vector<uint64_t>> recovered;
+        if (proj.delta_count == 1 || proj.delta_count == -1) {
+            if (proj.s1 == 0 || proj.s3 != GF64Cube(proj.s1) ||
+                proj.s5 != GF64Pow5(proj.s1)) {
+                return false;
+            }
+            recovered = std::vector<uint64_t>{proj.s1};
+        } else {
+            recovered = RecoverGF64Syndromes(proj.s1, proj.s3, proj.s5);
+            if (!recovered.has_value() || recovered->size() != 2 ||
+                (*recovered)[0] == (*recovered)[1]) {
+                return false;
+            }
         }
 
         int64_t expected_delta = 0;
