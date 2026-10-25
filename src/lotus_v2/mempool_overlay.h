@@ -13,12 +13,15 @@
 #include "tx_merklix.h"
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <map>
 #include <memory>
+#include <set>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace lotus::v2 {
@@ -325,6 +328,9 @@ public:
     bool RemoveTransaction(const Hash &tx_id);
 
     bool Contains(const Hash &tx_id) const;
+    bool SpendsOutpoint(const Outpoint &outpoint) const;
+    std::vector<Hash>
+    FindTransactionsSpending(std::span<const Outpoint> outpoints) const;
 
     /** Lazily completes only dirty digests; caller holds the writer lock. */
     Hash GetSubtreeARoot() const { return tx_tree_.RootDigest(); }
@@ -357,6 +363,7 @@ public:
     uint64_t GetHeight() const noexcept { return height_; }
     uint64_t GetParentMtp() const noexcept { return parent_mtp_; }
     uint64_t GetLayerId() const noexcept { return layer_id_; }
+    void SetLayerId(uint64_t layer_id) noexcept { layer_id_ = layer_id; }
 
     const std::map<Hash, OverlayTxEntry, CtorTxIdCompare> &
     GetOrderedTxs() const noexcept {
@@ -396,12 +403,82 @@ private:
 };
 
 /**
+ * Outcome of attempting to union a transaction into the active pre-consensus
+ * epoch in MerklixOverlayManager.
+ */
+enum class EpochUnionOutcome : uint8_t {
+    ADMITTED = 0,
+    ALREADY_PRESENT = 1,
+    QUARANTINED_CONFLICT = 2,
+    DEFERRED_LATE_DRIP = 3,
+    REJECTED_EPOCH_LOCKED = 4,
+};
+
+/**
+ * Relationship between a peer's advertised (parent_base_root, active_sketch_root)
+ * and our local (parent_base_root, active_sketch_root) during numberless
+ * parent_base_root-anchored self-clocking layer reconciliation.
+ */
+enum class LayerSyncRelation : uint8_t {
+    //! peer.parent_base_root == local.parent_base_root -> normal union & snowball
+    SAME_PARENT_BASE = 0,
+    //! peer.parent_base_root == local.active_sketch_root -> peer already
+    //! crystallized our candidate root R_1 and promoted to R_1! Counts as a
+    //! matching confirmation on R_1 without mixing peer's new layer into R_1.
+    PEER_AHEAD_CONFIRMS_LOCAL = 1,
+    //! peer.active_sketch_root == local.parent_base_root -> local already
+    //! crystallized peer's candidate root; ignore peer's lagging layer.
+    LOCAL_AHEAD_OF_PEER = 2,
+    //! Disjoint parent_base_root requiring base catch-up.
+    DIVERGENT_BASE = 3,
+};
+
+/**
+ * Deterministic result of resolving Option B quarantined transactions for
+ * Epoch E+1 using the finalized BatchId(E) of Epoch E.
+ */
+struct QuarantineResolutionResult {
+    std::vector<OverlayTxEntry> promoted_winners;
+    std::vector<OverlayTxEntry> rejected_losers;
+};
+
+/**
+ * Ungrindable tie-break score for Option B post-quarantine resolution:
+ *   score(T) = TaggedHash(HashDomain::PreconsensusBatch, BatchId(E) || tx_id).
+ *
+ * Security / Ungrindability:
+ *   1. When conflicting transactions (T_1, T_2) are broadcast during Epoch E,
+ *      BatchId(E) does not yet exist because it commits to the finalized
+ *      SubtreeARoot(E) and UtxoRoot(E) of all non-conflicting transactions in
+ *      Epoch E. Neither sender can predict or grind score(T_i) in advance.
+ *   2. Once Epoch E finalizes and reveals BatchId(E), the quarantined set Q_E
+ *      is already closed. If an attacker attempts to broadcast a newly ground
+ *      T_3 spending the same UTXO during Epoch E+1, T_3 arrives in open Epoch
+ *      E+1 where the promoted winner T_win already resides, which simply
+ *      triggers Option B quarantine for Epoch E+1 and defers resolution to
+ *      Epoch E+2 under the not-yet-existing BatchId(E+1).
+ */
+Hash ComputePreconsensusTiebreakScore(const Hash &finalized_batch_id,
+                                      const Hash &tx_id);
+
+/**
  * Manages the progressive stack of frozen pre-consensus epoch overlay layers
- * and the mutable speculative mempool tip overlay.
+ * and the mutable speculative mempool tip overlay, including:
+ *   - Option B same-epoch conflict quarantine (order-independent transitive
+ *     conflict removal into `quarantined_txs_`)
+ *   - Two-phase anti-drip union gate (`r <= R_cut` unrestricted union vs
+ *     `r > R_cut` sample-quorum gate routing late singletons to Epoch E+1)
+ *   - Deterministic `BatchId(E)` post-quarantine resolution into Epoch E+1
  */
 class MerklixOverlayManager {
 public:
+    static constexpr uint32_t DEFAULT_MAX_UNRESTRICTED_UNION_ROUNDS = 3;
+
     MerklixOverlayManager();
+    MerklixOverlayManager(const MerklixOverlayManager &other);
+    MerklixOverlayManager &operator=(const MerklixOverlayManager &other);
+    MerklixOverlayManager(MerklixOverlayManager &&other) noexcept;
+    MerklixOverlayManager &operator=(MerklixOverlayManager &&other) noexcept;
 
     void ResetToTip(const Hash &tip_block_id,
                     std::shared_ptr<const SmtNode> base_utxo_root,
@@ -439,8 +516,178 @@ public:
     bool RemoveTransaction(const Hash &tx_id);
 
     /**
+     * Union a transaction into the active pre-consensus epoch with:
+     *   1. Snowballed epoch immutability check (`epoch_snowballed_locked_`)
+     *   2. Two-phase anti-drip union gate (`union_round_ > max_unrestricted_union_rounds_`
+     *      requires `peer_sample_support * 2 >= peer_sample_size`, else defers
+     *      to `deferred_next_epoch_txs_` for Epoch E+1)
+     *   3. Option B order-independent same-epoch conflict quarantine
+     */
+    EpochUnionOutcome UnionEpochTransaction(
+        const OverlayTxEntry &entry,
+        uint32_t peer_sample_support = 1,
+        uint32_t peer_sample_size = 1);
+
+    EpochUnionOutcome UnionEpochTransaction(
+        const Hash &tx_id,
+        const Hash &tx_hash,
+        uint64_t linear_cost,
+        const std::vector<Outpoint> &spent_outpoints,
+        const std::vector<Coin> &created_coins,
+        int64_t fee_sats = 0,
+        int64_t sigchecks = 0,
+        std::shared_ptr<const void> tx_ref = nullptr,
+        uint32_t peer_sample_support = 1,
+        uint32_t peer_sample_size = 1);
+
+    /**
+     * Advance the Snowstorm reconciliation round counter for the active
+     * epoch. Once `union_round_ > max_unrestricted_union_rounds_`, Phase 2
+     * anti-drip filtering activates.
+     */
+    uint32_t AdvanceUnionRound() noexcept { return ++union_round_; }
+    void SetUnionRound(uint32_t round) noexcept { union_round_ = round; }
+    uint32_t GetUnionRound() const noexcept { return union_round_; }
+
+    void SetMaxUnrestrictedUnionRounds(uint32_t max_rounds) noexcept {
+        max_unrestricted_union_rounds_ = std::max(1U, max_rounds);
+    }
+    uint32_t GetMaxUnrestrictedUnionRounds() const noexcept {
+        return max_unrestricted_union_rounds_;
+    }
+
+    /**
+     * Symmetric Phase 2 minority-support demotion with hysteresis
+     * (m = min_consecutive_minority_rounds), transitive in-epoch descendant
+     * closure, and per-epoch deferral latch.
+     *
+     * When `union_round_ > max_unrestricted_union_rounds_` and the active epoch
+     * is not yet snowballed-locked, inspects every transaction T in the active
+     * epoch delta (present in `speculative_layer_` but not in
+     * `frozen_epochs_.back()`):
+     *   - If `support(T) * 2 < peer_sample_size`, increments T's minority
+     *     streak; otherwise resets T's streak to 0.
+     *   - Once T's streak reaches `min_consecutive_minority_rounds`, demotes T
+     *     and all of its transitive in-epoch descendants from
+     *     `speculative_layer_` into `deferred_next_epoch_txs_` and latches
+     *     their txids in `deferred_txids_for_epoch_` so they cannot oscillate
+     *     back into Epoch E.
+     *
+     * Returns the number of transactions demoted from the active epoch.
+     */
+    size_t ApplyPhase2PeerSampleSupport(
+        const std::map<Hash, uint32_t, CtorTxIdCompare> &tx_support_counts,
+        uint32_t peer_sample_size,
+        uint32_t min_consecutive_minority_rounds = 2);
+
+    const std::set<Hash, CtorTxIdCompare> &
+    GetDeferredTxIdsForEpoch() const noexcept {
+        return deferred_txids_for_epoch_;
+    }
+
+    /**
+     * Lock or unlock the active epoch once Snowstorm reaches beta_snow
+     * consecutive matching sample rounds. When locked, conflicting double-spends
+     * cannot displace transactions in the snowballed epoch.
+     */
+    void SetEpochSnowballedLocked(bool locked) noexcept {
+        epoch_snowballed_locked_ = locked;
+    }
+    bool IsEpochSnowballedLocked() const noexcept {
+        return epoch_snowballed_locked_;
+    }
+
+    /**
+     * Deterministically resolve all Option B quarantined transactions from
+     * Epoch E using `finalized_batch_id = BatchId(E)`, promoting the winning
+     * non-conflicting transactions (and any Phase 2 late-drip deferred
+     * transactions) into the speculative overlay for Epoch E+1 and returning
+     * both the promoted winners and rejected losers.
+     */
+    QuarantineResolutionResult
+    ResolveQuarantinedTxsWithBatchId(const Hash &finalized_batch_id);
+
+    const std::unordered_set<Outpoint, OutpointHasher> &
+    GetConflictedOutpoints() const noexcept {
+        return conflicted_outpoints_;
+    }
+    const std::map<Hash, OverlayTxEntry, CtorTxIdCompare> &
+    GetQuarantinedTxs() const noexcept {
+        return quarantined_txs_;
+    }
+    const std::vector<OverlayTxEntry> &
+    GetDeferredNextEpochTxs() const noexcept {
+        return deferred_next_epoch_txs_;
+    }
+
+    size_t GetQuarantinedTxCount() const noexcept {
+        return quarantined_tx_count_.load(std::memory_order_relaxed);
+    }
+    uint64_t GetTotalQuarantinedEvents() const noexcept {
+        return total_quarantined_events_.load(std::memory_order_relaxed);
+    }
+    uint64_t GetLateDripDeferredCount() const noexcept {
+        return late_drip_deferred_count_.load(std::memory_order_relaxed);
+    }
+
+    /**
+     * Numberless parent_base_root-anchored self-clocking layer pipeline:
+     *   - GetParentBaseRoot(): SubtreeARoot of the last crystallized/snowballed
+     *     layer (`frozen_epochs_.back()`), or `EmptyTxRoot()` right after a
+     *     block connects / on kick-off.
+     *   - GetActiveSketchRoot(): SubtreeARoot of the currently snowballing
+     *     `ActiveSketchLayer` (`speculative_layer_`).
+     *   - ClassifyPeerLayerSketch(): resolves boundary races when one peer
+     *     crystallizes `R_1` one tick ahead of another and advertises
+     *     `peer.parent_base_root == R_1`.
+     *   - StageIncomingTransaction() / PromoteIncomingToActiveSketchLayer():
+     *     stages unsnowballed incoming transactions in `IncomingMempool` while
+     *     `ActiveSketchLayer` is converging, then promotes them into the next
+     *     `ActiveSketchLayer` anchored on `parent_base_root = R_1` as soon as
+     *     `ActiveSketchLayer` reaches `snowballed` (`FreezeEpochBatch()`).
+     */
+    Hash GetParentBaseRoot() const;
+    Hash GetActiveSketchRoot() const;
+    size_t GetActiveLayerDeltaTxCount() const noexcept;
+
+    LayerSyncRelation
+    ClassifyPeerLayerSketch(const Hash &peer_parent_base_root,
+                            const Hash &peer_active_sketch_root) const;
+
+    bool StageIncomingTransaction(const OverlayTxEntry &entry);
+    bool StageIncomingTransaction(
+        const Hash &tx_id,
+        const Hash &tx_hash,
+        uint64_t linear_cost,
+        const std::vector<Outpoint> &spent_outpoints,
+        const std::vector<Coin> &created_coins,
+        int64_t fee_sats = 0,
+        int64_t sigchecks = 0,
+        std::shared_ptr<const void> tx_ref = nullptr);
+
+    size_t PromoteIncomingToActiveSketchLayer();
+
+    const std::vector<OverlayTxEntry> &
+    GetIncomingMempoolTxs() const noexcept {
+        return incoming_mempool_txs_;
+    }
+    size_t GetIncomingMempoolTxCount() const noexcept {
+        return incoming_mempool_txs_.size();
+    }
+
+    uint64_t GetLastLayerConvergenceMs() const noexcept {
+        return last_layer_convergence_ms_.load(std::memory_order_relaxed);
+    }
+    void SetLastLayerConvergenceMs(uint64_t ms) noexcept {
+        last_layer_convergence_ms_.store(ms, std::memory_order_relaxed);
+    }
+
+    /**
      * Freezes the current speculative state as an immutable epoch overlay
-     * snapshot and increments the epoch counter.
+     * snapshot and increments the epoch counter. Also folds ActiveSketchLayer
+     * into CrystallizedBase (`parent_base_root = SubtreeARoot(CrystallizedBase)`),
+     * records `last_layer_convergence_ms_`, and promotes any staged
+     * `incoming_mempool_txs_` into the new ActiveSketchLayer.
      */
     const MempoolOverlayLayer &FreezeEpochBatch();
 
@@ -453,11 +700,33 @@ public:
     const std::vector<MempoolOverlayLayer> &GetFrozenEpochs() const noexcept {
         return frozen_epochs_;
     }
+    std::vector<MempoolOverlayLayer> &GetFrozenEpochsMutable() noexcept {
+        return frozen_epochs_;
+    }
 
 private:
     uint64_t next_epoch_id_{1};
     MempoolOverlayLayer speculative_layer_;
     std::vector<MempoolOverlayLayer> frozen_epochs_;
+
+    uint32_t union_round_{0};
+    uint32_t max_unrestricted_union_rounds_{
+        DEFAULT_MAX_UNRESTRICTED_UNION_ROUNDS};
+    bool epoch_snowballed_locked_{false};
+
+    std::unordered_set<Outpoint, OutpointHasher> conflicted_outpoints_;
+    std::map<Hash, OverlayTxEntry, CtorTxIdCompare> quarantined_txs_;
+    std::vector<OverlayTxEntry> deferred_next_epoch_txs_;
+    std::set<Hash, CtorTxIdCompare> deferred_txids_for_epoch_;
+    std::map<Hash, uint32_t, CtorTxIdCompare> phase2_low_support_streak_;
+    std::vector<OverlayTxEntry> incoming_mempool_txs_;
+
+    uint64_t active_layer_start_ns_{0};
+    std::atomic<uint64_t> last_layer_convergence_ms_{0};
+
+    std::atomic<size_t> quarantined_tx_count_{0};
+    std::atomic<uint64_t> total_quarantined_events_{0};
+    std::atomic<uint64_t> late_drip_deferred_count_{0};
 };
 
 const MonetaryProfile &GetDefaultV2MonetaryProfile() noexcept;
