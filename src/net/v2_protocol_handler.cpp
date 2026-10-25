@@ -568,6 +568,7 @@ std::shared_ptr<const CBlock> V2PeerProtocolHandler::MatchCandidateOverlay(
             auto it_scope_prev =
                 m_scoped_txs.find(ScopeKey{scope, header.hashPrevBlock});
             if (it_scope_prev != m_scoped_txs.end()) {
+                EnsureScopedRootLocked(it_scope_prev->second);
                 candidates.push_back(CandidateOverlayEntry{
                     it_scope_prev->second.txs,
                     it_scope_prev->second.subtree_a_root});
@@ -575,6 +576,7 @@ std::shared_ptr<const CBlock> V2PeerProtocolHandler::MatchCandidateOverlay(
             auto it_scope_hash =
                 m_scoped_txs.find(ScopeKey{scope, header.GetHash()});
             if (it_scope_hash != m_scoped_txs.end()) {
+                EnsureScopedRootLocked(it_scope_hash->second);
                 candidates.push_back(CandidateOverlayEntry{
                     it_scope_hash->second.txs,
                     it_scope_hash->second.subtree_a_root});
@@ -748,12 +750,25 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
                              std::vector<CInv>{fallback_inv}));
 }
 
+void V2PeerProtocolHandler::EnsureScopedRootLocked(
+    ScopedTxSetEntry &entry) const {
+    AssertLockHeld(m_mutex);
+    if (!entry.root_valid) {
+        entry.subtree_a_root = ComputeSubtreeAHash(entry.txs);
+        std::memcpy(entry.candidate_root.begin(), entry.subtree_a_root.data(),
+                    32);
+        entry.root_valid = true;
+    }
+}
+
 void V2PeerProtocolHandler::SetScopedTransactions(
     ReconScope scope, const uint256 &context_id,
     std::vector<CTransactionRef> txs) {
     ScopedTxSetEntry entry;
     entry.txs = NormalizeCtorTxList(txs);
-    entry.subtree_a_root = ComputeSubtreeAHash(entry.txs);
+    for (const auto &tx : entry.txs) {
+        entry.by_top_bucket[GetMerklixBucketIndex(tx->GetId())].push_back(tx);
+    }
     LOCK(m_mutex);
     const ScopeKey key{scope, context_id};
     if (m_scoped_txs.find(key) == m_scoped_txs.end() &&
@@ -794,6 +809,46 @@ std::vector<CTransactionRef> V2PeerProtocolHandler::GetScopedTransactions(
     return {};
 }
 
+std::pair<std::vector<CTransactionRef>, uint256>
+V2PeerProtocolHandler::GetScopedTransactionsAndRoot(
+    ReconScope scope, const uint256 &context_id) const {
+    {
+        LOCK(m_mutex);
+        auto it = m_scoped_txs.find(ScopeKey{scope, context_id});
+        if (it != m_scoped_txs.end()) {
+            EnsureScopedRootLocked(it->second);
+            return {it->second.txs, it->second.candidate_root};
+        }
+    }
+    std::vector<CTransactionRef> txs = GetScopedTransactions(scope, context_id);
+    const lotus::v2::Hash root = ComputeSubtreeAHash(txs);
+    uint256 out{};
+    std::memcpy(out.begin(), root.data(), 32);
+    return {std::move(txs), out};
+}
+
+std::vector<CTransactionRef>
+V2PeerProtocolHandler::GetScopedTransactionsForTopBucket(
+    ReconScope scope, const uint256 &context_id, uint8_t top_bucket) const {
+    const uint8_t b = static_cast<uint8_t>(top_bucket & 0x0f);
+    {
+        LOCK(m_mutex);
+        auto it = m_scoped_txs.find(ScopeKey{scope, context_id});
+        if (it != m_scoped_txs.end()) {
+            return it->second.by_top_bucket[b];
+        }
+    }
+    const std::vector<CTransactionRef> all_txs =
+        GetScopedTransactions(scope, context_id);
+    std::vector<CTransactionRef> filtered;
+    for (const auto &tx : all_txs) {
+        if (GetMerklixBucketIndex(tx->GetId()) == b) {
+            filtered.push_back(tx);
+        }
+    }
+    return filtered;
+}
+
 MerklixSyncSummary V2PeerProtocolHandler::BuildSyncSummary(
     ReconScope scope, const uint256 &context_id, uint64_t salt_k0,
     uint64_t salt_k1) const {
@@ -806,9 +861,8 @@ MerklixSyncSummary V2PeerProtocolHandler::BuildSyncSummary(
     summary.salt_k0 = salt_k0;
     summary.salt_k1 = salt_k1;
 
-    const std::vector<CTransactionRef> txs =
-        GetScopedTransactions(scope, context_id);
-    summary.candidate_root = ComputeScopedMerklixRoot(txs);
+    const auto [txs, root] = GetScopedTransactionsAndRoot(scope, context_id);
+    summary.candidate_root = root;
     for (const auto &tx : txs) {
         const TxId &txid = tx->GetId();
         const uint8_t b = GetMerklixBucketIndex(txid);
@@ -827,10 +881,19 @@ MerklixSyncDiffResult V2PeerProtocolHandler::DiffSyncSummary(
         return result;
     }
     const ReconScope scope = static_cast<ReconScope>(remote_summary.scope);
-    const std::vector<CTransactionRef> local_txs =
-        GetScopedTransactions(scope, remote_summary.context_id);
-
-    const uint256 local_root = ComputeScopedMerklixRoot(local_txs);
+    {
+        LOCK(m_mutex);
+        auto it = m_scoped_txs.find(ScopeKey{scope, remote_summary.context_id});
+        if (it != m_scoped_txs.end()) {
+            EnsureScopedRootLocked(it->second);
+            if (it->second.candidate_root == remote_summary.candidate_root) {
+                result.root_matched = true;
+                return result;
+            }
+        }
+    }
+    const auto [local_txs, local_root] =
+        GetScopedTransactionsAndRoot(scope, remote_summary.context_id);
     result.root_matched = (local_root == remote_summary.candidate_root);
     if (result.root_matched) {
         return result;
@@ -965,10 +1028,11 @@ MerklixSubBucketSummary V2PeerProtocolHandler::BuildSubBucketSummary(
         static_cast<uint8_t>((masked_prefix >> (parent_bits - 4)) & 0x0f);
 
     const std::vector<CTransactionRef> txs =
-        GetScopedTransactions(scope, context_id);
+        GetScopedTransactionsForTopBucket(scope, context_id, sub.parent_bucket);
     for (const auto &tx : txs) {
         const TxId &txid = tx->GetId();
-        if (GetMerklixPrefix(txid, parent_bits) != masked_prefix) {
+        if (parent_bits > 4 &&
+            GetMerklixPrefix(txid, parent_bits) != masked_prefix) {
             continue;
         }
         const uint8_t sb = GetMerklixNibble(txid, child_nibble_idx);
@@ -1014,11 +1078,14 @@ MerklixSubBucketDiffResult V2PeerProtocolHandler::DiffSubBucketSummary(
          (remote_sub.parent_bucket != 0 || remote_sub.parent_prefix == 0))
             ? static_cast<uint16_t>(remote_sub.parent_bucket)
             : remote_sub.parent_prefix;
+    const uint8_t top_bucket = static_cast<uint8_t>(
+        (effective_parent_prefix >> (parent_bits - 4)) & 0x0f);
     const uint8_t child_nibble_idx = static_cast<uint8_t>((depth_bits >> 2) - 1);
 
     const ReconScope scope = static_cast<ReconScope>(remote_sub.scope);
     const std::vector<CTransactionRef> local_txs =
-        GetScopedTransactions(scope, remote_sub.context_id);
+        GetScopedTransactionsForTopBucket(scope, remote_sub.context_id,
+                                          top_bucket);
 
     uint64_t k0 = remote_sub.salt_k0;
     uint64_t k1 = remote_sub.salt_k1;
@@ -1032,7 +1099,8 @@ MerklixSubBucketDiffResult V2PeerProtocolHandler::DiffSubBucketSummary(
     std::unordered_set<uint64_t> local_prefix_sids{};
     for (const auto &tx : local_txs) {
         const TxId &txid = tx->GetId();
-        if (GetMerklixPrefix(txid, parent_bits) != effective_parent_prefix) {
+        if (parent_bits > 4 &&
+            GetMerklixPrefix(txid, parent_bits) != effective_parent_prefix) {
             continue;
         }
         const uint8_t sb = GetMerklixNibble(txid, child_nibble_idx);
@@ -1058,12 +1126,22 @@ MerklixSubBucketDiffResult V2PeerProtocolHandler::DiffSubBucketSummary(
             continue;
         }
 
+        auto mark_unresolved = [&](uint8_t sub_idx) {
+            result.unresolved_sub_buckets.push_back(sub_idx);
+            const int64_t count_delta =
+                static_cast<int64_t>(rem.count) -
+                static_cast<int64_t>(loc.count);
+            if (depth_bits == 8 && std::abs(count_delta) > 32) {
+                result.jump_to_depth16_sub_buckets.push_back(sub_idx);
+            }
+        };
+
         auto recovered = RecoverGF64Syndromes(delta_s1, delta_s3, delta_s5);
         if (!recovered.has_value()) {
             if (depth_bits == 16 && !remote_sub.overflow_short_ids.empty()) {
                 use_terminal_overflow_fallback = true;
             } else {
-                result.unresolved_sub_buckets.push_back(sb);
+                mark_unresolved(sb);
             }
             continue;
         }
@@ -1087,7 +1165,7 @@ MerklixSubBucketDiffResult V2PeerProtocolHandler::DiffSubBucketSummary(
             if (depth_bits == 16 && !remote_sub.overflow_short_ids.empty()) {
                 use_terminal_overflow_fallback = true;
             } else {
-                result.unresolved_sub_buckets.push_back(sb);
+                mark_unresolved(sb);
             }
             continue;
         }
@@ -1122,6 +1200,35 @@ std::vector<CTransactionRef> V2PeerProtocolHandler::ResolveShortIds(
     }
     if (salt_k0 == 0 && salt_k1 == 0) {
         std::tie(salt_k0, salt_k1) = DeriveReconSipHashKey(scope, context_id, 0);
+    }
+    {
+        LOCK(m_mutex);
+        auto it = m_scoped_txs.find(ScopeKey{scope, context_id});
+        if (it != m_scoped_txs.end()) {
+            ScopedTxSetEntry &entry = it->second;
+            if ((entry.cached_by_sid.empty() && !entry.txs.empty()) ||
+                entry.cached_salt_k0 != salt_k0 ||
+                entry.cached_salt_k1 != salt_k1) {
+                entry.cached_by_sid.clear();
+                entry.cached_by_sid.reserve(entry.txs.size());
+                for (const auto &tx : entry.txs) {
+                    const uint64_t sid = ComputeMerklixShortId(
+                        salt_k0, salt_k1, tx->GetId());
+                    entry.cached_by_sid.emplace(sid, tx);
+                }
+                entry.cached_salt_k0 = salt_k0;
+                entry.cached_salt_k1 = salt_k1;
+            }
+            std::vector<CTransactionRef> resolved;
+            resolved.reserve(short_ids.size());
+            for (const uint64_t sid : short_ids) {
+                auto sid_it = entry.cached_by_sid.find(sid);
+                if (sid_it != entry.cached_by_sid.end()) {
+                    resolved.push_back(sid_it->second);
+                }
+            }
+            return resolved;
+        }
     }
     const std::vector<CTransactionRef> local_txs =
         GetScopedTransactions(scope, context_id);
@@ -1560,19 +1667,32 @@ void V2PeerProtocolHandler::HandleMerklixBuck(
 
     // Multi-depth prefix bisection for d >= 3 sub-bucket overflows:
     // depth 8 -> request depth 12; depth 12 -> request depth 16.
+    // When depth_bits == 8 and a sub-bucket's count delta exceeds the
+    // 32-element capacity of depth 12 (16 child sub-buckets * 2 syndromes),
+    // jump directly to requesting depth 16 (req.depth_bits = 12,
+    // req.parent_prefix = (effective_parent_prefix << 4) | sb,
+    // req.bucket_mask = 0xFFFF) to avoid a guaranteed-overflow round-trip.
     if (!diff.unresolved_sub_buckets.empty() && depth_bits < 16) {
+        const uint16_t effective_parent_prefix =
+            (depth_bits == 8 &&
+             (sub.parent_bucket != 0 || sub.parent_prefix == 0))
+                ? static_cast<uint16_t>(sub.parent_bucket)
+                : sub.parent_prefix;
+        uint16_t jump_mask = 0;
+        if (depth_bits == 8) {
+            for (const uint8_t sb : diff.jump_to_depth16_sub_buckets) {
+                if (sb < 16) {
+                    jump_mask |= static_cast<uint16_t>(1U << sb);
+                }
+            }
+        }
         uint16_t unresolved_mask = 0;
         for (const uint8_t sb : diff.unresolved_sub_buckets) {
-            if (sb < 16) {
+            if (sb < 16 && (jump_mask & (1U << sb)) == 0) {
                 unresolved_mask |= static_cast<uint16_t>(1U << sb);
             }
         }
         if (unresolved_mask != 0) {
-            const uint16_t effective_parent_prefix =
-                (depth_bits == 8 &&
-                 (sub.parent_bucket != 0 || sub.parent_prefix == 0))
-                    ? static_cast<uint16_t>(sub.parent_bucket)
-                    : sub.parent_prefix;
             MerklixBucketRequest bisected_req;
             bisected_req.scope = sub.scope;
             bisected_req.context_id = sub.context_id;
@@ -1584,6 +1704,25 @@ void V2PeerProtocolHandler::HandleMerklixBuck(
             m_connman.PushMessage(
                 &pfrom,
                 NetMsg::Make(NetMsgType::GETMERKLIXBUCK, bisected_req));
+        }
+        if (jump_mask != 0) {
+            for (uint8_t sb = 0; sb < 16; ++sb) {
+                if ((jump_mask & (1U << sb)) == 0) {
+                    continue;
+                }
+                MerklixBucketRequest jump_req;
+                jump_req.scope = sub.scope;
+                jump_req.context_id = sub.context_id;
+                jump_req.salt_k0 = sub.salt_k0;
+                jump_req.salt_k1 = sub.salt_k1;
+                jump_req.bucket_mask = 0xFFFFU;
+                jump_req.depth_bits = 12;
+                jump_req.parent_prefix =
+                    static_cast<uint16_t>((effective_parent_prefix << 4) | sb);
+                m_connman.PushMessage(
+                    &pfrom,
+                    NetMsg::Make(NetMsgType::GETMERKLIXBUCK, jump_req));
+            }
         }
     }
 }

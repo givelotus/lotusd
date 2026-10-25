@@ -323,6 +323,9 @@ struct MerklixSubBucketDiffResult {
     std::vector<uint64_t> missing_short_ids;
     //! Sub-bucket indices (0..15) whose differences exceeded 2 elements.
     std::vector<uint8_t> unresolved_sub_buckets;
+    //! Sub-bucket indices (0..15) at depth 8 whose count delta exceeds the
+    //! 32-element capacity of depth 12, allowing direct jump to depth 16.
+    std::vector<uint8_t> jump_to_depth16_sub_buckets;
 };
 
 /**
@@ -437,7 +440,7 @@ public:
  */
 class V2PeerProtocolHandler {
 public:
-    static constexpr size_t MAX_SYNC_MESSAGES_PER_WINDOW = 32;
+    static constexpr size_t MAX_SYNC_MESSAGES_PER_WINDOW = 2048;
     /**
      * getshorttx/shorttx exchanged for relay-epoch short-id announcements
      * (one per peer per relay tick at most each way, plus slack)
@@ -447,7 +450,7 @@ public:
     static constexpr std::chrono::milliseconds RATE_LIMIT_WINDOW{1000};
     static constexpr size_t MAX_SEALEDHEADER_COINBASE_BYTES = 10000;
     static constexpr size_t MAX_TRACKED_RECON_SCOPES = 64;
-    static constexpr size_t MAX_SCOPED_TXS = 4096;
+    static constexpr size_t MAX_SCOPED_TXS = 65536;
 
     V2PeerProtocolHandler(ChainstateManager &chainman, CTxMemPool &mempool,
                           CConnman &connman, PeerManager &peerman);
@@ -830,9 +833,26 @@ private:
     };
     struct ScopedTxSetEntry {
         std::vector<CTransactionRef> txs;
+        std::array<std::vector<CTransactionRef>, 16> by_top_bucket;
         lotus::v2::Hash subtree_a_root{};
+        uint256 candidate_root{};
+        bool root_valid{false};
+        uint64_t cached_salt_k0{0};
+        uint64_t cached_salt_k1{0};
+        std::unordered_map<uint64_t, CTransactionRef> cached_by_sid;
     };
-    std::map<ScopeKey, ScopedTxSetEntry>
+    void EnsureScopedRootLocked(ScopedTxSetEntry &entry) const
+        EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
+    std::pair<std::vector<CTransactionRef>, uint256>
+    GetScopedTransactionsAndRoot(ReconScope scope,
+                                 const uint256 &context_id) const
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    std::vector<CTransactionRef>
+    GetScopedTransactionsForTopBucket(ReconScope scope,
+                                      const uint256 &context_id,
+                                      uint8_t top_bucket) const
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    mutable std::map<ScopeKey, ScopedTxSetEntry>
         m_scoped_txs GUARDED_BY(m_mutex);
 
     struct PendingShortTxKey {

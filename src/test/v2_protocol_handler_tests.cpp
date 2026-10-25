@@ -1621,6 +1621,200 @@ BOOST_AUTO_TEST_CASE(
         BOOST_CHECK(final_diff.single_missing_short_ids.empty());
     }
 
+    // =========================================================================
+    // 3. High-Throughput 100k-TPS Burst Reconciliation (2,500 missing + 2,500
+    //    shared = 5,000 scoped transactions > old 4,096 cap) within a single
+    //    1-second rate-limit window, including depth-8 -> depth-16 adaptive
+    //    jump when a depth-8 sub-bucket's count delta exceeds 32.
+    // =========================================================================
+    {
+        const ReconScope scope = ReconScope::EPOCH_BATCH;
+        const uint256 ctx_id = rng.rand256();
+        const auto [k0, k1] = DeriveReconSipHashKey(scope, ctx_id, 0);
+
+        const CScript out_spk =
+            GetScriptForDestination(ScriptHash(CScript() << OP_TRUE));
+        std::vector<CTransactionRef> local_txs;
+        std::vector<CTransactionRef> remote_txs;
+        local_txs.reserve(2500);
+        remote_txs.reserve(5000);
+
+        TestMemPoolEntryHelper entry;
+        {
+            LOCK2(cs_main, m_node.mempool->cs);
+            // 2,500 shared transactions
+            for (uint32_t i = 0; i < 2500; ++i) {
+                CMutableTransaction mtx;
+                mtx.nVersion = 2;
+                mtx.vin.resize(1);
+                mtx.vin[0].prevout = COutPoint(TxId(rng.rand256()), i);
+                mtx.vin[0].scriptSig = CScript() << int64_t(i) << OP_TRUE;
+                mtx.vout.resize(1);
+                mtx.vout[0].nValue = 1000 * SATOSHI;
+                mtx.vout[0].scriptPubKey = out_spk;
+                CTransactionRef tx = MakeTransactionRef(std::move(mtx));
+                m_node.mempool->addUnchecked(entry.FromTx(tx));
+                local_txs.push_back(tx);
+                remote_txs.push_back(tx);
+            }
+            // 40 missing transactions specifically in depth-8 sub-bucket 0x59
+            // (so |delta_count| >= 40 > 32, triggering depth-8 -> depth-16 jump)
+            for (int i = 0; i < 40; ++i) {
+                CTransactionRef tx = MakeNonCoinbaseTx(rng, 0x59);
+                BOOST_REQUIRE(tx != nullptr);
+                m_node.mempool->addUnchecked(entry.FromTx(tx));
+                remote_txs.push_back(tx);
+            }
+            // Remaining 2,460 uniformly distributed missing transactions
+            for (uint32_t i = 0; i < 2460; ++i) {
+                CMutableTransaction mtx;
+                mtx.nVersion = 2;
+                mtx.vin.resize(1);
+                mtx.vin[0].prevout =
+                    COutPoint(TxId(rng.rand256()), 100000U + i);
+                mtx.vin[0].scriptSig =
+                    CScript() << int64_t(100000U + i) << OP_TRUE;
+                mtx.vout.resize(1);
+                mtx.vout[0].nValue = 1000 * SATOSHI;
+                mtx.vout[0].scriptPubKey = out_spk;
+                CTransactionRef tx = MakeTransactionRef(std::move(mtx));
+                m_node.mempool->addUnchecked(entry.FromTx(tx));
+                remote_txs.push_back(tx);
+            }
+        }
+
+        local_handler->SetScopedTransactions(scope, ctx_id, local_txs);
+        remote_handler.SetScopedTransactions(scope, ctx_id, remote_txs);
+        BOOST_CHECK_EQUAL(
+            remote_handler.GetScopedTransactions(scope, ctx_id).size(), 5000U);
+
+        // Verify DiffSubBucketSummary flags sub-bucket 0x9 of bucket 0x5 for
+        // direct jump to depth 16 because its count delta exceeds 32.
+        const MerklixSubBucketSummary sub8_5 =
+            remote_handler.BuildSubBucketSummary(scope, ctx_id, k0, k1, 0x5);
+        const MerklixSubBucketDiffResult diff8_5 =
+            local_handler->DiffSubBucketSummary(sub8_5);
+        BOOST_CHECK(std::find(diff8_5.jump_to_depth16_sub_buckets.begin(),
+                              diff8_5.jump_to_depth16_sub_buckets.end(),
+                              0x9) !=
+                    diff8_5.jump_to_depth16_sub_buckets.end());
+
+        {
+            LOCK(peer_node.cs_vSend);
+            peer_node.vSendMsg.clear();
+        }
+
+        // Advance to a fresh rate-limit window, then keep all rounds within the
+        // same 1-second window (+10us per round) to verify MAX_SYNC_MESSAGES_PER_WINDOW.
+        cur_time += 5'000'000us;
+        const uint64_t rate_limited_before =
+            local_handler->GetStats().rate_limited_messages;
+
+        const MerklixSyncSummary remote_sync =
+            remote_handler.BuildSyncSummary(scope, ctx_id, k0, k1);
+        {
+            DataStream ss{};
+            ss << remote_sync;
+            peerman->ProcessMessage(config, peer_node, NetMsgType::MERKLIXSYNC,
+                                    ss, cur_time, interrupt);
+        }
+
+        V1TransportDeserializer local_to_remote(config, peer_node.GetId());
+        size_t saw_jump_to_depth16_req = 0;
+        for (int round = 0; round < 8; ++round) {
+            cur_time += 10us;
+            std::vector<std::vector<uint8_t>> outbound_chunks;
+            {
+                LOCK(peer_node.cs_vSend);
+                if (peer_node.vSendMsg.empty()) {
+                    break;
+                }
+                outbound_chunks.assign(peer_node.vSendMsg.begin(),
+                                       peer_node.vSendMsg.end());
+                peer_node.vSendMsg.clear();
+            }
+
+            for (const auto &chunk : outbound_chunks) {
+                Span<const uint8_t> sp{chunk};
+                while (!sp.empty()) {
+                    const int ret = local_to_remote.Read(config, sp);
+                    BOOST_REQUIRE_GE(ret, 0);
+                    if (!local_to_remote.Complete()) {
+                        continue;
+                    }
+                    bool reject = false;
+                    CNetMessage msg = local_to_remote.GetMessage(0us, reject);
+                    BOOST_REQUIRE(!reject);
+
+                    if (msg.m_type == NetMsgType::GETMERKLIXBUCK) {
+                        MerklixBucketRequest req;
+                        msg.m_recv >> req;
+                        const uint8_t req_depth =
+                            req.depth_bits == 0 ? 4 : req.depth_bits;
+                        if (req_depth == 12 && req.parent_prefix == 0x59 &&
+                            req.bucket_mask == 0xFFFFU) {
+                            ++saw_jump_to_depth16_req;
+                        }
+                        for (uint8_t b = 0; b < 16; ++b) {
+                            if ((req.bucket_mask & (1U << b)) == 0) {
+                                continue;
+                            }
+                            const uint8_t child_depth =
+                                req_depth == 16
+                                    ? 16
+                                    : static_cast<uint8_t>(req_depth + 4);
+                            const uint16_t child_prefix =
+                                req_depth == 16
+                                    ? req.parent_prefix
+                                    : static_cast<uint16_t>(
+                                          (req.parent_prefix << 4) | b);
+                            MerklixSubBucketSummary sub =
+                                remote_handler.BuildSubBucketSummary(
+                                    scope, req.context_id, req.salt_k0,
+                                    req.salt_k1, child_prefix, child_depth);
+                            DataStream sub_ss{};
+                            sub_ss << sub;
+                            peerman->ProcessMessage(config, peer_node,
+                                                    NetMsgType::MERKLIXBUCK,
+                                                    sub_ss, cur_time,
+                                                    interrupt);
+                            if (req_depth == 16) {
+                                break;
+                            }
+                        }
+                    } else if (msg.m_type == NetMsgType::GETSHORTTX) {
+                        ShortTxRequest sreq;
+                        msg.m_recv >> sreq;
+                        std::vector<CTransactionRef> resolved =
+                            remote_handler.ResolveShortIds(
+                                scope, sreq.context_id, sreq.salt_k0,
+                                sreq.salt_k1, sreq.short_ids);
+                        BOOST_REQUIRE(!resolved.empty());
+                        ShortTxResponse sresp;
+                        sresp.scope = sreq.scope;
+                        sresp.context_id = sreq.context_id;
+                        sresp.txs = std::move(resolved);
+                        DataStream sresp_ss{};
+                        sresp_ss << sresp;
+                        peerman->ProcessMessage(config, peer_node,
+                                                NetMsgType::SHORTTX, sresp_ss,
+                                                cur_time, interrupt);
+                    }
+                }
+            }
+        }
+
+        BOOST_CHECK_GE(saw_jump_to_depth16_req, 1U);
+        BOOST_CHECK_EQUAL(local_handler->GetStats().rate_limited_messages,
+                          rate_limited_before);
+        BOOST_CHECK_EQUAL(
+            local_handler->GetScopedTransactions(scope, ctx_id).size(), 5000U);
+        const MerklixSyncDiffResult final_burst_diff =
+            local_handler->DiffSyncSummary(remote_sync);
+        BOOST_CHECK(final_burst_diff.root_matched);
+        BOOST_CHECK_EQUAL(final_burst_diff.mismatched_bucket_mask, 0U);
+    }
+
     peerman->FinalizeNode(config, peer_node);
 }
 
