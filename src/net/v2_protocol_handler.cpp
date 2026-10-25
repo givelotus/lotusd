@@ -187,6 +187,9 @@ RecoverGF64Syndromes(uint64_t delta_s1, uint64_t delta_s3) noexcept {
     }
     uint64_t x1 = GF64Mul(delta_s1, y);
     uint64_t x2 = x1 ^ delta_s1;
+    if (x1 == 0 || x2 == 0 || x1 == x2) {
+        return std::nullopt;
+    }
     if (x1 > x2) {
         std::swap(x1, x2);
     }
@@ -212,6 +215,112 @@ RecoverGF64Syndromes(uint64_t delta_s1, uint64_t delta_s3,
     }
     return roots;
 }
+
+namespace {
+
+uint64_t GF64Pow(uint64_t base, uint64_t exp) noexcept {
+    uint64_t result = 1ULL;
+    while (exp > 0) {
+        if ((exp & 1ULL) != 0) {
+            result = GF64Mul(result, base);
+        }
+        base = GF64Square(base);
+        exp >>= 1U;
+    }
+    return result;
+}
+
+std::optional<std::vector<uint64_t>>
+RecoverGF64SyndromesUpTo3(uint64_t delta_s1, uint64_t delta_s3,
+                          uint64_t delta_s5) noexcept {
+    if (auto up_to_2 = RecoverGF64Syndromes(delta_s1, delta_s3, delta_s5)) {
+        return up_to_2;
+    }
+    // 3-element difference {x0, x1, x2} in GF(2^64)^*:
+    // By Newton's identities in characteristic 2:
+    //   sigma1 = S1
+    //   D = S3 ^ S1^3 = (x0 ^ x1)(x1 ^ x2)(x2 ^ x0) != 0
+    //   sigma2 = (S5 ^ S1^2 * S3) * D^(-1)
+    //   sigma3 = D ^ (S1 * sigma2) = x0 * x1 * x2 != 0
+    // Depressed cubic (x = z ^ sigma1): z^3 ^ p*z ^ q = 0
+    //   where p = sigma1^2 ^ sigma2, q = D.
+    const uint64_t sigma1 = delta_s1;
+    const uint64_t s1_sq = GF64Square(sigma1);
+    const uint64_t s1_cu = GF64Mul(s1_sq, sigma1);
+    const uint64_t q = delta_s3 ^ s1_cu;
+    if (q == 0) {
+        return std::nullopt;
+    }
+    const uint64_t inv_q = GF64Inv(q);
+    const uint64_t sigma2 =
+        GF64Mul(delta_s5 ^ GF64Mul(s1_sq, delta_s3), inv_q);
+    const uint64_t sigma3 = q ^ GF64Mul(sigma1, sigma2);
+    if (sigma3 == 0) {
+        return std::nullopt;
+    }
+
+    const uint64_t p = s1_sq ^ sigma2;
+    uint64_t w = q;
+    if (p != 0) {
+        const uint64_t c = GF64Mul(GF64Cube(p), GF64Square(inv_q));
+        uint64_t y = 0;
+        if (!GF64SolveQuadratic(c, y)) {
+            return std::nullopt;
+        }
+        if (y == 0) {
+            y = 1ULL;
+        }
+        w = GF64Mul(q, y);
+    }
+    if (w == 0) {
+        return std::nullopt;
+    }
+
+    // Cube root in GF(2^64)^*: since 2^64 - 1 = 3 * M with
+    // M = 0x5555555555555555ULL and 3 * 0x1c71c71c71c71c72ULL = M + 1,
+    // u0 = w^0x1c71c71c71c71c72ULL satisfies u0^3 == w iff w^M == 1.
+    const uint64_t u0 = GF64Pow(w, 0x1c71c71c71c71c72ULL);
+    if (u0 == 0 || GF64Cube(u0) != w) {
+        return std::nullopt;
+    }
+
+    static const uint64_t omega = []() noexcept {
+        for (uint64_t a = 2;; ++a) {
+            const uint64_t cand = GF64Pow(a, 0x5555555555555555ULL);
+            if (cand != 0 && cand != 1ULL) {
+                return cand;
+            }
+        }
+    }();
+
+    const uint64_t u1 = GF64Mul(u0, omega);
+    const uint64_t u2 = u0 ^ u1; // omega^2 = omega ^ 1 in GF(4) subset GF(2^64)
+    const uint64_t u_arr[3] = {u0, u1, u2};
+    std::vector<uint64_t> roots(3);
+    for (size_t k = 0; k < 3; ++k) {
+        const uint64_t uk = u_arr[k];
+        const uint64_t zk =
+            (p == 0) ? uk : (uk ^ GF64Mul(p, GF64Inv(uk)));
+        roots[k] = zk ^ sigma1;
+        if (roots[k] == 0) {
+            return std::nullopt;
+        }
+    }
+    std::sort(roots.begin(), roots.end());
+    if (roots[0] == roots[1] || roots[1] == roots[2]) {
+        return std::nullopt;
+    }
+    if ((roots[0] ^ roots[1] ^ roots[2]) != delta_s1 ||
+        (GF64Cube(roots[0]) ^ GF64Cube(roots[1]) ^ GF64Cube(roots[2])) !=
+            delta_s3 ||
+        (GF64Pow5(roots[0]) ^ GF64Pow5(roots[1]) ^ GF64Pow5(roots[2])) !=
+            delta_s5) {
+        return std::nullopt;
+    }
+    return roots;
+}
+
+} // namespace
 
 uint64_t ComputeMerklixShortId(uint64_t salt_k0, uint64_t salt_k1,
                                const TxId &txid) noexcept {
@@ -539,6 +648,7 @@ std::shared_ptr<const CBlock> V2PeerProtocolHandler::MatchCandidateOverlay(
     }
     if (overlay_matched) {
         if (used_overlay_fastpath) {
+            m_mempool.RecordSnapblockOverlayFastpath();
             LOCK(m_mutex);
             ++m_stats.sealedheader_overlay_fastpath;
         }
@@ -567,6 +677,7 @@ std::shared_ptr<const CBlock> V2PeerProtocolHandler::MatchCandidateOverlay(
             auto it_scope_prev =
                 m_scoped_txs.find(ScopeKey{scope, header.hashPrevBlock});
             if (it_scope_prev != m_scoped_txs.end()) {
+                EnsureScopedRootLocked(it_scope_prev->second);
                 candidates.push_back(CandidateOverlayEntry{
                     it_scope_prev->second.txs,
                     it_scope_prev->second.subtree_a_root});
@@ -574,6 +685,7 @@ std::shared_ptr<const CBlock> V2PeerProtocolHandler::MatchCandidateOverlay(
             auto it_scope_hash =
                 m_scoped_txs.find(ScopeKey{scope, header.GetHash()});
             if (it_scope_hash != m_scoped_txs.end()) {
+                EnsureScopedRootLocked(it_scope_hash->second);
                 candidates.push_back(CandidateOverlayEntry{
                     it_scope_hash->second.txs,
                     it_scope_hash->second.subtree_a_root});
@@ -657,6 +769,7 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
         vRecv >> sealed;
     } catch (const std::exception &) {
         node::CountSealedHeader(node::SealedHeaderOutcome::INVALID);
+        m_mempool.RecordSnapblockFailure();
         LOCK(m_mutex);
         ++m_stats.sealedheader_invalid;
         ++m_stats.malformed_messages;
@@ -670,6 +783,7 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
 
     if (!sealed.IsValid()) {
         node::CountSealedHeader(node::SealedHeaderOutcome::INVALID);
+        m_mempool.RecordSnapblockFailure();
         LOCK(m_mutex);
         ++m_stats.sealedheader_invalid;
         ++m_stats.malformed_messages;
@@ -681,6 +795,7 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
     if (::GetSerializeSize(*sealed.coinbase_tx) >
         MAX_SEALEDHEADER_COINBASE_BYTES) {
         node::CountSealedHeader(node::SealedHeaderOutcome::REJECTED);
+        m_mempool.RecordSnapblockFailure();
         LOCK(m_mutex);
         ++m_stats.sealedheader_invalid;
         ++m_stats.sealedheader_rejected;
@@ -696,6 +811,7 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
                                            /*min_pow_checked=*/true,
                                            header_state, &pindex)) {
         node::CountSealedHeader(node::SealedHeaderOutcome::REJECTED);
+        m_mempool.RecordSnapblockFailure();
         LOCK(m_mutex);
         ++m_stats.sealedheader_invalid;
         ++m_stats.sealedheader_rejected;
@@ -707,6 +823,7 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
 
     if (pindex && WITH_LOCK(cs_main, return pindex->nStatus.hasData())) {
         node::CountSealedHeader(node::SealedHeaderOutcome::ALREADY_HAVE);
+        m_mempool.RecordSnapblockReconstructed();
         LOCK(m_mutex);
         ++m_stats.sealedheader_reconstructed;
         return;
@@ -716,6 +833,7 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
         MatchCandidateOverlay(sealed.header, sealed.coinbase_tx);
     if (reconstructed) {
         node::CountSealedHeader(node::SealedHeaderOutcome::REBUILT);
+        m_mempool.RecordSnapblockReconstructed();
         {
             LOCK(m_mutex);
             ++m_stats.sealedheader_reconstructed;
@@ -730,6 +848,7 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
     // MSG_CMPCT_BLOCK via getdata from pfrom without penalizing the peer.
     const CInv fallback_inv(MSG_CMPCT_BLOCK, block_hash);
     node::CountSealedHeader(node::SealedHeaderOutcome::FALLBACK);
+    m_mempool.RecordSnapblockFailure();
     {
         LOCK(m_mutex);
         ++m_stats.sealedheader_fallback_getdata;
@@ -740,12 +859,25 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
                              std::vector<CInv>{fallback_inv}));
 }
 
+void V2PeerProtocolHandler::EnsureScopedRootLocked(
+    ScopedTxSetEntry &entry) const {
+    AssertLockHeld(m_mutex);
+    if (!entry.root_valid) {
+        entry.subtree_a_root = ComputeSubtreeAHash(entry.txs);
+        std::memcpy(entry.candidate_root.begin(), entry.subtree_a_root.data(),
+                    32);
+        entry.root_valid = true;
+    }
+}
+
 void V2PeerProtocolHandler::SetScopedTransactions(
     ReconScope scope, const uint256 &context_id,
     std::vector<CTransactionRef> txs) {
     ScopedTxSetEntry entry;
     entry.txs = NormalizeCtorTxList(txs);
-    entry.subtree_a_root = ComputeSubtreeAHash(entry.txs);
+    for (const auto &tx : entry.txs) {
+        entry.by_top_bucket[GetMerklixBucketIndex(tx->GetId())].push_back(tx);
+    }
     LOCK(m_mutex);
     const ScopeKey key{scope, context_id};
     if (m_scoped_txs.find(key) == m_scoped_txs.end() &&
@@ -786,6 +918,46 @@ std::vector<CTransactionRef> V2PeerProtocolHandler::GetScopedTransactions(
     return {};
 }
 
+std::pair<std::vector<CTransactionRef>, uint256>
+V2PeerProtocolHandler::GetScopedTransactionsAndRoot(
+    ReconScope scope, const uint256 &context_id) const {
+    {
+        LOCK(m_mutex);
+        auto it = m_scoped_txs.find(ScopeKey{scope, context_id});
+        if (it != m_scoped_txs.end()) {
+            EnsureScopedRootLocked(it->second);
+            return {it->second.txs, it->second.candidate_root};
+        }
+    }
+    std::vector<CTransactionRef> txs = GetScopedTransactions(scope, context_id);
+    const lotus::v2::Hash root = ComputeSubtreeAHash(txs);
+    uint256 out{};
+    std::memcpy(out.begin(), root.data(), 32);
+    return {std::move(txs), out};
+}
+
+std::vector<CTransactionRef>
+V2PeerProtocolHandler::GetScopedTransactionsForTopBucket(
+    ReconScope scope, const uint256 &context_id, uint8_t top_bucket) const {
+    const uint8_t b = static_cast<uint8_t>(top_bucket & 0x0f);
+    {
+        LOCK(m_mutex);
+        auto it = m_scoped_txs.find(ScopeKey{scope, context_id});
+        if (it != m_scoped_txs.end()) {
+            return it->second.by_top_bucket[b];
+        }
+    }
+    const std::vector<CTransactionRef> all_txs =
+        GetScopedTransactions(scope, context_id);
+    std::vector<CTransactionRef> filtered;
+    for (const auto &tx : all_txs) {
+        if (GetMerklixBucketIndex(tx->GetId()) == b) {
+            filtered.push_back(tx);
+        }
+    }
+    return filtered;
+}
+
 MerklixSyncSummary V2PeerProtocolHandler::BuildSyncSummary(
     ReconScope scope, const uint256 &context_id, uint64_t salt_k0,
     uint64_t salt_k1) const {
@@ -798,9 +970,8 @@ MerklixSyncSummary V2PeerProtocolHandler::BuildSyncSummary(
     summary.salt_k0 = salt_k0;
     summary.salt_k1 = salt_k1;
 
-    const std::vector<CTransactionRef> txs =
-        GetScopedTransactions(scope, context_id);
-    summary.candidate_root = ComputeScopedMerklixRoot(txs);
+    const auto [txs, root] = GetScopedTransactionsAndRoot(scope, context_id);
+    summary.candidate_root = root;
     for (const auto &tx : txs) {
         const TxId &txid = tx->GetId();
         const uint8_t b = GetMerklixBucketIndex(txid);
@@ -819,10 +990,19 @@ MerklixSyncDiffResult V2PeerProtocolHandler::DiffSyncSummary(
         return result;
     }
     const ReconScope scope = static_cast<ReconScope>(remote_summary.scope);
-    const std::vector<CTransactionRef> local_txs =
-        GetScopedTransactions(scope, remote_summary.context_id);
-
-    const uint256 local_root = ComputeScopedMerklixRoot(local_txs);
+    {
+        LOCK(m_mutex);
+        auto it = m_scoped_txs.find(ScopeKey{scope, remote_summary.context_id});
+        if (it != m_scoped_txs.end()) {
+            EnsureScopedRootLocked(it->second);
+            if (it->second.candidate_root == remote_summary.candidate_root) {
+                result.root_matched = true;
+                return result;
+            }
+        }
+    }
+    const auto [local_txs, local_root] =
+        GetScopedTransactionsAndRoot(scope, remote_summary.context_id);
     result.root_matched = (local_root == remote_summary.candidate_root);
     if (result.root_matched) {
         return result;
@@ -957,10 +1137,11 @@ MerklixSubBucketSummary V2PeerProtocolHandler::BuildSubBucketSummary(
         static_cast<uint8_t>((masked_prefix >> (parent_bits - 4)) & 0x0f);
 
     const std::vector<CTransactionRef> txs =
-        GetScopedTransactions(scope, context_id);
+        GetScopedTransactionsForTopBucket(scope, context_id, sub.parent_bucket);
     for (const auto &tx : txs) {
         const TxId &txid = tx->GetId();
-        if (GetMerklixPrefix(txid, parent_bits) != masked_prefix) {
+        if (parent_bits > 4 &&
+            GetMerklixPrefix(txid, parent_bits) != masked_prefix) {
             continue;
         }
         const uint8_t sb = GetMerklixNibble(txid, child_nibble_idx);
@@ -1006,11 +1187,14 @@ MerklixSubBucketDiffResult V2PeerProtocolHandler::DiffSubBucketSummary(
          (remote_sub.parent_bucket != 0 || remote_sub.parent_prefix == 0))
             ? static_cast<uint16_t>(remote_sub.parent_bucket)
             : remote_sub.parent_prefix;
+    const uint8_t top_bucket = static_cast<uint8_t>(
+        (effective_parent_prefix >> (parent_bits - 4)) & 0x0f);
     const uint8_t child_nibble_idx = static_cast<uint8_t>((depth_bits >> 2) - 1);
 
     const ReconScope scope = static_cast<ReconScope>(remote_sub.scope);
     const std::vector<CTransactionRef> local_txs =
-        GetScopedTransactions(scope, remote_sub.context_id);
+        GetScopedTransactionsForTopBucket(scope, remote_sub.context_id,
+                                          top_bucket);
 
     uint64_t k0 = remote_sub.salt_k0;
     uint64_t k1 = remote_sub.salt_k1;
@@ -1024,7 +1208,8 @@ MerklixSubBucketDiffResult V2PeerProtocolHandler::DiffSubBucketSummary(
     std::unordered_set<uint64_t> local_prefix_sids{};
     for (const auto &tx : local_txs) {
         const TxId &txid = tx->GetId();
-        if (GetMerklixPrefix(txid, parent_bits) != effective_parent_prefix) {
+        if (parent_bits > 4 &&
+            GetMerklixPrefix(txid, parent_bits) != effective_parent_prefix) {
             continue;
         }
         const uint8_t sb = GetMerklixNibble(txid, child_nibble_idx);
@@ -1050,12 +1235,22 @@ MerklixSubBucketDiffResult V2PeerProtocolHandler::DiffSubBucketSummary(
             continue;
         }
 
+        auto mark_unresolved = [&](uint8_t sub_idx) {
+            result.unresolved_sub_buckets.push_back(sub_idx);
+            const int64_t count_delta =
+                static_cast<int64_t>(rem.count) -
+                static_cast<int64_t>(loc.count);
+            if (depth_bits == 8 && std::abs(count_delta) > 32) {
+                result.jump_to_depth16_sub_buckets.push_back(sub_idx);
+            }
+        };
+
         auto recovered = RecoverGF64Syndromes(delta_s1, delta_s3, delta_s5);
         if (!recovered.has_value()) {
             if (depth_bits == 16 && !remote_sub.overflow_short_ids.empty()) {
                 use_terminal_overflow_fallback = true;
             } else {
-                result.unresolved_sub_buckets.push_back(sb);
+                mark_unresolved(sb);
             }
             continue;
         }
@@ -1079,7 +1274,7 @@ MerklixSubBucketDiffResult V2PeerProtocolHandler::DiffSubBucketSummary(
             if (depth_bits == 16 && !remote_sub.overflow_short_ids.empty()) {
                 use_terminal_overflow_fallback = true;
             } else {
-                result.unresolved_sub_buckets.push_back(sb);
+                mark_unresolved(sb);
             }
             continue;
         }
@@ -1106,6 +1301,1160 @@ MerklixSubBucketDiffResult V2PeerProtocolHandler::DiffSubBucketSummary(
     return result;
 }
 
+uint8_t SelectMiniblockDecimationLevel(size_t estimated_diff,
+                                       uint32_t miniblock_seq) noexcept {
+    constexpr size_t TARGET_DIFF_PER_MINIBLOCK =
+        RatelessMiniblock::NUM_CELLS * 2;
+    if (estimated_diff <= TARGET_DIFF_PER_MINIBLOCK) {
+        return 0;
+    }
+    uint8_t max_level = 0;
+    while (max_level < RatelessMiniblock::MAX_DECIMATION_LEVEL &&
+           (estimated_diff >> max_level) > TARGET_DIFF_PER_MINIBLOCK) {
+        ++max_level;
+    }
+    uint32_t remaining_seq = miniblock_seq;
+    for (uint8_t level = max_level; level > 0; --level) {
+        const uint32_t blocks_at_level = 1U << level;
+        if (remaining_seq < blocks_at_level) {
+            return level;
+        }
+        remaining_seq -= blocks_at_level;
+    }
+    return 0;
+}
+
+RatelessMiniblock BuildRatelessMiniblockFromShortIds(
+    ReconScope scope, const uint256 &context_id,
+    const uint256 &parent_base_root, const uint256 &candidate_root,
+    uint64_t salt_k0, uint64_t salt_k1, Span<const uint64_t> short_ids,
+    uint32_t miniblock_id, uint8_t decimation_level) noexcept {
+    if (decimation_level > RatelessMiniblock::MAX_DECIMATION_LEVEL) {
+        decimation_level = RatelessMiniblock::MAX_DECIMATION_LEVEL;
+    }
+    RatelessMiniblock mb;
+    mb.scope = static_cast<uint8_t>(scope);
+    mb.context_id = context_id;
+    mb.parent_base_root = parent_base_root;
+    mb.candidate_root = candidate_root;
+    mb.salt_k0 = salt_k0;
+    mb.salt_k1 = salt_k1;
+    mb.miniblock_id = miniblock_id;
+    mb.decimation_level = decimation_level;
+
+    std::unordered_set<uint64_t> seen;
+    seen.reserve(short_ids.size());
+    uint32_t unique_count = 0;
+    for (const uint64_t sid : short_ids) {
+        if (sid == 0 || !seen.insert(sid).second) {
+            continue;
+        }
+        ++unique_count;
+        const auto cell_idx =
+            MapShortIdToMiniblockCell(sid, miniblock_id, decimation_level);
+        if (!cell_idx.has_value()) {
+            continue;
+        }
+        MerklixSubBucketEntry &cell = mb.cells[*cell_idx];
+        cell.count += 1;
+        cell.s1 ^= sid;
+        cell.s3 ^= GF64Cube(sid);
+        cell.s5 ^= GF64Pow5(sid);
+    }
+    mb.total_tx_count = unique_count;
+    return mb;
+}
+
+RatelessMiniblock V2PeerProtocolHandler::BuildRatelessMiniblock(
+    ReconScope scope, const uint256 &context_id, uint64_t salt_k0,
+    uint64_t salt_k1, uint32_t miniblock_id, uint8_t decimation_level,
+    const uint256 &parent_base_root) const {
+    if (salt_k0 == 0 && salt_k1 == 0) {
+        std::tie(salt_k0, salt_k1) = DeriveReconSipHashKey(scope, context_id, 0);
+    }
+    const auto [txs, candidate_root] =
+        GetScopedTransactionsAndRoot(scope, context_id);
+    std::vector<uint64_t> sids;
+    sids.reserve(txs.size());
+    for (const auto &tx : txs) {
+        sids.push_back(
+            ScopedShortId(scope, context_id, salt_k0, salt_k1, tx->GetId()));
+    }
+    return BuildRatelessMiniblockFromShortIds(
+        scope, context_id, parent_base_root, candidate_root, salt_k0, salt_k1,
+        sids, miniblock_id, decimation_level);
+}
+
+RatelessMiniblockDecoder::RatelessMiniblockDecoder(
+    const std::vector<uint64_t> &local_short_ids) {
+    m_local_sids.reserve(local_short_ids.size());
+    m_local_sids_vec.reserve(local_short_ids.size());
+    for (const uint64_t sid : local_short_ids) {
+        if (sid != 0 && m_local_sids.insert(sid).second) {
+            m_local_sids_vec.push_back(sid);
+        }
+    }
+}
+
+bool RatelessMiniblockDecoder::HasZeroCellVetoForPeer(
+    NodeId peer_id, uint64_t sid) const noexcept {
+    auto it_rem = m_peer_known_missing_remote.find(peer_id);
+    if (it_rem != m_peer_known_missing_remote.end() &&
+        it_rem->second.count(sid) > 0) {
+        return true;
+    }
+    for (const auto &mb : m_miniblocks) {
+        if (mb.peer_id != peer_id) {
+            continue;
+        }
+        const auto c = MapShortIdToMiniblockCell(sid, mb.miniblock_id,
+                                                 mb.decimation_level);
+        if (c.has_value() &&
+            (mb.cells[*c].IsZero() ||
+             mb.peeled_missing_count[*c] >= mb.raw_count[*c])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool RatelessMiniblockDecoder::HasZeroCellVetoForLocalExtra(
+    NodeId peer_id, uint64_t sid) const noexcept {
+    for (const auto &mb : m_miniblocks) {
+        if (mb.peer_id != peer_id) {
+            continue;
+        }
+        const auto c = MapShortIdToMiniblockCell(sid, mb.miniblock_id,
+                                                 mb.decimation_level);
+        if (c.has_value() && mb.cells[*c].IsZero()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void RatelessMiniblockDecoder::MarkResolvedCellExclusions(size_t mb_idx,
+                                                          uint8_t cell_idx) {
+    const StoredMiniblock &mb = m_miniblocks[mb_idx];
+    if (!mb.cells[cell_idx].IsZero() &&
+        mb.peeled_missing_count[cell_idx] < mb.raw_count[cell_idx]) {
+        return;
+    }
+    const auto &confirmed_has = m_peer_confirmed_has[mb.peer_id];
+    auto &known_missing_rem = m_peer_known_missing_remote[mb.peer_id];
+    for (const uint64_t sid : m_discovered_missing_sids) {
+        const auto c = MapShortIdToMiniblockCell(sid, mb.miniblock_id,
+                                                 mb.decimation_level);
+        if (!c.has_value() || *c != cell_idx) {
+            continue;
+        }
+        if (confirmed_has.count(sid) == 0 &&
+            known_missing_rem.count(sid) == 0) {
+            known_missing_rem.insert(sid);
+        }
+    }
+}
+
+void RatelessMiniblockDecoder::PeelMissingTxFromPeer(
+    NodeId peer_id, uint64_t sid, std::vector<uint64_t> &newly_discovered) {
+    if (sid == 0 || m_local_sids.count(sid) > 0) {
+        return;
+    }
+    if (m_discovered_missing_sids.insert(sid).second) {
+        newly_discovered.push_back(sid);
+        for (size_t i = 0; i < m_miniblocks.size(); ++i) {
+            const StoredMiniblock &mb = m_miniblocks[i];
+            if (mb.peer_id == peer_id) {
+                continue;
+            }
+            const auto c = MapShortIdToMiniblockCell(sid, mb.miniblock_id,
+                                                     mb.decimation_level);
+            if (c.has_value() &&
+                (mb.cells[*c].IsZero() ||
+                 mb.peeled_missing_count[*c] >= mb.raw_count[*c]) &&
+                m_peer_confirmed_has[mb.peer_id].count(sid) == 0) {
+                m_peer_known_missing_remote[mb.peer_id].insert(sid);
+            }
+        }
+    }
+    if (!m_peer_confirmed_has[peer_id].insert(sid).second) {
+        return;
+    }
+    m_peer_known_missing_remote[peer_id].erase(sid);
+    const uint64_t sid3 = GF64Cube(sid);
+    const uint64_t sid5 = GF64Pow5(sid);
+    for (size_t i = 0; i < m_miniblocks.size(); ++i) {
+        StoredMiniblock &mb = m_miniblocks[i];
+        if (mb.peer_id != peer_id) {
+            continue;
+        }
+        const auto c = MapShortIdToMiniblockCell(sid, mb.miniblock_id,
+                                                 mb.decimation_level);
+        if (!c.has_value()) {
+            continue;
+        }
+        mb.peeled_missing_count[*c] += 1;
+        ResidualCell &cell = mb.cells[*c];
+        cell.delta_count -= 1;
+        cell.s1 ^= sid;
+        cell.s3 ^= sid3;
+        cell.s5 ^= sid5;
+        if (cell.IsZero() ||
+            mb.peeled_missing_count[*c] >= mb.raw_count[*c]) {
+            MarkResolvedCellExclusions(i, *c);
+        }
+    }
+}
+
+void RatelessMiniblockDecoder::PeelLocalExtraFromPeer(NodeId peer_id,
+                                                      uint64_t sid) {
+    if (sid == 0 || m_local_sids.count(sid) == 0) {
+        return;
+    }
+    m_discovered_local_extras.insert(sid);
+    if (!m_peer_known_missing_local[peer_id].insert(sid).second) {
+        return;
+    }
+    const uint64_t sid3 = GF64Cube(sid);
+    const uint64_t sid5 = GF64Pow5(sid);
+    for (size_t i = 0; i < m_miniblocks.size(); ++i) {
+        StoredMiniblock &mb = m_miniblocks[i];
+        if (mb.peer_id != peer_id) {
+            continue;
+        }
+        const auto c = MapShortIdToMiniblockCell(sid, mb.miniblock_id,
+                                                 mb.decimation_level);
+        if (!c.has_value()) {
+            continue;
+        }
+        ResidualCell &cell = mb.cells[*c];
+        cell.delta_count += 1;
+        cell.s1 ^= sid;
+        cell.s3 ^= sid3;
+        cell.s5 ^= sid5;
+        if (cell.IsZero()) {
+            MarkResolvedCellExclusions(i, *c);
+        }
+    }
+}
+
+bool RatelessMiniblockDecoder::CheckAndPeelExhaustedCellsForPeer(
+    NodeId peer_id) {
+    for (size_t i = 0; i < m_miniblocks.size(); ++i) {
+        if (m_miniblocks[i].peer_id != peer_id) {
+            continue;
+        }
+        uint32_t need_local_peel_mask = 0;
+        for (uint8_t c = 0; c < RatelessMiniblock::NUM_CELLS; ++c) {
+            const uint32_t peeled = m_miniblocks[i].peeled_missing_count[c];
+            const uint32_t raw = m_miniblocks[i].raw_count[c];
+            if (peeled > raw) {
+                MarkPeerFraudulent(peer_id);
+                return false;
+            }
+            if (peeled == raw && !m_miniblocks[i].cells[c].IsZero()) {
+                need_local_peel_mask |= (1U << c);
+            }
+        }
+        if (need_local_peel_mask != 0) {
+            const uint32_t mb_id = m_miniblocks[i].miniblock_id;
+            const uint8_t dec_lvl = m_miniblocks[i].decimation_level;
+            const auto &known_missing_loc = m_peer_known_missing_local[peer_id];
+            std::vector<uint64_t> to_peel_local;
+            for (const uint64_t sid : m_local_sids_vec) {
+                if (known_missing_loc.count(sid) > 0) {
+                    continue;
+                }
+                const auto mapped =
+                    MapShortIdToMiniblockCell(sid, mb_id, dec_lvl);
+                if (mapped.has_value() &&
+                    (need_local_peel_mask & (1U << *mapped)) != 0) {
+                    to_peel_local.push_back(sid);
+                }
+            }
+            for (const uint64_t sid : to_peel_local) {
+                PeelLocalExtraFromPeer(peer_id, sid);
+            }
+        }
+        for (uint8_t c = 0; c < RatelessMiniblock::NUM_CELLS; ++c) {
+            if (m_miniblocks[i].peeled_missing_count[c] ==
+                m_miniblocks[i].raw_count[c]) {
+                if (!m_miniblocks[i].cells[c].IsZero()) {
+                    MarkPeerFraudulent(peer_id);
+                    return false;
+                }
+                MarkResolvedCellExclusions(i, c);
+            }
+        }
+    }
+    return true;
+}
+
+bool RatelessMiniblockDecoder::TryResolveCell(
+    size_t mb_idx, uint8_t cell_idx, std::vector<uint64_t> &newly_discovered) {
+    StoredMiniblock &mb = m_miniblocks[mb_idx];
+    const ResidualCell &cell = mb.cells[cell_idx];
+    if (cell.IsZero() || cell.delta_count < -2 || cell.delta_count > 2) {
+        return false;
+    }
+    std::optional<std::vector<uint64_t>> recovered;
+    if (cell.delta_count == 1 || cell.delta_count == -1) {
+        if (cell.s1 == 0 || cell.s3 != GF64Cube(cell.s1) ||
+            cell.s5 != GF64Pow5(cell.s1)) {
+            return false;
+        }
+        recovered = std::vector<uint64_t>{cell.s1};
+    } else {
+        recovered = RecoverGF64Syndromes(cell.s1, cell.s3, cell.s5);
+        if (!recovered.has_value() || recovered->size() != 2 ||
+            (*recovered)[0] == (*recovered)[1]) {
+            return false;
+        }
+    }
+    const NodeId peer_id = mb.peer_id;
+    const auto &confirmed_has = m_peer_confirmed_has[peer_id];
+    const auto &known_missing_loc = m_peer_known_missing_local[peer_id];
+
+    const bool pure_missing_cell =
+        cell.delta_count > 0 &&
+        static_cast<uint32_t>(cell.delta_count) ==
+            (mb.raw_count[cell_idx] - mb.peeled_missing_count[cell_idx]);
+
+    int64_t expected_delta = 0;
+    bool vetoed_by_own_miniblock = false;
+    for (const uint64_t sid : *recovered) {
+        if (sid == 0) {
+            return false;
+        }
+        const auto c = MapShortIdToMiniblockCell(sid, mb.miniblock_id,
+                                                 mb.decimation_level);
+        if (!c.has_value() || *c != cell_idx) {
+            return false;
+        }
+        if (m_local_sids.count(sid) > 0) {
+            if (known_missing_loc.count(sid) > 0 ||
+                HasZeroCellVetoForLocalExtra(peer_id, sid)) {
+                return false;
+            }
+            expected_delta -= 1;
+        } else {
+            if (confirmed_has.count(sid) > 0) {
+                return false;
+            }
+            if (HasZeroCellVetoForPeer(peer_id, sid)) {
+                vetoed_by_own_miniblock = true;
+            }
+            expected_delta += 1;
+        }
+    }
+    if (expected_delta != cell.delta_count) {
+        return false;
+    }
+    if (recovered->size() == 3 && expected_delta != 3 && expected_delta != -3) {
+        return false;
+    }
+    if (vetoed_by_own_miniblock) {
+        if (pure_missing_cell && recovered->size() <= 2) {
+            // Delayed Type 3 Contradiction: a pure missing cell of peer_id
+            // solved with BCH redundancy directly contradicts another
+            // miniblock cell of the same peer_id whose capacity is already
+            // exhausted!
+            MarkPeerFraudulent(peer_id);
+        }
+        return false;
+    }
+
+    for (const uint64_t sid : *recovered) {
+        if (m_local_sids.count(sid) > 0) {
+            PeelLocalExtraFromPeer(peer_id, sid);
+        } else {
+            PeelMissingTxFromPeer(peer_id, sid, newly_discovered);
+        }
+    }
+    MarkResolvedCellExclusions(mb_idx, cell_idx);
+    (void)CheckAndPeelExhaustedCellsForPeer(peer_id);
+    return true;
+}
+
+bool RatelessMiniblockDecoder::TryCrossPeerProjectCell(
+    size_t mb_idx, uint8_t cell_idx, std::vector<uint64_t> &newly_discovered) {
+    const StoredMiniblock &mb = m_miniblocks[mb_idx];
+    const ResidualCell &cell = mb.cells[cell_idx];
+    if (cell.IsZero()) {
+        return false;
+    }
+    const NodeId peer_id = mb.peer_id;
+    const auto &confirmed_has = m_peer_confirmed_has[peer_id];
+    const auto &known_missing_loc = m_peer_known_missing_local[peer_id];
+
+    auto try_projection = [&](Span<const uint64_t> assume_has_missing,
+                              Span<const uint64_t> assume_missing_local,
+                              Span<const uint64_t> assume_not_has_missing)
+        -> bool {
+        if (assume_has_missing.empty() && assume_missing_local.empty()) {
+            return false;
+        }
+        ResidualCell proj = m_miniblocks[mb_idx].cells[cell_idx];
+        for (const uint64_t sid : assume_has_missing) {
+            proj.delta_count -= 1;
+            proj.s1 ^= sid;
+            proj.s3 ^= GF64Cube(sid);
+            proj.s5 ^= GF64Pow5(sid);
+        }
+        for (const uint64_t sid : assume_missing_local) {
+            proj.delta_count += 1;
+            proj.s1 ^= sid;
+            proj.s3 ^= GF64Cube(sid);
+            proj.s5 ^= GF64Pow5(sid);
+        }
+
+        auto fits_peer_capacity =
+            [&](Span<const uint64_t> extra_roots) -> bool {
+            for (const auto &other_mb : m_miniblocks) {
+                if (other_mb.peer_id != peer_id) {
+                    continue;
+                }
+                std::array<uint32_t, RatelessMiniblock::NUM_CELLS> added{};
+                for (const uint64_t sid : assume_has_missing) {
+                    if (m_peer_confirmed_has[peer_id].count(sid) > 0) {
+                        continue;
+                    }
+                    const auto c = MapShortIdToMiniblockCell(
+                        sid, other_mb.miniblock_id, other_mb.decimation_level);
+                    if (c.has_value()) {
+                        added[*c] += 1;
+                        if (other_mb.peeled_missing_count[*c] + added[*c] >
+                            other_mb.raw_count[*c]) {
+                            return false;
+                        }
+                    }
+                }
+                for (const uint64_t r : extra_roots) {
+                    if (m_local_sids.count(r) > 0 ||
+                        m_peer_confirmed_has[peer_id].count(r) > 0) {
+                        continue;
+                    }
+                    const auto c = MapShortIdToMiniblockCell(
+                        r, other_mb.miniblock_id, other_mb.decimation_level);
+                    if (c.has_value()) {
+                        added[*c] += 1;
+                        if (other_mb.peeled_missing_count[*c] + added[*c] >
+                            other_mb.raw_count[*c]) {
+                            return false;
+                        }
+                    }
+                }
+            }
+            return true;
+        };
+
+        if (proj.IsZero()) {
+            if (!fits_peer_capacity({})) {
+                return false;
+            }
+            for (const uint64_t sid : assume_has_missing) {
+                PeelMissingTxFromPeer(peer_id, sid, newly_discovered);
+            }
+            for (const uint64_t sid : assume_missing_local) {
+                PeelLocalExtraFromPeer(peer_id, sid);
+            }
+            for (const uint64_t sid : assume_not_has_missing) {
+                m_peer_known_missing_remote[peer_id].insert(sid);
+            }
+            MarkResolvedCellExclusions(mb_idx, cell_idx);
+            (void)CheckAndPeelExhaustedCellsForPeer(peer_id);
+            return true;
+        }
+
+        if (proj.delta_count < -2 || proj.delta_count > 2) {
+            return false;
+        }
+        std::optional<std::vector<uint64_t>> recovered;
+        if (proj.delta_count == 1 || proj.delta_count == -1) {
+            if (proj.s1 == 0 || proj.s3 != GF64Cube(proj.s1) ||
+                proj.s5 != GF64Pow5(proj.s1)) {
+                return false;
+            }
+            recovered = std::vector<uint64_t>{proj.s1};
+        } else {
+            recovered = RecoverGF64Syndromes(proj.s1, proj.s3, proj.s5);
+            if (!recovered.has_value() || recovered->size() != 2 ||
+                (*recovered)[0] == (*recovered)[1]) {
+                return false;
+            }
+        }
+
+        int64_t expected_delta = 0;
+        for (const uint64_t r : *recovered) {
+            if (r == 0) {
+                return false;
+            }
+            const auto c = MapShortIdToMiniblockCell(
+                r, m_miniblocks[mb_idx].miniblock_id,
+                m_miniblocks[mb_idx].decimation_level);
+            if (!c.has_value() || *c != cell_idx) {
+                return false;
+            }
+            if (std::find(assume_has_missing.begin(), assume_has_missing.end(),
+                          r) != assume_has_missing.end() ||
+                std::find(assume_missing_local.begin(),
+                          assume_missing_local.end(),
+                          r) != assume_missing_local.end() ||
+                std::find(assume_not_has_missing.begin(),
+                          assume_not_has_missing.end(),
+                          r) != assume_not_has_missing.end()) {
+                return false;
+            }
+            if (m_local_sids.count(r) > 0) {
+                if (m_peer_known_missing_local[peer_id].count(r) > 0 ||
+                    HasZeroCellVetoForLocalExtra(peer_id, r)) {
+                    return false;
+                }
+                expected_delta -= 1;
+            } else {
+                if (m_peer_confirmed_has[peer_id].count(r) > 0 ||
+                    HasZeroCellVetoForPeer(peer_id, r)) {
+                    return false;
+                }
+                expected_delta += 1;
+            }
+        }
+        if (expected_delta != proj.delta_count ||
+            !fits_peer_capacity(*recovered)) {
+            return false;
+        }
+
+        for (const uint64_t sid : assume_has_missing) {
+            PeelMissingTxFromPeer(peer_id, sid, newly_discovered);
+        }
+        for (const uint64_t sid : assume_missing_local) {
+            PeelLocalExtraFromPeer(peer_id, sid);
+        }
+        for (const uint64_t sid : assume_not_has_missing) {
+            m_peer_known_missing_remote[peer_id].insert(sid);
+        }
+        for (const uint64_t r : *recovered) {
+            if (m_local_sids.count(r) > 0) {
+                PeelLocalExtraFromPeer(peer_id, r);
+            } else {
+                PeelMissingTxFromPeer(peer_id, r, newly_discovered);
+            }
+        }
+        MarkResolvedCellExclusions(mb_idx, cell_idx);
+        (void)CheckAndPeelExhaustedCellsForPeer(peer_id);
+        return true;
+    };
+
+    auto run_candidate_projections =
+        [&](const std::vector<uint64_t> &c_missing,
+            const std::vector<uint64_t> &c_local_extra) -> bool {
+        if (c_missing.empty() && c_local_extra.empty()) {
+            return false;
+        }
+        // 1. Full cell-candidate projection
+        if (try_projection(c_missing, c_local_extra, {})) {
+            return true;
+        }
+        if (!c_missing.empty() && !c_local_extra.empty()) {
+            if (try_projection(c_missing, {}, {}) ||
+                try_projection({}, c_local_extra, {})) {
+                return true;
+            }
+        }
+
+        // 2. Single-candidate projection
+        if (c_missing.size() > 1 && c_missing.size() <= 16) {
+            for (const uint64_t sid : c_missing) {
+                const uint64_t single[1] = {sid};
+                if (try_projection(single, {}, {})) {
+                    return true;
+                }
+            }
+        }
+        if (c_local_extra.size() > 1 && c_local_extra.size() <= 16) {
+            for (const uint64_t sid : c_local_extra) {
+                const uint64_t single[1] = {sid};
+                if (try_projection({}, single, {})) {
+                    return true;
+                }
+            }
+        }
+
+        // 3. Pair-candidate projection ({c_missing[i], c_missing[j]})
+        if (c_missing.size() >= 3 && c_missing.size() <= 16) {
+            for (size_t i = 0; i < c_missing.size(); ++i) {
+                for (size_t j = i + 1; j < c_missing.size(); ++j) {
+                    const uint64_t pair[2] = {c_missing[i], c_missing[j]};
+                    if (try_projection(pair, {}, {})) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // 4. Leave-one-out projection when peer is missing 1 of c_missing
+        if (c_missing.size() >= 2 && c_missing.size() <= 16) {
+            std::vector<uint64_t> subset;
+            subset.reserve(c_missing.size() - 1);
+            for (size_t omit = 0; omit < c_missing.size(); ++omit) {
+                subset.clear();
+                for (size_t i = 0; i < c_missing.size(); ++i) {
+                    if (i != omit) {
+                        subset.push_back(c_missing[i]);
+                    }
+                }
+                const uint64_t omitted[1] = {c_missing[omit]};
+                if (try_projection(subset, c_local_extra, omitted)) {
+                    return true;
+                }
+                if (!c_local_extra.empty() &&
+                    try_projection(subset, {}, omitted)) {
+                    return true;
+                }
+            }
+        }
+
+        // 5. Leave-two-out projection when peer is missing 2 of c_missing
+        if (c_missing.size() >= 3 && c_missing.size() <= 10) {
+            std::vector<uint64_t> subset;
+            subset.reserve(c_missing.size() - 2);
+            for (size_t o1 = 0; o1 < c_missing.size(); ++o1) {
+                for (size_t o2 = o1 + 1; o2 < c_missing.size(); ++o2) {
+                    subset.clear();
+                    for (size_t i = 0; i < c_missing.size(); ++i) {
+                        if (i != o1 && i != o2) {
+                            subset.push_back(c_missing[i]);
+                        }
+                    }
+                    const uint64_t omitted[2] = {c_missing[o1], c_missing[o2]};
+                    if (try_projection(subset, c_local_extra, omitted)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    };
+
+    // Collect all unvetoed candidates mapping to this cell across all peers.
+    std::vector<uint64_t> cand_missing;
+    for (const uint64_t sid : m_discovered_missing_sids) {
+        const auto c = MapShortIdToMiniblockCell(sid, mb.miniblock_id,
+                                                 mb.decimation_level);
+        if (!c.has_value() || *c != cell_idx) {
+            continue;
+        }
+        if (confirmed_has.count(sid) == 0 &&
+            !HasZeroCellVetoForPeer(peer_id, sid)) {
+            cand_missing.push_back(sid);
+        }
+    }
+
+    std::vector<uint64_t> cand_local_extra;
+    for (const uint64_t sid : m_discovered_local_extras) {
+        const auto c = MapShortIdToMiniblockCell(sid, mb.miniblock_id,
+                                                 mb.decimation_level);
+        if (!c.has_value() || *c != cell_idx) {
+            continue;
+        }
+        if (known_missing_loc.count(sid) == 0 &&
+            !HasZeroCellVetoForLocalExtra(peer_id, sid)) {
+            cand_local_extra.push_back(sid);
+        }
+    }
+
+    if (cand_missing.empty() && cand_local_extra.empty()) {
+        return false;
+    }
+
+    // Try combined candidates first when the cell candidate set is small, then
+    // try isolated per-donor-peer subsets of cand_missing / cand_local_extra so
+    // a Byzantine peer flooding fake 1-element cells can never jam cross-peer
+    // peeling between honest peers.
+    if (cand_missing.size() <= 6 &&
+        run_candidate_projections(cand_missing, cand_local_extra)) {
+        return true;
+    }
+
+    std::vector<NodeId> donor_ids;
+    donor_ids.reserve(m_peer_confirmed_has.size() +
+                      m_peer_known_missing_local.size());
+    for (const auto &[donor_id, _] : m_peer_confirmed_has) {
+        if (donor_id != peer_id) {
+            donor_ids.push_back(donor_id);
+        }
+    }
+    for (const auto &[donor_id, _] : m_peer_known_missing_local) {
+        if (donor_id != peer_id &&
+            std::find(donor_ids.begin(), donor_ids.end(), donor_id) ==
+                donor_ids.end()) {
+            donor_ids.push_back(donor_id);
+        }
+    }
+
+    std::vector<uint64_t> donor_cand_missing;
+    std::vector<uint64_t> donor_cand_local_extra;
+    for (const NodeId donor_id : donor_ids) {
+        donor_cand_missing.clear();
+        donor_cand_local_extra.clear();
+        auto it_has = m_peer_confirmed_has.find(donor_id);
+        if (it_has != m_peer_confirmed_has.end()) {
+            for (const uint64_t sid : cand_missing) {
+                if (it_has->second.count(sid) > 0) {
+                    donor_cand_missing.push_back(sid);
+                }
+            }
+        }
+        auto it_loc = m_peer_known_missing_local.find(donor_id);
+        if (it_loc != m_peer_known_missing_local.end()) {
+            for (const uint64_t sid : cand_local_extra) {
+                if (it_loc->second.count(sid) > 0) {
+                    donor_cand_local_extra.push_back(sid);
+                }
+            }
+        }
+        if (run_candidate_projections(donor_cand_missing,
+                                      donor_cand_local_extra)) {
+            return true;
+        }
+    }
+
+    if (cand_missing.size() > 6 &&
+        run_candidate_projections(cand_missing, cand_local_extra)) {
+        return true;
+    }
+    return false;
+}
+
+bool RatelessMiniblockDecoder::ValidateRatelessMiniblock(
+    const RatelessMiniblock &mb) noexcept {
+    if (mb.decimation_level > RatelessMiniblock::MAX_DECIMATION_LEVEL) {
+        return false;
+    }
+    uint64_t sum_count = 0;
+    for (uint8_t c = 0; c < RatelessMiniblock::NUM_CELLS; ++c) {
+        const auto &cell = mb.cells[c];
+        sum_count += cell.count;
+        if (cell.count == 0) {
+            if (cell.s1 != 0 || cell.s3 != 0 || cell.s5 != 0) {
+                return false;
+            }
+            continue;
+        }
+        if (cell.count >= 1 && cell.count <= 3) {
+            std::optional<std::vector<uint64_t>> roots;
+            if (cell.count == 1) {
+                if (cell.s1 == 0 || cell.s3 != GF64Cube(cell.s1) ||
+                    cell.s5 != GF64Pow5(cell.s1)) {
+                    return false;
+                }
+                roots = std::vector<uint64_t>{cell.s1};
+            } else if (cell.count == 2) {
+                if (cell.s1 == 0) {
+                    return false;
+                }
+                roots = RecoverGF64Syndromes(cell.s1, cell.s3, cell.s5);
+            } else {
+                roots = RecoverGF64SyndromesUpTo3(cell.s1, cell.s3, cell.s5);
+            }
+            if (!roots.has_value() || roots->size() != cell.count) {
+                return false;
+            }
+            for (size_t i = 0; i < roots->size(); ++i) {
+                const uint64_t r = (*roots)[i];
+                if (r == 0) {
+                    return false;
+                }
+                for (size_t j = i + 1; j < roots->size(); ++j) {
+                    if ((*roots)[j] == r) {
+                        return false;
+                    }
+                }
+                const auto mapped_cell = MapShortIdToMiniblockCell(
+                    r, mb.miniblock_id, mb.decimation_level);
+                if (!mapped_cell.has_value() || *mapped_cell != c) {
+                    return false;
+                }
+            }
+        }
+    }
+    if (mb.total_tx_count != 0) {
+        if (mb.decimation_level == 0 && sum_count != mb.total_tx_count) {
+            return false;
+        }
+        if (sum_count > mb.total_tx_count) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void RatelessMiniblockDecoder::MarkPeerFraudulent(NodeId peer_id) {
+    m_fraudulent_peers.insert(peer_id);
+    RemovePeer(peer_id);
+}
+
+std::vector<uint64_t>
+RatelessMiniblockDecoder::AddPeerMiniblock(NodeId peer_id,
+                                           const RatelessMiniblock &remote_mb) {
+    if (IsPeerFraudulent(peer_id)) {
+        return {};
+    }
+    // Type 1 Fraud Proof: single-miniblock raw cell algebraic validity
+    if (!ValidateRatelessMiniblock(remote_mb)) {
+        MarkPeerFraudulent(peer_id);
+        return {};
+    }
+
+    // Key per-peer Type 2 & Type 3 snapshot invariants on candidate_root so
+    // an honest peer whose working set legitimately advances from R_1 to R_2
+    // is never falsely flagged for cross-snapshot contradiction, while
+    // bounding root rotations per peer by MAX_ROOT_ROTATIONS_PER_PEER.
+    auto it_root = m_peer_candidate_root.find(peer_id);
+    if (it_root == m_peer_candidate_root.end()) {
+        m_peer_candidate_root.emplace(peer_id, remote_mb.candidate_root);
+    } else if (it_root->second != remote_mb.candidate_root) {
+        size_t &rots = m_peer_root_rotations[peer_id];
+        ++rots;
+        if (rots > MAX_ROOT_ROTATIONS_PER_PEER) {
+            MarkPeerFraudulent(peer_id);
+            return {};
+        }
+        m_miniblocks.erase(
+            std::remove_if(m_miniblocks.begin(), m_miniblocks.end(),
+                           [peer_id](const StoredMiniblock &mb) {
+                               return mb.peer_id == peer_id;
+                           }),
+            m_miniblocks.end());
+        if (auto it_conf = m_peer_confirmed_has.find(peer_id);
+            it_conf != m_peer_confirmed_has.end()) {
+            m_peer_prior_confirmed_has[peer_id].insert(it_conf->second.begin(),
+                                                       it_conf->second.end());
+            m_peer_confirmed_has.erase(it_conf);
+        }
+        m_peer_known_missing_remote.erase(peer_id);
+        m_peer_known_missing_local.erase(peer_id);
+        m_peer_l0_invariants.erase(peer_id);
+        m_peer_raw_claimed_sids.erase(peer_id);
+        it_root->second = remote_mb.candidate_root;
+    }
+
+    const uint8_t decimation_level = remote_mb.decimation_level;
+
+    // Type 2 Fraud Proof: L=0 32-Cell Partition Conservation Law
+    PeerSetInvariant mb_agg{};
+    uint32_t raw_zero_mask = 0;
+    std::vector<uint64_t> mb_raw_claimed_sids;
+    for (uint8_t c = 0; c < RatelessMiniblock::NUM_CELLS; ++c) {
+        const auto &cell = remote_mb.cells[c];
+        mb_agg.total_count += cell.count;
+        mb_agg.total_s1 ^= cell.s1;
+        mb_agg.total_s3 ^= cell.s3;
+        mb_agg.total_s5 ^= cell.s5;
+        if (cell.count == 0) {
+            raw_zero_mask |= (1U << c);
+        } else if (cell.count == 1) {
+            mb_raw_claimed_sids.push_back(cell.s1);
+        } else if (cell.count == 2) {
+            auto roots = RecoverGF64Syndromes(cell.s1, cell.s3, cell.s5);
+            if (roots.has_value()) {
+                for (const uint64_t r : *roots) {
+                    mb_raw_claimed_sids.push_back(r);
+                }
+            }
+        } else if (cell.count == 3) {
+            auto roots = RecoverGF64SyndromesUpTo3(cell.s1, cell.s3, cell.s5);
+            if (roots.has_value()) {
+                for (const uint64_t r : *roots) {
+                    mb_raw_claimed_sids.push_back(r);
+                }
+            }
+        }
+    }
+    if (decimation_level == 0) {
+        auto it_inv = m_peer_l0_invariants.find(peer_id);
+        if (it_inv == m_peer_l0_invariants.end()) {
+            m_peer_l0_invariants.emplace(peer_id, mb_agg);
+        } else {
+            const PeerSetInvariant &expected = it_inv->second;
+            if (expected.total_count != mb_agg.total_count ||
+                expected.total_s1 != mb_agg.total_s1 ||
+                expected.total_s3 != mb_agg.total_s3 ||
+                expected.total_s5 != mb_agg.total_s5) {
+                MarkPeerFraudulent(peer_id);
+                return {};
+            }
+        }
+    } else {
+        auto it_inv = m_peer_l0_invariants.find(peer_id);
+        if (it_inv != m_peer_l0_invariants.end() &&
+            mb_agg.total_count > it_inv->second.total_count) {
+            MarkPeerFraudulent(peer_id);
+            return {};
+        }
+    }
+
+    size_t peer_mb_count = 0;
+    for (const auto &existing : m_miniblocks) {
+        if (existing.peer_id == peer_id) {
+            if (existing.miniblock_id == remote_mb.miniblock_id &&
+                existing.decimation_level == decimation_level) {
+                return {};
+            }
+            ++peer_mb_count;
+        }
+    }
+    if (peer_mb_count >= MAX_MINIBLOCKS_PER_PEER) {
+        return {};
+    }
+
+    // Type 3 Fraud Proof: Generalized Cross-Miniblock Cell Capacity &
+    // Zero-Cell Conservation Law on the same peer
+    auto &peer_raw_claimed = m_peer_raw_claimed_sids[peer_id];
+    for (const uint64_t r : mb_raw_claimed_sids) {
+        peer_raw_claimed.insert(r);
+    }
+    std::unordered_set<uint64_t> all_peer_claimed = peer_raw_claimed;
+    if (auto it_conf = m_peer_confirmed_has.find(peer_id);
+        it_conf != m_peer_confirmed_has.end()) {
+        all_peer_claimed.insert(it_conf->second.begin(), it_conf->second.end());
+    }
+
+    {
+        std::array<uint32_t, RatelessMiniblock::NUM_CELLS> new_mb_claimed_cnt{};
+        std::array<uint64_t, RatelessMiniblock::NUM_CELLS> new_mb_s1{};
+        std::array<uint64_t, RatelessMiniblock::NUM_CELLS> new_mb_s3{};
+        std::array<uint64_t, RatelessMiniblock::NUM_CELLS> new_mb_s5{};
+        for (const uint64_t r : all_peer_claimed) {
+            const auto c = MapShortIdToMiniblockCell(
+                r, remote_mb.miniblock_id, decimation_level);
+            if (!c.has_value()) {
+                continue;
+            }
+            new_mb_claimed_cnt[*c] += 1;
+            if (new_mb_claimed_cnt[*c] > remote_mb.cells[*c].count) {
+                MarkPeerFraudulent(peer_id);
+                return {};
+            }
+            new_mb_s1[*c] ^= r;
+            new_mb_s3[*c] ^= GF64Cube(r);
+            new_mb_s5[*c] ^= GF64Pow5(r);
+        }
+        for (uint8_t c = 0; c < RatelessMiniblock::NUM_CELLS; ++c) {
+            if (new_mb_claimed_cnt[c] == remote_mb.cells[c].count &&
+                (new_mb_s1[c] != remote_mb.cells[c].s1 ||
+                 new_mb_s3[c] != remote_mb.cells[c].s3 ||
+                 new_mb_s5[c] != remote_mb.cells[c].s5)) {
+                MarkPeerFraudulent(peer_id);
+                return {};
+            }
+        }
+    }
+
+    for (const auto &existing : m_miniblocks) {
+        if (existing.peer_id != peer_id) {
+            continue;
+        }
+        std::array<uint32_t, RatelessMiniblock::NUM_CELLS> ex_claimed_cnt{};
+        for (const uint64_t r : all_peer_claimed) {
+            const auto c = MapShortIdToMiniblockCell(
+                r, existing.miniblock_id, existing.decimation_level);
+            if (!c.has_value()) {
+                continue;
+            }
+            ex_claimed_cnt[*c] += 1;
+            if (ex_claimed_cnt[*c] > existing.raw_count[*c]) {
+                MarkPeerFraudulent(peer_id);
+                return {};
+            }
+        }
+    }
+
+    StoredMiniblock stored;
+    stored.peer_id = peer_id;
+    stored.miniblock_id = remote_mb.miniblock_id;
+    stored.decimation_level = decimation_level;
+    stored.raw_zero_cell_mask = raw_zero_mask;
+    for (size_t c = 0; c < RatelessMiniblock::NUM_CELLS; ++c) {
+        stored.raw_count[c] = remote_mb.cells[c].count;
+        stored.peeled_missing_count[c] = 0;
+        stored.cells[c].delta_count =
+            static_cast<int64_t>(remote_mb.cells[c].count);
+        stored.cells[c].s1 = remote_mb.cells[c].s1;
+        stored.cells[c].s3 = remote_mb.cells[c].s3;
+        stored.cells[c].s5 = remote_mb.cells[c].s5;
+    }
+
+    const auto &known_missing_loc = m_peer_known_missing_local[peer_id];
+    for (const uint64_t sid : m_local_sids_vec) {
+        if (known_missing_loc.count(sid) > 0) {
+            continue;
+        }
+        const auto c = MapShortIdToMiniblockCell(sid, remote_mb.miniblock_id,
+                                                 decimation_level);
+        if (!c.has_value()) {
+            continue;
+        }
+        ResidualCell &cell = stored.cells[*c];
+        cell.delta_count -= 1;
+        cell.s1 ^= sid;
+        cell.s3 ^= GF64Cube(sid);
+        cell.s5 ^= GF64Pow5(sid);
+    }
+
+    const auto &confirmed_has = m_peer_confirmed_has[peer_id];
+    for (const uint64_t sid : confirmed_has) {
+        const auto c = MapShortIdToMiniblockCell(sid, remote_mb.miniblock_id,
+                                                 decimation_level);
+        if (!c.has_value()) {
+            continue;
+        }
+        stored.peeled_missing_count[*c] += 1;
+        ResidualCell &cell = stored.cells[*c];
+        cell.delta_count -= 1;
+        cell.s1 ^= sid;
+        cell.s3 ^= GF64Cube(sid);
+        cell.s5 ^= GF64Pow5(sid);
+    }
+
+    const size_t new_mb_idx = m_miniblocks.size();
+    m_miniblocks.push_back(stored);
+    for (uint8_t c = 0; c < RatelessMiniblock::NUM_CELLS; ++c) {
+        if (m_miniblocks[new_mb_idx].cells[c].IsZero() ||
+            m_miniblocks[new_mb_idx].peeled_missing_count[c] >=
+                m_miniblocks[new_mb_idx].raw_count[c]) {
+            MarkResolvedCellExclusions(new_mb_idx, c);
+        }
+    }
+    if (!CheckAndPeelExhaustedCellsForPeer(peer_id)) {
+        return {};
+    }
+
+    std::vector<uint64_t> newly_discovered;
+    bool progress = true;
+    while (progress && !IsPeerFraudulent(peer_id)) {
+        progress = false;
+        for (size_t i = 0; i < m_miniblocks.size(); ++i) {
+            const size_t mb_count_before = m_miniblocks.size();
+            for (uint8_t c = 0; c < RatelessMiniblock::NUM_CELLS; ++c) {
+                if (TryResolveCell(i, c, newly_discovered)) {
+                    progress = true;
+                }
+                if (m_miniblocks.size() != mb_count_before) {
+                    progress = true;
+                    break;
+                }
+            }
+            if (m_miniblocks.size() != mb_count_before) {
+                break;
+            }
+        }
+        if (!progress && !IsPeerFraudulent(peer_id)) {
+            for (size_t i = 0; i < m_miniblocks.size(); ++i) {
+                const size_t mb_count_before = m_miniblocks.size();
+                for (uint8_t c = 0; c < RatelessMiniblock::NUM_CELLS; ++c) {
+                    if (TryCrossPeerProjectCell(i, c, newly_discovered)) {
+                        progress = true;
+                    }
+                    if (m_miniblocks.size() != mb_count_before) {
+                        progress = true;
+                        break;
+                    }
+                }
+                if (m_miniblocks.size() != mb_count_before) {
+                    break;
+                }
+            }
+        }
+    }
+
+    newly_discovered.erase(
+        std::remove_if(newly_discovered.begin(), newly_discovered.end(),
+                       [this](uint64_t sid) {
+                           return m_discovered_missing_sids.count(sid) == 0;
+                       }),
+        newly_discovered.end());
+    return newly_discovered;
+}
+
+std::vector<uint64_t>
+RatelessMiniblockDecoder::GetSortedMissingShortIds() const {
+    std::vector<uint64_t> out(m_discovered_missing_sids.begin(),
+                              m_discovered_missing_sids.end());
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+bool RatelessMiniblockDecoder::IsPeerConverged(NodeId peer_id) const noexcept {
+    bool has_full_coverage = false;
+    for (const auto &mb : m_miniblocks) {
+        if (mb.peer_id != peer_id) {
+            continue;
+        }
+        if (mb.decimation_level == 0) {
+            has_full_coverage = true;
+        }
+        for (const auto &cell : mb.cells) {
+            if (!cell.IsZero()) {
+                return false;
+            }
+        }
+    }
+    return has_full_coverage;
+}
+
+std::unordered_set<uint64_t>
+RatelessMiniblockDecoder::GetPeerMissingShortIds(NodeId peer_id) const {
+    std::unordered_set<uint64_t> out;
+    if (auto it = m_peer_confirmed_has.find(peer_id);
+        it != m_peer_confirmed_has.end()) {
+        out.insert(it->second.begin(), it->second.end());
+    }
+    if (auto it_p = m_peer_prior_confirmed_has.find(peer_id);
+        it_p != m_peer_prior_confirmed_has.end()) {
+        out.insert(it_p->second.begin(), it_p->second.end());
+    }
+    return out;
+}
+
+void RatelessMiniblockDecoder::RemovePeer(NodeId peer_id) {
+    m_miniblocks.erase(
+        std::remove_if(m_miniblocks.begin(), m_miniblocks.end(),
+                       [peer_id](const StoredMiniblock &mb) {
+                           return mb.peer_id == peer_id;
+                       }),
+        m_miniblocks.end());
+    m_peer_confirmed_has.erase(peer_id);
+    m_peer_prior_confirmed_has.erase(peer_id);
+    m_peer_known_missing_remote.erase(peer_id);
+    m_peer_known_missing_local.erase(peer_id);
+    m_peer_l0_invariants.erase(peer_id);
+    m_peer_raw_claimed_sids.erase(peer_id);
+    m_peer_candidate_root.erase(peer_id);
+    m_peer_root_rotations.erase(peer_id);
+
+    m_discovered_missing_sids.clear();
+    for (const auto &[_, sids] : m_peer_confirmed_has) {
+        m_discovered_missing_sids.insert(sids.begin(), sids.end());
+    }
+    for (const auto &[_, sids] : m_peer_prior_confirmed_has) {
+        m_discovered_missing_sids.insert(sids.begin(), sids.end());
+    }
+    for (auto &[_, rem_missing_set] : m_peer_known_missing_remote) {
+        for (auto it = rem_missing_set.begin(); it != rem_missing_set.end();) {
+            if (m_discovered_missing_sids.count(*it) == 0) {
+                it = rem_missing_set.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    m_discovered_local_extras.clear();
+    for (const auto &[_, sids] : m_peer_known_missing_local) {
+        m_discovered_local_extras.insert(sids.begin(), sids.end());
+    }
+}
+
 std::vector<CTransactionRef> V2PeerProtocolHandler::ResolveShortIds(
     ReconScope scope, const uint256 &context_id, uint64_t salt_k0,
     uint64_t salt_k1, const std::vector<uint64_t> &short_ids) const {
@@ -1114,6 +2463,35 @@ std::vector<CTransactionRef> V2PeerProtocolHandler::ResolveShortIds(
     }
     if (salt_k0 == 0 && salt_k1 == 0) {
         std::tie(salt_k0, salt_k1) = DeriveReconSipHashKey(scope, context_id, 0);
+    }
+    {
+        LOCK(m_mutex);
+        auto it = m_scoped_txs.find(ScopeKey{scope, context_id});
+        if (it != m_scoped_txs.end()) {
+            ScopedTxSetEntry &entry = it->second;
+            if ((entry.cached_by_sid.empty() && !entry.txs.empty()) ||
+                entry.cached_salt_k0 != salt_k0 ||
+                entry.cached_salt_k1 != salt_k1) {
+                entry.cached_by_sid.clear();
+                entry.cached_by_sid.reserve(entry.txs.size());
+                for (const auto &tx : entry.txs) {
+                    const uint64_t sid = ComputeMerklixShortId(
+                        salt_k0, salt_k1, tx->GetId());
+                    entry.cached_by_sid.emplace(sid, tx);
+                }
+                entry.cached_salt_k0 = salt_k0;
+                entry.cached_salt_k1 = salt_k1;
+            }
+            std::vector<CTransactionRef> resolved;
+            resolved.reserve(short_ids.size());
+            for (const uint64_t sid : short_ids) {
+                auto sid_it = entry.cached_by_sid.find(sid);
+                if (sid_it != entry.cached_by_sid.end()) {
+                    resolved.push_back(sid_it->second);
+                }
+            }
+            return resolved;
+        }
     }
     const std::vector<CTransactionRef> local_txs =
         GetScopedTransactions(scope, context_id);
@@ -1552,19 +2930,32 @@ void V2PeerProtocolHandler::HandleMerklixBuck(
 
     // Multi-depth prefix bisection for d >= 3 sub-bucket overflows:
     // depth 8 -> request depth 12; depth 12 -> request depth 16.
+    // When depth_bits == 8 and a sub-bucket's count delta exceeds the
+    // 32-element capacity of depth 12 (16 child sub-buckets * 2 syndromes),
+    // jump directly to requesting depth 16 (req.depth_bits = 12,
+    // req.parent_prefix = (effective_parent_prefix << 4) | sb,
+    // req.bucket_mask = 0xFFFF) to avoid a guaranteed-overflow round-trip.
     if (!diff.unresolved_sub_buckets.empty() && depth_bits < 16) {
+        const uint16_t effective_parent_prefix =
+            (depth_bits == 8 &&
+             (sub.parent_bucket != 0 || sub.parent_prefix == 0))
+                ? static_cast<uint16_t>(sub.parent_bucket)
+                : sub.parent_prefix;
+        uint16_t jump_mask = 0;
+        if (depth_bits == 8) {
+            for (const uint8_t sb : diff.jump_to_depth16_sub_buckets) {
+                if (sb < 16) {
+                    jump_mask |= static_cast<uint16_t>(1U << sb);
+                }
+            }
+        }
         uint16_t unresolved_mask = 0;
         for (const uint8_t sb : diff.unresolved_sub_buckets) {
-            if (sb < 16) {
+            if (sb < 16 && (jump_mask & (1U << sb)) == 0) {
                 unresolved_mask |= static_cast<uint16_t>(1U << sb);
             }
         }
         if (unresolved_mask != 0) {
-            const uint16_t effective_parent_prefix =
-                (depth_bits == 8 &&
-                 (sub.parent_bucket != 0 || sub.parent_prefix == 0))
-                    ? static_cast<uint16_t>(sub.parent_bucket)
-                    : sub.parent_prefix;
             MerklixBucketRequest bisected_req;
             bisected_req.scope = sub.scope;
             bisected_req.context_id = sub.context_id;
@@ -1576,6 +2967,25 @@ void V2PeerProtocolHandler::HandleMerklixBuck(
             m_connman.PushMessage(
                 &pfrom,
                 NetMsg::Make(NetMsgType::GETMERKLIXBUCK, bisected_req));
+        }
+        if (jump_mask != 0) {
+            for (uint8_t sb = 0; sb < 16; ++sb) {
+                if ((jump_mask & (1U << sb)) == 0) {
+                    continue;
+                }
+                MerklixBucketRequest jump_req;
+                jump_req.scope = sub.scope;
+                jump_req.context_id = sub.context_id;
+                jump_req.salt_k0 = sub.salt_k0;
+                jump_req.salt_k1 = sub.salt_k1;
+                jump_req.bucket_mask = 0xFFFFU;
+                jump_req.depth_bits = 12;
+                jump_req.parent_prefix =
+                    static_cast<uint16_t>((effective_parent_prefix << 4) | sb);
+                m_connman.PushMessage(
+                    &pfrom,
+                    NetMsg::Make(NetMsgType::GETMERKLIXBUCK, jump_req));
+            }
         }
     }
 }

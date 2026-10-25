@@ -323,6 +323,246 @@ struct MerklixSubBucketDiffResult {
     std::vector<uint64_t> missing_short_ids;
     //! Sub-bucket indices (0..15) whose differences exceeded 2 elements.
     std::vector<uint8_t> unresolved_sub_buckets;
+    //! Sub-bucket indices (0..15) at depth 8 whose count delta exceeds the
+    //! 32-element capacity of depth 12, allowing direct jump to depth 16.
+    std::vector<uint8_t> jump_to_depth16_sub_buckets;
+};
+
+/**
+ * Snowstorm compact (~920-byte) rateless GF(2^64) BCH fountain miniblock over
+ * a reconciliation scope. Each cell accumulates (count, s1, s3, s5) over
+ * transactions mapped via
+ * MapShortIdToMiniblockCell(sid, miniblock_id, decimation_level).
+ */
+struct RatelessMiniblock {
+    static constexpr size_t NUM_CELLS = 32;
+    static constexpr uint8_t MAX_DECIMATION_LEVEL = 16;
+
+    uint8_t scope{static_cast<uint8_t>(ReconScope::EPOCH_BATCH)};
+    uint256 context_id{};
+    uint256 parent_base_root{};
+    uint256 candidate_root{};
+    uint64_t salt_k0{0};
+    uint64_t salt_k1{0};
+    uint32_t total_tx_count{0};
+    uint32_t miniblock_id{0};
+    uint8_t decimation_level{0};
+    std::array<MerklixSubBucketEntry, NUM_CELLS> cells{};
+
+    SERIALIZE_METHODS(RatelessMiniblock, obj) {
+        READWRITE(obj.scope, obj.context_id, obj.parent_base_root,
+                  obj.candidate_root, obj.salt_k0, obj.salt_k1,
+                  obj.total_tx_count, obj.miniblock_id, obj.decimation_level);
+        for (auto &c : obj.cells) {
+            READWRITE(c);
+        }
+    }
+};
+
+/**
+ * Universal content-addressed cell mapping for RatelessMiniblock.
+ * Depends solely on (sid, miniblock_id, decimation_level), independent of the
+ * sender's full transaction set. Returns the cell index in 0..31 if sid passes
+ * the 1/2^decimation_level filter, or std::nullopt otherwise.
+ */
+inline std::optional<uint8_t>
+MapShortIdToMiniblockCell(uint64_t sid, uint32_t miniblock_id,
+                          uint8_t decimation_level) noexcept {
+    if (decimation_level > RatelessMiniblock::MAX_DECIMATION_LEVEL) {
+        decimation_level = RatelessMiniblock::MAX_DECIMATION_LEVEL;
+    }
+    uint64_t z = sid ^ (static_cast<uint64_t>(miniblock_id) *
+                            0x9e3779b97f4a7c15ULL +
+                        0xbf58476d1ce4e5b9ULL);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    z = z ^ (z >> 31);
+    if (decimation_level > 0) {
+        const uint64_t mask = (1ULL << decimation_level) - 1ULL;
+        if ((z & mask) != 0) {
+            return std::nullopt;
+        }
+    }
+    return static_cast<uint8_t>((z >> decimation_level) &
+                                (RatelessMiniblock::NUM_CELLS - 1));
+}
+
+/**
+ * Select the adaptive multi-scale decimation level L for miniblock_seq given
+ * an initial symmetric difference estimate. Starts at L_max where
+ * estimated_diff / 2^L_max <= 32, and steps down toward L = 0 (full coverage).
+ */
+uint8_t SelectMiniblockDecimationLevel(size_t estimated_diff,
+                                       uint32_t miniblock_seq) noexcept;
+
+/**
+ * Build a RatelessMiniblock over a precomputed list of 64-bit short IDs.
+ */
+RatelessMiniblock BuildRatelessMiniblockFromShortIds(
+    ReconScope scope, const uint256 &context_id,
+    const uint256 &parent_base_root, const uint256 &candidate_root,
+    uint64_t salt_k0, uint64_t salt_k1, Span<const uint64_t> short_ids,
+    uint32_t miniblock_id, uint8_t decimation_level = 0) noexcept;
+
+/**
+ * Snowstorm multi-peer coupled GF(2^64) BCH peeling decoder for
+ * RatelessMiniblock streams. Reconciles missing short IDs across multiple peers
+ * even when peers hold different unconverged transaction subsets
+ * (S_A != S_B != S_C != S_local).
+ *
+ * Algebraic Soundness (BCH d_min = 7):
+ * Because the binary primitive BCH code over GF(2^64) with power-sum syndromes
+ * (S_1, S_3, S_5) has minimum distance d_min = 2t + 1 = 7, no two distinct sets
+ * of size <= 3 can share the same (S_1, S_3, S_5) (3 + 3 = 6 < 7). Thus, for
+ * any true 3-element cell in Peer B, the only elements in the entire GF(2^64)
+ * field whose subtraction leaves a valid 2-element (S_1, S_3, S_5) syndrome are
+ * the 3 true elements of that cell themselves. Combined with
+ * MapShortIdToMiniblockCell verification on all recovered roots and the
+ * Zero-Cell Veto across Peer B's miniblocks, Snowstorm cross-peer peeling is
+ * resistant to both random collisions and algebraic forgery.
+ */
+class RatelessMiniblockDecoder {
+public:
+    static constexpr size_t MAX_MINIBLOCKS_PER_PEER = 256;
+    static constexpr size_t MAX_ROOT_ROTATIONS_PER_PEER = 4;
+
+    explicit RatelessMiniblockDecoder(
+        const std::vector<uint64_t> &local_short_ids);
+
+    /**
+     * Ingest a RatelessMiniblock from peer_id and run the coupled multi-peer
+     * peeling cascade. Returns newly discovered missing short IDs from this
+     * step.
+     */
+    std::vector<uint64_t> AddPeerMiniblock(NodeId peer_id,
+                                           const RatelessMiniblock &remote_mb);
+
+    /**
+     * All missing short IDs (present on >= 1 remote peer, absent locally)
+     * recovered so far.
+     */
+    const std::unordered_set<uint64_t> &GetDiscoveredMissingShortIds() const
+        noexcept {
+        return m_discovered_missing_sids;
+    }
+
+    /**
+     * Sorted vector of all discovered missing short IDs.
+     */
+    std::vector<uint64_t> GetSortedMissingShortIds() const;
+
+    /**
+     * Number of miniblocks ingested across all peers.
+     */
+    size_t GetIngestedMiniblockCount() const noexcept {
+        return m_miniblocks.size();
+    }
+
+    /**
+     * True if at least one peer has zero unresolved cells across all its
+     * ingested miniblocks (including at least one L=0 full-coverage miniblock).
+     */
+    bool IsPeerConverged(NodeId peer_id) const noexcept;
+
+    /**
+     * Missing short IDs confirmed to be present on a specific peer_id.
+     */
+    std::unordered_set<uint64_t> GetPeerMissingShortIds(NodeId peer_id) const;
+
+    /**
+     * Purge all ingested miniblocks and uncorroborated short IDs attributed to
+     * a disconnected or misbehaving peer.
+     */
+    void RemovePeer(NodeId peer_id);
+
+    /**
+     * Snowstorm stateless single-miniblock algebraic fraud check (Type 1 Fraud
+     * Proof):
+     *   - Rejects decimation_level > MAX_DECIMATION_LEVEL.
+     *   - Rejects any cell with count == 0 and non-zero (s1, s3, s5).
+     *   - Rejects any cell with 1 <= count <= 3 whose syndromes (s1, s3, s5)
+     *     fail to decode into `count` distinct non-zero roots in GF(2^64) that
+     *     all map to that exact cell in (miniblock_id, decimation_level).
+     */
+    static bool ValidateRatelessMiniblock(const RatelessMiniblock &mb) noexcept;
+
+    /**
+     * True if peer_id has been caught sending algebraically invalid or
+     * mutually contradictory miniblocks (Type 1, Type 2 L=0 Partition
+     * Conservation, or Type 3 Cross-Miniblock Zero-Cell / Cell-Capacity
+     * Contradiction).
+     */
+    bool IsPeerFraudulent(NodeId peer_id) const noexcept {
+        return m_fraudulent_peers.count(peer_id) > 0;
+    }
+
+    const std::unordered_set<NodeId> &GetFraudulentPeers() const noexcept {
+        return m_fraudulent_peers;
+    }
+
+private:
+    struct ResidualCell {
+        int64_t delta_count{0};
+        uint64_t s1{0};
+        uint64_t s3{0};
+        uint64_t s5{0};
+
+        bool IsZero() const noexcept {
+            return delta_count == 0 && s1 == 0 && s3 == 0 && s5 == 0;
+        }
+    };
+
+    struct StoredMiniblock {
+        NodeId peer_id{-1};
+        uint32_t miniblock_id{0};
+        uint8_t decimation_level{0};
+        uint32_t raw_zero_cell_mask{0};
+        std::array<uint32_t, RatelessMiniblock::NUM_CELLS> raw_count{};
+        std::array<uint32_t, RatelessMiniblock::NUM_CELLS>
+            peeled_missing_count{};
+        std::array<ResidualCell, RatelessMiniblock::NUM_CELLS> cells{};
+    };
+
+    struct PeerSetInvariant {
+        uint64_t total_count{0};
+        uint64_t total_s1{0};
+        uint64_t total_s3{0};
+        uint64_t total_s5{0};
+    };
+
+    void MarkPeerFraudulent(NodeId peer_id);
+    bool CheckAndPeelExhaustedCellsForPeer(NodeId peer_id);
+    bool TryResolveCell(size_t mb_idx, uint8_t cell_idx,
+                        std::vector<uint64_t> &newly_discovered);
+    bool TryCrossPeerProjectCell(size_t mb_idx, uint8_t cell_idx,
+                                 std::vector<uint64_t> &newly_discovered);
+    bool HasZeroCellVetoForPeer(NodeId peer_id, uint64_t sid) const noexcept;
+    bool HasZeroCellVetoForLocalExtra(NodeId peer_id,
+                                      uint64_t sid) const noexcept;
+    void PeelMissingTxFromPeer(NodeId peer_id, uint64_t sid,
+                               std::vector<uint64_t> &newly_discovered);
+    void PeelLocalExtraFromPeer(NodeId peer_id, uint64_t sid);
+    void MarkResolvedCellExclusions(size_t mb_idx, uint8_t cell_idx);
+
+    std::vector<uint64_t> m_local_sids_vec;
+    std::unordered_set<uint64_t> m_local_sids;
+    std::unordered_set<uint64_t> m_discovered_missing_sids;
+    std::unordered_set<uint64_t> m_discovered_local_extras;
+    std::unordered_map<NodeId, std::unordered_set<uint64_t>>
+        m_peer_confirmed_has;
+    std::unordered_map<NodeId, std::unordered_set<uint64_t>>
+        m_peer_known_missing_local;
+    std::unordered_map<NodeId, std::unordered_set<uint64_t>>
+        m_peer_known_missing_remote;
+    std::unordered_map<NodeId, PeerSetInvariant> m_peer_l0_invariants;
+    std::unordered_map<NodeId, std::unordered_set<uint64_t>>
+        m_peer_raw_claimed_sids;
+    std::unordered_map<NodeId, std::unordered_set<uint64_t>>
+        m_peer_prior_confirmed_has;
+    std::unordered_map<NodeId, uint256> m_peer_candidate_root;
+    std::unordered_map<NodeId, size_t> m_peer_root_rotations;
+    std::unordered_set<NodeId> m_fraudulent_peers;
+    std::vector<StoredMiniblock> m_miniblocks;
 };
 
 /**
@@ -335,6 +575,11 @@ struct V2ProtocolHandlerStats {
     uint64_t sealedheader_fallback_getdata{0};
     uint64_t sealedheader_invalid{0};
     uint64_t sealedheader_rejected{0};
+
+    uint64_t SnapblockFailures() const noexcept {
+        return sealedheader_fallback_getdata + sealedheader_invalid +
+               sealedheader_rejected;
+    }
     uint64_t merklixsync_received{0};
     uint64_t getmerklixbuck_received{0};
     uint64_t merklixbuck_received{0};
@@ -432,7 +677,7 @@ public:
  */
 class V2PeerProtocolHandler {
 public:
-    static constexpr size_t MAX_SYNC_MESSAGES_PER_WINDOW = 32;
+    static constexpr size_t MAX_SYNC_MESSAGES_PER_WINDOW = 2048;
     /**
      * getshorttx/shorttx exchanged for relay-epoch short-id announcements
      * (one per peer per relay tick at most each way, plus slack)
@@ -442,7 +687,7 @@ public:
     static constexpr std::chrono::milliseconds RATE_LIMIT_WINDOW{1000};
     static constexpr size_t MAX_SEALEDHEADER_COINBASE_BYTES = 10000;
     static constexpr size_t MAX_TRACKED_RECON_SCOPES = 64;
-    static constexpr size_t MAX_SCOPED_TXS = 4096;
+    static constexpr size_t MAX_SCOPED_TXS = 65536;
 
     V2PeerProtocolHandler(ChainstateManager &chainman, CTxMemPool &mempool,
                           CConnman &connman, PeerManager &peerman);
@@ -673,6 +918,17 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /**
+     * Build a compact rateless GF(2^64) coded miniblock over our local
+     * transaction set for (scope, context_id).
+     */
+    RatelessMiniblock
+    BuildRatelessMiniblock(ReconScope scope, const uint256 &context_id,
+                           uint64_t salt_k0, uint64_t salt_k1,
+                           uint32_t miniblock_id, uint8_t decimation_level = 0,
+                           const uint256 &parent_base_root = uint256{}) const
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
+    /**
      * Resolve a list of short IDs against our local transaction set for
      * (scope, context_id).
      */
@@ -825,9 +1081,26 @@ private:
     };
     struct ScopedTxSetEntry {
         std::vector<CTransactionRef> txs;
+        std::array<std::vector<CTransactionRef>, 16> by_top_bucket;
         lotus::v2::Hash subtree_a_root{};
+        uint256 candidate_root{};
+        bool root_valid{false};
+        uint64_t cached_salt_k0{0};
+        uint64_t cached_salt_k1{0};
+        std::unordered_map<uint64_t, CTransactionRef> cached_by_sid;
     };
-    std::map<ScopeKey, ScopedTxSetEntry>
+    void EnsureScopedRootLocked(ScopedTxSetEntry &entry) const
+        EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
+    std::pair<std::vector<CTransactionRef>, uint256>
+    GetScopedTransactionsAndRoot(ReconScope scope,
+                                 const uint256 &context_id) const
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    std::vector<CTransactionRef>
+    GetScopedTransactionsForTopBucket(ReconScope scope,
+                                      const uint256 &context_id,
+                                      uint8_t top_bucket) const
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    mutable std::map<ScopeKey, ScopedTxSetEntry>
         m_scoped_txs GUARDED_BY(m_mutex);
 
     struct PendingShortTxKey {
