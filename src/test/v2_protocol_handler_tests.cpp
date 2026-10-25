@@ -4604,6 +4604,41 @@ BOOST_AUTO_TEST_CASE(
         BOOST_CHECK(all_found.count(x1) == 1U);
         BOOST_CHECK(all_found.count(x2) == 1U);
         BOOST_CHECK(all_found.count(x3) == 1U);
+
+        // Also verify 4 -> 3 projection rejection vs 4 -> 2 BCH (d_min=7)
+        // projection acceptance:
+        uint64_t x4 = 0;
+        for (uint64_t cand = x3 + 1;; ++cand) {
+            if (MapShortIdToMiniblockCell(cand, /*miniblock_id=*/0,
+                                          /*decimation_level=*/0) == 0) {
+                x4 = cand;
+                break;
+            }
+        }
+        RatelessMiniblockDecoder dec4(/*local_short_ids=*/{});
+        const std::vector<uint64_t> set4_a{x1, x2, x3, x4};
+        const std::vector<uint64_t> set1_evil{x1};
+        const std::vector<uint64_t> set2_b{x1, x2};
+        const RatelessMiniblock mb4_a = BuildRatelessMiniblockFromShortIds(
+            ReconScope::LIVE_MEMPOOL, uint256{}, uint256{}, uint256{}, 1, 2,
+            set4_a, /*miniblock_id=*/0, /*decimation_level=*/0);
+        const RatelessMiniblock mb1_evil = BuildRatelessMiniblockFromShortIds(
+            ReconScope::LIVE_MEMPOOL, uint256{}, uint256{}, uint256{}, 1, 2,
+            set1_evil, /*miniblock_id=*/99, /*decimation_level=*/0);
+        const RatelessMiniblock mb2_b = BuildRatelessMiniblockFromShortIds(
+            ReconScope::LIVE_MEMPOOL, uint256{}, uint256{}, uint256{}, 1, 2,
+            set2_b, /*miniblock_id=*/0, /*decimation_level=*/0);
+        BOOST_CHECK(dec4.AddPeerMiniblock(/*peer_id=*/1, mb4_a).empty());
+        // Subtracting 1 element leaves 3 unknowns (4 -> 3), which has 0 bits of
+        // syndrome redundancy and MUST NOT trigger a 3-root cross-peer peel:
+        (void)dec4.AddPeerMiniblock(/*peer_id=*/999, mb1_evil);
+        BOOST_CHECK(!dec4.IsPeerConverged(/*peer_id=*/1));
+        // Subtracting 2 elements {x1, x2} from Peer B leaves 2 unknowns {x3, x4}
+        // (4 -> 2), which has 64-bit BCH S_5 redundancy and resolves Peer A!
+        (void)dec4.AddPeerMiniblock(/*peer_id=*/2, mb2_b);
+        BOOST_CHECK(dec4.IsPeerConverged(/*peer_id=*/1));
+        BOOST_CHECK_EQUAL(dec4.GetPeerMissingShortIds(/*peer_id=*/1).size(),
+                          4U);
     }
 
     // =========================================================================

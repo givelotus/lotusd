@@ -1464,6 +1464,9 @@ bool RatelessMiniblockDecoder::TryResolveCell(
     if (expected_delta != cell.delta_count) {
         return false;
     }
+    if (recovered->size() == 3 && expected_delta != 3 && expected_delta != -3) {
+        return false;
+    }
 
     for (const uint64_t sid : *recovered) {
         if (m_local_sids.count(sid) > 0) {
@@ -1524,6 +1527,7 @@ bool RatelessMiniblockDecoder::TryCrossPeerProjectCell(
 
         auto recovered = RecoverGF64Syndromes(proj.s1, proj.s3, proj.s5);
         if (!recovered.has_value() || recovered->empty() ||
+            recovered->size() > 2 ||
             (recovered->size() == 2 && (*recovered)[0] == (*recovered)[1])) {
             return false;
         }
