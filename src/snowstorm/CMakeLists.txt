@@ -9,6 +9,8 @@ add_library(snowstorm STATIC
     src/cell_decode.cpp
     src/schedule.cpp
     src/sketch.cpp
+    src/peeler.cpp
+    src/peeler_engine.cpp
 )
 target_compile_features(snowstorm PUBLIC cxx_std_20)
 target_include_directories(snowstorm PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
