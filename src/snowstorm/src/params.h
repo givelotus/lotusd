@@ -16,6 +16,10 @@ inline constexpr std::uint64_t MAX_PEERS = 1024;
 inline constexpr std::uint64_t MAX_RANGES = 64;
 // Operational cells-per-message ceiling.
 inline constexpr std::uint64_t MAX_MESSAGE_CELLS = 65536;
+// Operational minimum positive peer delay, in microseconds.
+inline constexpr std::int64_t MIN_RTT = 1;
+// Operational retransmission deadline multiplier.
+inline constexpr std::int64_t RETRANSMIT_FACTOR = 2;
 // Operational usable donors per ID.
 inline constexpr std::uint64_t MAX_DONORS = 8;
 // Operational upper bound on fixed peer-owned allocation bytes.

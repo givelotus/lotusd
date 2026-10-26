@@ -28,6 +28,7 @@ public:
         for (std::size_t i = 0; i < used; ++i) replacement.put(i, get(i));
         *this = std::move(replacement);
     }
+    std::size_t capacity() const noexcept { return capacity_; }
     std::size_t allocated_bytes() const noexcept {
         return capacity_ * (sizeof(std::int32_t) + 3 * sizeof(std::uint64_t));
     }

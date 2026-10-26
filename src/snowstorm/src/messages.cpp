@@ -3,6 +3,8 @@
 #include <snowstorm/messages.h>
 #include "wire_cursor.h"
 #include "cell_count.h"
+#include "range_validation.h"
+#include "message_size.h"
 #include <algorithm>
 #include <limits>
 #include <new>
@@ -12,28 +14,10 @@ namespace snowstorm {
 namespace {
 using detail::WireReader;
 using detail::WireWriter;
+using detail::check_range;
+using detail::check_ranges;
 std::size_t byte_limit(const Limits &limits) noexcept {
     return static_cast<std::size_t>(std::min(limits.max_message_bytes, params::MESSAGE_BYTES));
-}
-Error check_range(Range range, SymbolIndex previous_end, const Limits &limits,
-                  std::uint64_t &total) noexcept {
-    if (range.begin >= range.end || range.begin < previous_end ||
-        range.end - 1 > limits.max_symbol_index) return Error::invalid_range;
-    const auto length = range.end - range.begin;
-    if (length > std::numeric_limits<std::uint64_t>::max() - total) return Error::overflow;
-    total += length;
-    return total > limits.max_cells ? Error::capacity : Error::ok;
-}
-Error check_ranges(std::span<const Range> ranges, const Limits &limits, std::uint64_t &total) noexcept {
-    if (ranges.empty()) return Error::malformed_message;
-    if (ranges.size() > limits.max_ranges) return Error::capacity;
-    SymbolIndex previous{};
-    for (const auto range : ranges) {
-        const auto error = check_range(range, previous, limits, total);
-        if (error != Error::ok) return error;
-        previous = range.end;
-    }
-    return Error::ok;
 }
 Error validate(const ReconReq &request, const Limits &limits) noexcept {
     if (request.version != params::PROTOCOL_VERSION) return Error::unsupported_version;
@@ -254,5 +238,28 @@ ParseResult parse(ByteSpan bytes, const Limits &limits) noexcept {
     } catch (const std::length_error &) {
         return {Error::capacity, std::nullopt};
     }
+}
+Error detail::normal_symbols_size(std::uint64_t ranges, std::uint64_t cells,
+                                  std::optional<std::uint64_t> exclusions,
+                                  const Limits &limits, std::size_t &bytes) noexcept {
+    if (ranges == 0 || cells == 0) return Error::invalid_range;
+    if (ranges > limits.max_ranges || cells > limits.max_cells ||
+        (exclusions && *exclusions > limits.max_exclusions)) return Error::capacity;
+    // Empty vectors allocate nothing. The existing writer measures all fixed
+    // fields and the one-byte zero counts; add only dynamic field differences.
+    WireWriter base({}, std::numeric_limits<std::size_t>::max(), true);
+    write_message(base, ReconSymbols{});
+    const auto compact_bytes = [](std::uint64_t value) noexcept {
+        WireWriter writer({}, std::numeric_limits<std::size_t>::max(), true);
+        writer.compact(value);
+        return writer.position;
+    };
+    auto total = static_cast<unsigned __int128>(base.position);
+    total += static_cast<unsigned __int128>(ranges) * (sizeof(SymbolIndex) + sizeof(SymbolIndex)) + compact_bytes(ranges) - 1;
+    total += static_cast<unsigned __int128>(cells) * params::CELL_WIRE_BYTES + compact_bytes(cells) - 1;
+    if (exclusions) total += compact_bytes(*exclusions) + static_cast<unsigned __int128>(*exclusions) * sizeof(ShortId);
+    if (total > byte_limit(limits)) return Error::capacity;
+    bytes = static_cast<std::size_t>(total);
+    return Error::ok;
 }
 } // namespace snowstorm

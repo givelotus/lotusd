@@ -3,6 +3,7 @@
 #include "peeler_engine.h"
 #include "cell_decode.h"
 #include "cell_count.h"
+#include "scheduled_cells.h"
 #include <snowstorm/gf64.h>
 #include <snowstorm/schedule.h>
 #include <algorithm>
@@ -101,18 +102,8 @@ Error PeelerEngine::stage_append(std::span<const IndexedCell> input) noexcept {
     return reconstruct_raw();
 }
 Error PeelerEngine::reconstruct_raw() noexcept {
-    if (staged_.empty()) return Error::ok;
-    const auto by_index = [](const Staged &cell, SymbolIndex value) { return cell.index < value; };
-    for (const auto &powers : reference_) {
-        ScheduleIterator iterator(powers.item, staged_.back().index);
-        while (const auto index = iterator.next()) {
-            const auto pos = std::lower_bound(staged_.begin(), staged_.end(), *index, by_index);
-            if (pos == staged_.end() || pos->index != *index) continue;
-            const auto error = cell_add(pos->raw, powers, Sign::positive);
-            if (error != Error::ok) return error;
-        }
-    }
-    return Error::ok;
+    return apply_scheduled(std::span<const ItemPowers>(reference_), std::span<Staged>(staged_),
+        Sign::positive, [](Staged &entry) -> Cell & { return entry.raw; });
 }
 Error PeelerEngine::append(std::span<const IndexedCell> input) noexcept {
     const auto error = stage_append(input);
@@ -178,6 +169,11 @@ void PeelerEngine::apply_delta(const DecodeResult &decoded) noexcept {
         residual_.put(change.pos, change.cell); ++versions_[change.pos]; mark(change.pos);
     }
 }
+Error PeelerEngine::restart_pass() noexcept {
+    if (pass_ == std::numeric_limits<std::uint64_t>::max()) return Error::overflow;
+    claims_.clear(); ++pass_; mark_all();
+    return Error::ok;
+}
 Error PeelerEngine::reference_change(ShortId item, Sign sign) noexcept {
     if (item == 0) return Error::invalid_id;
     if (sign != Sign::positive && sign != Sign::negative) return Error::invalid_argument;
@@ -186,12 +182,12 @@ Error PeelerEngine::reference_change(ShortId item, Sign sign) noexcept {
     const DecodeResult decoded{DecodeKind::one, {{{item, sign}, {}}}, 1};
     const auto error = stage_delta(decoded);
     if (error != Error::ok) return error;
-    apply_delta(decoded); claims_.clear(); ++pass_; mark_all();
-    return Error::ok;
+    apply_delta(decoded);
+    return restart_pass();
 }
 Error PeelerEngine::commit(std::size_t pos, const DecodeResult &decoded, DecodePolicy policy,
                           std::span<SignedItem> output, std::span<DecodeAudit> audit,
-                          PeelResult &result) noexcept {
+                          PeelResult &result, PeelObserver observer) noexcept {
     for (std::size_t i = 0; i < decoded.size; ++i) {
         if (std::binary_search(claims_.begin(), claims_.end(), decoded.items[i].item)) return Error::inconsistent_symbols;
     }
@@ -211,26 +207,27 @@ Error PeelerEngine::commit(std::size_t pos, const DecodeResult &decoded, DecodeP
         output[result.item_count++] = item;
     }
     audit[result.audit_count++] = proof;
+    if (observer.committed) observer.committed(observer.context, proof);
     return Error::ok;
 }
 bool PeelerEngine::current(const Candidate &candidate) const noexcept {
     return versions_[candidate.pos] == candidate.version && same(residual_.get(candidate.pos), candidate.cell);
 }
 Error PeelerEngine::singles(DecodePolicy policy, std::span<SignedItem> output,
-                           std::span<DecodeAudit> audit, PeelResult &result) noexcept {
+                           std::span<DecodeAudit> audit, PeelResult &result, PeelObserver observer) noexcept {
     for (const auto &candidate : snapshot_) {
         if (!current(candidate)) continue;
         if (candidate.cell.count != -1 && candidate.cell.count != 1) continue;
         ++steps_;
         const auto decoded = decode_singleton(candidate.cell, indices_[candidate.pos], reference_view());
         if (decoded.kind != DecodeKind::one) continue;
-        const auto error = commit(candidate.pos, decoded, policy, output, audit, result);
+        const auto error = commit(candidate.pos, decoded, policy, output, audit, result, observer);
         if (error != Error::ok) return error;
     }
     return Error::ok;
 }
 Error PeelerEngine::pairs(DecodePolicy policy, std::span<SignedItem> output,
-                         std::span<DecodeAudit> audit, PeelResult &result) noexcept {
+                         std::span<DecodeAudit> audit, PeelResult &result, PeelObserver observer) noexcept {
     pairs_.clear();
     for (const auto &candidate : snapshot_) {
         if (!current(candidate) || candidate.cell.s1 == 0) continue;
@@ -251,12 +248,12 @@ Error PeelerEngine::pairs(DecodePolicy policy, std::span<SignedItem> output,
         ++steps_;
         const auto decoded = decode_pair(candidate.cell, indices_[candidate.pos], reference_view(), inverses_[i]);
         if (decoded.kind != DecodeKind::two) continue;
-        const auto error = commit(candidate.pos, decoded, policy, output, audit, result);
+        const auto error = commit(candidate.pos, decoded, policy, output, audit, result, observer);
         if (error != Error::ok) return error;
     }
     return Error::ok;
 }
-PeelResult PeelerEngine::run(std::span<SignedItem> output, std::span<DecodeAudit> audit, DecodePolicy policy) noexcept {
+PeelResult PeelerEngine::run(std::span<SignedItem> output, std::span<DecodeAudit> audit, DecodePolicy policy, PeelObserver observer) noexcept {
     PeelResult result{};
     if (output.size() < storage_.max_claims || audit.size() < storage_.max_claims) {
         result.error = Error::capacity; result.decode_steps = steps_; return result;
@@ -267,8 +264,8 @@ PeelResult PeelerEngine::run(std::span<SignedItem> output, std::span<DecodeAudit
             snapshot_.push_back({pos, versions_[pos], residual_.get(pos)}); queued_[pos] = 0;
         }
         work_.clear();
-        result.error = singles(policy, output, audit, result);
-        if (result.error == Error::ok) result.error = pairs(policy, output, audit, result);
+        result.error = singles(policy, output, audit, result, observer);
+        if (result.error == Error::ok) result.error = pairs(policy, output, audit, result, observer);
         if (result.error != Error::ok) { mark_all(); break; }
     }
     for (std::size_t pos = 0; pos < indices_.size(); ++pos) result.stuck += !cell_is_zero(residual_.get(pos));
@@ -282,12 +279,20 @@ Error PeelerEngine::observations(std::span<ResidualObservation> output, std::siz
     written = indices_.size();
     return Error::ok;
 }
+PeelerMemory PeelerEngine::memory() const noexcept {
+    constexpr auto COLUMN_BYTES = sizeof(std::int32_t) + 3 * sizeof(std::uint64_t);
+    return {{{reference_.capacity(), sizeof(ItemPowers)}, {claims_.capacity(), sizeof(ShortId)},
+        {indices_.capacity(), sizeof(SymbolIndex)}, {raw_.capacity(), COLUMN_BYTES},
+        {residual_.capacity(), COLUMN_BYTES}, {versions_.capacity(), sizeof(std::uint64_t)},
+        {queued_.capacity(), sizeof(std::uint8_t)}, {work_.capacity(), sizeof(std::size_t)},
+        {snapshot_.capacity(), sizeof(Candidate)}, {pairs_.capacity(), sizeof(Candidate)},
+        {staged_.capacity(), sizeof(Staged)}, {changes_.capacity(), sizeof(Change)},
+        {cubes_.capacity(), sizeof(std::uint64_t)}, {inverses_.capacity(), sizeof(std::uint64_t)},
+        {inverse_scratch_.capacity(), sizeof(std::uint64_t)}}};
+}
 std::size_t PeelerEngine::allocated_bytes() const noexcept {
-    return reference_.capacity() * sizeof(ItemPowers) + claims_.capacity() * sizeof(ShortId) +
-        indices_.capacity() * sizeof(SymbolIndex) + raw_.allocated_bytes() + residual_.allocated_bytes() +
-        versions_.capacity() * sizeof(std::uint64_t) + queued_.capacity() * sizeof(std::uint8_t) +
-        work_.capacity() * sizeof(std::size_t) + (snapshot_.capacity() + pairs_.capacity()) * sizeof(Candidate) +
-        staged_.capacity() * sizeof(Staged) + changes_.capacity() * sizeof(Change) +
-        (cubes_.capacity() + inverses_.capacity() + inverse_scratch_.capacity()) * sizeof(std::uint64_t);
+    std::size_t bytes = 0;
+    for (const auto buffer : memory()) bytes += buffer.requested_bytes();
+    return bytes;
 }
 } // namespace snowstorm::detail
