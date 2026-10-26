@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see COPYING.
 #include "peeler_engine.h"
 #include "cell_decode.h"
+#include "cell_count.h"
 #include <snowstorm/gf64.h>
 #include <snowstorm/schedule.h>
 #include <algorithm>
@@ -13,11 +14,9 @@ namespace snowstorm::detail {
 namespace {
 constexpr unsigned INDEX_BITS = 40;
 constexpr auto INDEX_BOUND = std::uint64_t{1} << INDEX_BITS;
-constexpr auto MAX_COUNT = std::numeric_limits<std::int32_t>::max();
 bool same(const Cell &a, const Cell &b) noexcept {
     return a.count == b.count && a.s1 == b.s1 && a.s3 == b.s3 && a.s5 == b.s5;
 }
-bool valid_count(std::int64_t count) noexcept { return count >= -MAX_COUNT && count <= MAX_COUNT; }
 auto ref_lower(auto &reference, ShortId item) noexcept {
     return std::lower_bound(reference.begin(), reference.end(), item,
         [](const ItemPowers &powers, ShortId id) { return powers.item < id; });
@@ -28,7 +27,7 @@ bool fits(PeelerCapacity storage, PeelerCapacity limits) noexcept {
 }
 }
 PeelerEngine::PeelerEngine(PeelerCapacity limits, PeelerCapacity storage) : limits_(limits) {
-    if (limits.max_reference_items > MAX_COUNT || limits.max_symbol_index >= INDEX_BOUND ||
+    if (limits.max_reference_items > CELL_MAX_COUNT || limits.max_symbol_index >= INDEX_BOUND ||
         limits.max_symbols > limits.max_symbol_index + 1 || !fits(storage, limits)) {
         throw std::invalid_argument("invalid Snowstorm peeler capacities");
     }
@@ -84,7 +83,7 @@ Error PeelerEngine::stage_append(std::span<const IndexedCell> input) noexcept {
     staged_.clear();
     for (const auto &entry : input) {
         if (entry.index > limits_.max_symbol_index) return Error::invalid_range;
-        if (!valid_count(entry.cell.count)) return Error::overflow;
+        if (!valid_cell_count(entry.cell.count)) return Error::overflow;
         const auto pos = lower(entry.index);
         if (pos < indices_.size() && indices_[pos] == entry.index) {
             if (!same(entry.cell, residual_.get(pos))) return Error::inconsistent_symbols;
@@ -159,7 +158,7 @@ Error PeelerEngine::stage_delta(const DecodeResult &decoded) noexcept {
     }
     if (size < 0 || static_cast<std::uint64_t>(size) > storage_.max_reference_items) return Error::capacity;
     for (auto &change : changes_) {
-        if (!valid_count(change.count)) return Error::overflow;
+        if (!valid_cell_count(change.count)) return Error::overflow;
         change.cell.count = static_cast<std::int32_t>(change.count);
     }
     return Error::ok;
