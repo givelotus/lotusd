@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see COPYING.
 #include <snowstorm/voting.h>
 #include "log_factorial.h"
+#include "voting_preview.h"
 #include "params.h"
 #include <algorithm>
 #include <cmath>
@@ -103,5 +104,20 @@ Error estimate_m1(std::uint64_t n, std::uint64_t m0, std::uint64_t matches,
     const auto estimate = static_cast<std::uint64_t>(product / sample + (product % sample != 0));
     out = std::clamp(estimate,m0+1,n);
     return Error::ok;
+}
+detail::VotingPreview detail::preview_voting(std::uint64_t population,
+    std::uint64_t m0, std::uint64_t m1, std::uint64_t sample,
+    std::uint64_t answered, std::uint64_t matches, double current,
+    std::uint64_t b_root, bool transaction_ready) noexcept {
+    if (matches > answered || answered > sample || sample > population || b_root == 0)
+        return {Error::invalid_argument, 0, 0, false};
+    const bool empty = population == 0 && m0 == 0 && m1 == 0;
+    const auto lower = empty ? MathResult{Error::ok, 0} :
+        hypergeometric_llr(matches, population, m0, m1, sample);
+    if (lower.error != Error::ok) return {lower.error, 0, 0, false};
+    const auto updated = update_root_confidence(current, lower.value, b_root);
+    if (updated.error != Error::ok) return {updated.error, 0, 0, false};
+    return {Error::ok, lower.value, updated.value,
+        sample != 0 && transaction_ready && updated.value >= static_cast<double>(b_root)};
 }
 } // namespace snowstorm

@@ -31,3 +31,6 @@ if(NOT ENABLE_SNOWSTORM)
 endif()
 add_subdirectory(test)
 # snowstorm-frozen:test-registration:end
+
+# Supplemental pure voting preview proof, outside frozen acceptance registration.
+add_subdirectory(verify)
