@@ -19,6 +19,8 @@ add_library(snowstorm STATIC
     src/session_responder.cpp
     src/session_model.cpp
     src/pending.cpp
+    src/voting.cpp
+    src/wave.cpp
 )
 target_compile_features(snowstorm PUBLIC cxx_std_20)
 target_include_directories(snowstorm PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")

@@ -20,6 +20,12 @@ inline constexpr std::uint64_t MAX_MESSAGE_CELLS = 65536;
 inline constexpr std::int64_t MIN_RTT = 1;
 // Operational retransmission deadline multiplier.
 inline constexpr std::int64_t RETRANSMIT_FACTOR = 2;
+// Operational finite voting calibration horizon.
+inline constexpr std::uint64_t VOTING_HORIZON = 25;
+// Operational peers sampled independently per voting wave.
+inline constexpr std::uint64_t VOTING_SAMPLE = 8;
+// Derived transaction threshold divisor in ceil(Broot/3).
+inline constexpr std::uint64_t TX_THRESHOLD_DIVISOR = 3;
 // Operational usable donors per ID.
 inline constexpr std::uint64_t MAX_DONORS = 8;
 // Operational upper bound on fixed peer-owned allocation bytes.
