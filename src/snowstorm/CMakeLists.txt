@@ -1,8 +1,10 @@
 # Copyright (c) 2026 The Lotus developers
 # Distributed under the MIT software license; see the accompanying COPYING.
 
-# Future implementation targets belong above the frozen test traversal below.
-# The contract stage deliberately defines no Snowstorm library or stub target.
+# Core implementation stays independent of daemon services and test oracles.
+add_library(snowstorm STATIC src/gf64.cpp src/types.cpp)
+target_compile_features(snowstorm PUBLIC cxx_std_20)
+target_include_directories(snowstorm PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 # snowstorm-frozen:test-registration:begin
 if(NOT ENABLE_SNOWSTORM)
