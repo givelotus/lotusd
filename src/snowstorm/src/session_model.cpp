@@ -19,7 +19,29 @@ void erase_id(std::vector<ShortId> &ids, ShortId id) noexcept {
     auto it = std::lower_bound(ids.begin(), ids.end(), id);
     if (it != ids.end() && *it == id) ids.erase(it);
 }
+auto plus_lower(auto &entries, ShortId item) noexcept {
+    return std::lower_bound(entries.begin(), entries.end(), item,
+        [](const SessionPlusEntry &entry, ShortId id) { return entry.item < id; });
+}
 } // namespace
+bool SessionModel::has_plus(ShortId item) const noexcept {
+    const auto entry = plus_lower(plus_, item);
+    return entry != plus_.end() && entry->item == item;
+}
+void SessionModel::insert_plus(ShortId item, bool decoded) noexcept {
+    const auto entry = plus_lower(plus_, item);
+    if (entry != plus_.end() && entry->item == item) { entry->decoded |= decoded; return; }
+    plus_.insert(entry, {item, decoded});
+}
+void SessionModel::erase_plus(ShortId item) noexcept {
+    const auto entry = plus_lower(plus_, item);
+    if (entry != plus_.end() && entry->item == item) plus_.erase(entry);
+}
+bool SessionModel::decoded_support(ShortId item) const noexcept {
+    if (!active_ || (!engine_ && inferred_)) return false;
+    const auto entry = plus_lower(plus_, item);
+    return entry != plus_.end() && entry->item == item && entry->decoded;
+}
 Error SessionModel::open(std::span<const ShortId> pending) {
     if (pending.size() > limits_.max_plus) return Error::capacity;
     ShortId previous = 0;
@@ -27,7 +49,9 @@ Error SessionModel::open(std::span<const ShortId> pending) {
         if (id <= previous) return Error::invalid_id;
         previous = id;
     }
-    std::vector<ShortId> plus(pending.begin(), pending.end());
+    std::vector<SessionPlusEntry> plus;
+    plus.reserve(pending.size());
+    for (const auto item : pending) plus.push_back({item, false});
     clear();
     plus_.swap(plus);
     active_ = true;
@@ -37,7 +61,7 @@ Error SessionModel::create_engine() {
     std::vector<ShortId> reference;
     reference.reserve(own_.current_ids().size() + plus_.size());
     for (const auto &id : own_.current_ids()) reference.push_back(id.powers.item);
-    reference.insert(reference.end(), plus_.begin(), plus_.end());
+    for (const auto &entry : plus_) reference.push_back(entry.item);
     std::sort(reference.begin(), reference.end());
     reference.erase(std::unique(reference.begin(), reference.end()), reference.end());
     std::erase_if(reference, [this](ShortId id) { return has(minus_, id); });
@@ -143,8 +167,8 @@ Error SessionModel::accept(void *context, const DecodeResult &decoded) noexcept 
     std::size_t plus = self.plus_.size(), minus = self.minus_.size();
     for (std::size_t i = 0; i < decoded.size; ++i) {
         const auto item = decoded.items[i];
-        if (item.sign == Sign::positive) { plus += !has(self.plus_, item.item); minus -= has(self.minus_, item.item); }
-        else { minus += !has(self.minus_, item.item); plus -= has(self.plus_, item.item); }
+        if (item.sign == Sign::positive) { plus += !self.has_plus(item.item); minus -= has(self.minus_, item.item); }
+        else { minus += !has(self.minus_, item.item); plus -= self.has_plus(item.item); }
     }
     if (plus > self.plus_.capacity() || minus > self.minus_.capacity() ||
         plus > self.limits_.max_plus || minus > self.limits_.max_minus) return Error::capacity;
@@ -156,11 +180,13 @@ void SessionModel::committed(void *context, const DecodeAudit &proof) noexcept {
     // Remove first so an atomic mixed pair needs only its final membership capacity.
     for (std::size_t i = 0; i < proof.decoded.size; ++i) {
         const auto item = proof.decoded.items[i];
-        erase_id(item.sign == Sign::positive ? self.minus_ : self.plus_, item.item);
+        if (item.sign == Sign::positive) erase_id(self.minus_, item.item);
+        else self.erase_plus(item.item);
     }
     for (std::size_t i = 0; i < proof.decoded.size; ++i) {
         const auto item = proof.decoded.items[i];
-        insert_id(item.sign == Sign::positive ? self.plus_ : self.minus_, item.item);
+        if (item.sign == Sign::positive) self.insert_plus(item.item, true);
+        else insert_id(self.minus_, item.item);
     }
     self.assert_reference();
     if (run.observer.committed) run.observer.committed(run.observer.context, proof);
@@ -172,14 +198,14 @@ PeelResult SessionModel::run(std::span<SignedItem> output, std::span<DecodeAudit
     return engine_->run(output, audit, {&context, accept}, {&context, committed});
 }
 bool SessionModel::contains(ShortId item) const noexcept {
-    return (own_.contains(item) || has(plus_, item)) && !has(minus_, item);
+    return (own_.contains(item) || has_plus(item)) && !has(minus_, item);
 }
 void SessionModel::assert_reference() const noexcept {
 #ifndef NDEBUG
     if (!engine_) return;
     for (const auto &item : engine_->reference_items()) assert(contains(item.item));
     for (const auto &item : own_.current_ids()) assert(contains(item.powers.item) == engine_->contains(item.powers.item));
-    for (const auto item : plus_) assert(contains(item) == engine_->contains(item));
+    for (const auto entry : plus_) assert(contains(entry.item) == engine_->contains(entry.item));
     for (const auto item : minus_) assert(contains(item) == engine_->contains(item));
 #endif
 }
@@ -187,14 +213,27 @@ Error SessionModel::own_delta(ShortId item, Sign sign) noexcept {
     if (item == 0) return Error::invalid_id;
     if (sign != Sign::positive && sign != Sign::negative) return Error::invalid_argument;
     if (!active_) return Error::ok;
-    if (has(plus_, item) || has(minus_, item)) return engine_ ? engine_->restart_pass() : Error::ok;
+    if (has_plus(item) || has(minus_, item)) return engine_ ? engine_->restart_pass() : Error::ok;
     if (sign == Sign::positive) return engine_ ? engine_->reference_change(item, sign) : Error::ok;
     if (plus_.size() == plus_.capacity() || plus_.size() == limits_.max_plus) return Error::capacity;
     if (engine_) {
         const auto error = engine_->restart_pass();
         if (error != Error::ok) return error;
     }
-    insert_id(plus_, item);
+    insert_plus(item, false);
+    return Error::ok;
+}
+Error SessionModel::import_pending(ShortId item) noexcept {
+    if (item == 0) return Error::invalid_id;
+    if (!active_ || (!engine_ && inferred_)) return Error::not_found;
+    if (own_.contains(item) || has_plus(item) || has(minus_, item)) return Error::ok;
+    if (plus_.size() == plus_.capacity() || plus_.size() == limits_.max_plus) return Error::capacity;
+    if (engine_) {
+        const auto error = engine_->reference_change(item, Sign::positive);
+        if (error != Error::ok) return error;
+    }
+    insert_plus(item, false);
+    assert_reference();
     return Error::ok;
 }
 Error SessionModel::next_range(std::uint64_t stuck, std::int32_t residual_zero,
@@ -225,14 +264,15 @@ Error SessionModel::next_range(std::uint64_t stuck, std::int32_t residual_zero,
     return Error::ok;
 }
 void SessionModel::compact_done() noexcept {
-    std::erase_if(plus_, [this](ShortId id) { return own_.contains(id); });
+    std::erase_if(plus_, [this](const SessionPlusEntry &entry) { return own_.contains(entry.item); });
+    for (auto &entry : plus_) entry.decoded = false;
     std::erase_if(minus_, [this](ShortId id) { return !own_.contains(id); });
     assert_reference();
     engine_.reset();
 }
 void SessionModel::clear() noexcept {
     engine_.reset();
-    std::vector<ShortId>().swap(plus_);
+    std::vector<SessionPlusEntry>().swap(plus_);
     std::vector<ShortId>().swap(minus_);
     std::vector<ShortId>().swap(exclusions_);
     active_ = inferred_ = false;

@@ -55,3 +55,31 @@ mutation. SessionModel updates plus/minus and asserts the actual reference
 before forwarding the committed audit. Rejecting/resource checks stay in the
 precommit policy. The later Node omitted-minus-erasure mutation remains a
 separate mandatory proof; an observer-only test cannot replace it.
+
+## Pending support and suspension
+
+Pending eligibility uses current live state: an in-flight fetch, an awaiting
+admission record, or an actual committed positive decode still retained in an
+OPEN model's plus entry. There is no per-height decode history. Each existing
+plus record carries its own provenance bit; copied Pending, pooling and own
+removal do not establish provenance. Own admission suppresses Pending without
+erasing a genuine tag while that same plus entry remains. Negative removal,
+model release and Done compaction erase the tag. Node must count only genuine
+OPEN support and install a Done-only fetch before releasing its model support.
+All record capacities, including the actual padded plus record size, enter
+allocation accounting.
+
+Resource suspension cancels in-flight work and speculative models but retains
+every awaiting token, hash, donor generation and reservation. These records
+remain eligible under the usual own/rejection filters until their host callback
+or tip reset. Host admission remains allowed while speculative work is suspended.
+Node prunes confidence only when neither own nor surviving Pending supports it.
+These rules follow the separately approved contract corrections; they do not
+retroactively describe the earlier frozen harness as consistent.
+
+Supplemental allocation proofs use observable atomic counters, independently
+summed pointer ledgers and -fno-assume-sane-operator-new. Calibration exercises
+ordinary, aligned and shared ownership allocations and an allocation-free
+control. Earlier ordinary-counter snapshots were optimized away around a
+shared allocation; independent disassembly identified the cause. Requested
+bytes remain measured from actual ownership, without a hardcoded body size.
