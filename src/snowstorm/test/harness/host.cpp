@@ -260,24 +260,34 @@ public:
             ids.erase(id);
         return ids;
     }
+    bool has_fetch_support(NodeId n, ShortId item, bool awaiting_only) const {
+        const auto &owner = node(n);
+        return std::any_of(
+            owner.expected_fetches.begin(), owner.expected_fetches.end(),
+            [&](const auto &entry) {
+                return entry.second.item == item &&
+                       entry.second.generation == owner.generation &&
+                       (!awaiting_only || entry.second.awaiting);
+            });
+    }
     std::set<ShortId> expected_pending(NodeId n) const {
         std::set<ShortId> pending;
         const auto &owner = node(n);
-        if (owner.expected_rejection_suspension) return pending;
         const auto own = projected_truth(n);
         for (auto id : owner.decoded_positive) {
             if (own.contains(id) || owner.expected_rejected.contains(id) ||
                 owner.expected_probation.contains(id) ||
                 owner.expected_local_rejected.contains(id))
                 continue;
-            bool supported = std::any_of(
-                owner.expected_fetches.begin(), owner.expected_fetches.end(),
-                [&](const auto &entry) { return entry.second.item == id; });
-            for (const auto &[key, model] : owner.expected_models) {
-                supported = supported ||
-                            (model.open && !owner.must_release.contains(key) &&
-                             model.plus.contains(id));
-            }
+            bool supported =
+                has_fetch_support(n, id, owner.expected_rejection_suspension);
+            if (!owner.expected_rejection_suspension)
+                for (const auto &[key, model] : owner.expected_models) {
+                    supported =
+                        supported ||
+                        (model.open && !owner.must_release.contains(key) &&
+                         model.plus.contains(id));
+                }
             if (supported) pending.insert(id);
         }
         return pending;
@@ -359,7 +369,8 @@ public:
         if (owner.expected_rejection_suspension) {
             for (auto &[key, model] : owner.expected_models) {
                 for (auto it = model.plus.begin(); it != model.plus.end();) {
-                    if (!own.contains(*it)) {
+                    const bool awaiting = has_fetch_support(n, *it, true);
+                    if (!own.contains(*it) && !awaiting) {
                         it = model.plus.erase(it);
                         owner.must_release.insert(key);
                     } else
@@ -1415,7 +1426,13 @@ public:
             } else if (valid_payload)
                 owner.expected_fetches.erase(live);
             if (owner.expected_rejection_suspension)
-                owner.expected_fetches.clear();
+                for (auto it = owner.expected_fetches.begin();
+                     it != owner.expected_fetches.end();) {
+                    if (!it->second.awaiting)
+                        it = owner.expected_fetches.erase(it);
+                    else
+                        ++it;
+                }
         }
         std::optional<std::uint64_t> admission_version;
         if (accepted_result && result.status == BodyStatus::admitted &&

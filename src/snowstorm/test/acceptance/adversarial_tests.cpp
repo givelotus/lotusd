@@ -782,4 +782,268 @@ BOOST_AUTO_TEST_CASE(T11_normal_response_order_identity_and_snapshot_binding) {
     }, h.now() + 1000000));
     h.audit();
 }
+// Separately authorized postfreeze suspension/awaiting correction. Six subcases
+// supplement, and do not replace, the original empty-state exhaustion fixture.
+BOOST_AUTO_TEST_CASE(T12_suspension_preserves_awaiting_admission_and_existing_confidence) {
+    using namespace snowstorm;
+    using IdSet = snowstorm_oracle::IdSet;
+    for (const auto outcome : {BodyStatus::not_found, BodyStatus::invalid, BodyStatus::local_rejected}) {
+        for (bool tip_ending : {false, true}) {
+            test::Host h(0x712a000 + 2 * unsigned(outcome) + tip_ending, 1, 2,
+                         test::HostOptions{false, false, false});
+            const auto limits = h.stats(0).limits;
+            BOOST_REQUIRE_EQUAL(limits.max_probation, 144U);
+            const auto tip = test::default_tip();
+            const auto body_a = snowstorm_test::make_body(3000001);
+            const auto body_b = snowstorm_test::make_body(3000002);
+            const auto a = short_id(tip.key, body_a->tx_hash());
+            const auto b = short_id(tip.key, body_b->tx_hash());
+            BOOST_REQUIRE_NE(a, b);
+            bool replies_enabled = true, failures_enabled = false, new_claim_phase = false;
+            unsigned new_claim_responses = 0, new_claim_deliveries = 0;
+            std::vector<Bytes> new_claim_payloads;
+            std::vector<TxHandle> failures;
+            std::vector<ShortId> failure_ids;
+            std::set<ShortId> unique{a, b};
+            for (unsigned i = 0; i < 146; ++i) {
+                auto body = snowstorm_test::make_body(3100000 + i);
+                const auto id = short_id(tip.key, body->tx_hash());
+                BOOST_REQUIRE(unique.insert(id).second);
+                failures.push_back(body); failure_ids.push_back(id);
+            }
+            const auto new_claim = short_id(tip.key, snowstorm_test::make_body(3200000)->tx_hash());
+            BOOST_REQUIRE(unique.insert(new_claim).second);
+            const auto answer = [&](const test::WireInput &input, const IdSet &raw, Sequence sequence) {
+                std::vector<test::WireReply> out;
+                const auto parsed = parse(input.bytes, limits); BOOST_REQUIRE(parsed.error == Error::ok);
+                if (const auto *q = std::get_if<ReconReq>(&*parsed.message)) {
+                    ReconSymbols r; r.tip_context = q->tip_context; r.session_id = q->session_id;
+                    r.request_id = q->request_id; r.poll_id = q->poll_id;
+                    r.snapshot_seq = sequence; r.current_seq = sequence; r.ranges = q->ranges;
+                    r.root_vote = snowstorm_test::make_hash(sequence); r.exclusions = std::vector<ShortId>{};
+                    for (const auto &range : q->ranges)
+                        for (const auto &cell : snowstorm_oracle::encode(raw, range.begin, range.end))
+                            r.cells.push_back(snowstorm_test::to_core(cell));
+                    Bytes wire; BOOST_REQUIRE(serialize(r, limits, wire) == Error::ok);
+                    out.push_back({std::move(wire), 1});
+                }
+                return out;
+            };
+            const auto peer_a = h.connect_wire(0, [&](const test::WireInput &input) {
+                return replies_enabled ? answer(input, IdSet{a}, 1) : std::vector<test::WireReply>{};
+            });
+            test::BodyRule a_rule; a_rule.body = body_a; a_rule.expected_tx_hash = body_a->tx_hash();
+            a_rule.result_delay = 1; a_rule.admission_delay = 3000000;
+            h.body_rule(0, peer_a, a, a_rule);
+            const auto confidence = [](const Stats &s, ShortId id) {
+                return std::find_if(s.confidence.begin(), s.confidence.end(),
+                    [=](const ConfidenceObservation &c) { return c.item == id; });
+            };
+            const auto fetch = [](const Stats &s, ShortId id) {
+                return std::find_if(s.fetches.begin(), s.fetches.end(),
+                    [=](const FetchObservation &f) { return f.item == id; });
+            };
+            // First establish positive A evidence and its real admitted-result gap.
+            BOOST_REQUIRE(h.run_until([&](const test::Host &host) {
+                const auto s = host.stats(0); const auto f = fetch(s, a); const auto c = confidence(s, a);
+                return f != s.fetches.end() && f->state == FetchState::awaiting_admission &&
+                       c != s.confidence.end() && c->lambda != 0;
+            }, 100000));
+            const auto established = h.stats(0);
+            const auto saved_a = *fetch(established, a);
+            BOOST_REQUIRE(saved_a.expected_tx_hash);
+            BOOST_CHECK(*saved_a.expected_tx_hash == body_a->tx_hash());
+            BOOST_CHECK_EQUAL(h.truth(0).count(a), 1U);
+            BOOST_CHECK(h.projected_truth(0).empty());
+            const auto peer_b = h.connect_wire(0, [&](const test::WireInput &input) {
+                return replies_enabled ? answer(input, IdSet{a, b}, 2) : std::vector<test::WireReply>{};
+            });
+            test::BodyRule b_rule; b_rule.status = BodyStatus::not_found;
+            b_rule.binding = BodyBinding::unbound; b_rule.result_delay = 2000000;
+            b_rule.deliver_admission = false;
+            h.body_rule(0, peer_b, b, b_rule);
+            BOOST_REQUIRE(h.run_until([&](const test::Host &host) {
+                const auto s = host.stats(0); const auto f = fetch(s, b);
+                return f != s.fetches.end() && f->state == FetchState::in_flight;
+            }, h.now() + 100000));
+            const auto saved_b = *fetch(h.stats(0), b);
+            std::map<SessionId, std::pair<ShortId, Sequence>> snapshots;
+            std::size_t next_failure = 0;
+            const auto peer_failure = h.connect_wire(0, [&](const test::WireInput &input) {
+                if (!replies_enabled || !failures_enabled) return std::vector<test::WireReply>{};
+                const auto parsed = parse(input.bytes, limits); BOOST_REQUIRE(parsed.error == Error::ok);
+                const auto *q = std::get_if<ReconReq>(&*parsed.message);
+                if (!q) return std::vector<test::WireReply>{};
+                if (!snapshots.count(q->session_id)) {
+                    if (new_claim_phase) snapshots.emplace(q->session_id, std::pair{new_claim, Sequence{10000}});
+                    else {
+                        if (next_failure == failure_ids.size()) return std::vector<test::WireReply>{};
+                        snapshots.emplace(q->session_id, std::pair{failure_ids[next_failure], Sequence{100 + next_failure}});
+                        ++next_failure;
+                    }
+                }
+                const auto [id, sequence] = snapshots.at(q->session_id);
+                auto replies = answer(input, IdSet{a, id}, sequence);
+                if (id == new_claim) {
+                    ++new_claim_responses;
+                    for (const auto &reply : replies) new_claim_payloads.push_back(reply.bytes);
+                }
+                return replies;
+            });
+            for (std::size_t i = 0; i < failures.size(); ++i) {
+                test::BodyRule rule; rule.status = outcome; rule.body = failures[i];
+                rule.binding = outcome == BodyStatus::not_found ? BodyBinding::unbound : BodyBinding::matched;
+                rule.expected_tx_hash = failures[i]->tx_hash(); rule.result_delay = 1;
+                rule.deliver_admission = false; h.body_rule(0, peer_failure, failure_ids[i], rule);
+            }
+            std::optional<Stats> before_suspension, after_suspension;
+            unsigned fetch_actions = 0, a_notifications = 0, late_b_results = 0;
+            std::optional<Stats> stale_result_baseline;
+            std::optional<std::pair<Time, std::uint64_t>> last_body_result_call;
+            const auto table_size = [&](const Stats &s) {
+                return outcome == BodyStatus::not_found ? s.probation.size() :
+                       outcome == BodyStatus::invalid ? s.rejected.size() : s.local_rejected.size();
+            };
+            h.observe([&](const test::Observation &o) {
+                allocation_bounds(o.after);
+                if (o.call == "body_result")
+                    last_body_result_call = std::pair{o.time, o.after.last_call.call_sequence};
+                for (const auto &action : o.actions) if (std::holds_alternative<FetchBody>(action)) ++fetch_actions;
+                if (!o.before.suspended_unadmitted && o.after.suspended_unadmitted) {
+                    BOOST_CHECK(!before_suspension); before_suspension = o.before; after_suspension = o.after;
+                }
+            });
+            h.observe_delivery([&](const test::DeliveryObservation &o) {
+                if (o.traffic_class == test::TrafficClass::reconciliation &&
+                    o.stage == test::DeliveryStage::arrived &&
+                    o.disposition == test::ApplicationDisposition::delivered_to_core &&
+                    o.local_node == 0 && o.local_peer == peer_failure) {
+                    const Bytes received(o.bytes.begin(), o.bytes.end());
+                    if (std::find(new_claim_payloads.begin(), new_claim_payloads.end(), received) != new_claim_payloads.end()) {
+                        const auto parsed = parse(o.bytes, limits); BOOST_REQUIRE(parsed.error == Error::ok);
+                        const auto *symbols = std::get_if<ReconSymbols>(&*parsed.message);
+                        BOOST_REQUIRE(symbols); BOOST_CHECK(symbols->status == SymbolsStatus::normal);
+                        BOOST_CHECK_EQUAL(symbols->snapshot_seq, 10000U);
+                        BOOST_REQUIRE(snapshots.count(symbols->session_id));
+                        BOOST_CHECK_EQUAL(snapshots.at(symbols->session_id).first, new_claim);
+                        // Exact emitted bytes bind request/poll IDs and ranges; independently
+                        // encode {A,new_claim} to witness the item in those delivered cells.
+                        std::size_t cell_index = 0;
+                        for (const auto &range : symbols->ranges)
+                            for (const auto &cell : snowstorm_oracle::encode(IdSet{a, new_claim}, range.begin, range.end)) {
+                                BOOST_REQUIRE_LT(cell_index, symbols->cells.size());
+                                snowstorm_test::require_cell_equal(symbols->cells[cell_index++], cell);
+                            }
+                        BOOST_CHECK_EQUAL(cell_index, symbols->cells.size());
+                        ++new_claim_deliveries;
+                    }
+                }
+                if (o.stage == test::DeliveryStage::admission_callback && o.fetch_id == saved_a.fetch_id)
+                    ++a_notifications;
+                if (o.stage == test::DeliveryStage::result_callback && o.fetch_id == saved_b.fetch_id) {
+                    ++late_b_results; BOOST_REQUIRE(stale_result_baseline);
+                    BOOST_CHECK(o.traffic_class == test::TrafficClass::body_result);
+                    BOOST_CHECK(o.disposition == test::ApplicationDisposition::stale);
+                    BOOST_CHECK(o.result == BodyStatus::not_found); BOOST_CHECK(o.item == b);
+                    const auto s = h.stats(0);
+                    BOOST_REQUIRE(last_body_result_call);
+                    BOOST_CHECK_EQUAL(last_body_result_call->first, o.time);
+                    BOOST_CHECK_EQUAL(last_body_result_call->second, s.last_call.call_sequence);
+                    BOOST_CHECK(s.probation == stale_result_baseline->probation);
+                    BOOST_CHECK(s.rejected == stale_result_baseline->rejected);
+                    BOOST_CHECK(s.local_rejected == stale_result_baseline->local_rejected);
+                    BOOST_CHECK_EQUAL(s.unavailable_marks, stale_result_baseline->unavailable_marks);
+                    BOOST_CHECK(std::none_of(s.last_call.actions.begin(), s.last_call.actions.end(),
+                        [](const ActionAudit &action) { return action.kind == ActionKind::misbehaved; }));
+                }
+            });
+            failures_enabled = true;
+            BOOST_REQUIRE(h.run_until([](const test::Host &host) {
+                return host.stats(0).suspended_unadmitted;
+            }, h.now() + 1000000, 1000000));
+            BOOST_REQUIRE(before_suspension); BOOST_REQUIRE(after_suspension);
+            const auto &before = *before_suspension; const auto &after = *after_suspension;
+            BOOST_CHECK_EQUAL(table_size(before), 144U); BOOST_CHECK_EQUAL(table_size(after), 144U);
+            const auto named = outcome == BodyStatus::not_found ? Limit::probation :
+                               outcome == BodyStatus::invalid ? Limit::rejected : Limit::local_rejected;
+            BOOST_CHECK_GT(after.limit_hits[std::size_t(named)] + after.limit_hits[std::size_t(Limit::unavailable)],
+                           before.limit_hits[std::size_t(named)] + before.limit_hits[std::size_t(Limit::unavailable)]);
+            const auto before_a = fetch(before, a), after_a = fetch(after, a);
+            BOOST_REQUIRE(before_a != before.fetches.end()); BOOST_REQUIRE(after_a != after.fetches.end());
+            BOOST_CHECK(after_a->state == FetchState::awaiting_admission);
+            BOOST_CHECK_EQUAL(after_a->fetch_id, saved_a.fetch_id);
+            BOOST_CHECK_EQUAL(after_a->peer, saved_a.peer);
+            BOOST_CHECK(after_a->expected_tx_hash == saved_a.expected_tx_hash);
+            BOOST_CHECK(after_a->tip_context == saved_a.tip_context);
+            BOOST_CHECK(std::find(after.pending.begin(), after.pending.end(), a) != after.pending.end());
+            const auto cb = confidence(before, a), ca = confidence(after, a);
+            BOOST_REQUIRE(cb != before.confidence.end()); BOOST_REQUIRE(ca != after.confidence.end());
+            BOOST_CHECK_NE(cb->lambda, 0.0); BOOST_CHECK_EQUAL(ca->lambda, cb->lambda);
+            BOOST_REQUIRE(fetch(before, b) != before.fetches.end());
+            BOOST_CHECK(fetch(after, b) == after.fetches.end());
+            BOOST_CHECK(std::find(after.pending.begin(), after.pending.end(), b) == after.pending.end());
+            BOOST_CHECK(confidence(after, b) == after.confidence.end());
+            const auto union_size = [](const Stats &s) {
+                std::set<ShortId> ids(s.pending.begin(), s.pending.end());
+                for (const auto &f : s.fetches) ids.insert(f.item);
+                return ids.size();
+            };
+            BOOST_CHECK_LE(union_size(after), union_size(before));
+            BOOST_CHECK_LE(union_size(after), 36U);
+            BOOST_CHECK_EQUAL(h.truth(0).count(a), 1U); BOOST_CHECK(h.projected_truth(0).empty());
+            const auto fetches_at_suspension = fetch_actions;
+            new_claim_phase = true;
+            BOOST_REQUIRE(h.run_until([&](const test::Host &) { return new_claim_deliveries > 0; }, h.now() + 10000));
+            BOOST_CHECK_GT(new_claim_responses, 0U);
+            BOOST_CHECK_EQUAL(fetch_actions, fetches_at_suspension);
+            const auto claimed = h.stats(0);
+            BOOST_CHECK(std::find(claimed.pending.begin(), claimed.pending.end(), new_claim) == claimed.pending.end());
+            BOOST_CHECK(fetch(claimed, new_claim) == claimed.fetches.end());
+            replies_enabled = false;
+            const auto quiescing = h.stats(0); const auto cq = confidence(quiescing, a);
+            BOOST_REQUIRE(cq != quiescing.confidence.end()); const auto current_lambda = cq->lambda;
+            h.disconnect_peer(0, peer_a); h.disconnect_peer(0, peer_b); h.disconnect_peer(0, peer_failure);
+            h.timer(0); h.run_for(5000);
+            const auto quiet = h.stats(0); const auto quiet_a = fetch(quiet, a); const auto quiet_c = confidence(quiet, a);
+            BOOST_REQUIRE(quiet_a != quiet.fetches.end()); BOOST_REQUIRE(quiet_c != quiet.confidence.end());
+            BOOST_CHECK_EQUAL(quiet_a->fetch_id, saved_a.fetch_id);
+            BOOST_CHECK(quiet_a->expected_tx_hash == saved_a.expected_tx_hash);
+            BOOST_CHECK_EQUAL(quiet_c->lambda, current_lambda);
+            BOOST_CHECK(std::find(quiet.pending.begin(), quiet.pending.end(), a) != quiet.pending.end());
+            BOOST_CHECK_EQUAL(fetch_actions, fetches_at_suspension);
+            if (tip_ending) {
+                h.change_tip(0, test::default_tip(1)); // explicit empty survivors
+                const auto reset = h.stats(0);
+                BOOST_CHECK(!reset.suspended_unadmitted); BOOST_CHECK(reset.fetches.empty());
+                BOOST_CHECK(reset.pending.empty()); BOOST_CHECK(reset.confidence.empty());
+                BOOST_CHECK(reset.probation.empty()); BOOST_CHECK(reset.rejected.empty());
+                BOOST_CHECK(reset.local_rejected.empty()); BOOST_CHECK(reset.unavailable.empty());
+                BOOST_CHECK(h.truth(0).empty()); BOOST_CHECK(h.projected_truth(0).empty());
+            } else {
+                h.admit(0, body_a); // flush exactly the already-real matching admission
+                const auto admitted = h.stats(0); const auto c = confidence(admitted, a);
+                BOOST_REQUIRE(c != admitted.confidence.end()); BOOST_CHECK(c->admitted);
+                BOOST_CHECK_EQUAL(c->lambda, current_lambda);
+                BOOST_CHECK(fetch(admitted, a) == admitted.fetches.end());
+                BOOST_CHECK(std::find(admitted.pending.begin(), admitted.pending.end(), a) == admitted.pending.end());
+                BOOST_CHECK(admitted.suspended_unadmitted);
+                BOOST_CHECK_EQUAL(h.projected_truth(0).count(a), 1U);
+                BOOST_CHECK_EQUAL(a_notifications, 1U);
+            }
+            stale_result_baseline = h.stats(0);
+            h.run_for(4000000, 1000000); // B's stale result and A's delayed duplicate/canceled notification
+            BOOST_CHECK_EQUAL(late_b_results, 1U); BOOST_CHECK_EQUAL(a_notifications, tip_ending ? 0U : 1U);
+            BOOST_CHECK_EQUAL(fetch_actions, fetches_at_suspension);
+            const auto final = h.stats(0); allocation_bounds(final);
+            if (tip_ending) {
+                BOOST_CHECK(final.own_ids.empty()); BOOST_CHECK(final.pending.empty());
+                BOOST_CHECK(final.fetches.empty()); BOOST_CHECK(final.confidence.empty());
+            } else {
+                const auto c = confidence(final, a); BOOST_REQUIRE(c != final.confidence.end());
+                BOOST_CHECK_EQUAL(c->lambda, current_lambda); BOOST_CHECK(c->admitted);
+                BOOST_CHECK(final.suspended_unadmitted); BOOST_CHECK(final.fetches.empty());
+            }
+        }
+    }
+}
 BOOST_AUTO_TEST_SUITE_END()
