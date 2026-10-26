@@ -942,4 +942,187 @@ BOOST_AUTO_TEST_CASE(T8_same_session_negative_then_positive_reachability_trace) 
     BOOST_CHECK(has_id(node.stats().own_ids, w));
 }
 
+BOOST_AUTO_TEST_CASE(T8_pending_depends_on_current_fetch_or_live_decode_provenance) {
+    // A paired finite counterexample, not an asymptotic storage proof. Ancient
+    // decode history must neither enable own-removal assumptions nor gate a
+    // current Done-only fetch. The independent host audits bounded ownership.
+    for (bool ancient_decode : {false, true}) {
+        BOOST_TEST_CONTEXT("ancient positive decode=" << ancient_decode) {
+            Host host(0x70656e646c697665ULL + ancient_decode, 2, 32);
+            auto body = make_body(0x70656e646974656dULL);
+            const auto id = short_id(default_tip().key, body->tx_hash());
+            host.admit(1, body);
+            if (ancient_decode) {
+                const auto old = host.connect(0, 1);
+                BOOST_REQUIRE(host.run_until([id](const Host &h) {
+                    return h.projected_truth(0).contains(id);
+                }, host.now() + 100000));
+                bool positive_witness = false;
+                for (const auto &o : host.observations()) {
+                    if (o.node != 0) continue;
+                    for (const auto &d : o.after.last_call.decodes)
+                        if (d.peer == old.left_peer)
+                            for (const auto &item : to_oracle(d.decode.decoded))
+                                if (item.item == id && item.sign == 1) positive_witness = true;
+                }
+                BOOST_REQUIRE(positive_witness);
+                host.disconnect(old);
+                host.remove(0, id, RemovalReason::expiry);
+                BOOST_CHECK(host.stats(0).pending.empty());
+                BOOST_CHECK(host.stats(0).fetches.empty());
+                BOOST_CHECK(host.stats(0).donors.empty());
+                for (const auto &peer : host.stats(0).peers) {
+                    BOOST_CHECK(peer.plus.empty());
+                    BOOST_CHECK(peer.residuals.empty());
+                }
+            }
+            host.admit(0, body); // independent admission in both histories
+            const auto limits = host.stats(0).limits;
+            SessionId session = 0;
+            std::size_t delivered_requests = 0, delivered_responses = 0;
+            host.observe_delivery([&](const DeliveryObservation &event) {
+                if (event.traffic_class != TrafficClass::reconciliation ||
+                    event.stage != DeliveryStage::arrived ||
+                    event.disposition != ApplicationDisposition::delivered_to_core) return;
+                auto parsed = parse(event.bytes, limits);
+                BOOST_REQUIRE(parsed.error == Error::ok && parsed.message);
+                if (const auto *req = std::get_if<ReconReq>(&*parsed.message)) {
+                    if (req->session_id == session && event.receiver == NodeId{1})
+                        ++delivered_requests;
+                } else if (const auto *reply = std::get_if<ReconSymbols>(&*parsed.message)) {
+                    if (reply->session_id == session && event.receiver == NodeId{0})
+                        ++delivered_responses;
+                }
+            });
+            const auto link = host.connect(0, 1);
+            for (const auto &peer : host.stats(0).peers)
+                if (peer.peer == link.left_peer) session = peer.session_id;
+            BOOST_REQUIRE_NE(session, 0U);
+            BodyRule delayed; delayed.body = body; delayed.result_delay = 50000;
+            host.body_rule(0, link.left_peer, id, delayed);
+            host.remove(0, id, RemovalReason::trim); // before any response arrives
+            const auto removed = host.stats(0);
+            BOOST_CHECK_EQUAL(delivered_responses, 0U);
+            BOOST_CHECK(!has_id(removed.own_ids, id));
+            BOOST_CHECK(!has_id(removed.pending, id));
+            BOOST_CHECK(removed.fetches.empty());
+            bool own_removal_plus = false;
+            for (const auto &peer : removed.peers)
+                if (peer.peer == link.left_peer && peer.state == SessionState::open)
+                    own_removal_plus = has_id(peer.plus, id);
+            BOOST_REQUIRE(own_removal_plus);
+            const auto call_boundary = removed.last_call.call_sequence;
+            BOOST_REQUIRE(host.run_until([id](const Host &h) {
+                for (const auto &fetch : h.stats(0).fetches)
+                    if (fetch.item == id && fetch.state == FetchState::in_flight) return true;
+                return false;
+            }, host.now() + 10000));
+            BOOST_CHECK_GT(delivered_requests, 0U);
+            BOOST_CHECK_GT(delivered_responses, 0U);
+            bool done_witness = false, fetch_action_witness = false;
+            for (const auto &completion : host.completions()) {
+                if (completion.node != 0 || completion.audit.peer != link.left_peer ||
+                    completion.audit.session_id != session) continue;
+                BOOST_CHECK(completion.audit.state == SessionState::done);
+                BOOST_CHECK(completion.raw == IdSet{id});
+                BOOST_CHECK(IdSet(completion.audit.reference.begin(),
+                                  completion.audit.reference.end()) == IdSet{id});
+                done_witness = true;
+            }
+            for (const auto &o : host.observations()) {
+                if (o.node != 0 || o.after.last_call.call_sequence <= call_boundary) continue;
+                for (const auto &d : o.after.last_call.decodes)
+                    if (d.peer == link.left_peer && d.session_id == session)
+                        for (const auto &item : to_oracle(d.decode.decoded))
+                            BOOST_CHECK(item.item != id || item.sign != 1);
+                for (const auto &action : o.actions)
+                    if (const auto *fetch = std::get_if<FetchBody>(&action))
+                        if (fetch->peer == link.left_peer && fetch->short_id == id)
+                            fetch_action_witness = true;
+            }
+            BOOST_REQUIRE(done_witness && fetch_action_witness);
+            const auto supported = host.stats(0);
+            BOOST_CHECK(has_id(supported.pending, id));
+            BOOST_REQUIRE_EQUAL(supported.fetches.size(), 1U);
+            BOOST_CHECK_EQUAL(supported.fetches.front().item, id);
+            BOOST_CHECK_EQUAL(supported.fetches.front().peer, link.left_peer);
+            BOOST_CHECK(!host.projected_truth(0).contains(id));
+            host.disconnect(link);
+            BOOST_CHECK(host.stats(0).fetches.empty());
+            BOOST_CHECK(!has_id(host.stats(0).pending, id));
+            host.audit();
+        }
+    }
+
+    // Current positive-decode provenance belongs to the still-open plus entry,
+    // survives admission, and becomes relevant again after last-body removal.
+    // Copied Pending and own-removal plus are not equivalent provenance.
+    Host host(0x70656e6466726573ULL, 1, 32);
+    const auto body = collision_bodies()[0];
+    constexpr ShortId x = collision_id;
+    const auto limits = host.stats(0).limits;
+    std::size_t delivered_symbols = 0;
+    host.observe_delivery([&](const DeliveryObservation &event) {
+        if (event.traffic_class != TrafficClass::reconciliation ||
+            event.stage != DeliveryStage::arrived ||
+            event.disposition != ApplicationDisposition::delivered_to_core) return;
+        const auto parsed = parse(event.bytes, limits);
+        BOOST_REQUIRE(parsed.error == Error::ok && parsed.message);
+        if (std::holds_alternative<ReconSymbols>(*parsed.message)) ++delivered_symbols;
+    });
+    const auto peer = host.connect_wire(0, [limits](const WireInput &input) {
+        auto parsed = parse(input.bytes, limits);
+        BOOST_REQUIRE(parsed.error == Error::ok && parsed.message);
+        const auto *req = std::get_if<ReconReq>(&*parsed.message);
+        if (!req) return std::vector<WireReply>{};
+        ReconSymbols reply;
+        reply.tip_context = req->tip_context; reply.session_id = req->session_id;
+        reply.request_id = req->request_id; reply.poll_id = req->poll_id;
+        reply.snapshot_seq = 1; reply.current_seq = 1; reply.ranges = req->ranges;
+        reply.root_vote.fill(0xa7); reply.exclusion_version = 1;
+        reply.exclusions = std::vector<ShortId>{};
+        for (const auto &range : req->ranges) {
+            for (auto i = range.begin; i < range.end; ++i) {
+                if (i <= 1) reply.cells.push_back(to_core(
+                    snowstorm_oracle::encode({x, 3, 4}, i, i + 1).front()));
+                else reply.cells.push_back(Cell{0, 0, 1, 0});
+            }
+        }
+        Bytes bytes;
+        BOOST_REQUIRE(serialize(Message{reply}, limits, bytes) == Error::ok);
+        return std::vector<WireReply>{{std::move(bytes), 500}};
+    });
+    BodyRule deferred; deferred.body = body; deferred.result_delay = 50000;
+    host.body_rule(0, peer, x, deferred);
+    BodyRule unavailable; unavailable.status = BodyStatus::not_found;
+    unavailable.binding = BodyBinding::unbound; unavailable.deliver_admission = false;
+    unavailable.result_delay = 50000;
+    host.body_rule(0, peer, 3, unavailable); host.body_rule(0, peer, 4, unavailable);
+    BOOST_REQUIRE(host.run_until([](const Host &h) { return has_id(h.stats(0).pending, x); },
+                                 10000));
+    BOOST_CHECK_GT(delivered_symbols, 0U);
+    bool fresh_positive = false;
+    for (const auto &o : host.observations())
+        for (const auto &d : o.after.last_call.decodes)
+            if (d.peer == peer)
+                for (const auto &item : to_oracle(d.decode.decoded))
+                    if (item.item == x && item.sign == 1) fresh_positive = true;
+    BOOST_REQUIRE(fresh_positive);
+    BOOST_REQUIRE_EQUAL(host.stats(0).peers.size(), 1U);
+    BOOST_REQUIRE(host.stats(0).peers.front().state == SessionState::open);
+    BOOST_CHECK(has_id(host.stats(0).peers.front().plus, x));
+    host.admit(0, body);
+    BOOST_CHECK(!has_id(host.stats(0).pending, x));
+    for (const auto &fetch : host.stats(0).fetches) BOOST_CHECK_NE(fetch.item, x);
+    host.remove(0, x, RemovalReason::expiry);
+    BOOST_CHECK(has_id(host.stats(0).pending, x));
+    for (const auto &fetch : host.stats(0).fetches) BOOST_CHECK_NE(fetch.item, x);
+    BOOST_REQUIRE(host.stats(0).peers.front().state == SessionState::open);
+    BOOST_CHECK(has_id(host.stats(0).peers.front().plus, x));
+    host.disconnect_peer(0, peer);
+    BOOST_CHECK(!has_id(host.stats(0).pending, x));
+    BOOST_CHECK(host.stats(0).fetches.empty());
+    host.audit();
+}
+
 BOOST_AUTO_TEST_SUITE_END()

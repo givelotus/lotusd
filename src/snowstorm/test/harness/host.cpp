@@ -76,6 +76,9 @@ public:
     };
     struct ModelExpectation {
         std::set<ShortId> plus, minus;
+        // Provenance belongs only to an actual positive decode in this model.
+        // Copying an assumption or retaining an own removal does not create it.
+        std::set<ShortId> decoded_plus;
         bool open{true};
     };
     using ModelKey = std::pair<PeerId, SessionId>;
@@ -100,8 +103,8 @@ public:
         std::optional<FetchId> largest_fetch_token;
         bool expected_rejection_suspension{};
         std::map<ModelKey, ModelExpectation> expected_models;
-        std::set<ShortId> previous_projected, decoded_positive,
-            expected_probation, expected_local_rejected;
+        std::set<ShortId> previous_projected, expected_probation,
+            expected_local_rejected;
         std::set<std::pair<PeerId, ShortId>> expected_unavailable;
         std::set<ModelKey> must_release;
         bool tip_reset_pending{};
@@ -274,21 +277,25 @@ public:
         std::set<ShortId> pending;
         const auto &owner = node(n);
         const auto own = projected_truth(n);
-        for (auto id : owner.decoded_positive) {
-            if (own.contains(id) || owner.expected_rejected.contains(id) ||
-                owner.expected_probation.contains(id) ||
-                owner.expected_local_rejected.contains(id))
-                continue;
-            bool supported =
-                has_fetch_support(n, id, owner.expected_rejection_suspension);
-            if (!owner.expected_rejection_suspension)
-                for (const auto &[key, model] : owner.expected_models) {
-                    supported =
-                        supported ||
-                        (model.open && !owner.must_release.contains(key) &&
-                         model.plus.contains(id));
-                }
-            if (supported) pending.insert(id);
+        for (const auto &[token, fetch] : owner.expected_fetches) {
+            (void)token;
+            if (fetch.generation == owner.generation &&
+                (!owner.expected_rejection_suspension || fetch.awaiting))
+                pending.insert(fetch.item);
+        }
+        if (!owner.expected_rejection_suspension)
+            for (const auto &[key, model] : owner.expected_models) {
+                if (!model.open || owner.must_release.contains(key)) continue;
+                for (auto id : model.decoded_plus)
+                    if (model.plus.contains(id)) pending.insert(id);
+            }
+        for (auto it = pending.begin(); it != pending.end();) {
+            if (own.contains(*it) || owner.expected_rejected.contains(*it) ||
+                owner.expected_probation.contains(*it) ||
+                owner.expected_local_rejected.contains(*it))
+                it = pending.erase(it);
+            else
+                ++it;
         }
         return pending;
     }
@@ -303,6 +310,7 @@ public:
     void revoke_assumption(NodeId n, ShortId id) {
         auto &owner = node(n);
         for (auto &[key, model] : owner.expected_models) {
+            model.decoded_plus.erase(id);
             if (model.plus.erase(id)) owner.must_release.insert(key);
         }
     }
@@ -371,6 +379,7 @@ public:
                 for (auto it = model.plus.begin(); it != model.plus.end();) {
                     const bool awaiting = has_fetch_support(n, *it, true);
                     if (!own.contains(*it) && !awaiting) {
+                        model.decoded_plus.erase(*it);
                         it = model.plus.erase(it);
                         owner.must_release.insert(key);
                     } else
@@ -507,10 +516,11 @@ public:
                                           item.item))),
                                 "forbidden speculative positive mutation "
                                 "committed");
-                        owner.decoded_positive.insert(item.item);
+                        model.decoded_plus.insert(item.item);
                         model.minus.erase(item.item);
                         model.plus.insert(item.item);
                     } else {
+                        model.decoded_plus.erase(item.item);
                         model.plus.erase(item.item);
                         model.minus.insert(item.item);
                     }
@@ -538,8 +548,10 @@ public:
                                 model_reference(n, model),
                             "Done reference differs from independently "
                             "replayed reference");
-                    for (auto id : own)
+                    for (auto id : own) {
+                        model.decoded_plus.erase(id);
                         model.plus.erase(id);
+                    }
                     for (auto it = model.minus.begin();
                          it != model.minus.end();) {
                         if (!own.contains(*it))
@@ -549,6 +561,7 @@ public:
                     }
                 }
                 model.open = false;
+                model.decoded_plus.clear();
                 if (complete.state != SessionState::done &&
                     complete.state != SessionState::root_matched)
                     owner.must_release.insert(
@@ -1403,7 +1416,6 @@ public:
                 if (result.status == BodyStatus::invalid &&
                     result.binding == BodyBinding::matched) {
                     owner.expected_probation.erase(fetch.item);
-                    owner.decoded_positive.erase(fetch.item);
                     revoke_assumption(n, fetch.item);
                 } else if (result.status == BodyStatus::not_found ||
                            (result.status == BodyStatus::invalid &&
@@ -1773,7 +1785,6 @@ void Host::change_tip(NodeId n, TipParams tip, bool disconnected) {
     p.expected_rejected.clear();
     p.expected_fetches.clear();
     p.expected_rejection_suspension = false;
-    p.decoded_positive.clear();
     p.expected_probation.clear();
     p.expected_local_rejected.clear();
     p.expected_unavailable.clear();
