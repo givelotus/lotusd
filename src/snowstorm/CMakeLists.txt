@@ -13,6 +13,8 @@ add_library(snowstorm STATIC
     src/peeler_engine.cpp
     src/messages.cpp
     src/limits.cpp
+    src/short_id.cpp
+    src/setstore.cpp
 )
 target_compile_features(snowstorm PUBLIC cxx_std_20)
 target_include_directories(snowstorm PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")

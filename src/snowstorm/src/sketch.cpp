@@ -3,6 +3,7 @@
 #include <snowstorm/sketch.h>
 #include <snowstorm/schedule.h>
 #include "aligned_array.h"
+#include "sketch_engine.h"
 #include <algorithm>
 #include <bit>
 #include <limits>
@@ -65,6 +66,8 @@ public:
         slots_[hole] = {};
     }
     void clear() noexcept { std::fill(slots_.begin(), slots_.end(), Slot{}); }
+    std::size_t slot_capacity() const noexcept { return slots_.capacity(); }
+    static constexpr std::size_t slot_bytes() noexcept { return sizeof(Slot); }
 };
 }
 Error encode(std::span<const ShortId> items, Range range, std::span<Cell> output) noexcept {
@@ -81,7 +84,7 @@ Error encode(std::span<const ShortId> items, Range range, std::span<Cell> output
     for (const auto item : items) encode_item(item_powers(item), range, output);
     return Error::ok;
 }
-class SketchCache::Impl {
+class detail::SketchEngine::Impl {
 public:
     std::size_t max_items;
     std::size_t max_symbols;
@@ -132,26 +135,26 @@ public:
         indices[pos] = index; put(pos, cell); ++symbols;
     }
 };
-SketchCache::SketchCache(std::size_t max_items, std::size_t max_symbols, SymbolIndex maximum) {
+detail::SketchEngine::SketchEngine(std::size_t max_items, std::size_t max_symbols, SymbolIndex maximum) {
     if (max_items > MAX_ITEMS || maximum >= INDEX_BOUND || max_symbols > maximum + 1) {
         throw std::invalid_argument("invalid Snowstorm sketch capacity or index bound");
     }
     impl_ = std::make_unique<Impl>(max_items, max_symbols, maximum);
 }
-SketchCache::~SketchCache() = default;
-SketchCache::SketchCache(SketchCache &&) noexcept = default;
-SketchCache &SketchCache::operator=(SketchCache &&) noexcept = default;
-void SketchCache::clear() noexcept {
+detail::SketchEngine::~SketchEngine() = default;
+detail::SketchEngine::SketchEngine(SketchEngine &&) noexcept = default;
+detail::SketchEngine &detail::SketchEngine::operator=(SketchEngine &&) noexcept = default;
+void detail::SketchEngine::clear() noexcept {
     impl_->items.clear(); impl_->lookup.clear(); impl_->symbols = 0;
 }
-Error SketchCache::cache_range(Range range) noexcept {
+Error detail::SketchEngine::cache_range(Range range) noexcept {
     if (range.begin > range.end || range.end > impl_->maximum + 1) return Error::invalid_range;
     const auto already = impl_->lower(range.end) - impl_->lower(range.begin);
     if (range.end - range.begin - already > impl_->max_symbols - impl_->symbols) return Error::capacity;
     for (auto index = range.begin; index < range.end; ++index) impl_->insert_symbol(index);
     return Error::ok;
 }
-Error SketchCache::add(ShortId item) noexcept {
+Error detail::SketchEngine::add(ShortId item) noexcept {
     if (item == 0) return Error::invalid_id;
     if (impl_->lookup.find(item)) return Error::duplicate;
     if (impl_->items.size() == impl_->max_items) return Error::capacity;
@@ -160,7 +163,7 @@ Error SketchCache::add(ShortId item) noexcept {
     impl_->update(powers, Sign::positive);
     return Error::ok;
 }
-Error SketchCache::remove(ShortId item) noexcept {
+Error detail::SketchEngine::remove(ShortId item) noexcept {
     const auto pos = impl_->lookup.find(item);
     if (!pos) return Error::not_found;
     impl_->update(impl_->items[*pos], Sign::negative);
@@ -171,9 +174,9 @@ Error SketchCache::remove(ShortId item) noexcept {
     impl_->items.pop_back();
     return Error::ok;
 }
-std::size_t SketchCache::size() const noexcept { return impl_->items.size(); }
-bool SketchCache::contains(ShortId item) const noexcept { return impl_->lookup.find(item).has_value(); }
-Error SketchCache::encode(Range range, std::span<Cell> output) const noexcept {
+std::size_t detail::SketchEngine::size() const noexcept { return impl_->items.size(); }
+bool detail::SketchEngine::contains(ShortId item) const noexcept { return impl_->lookup.find(item).has_value(); }
+Error detail::SketchEngine::encode(Range range, std::span<Cell> output) const noexcept {
     const auto valid = check_range(range, impl_->maximum, output.size());
     if (valid != Error::ok) return valid;
     const auto first = impl_->lower(range.begin);
@@ -185,9 +188,48 @@ Error SketchCache::encode(Range range, std::span<Cell> output) const noexcept {
     for (const auto &powers : impl_->items) encode_item(powers, range, output);
     return Error::ok;
 }
-SketchView SketchCache::view() const noexcept {
+SketchView detail::SketchEngine::view() const noexcept {
     const auto n = impl_->symbols;
     return {{impl_->indices.get(), n}, {impl_->counts.get(), n}, {impl_->s1.get(), n},
             {impl_->s3.get(), n}, {impl_->s5.get(), n}};
 }
+void detail::SketchEngine::reserve_symbols(std::size_t count) {
+    if (count <= impl_->max_symbols) return;
+    if (count > impl_->maximum + 1) throw std::invalid_argument("invalid sketch symbol growth");
+    auto indices = detail::aligned_array<SymbolIndex>(count);
+    auto counts = detail::aligned_array<std::int32_t>(count);
+    auto first = detail::aligned_array<std::uint64_t>(count);
+    auto third = detail::aligned_array<std::uint64_t>(count);
+    auto fifth = detail::aligned_array<std::uint64_t>(count);
+    for (std::size_t i = 0; i < impl_->symbols; ++i) {
+        indices[i] = impl_->indices[i]; counts[i] = impl_->counts[i];
+        first[i] = impl_->s1[i]; third[i] = impl_->s3[i]; fifth[i] = impl_->s5[i];
+    }
+    impl_->indices = std::move(indices); impl_->counts = std::move(counts);
+    impl_->s1 = std::move(first); impl_->s3 = std::move(third); impl_->s5 = std::move(fifth);
+    impl_->max_symbols = count;
+}
+std::size_t detail::SketchEngine::allocated_bytes() const noexcept {
+    return memory().requested_bytes();
+}
+detail::SketchMemory detail::SketchEngine::memory() const noexcept {
+    return {sizeof(Impl), impl_->items.capacity(), impl_->lookup.slot_capacity(), ItemIndex::slot_bytes(), impl_->max_symbols};
+}
+class SketchCache::Impl : public detail::SketchEngine {
+public:
+    using SketchEngine::SketchEngine;
+};
+SketchCache::SketchCache(std::size_t max_items, std::size_t max_symbols, SymbolIndex maximum)
+    : impl_(std::make_unique<Impl>(max_items, max_symbols, maximum)) {}
+SketchCache::~SketchCache() = default;
+SketchCache::SketchCache(SketchCache &&) noexcept = default;
+SketchCache &SketchCache::operator=(SketchCache &&) noexcept = default;
+void SketchCache::clear() noexcept { impl_->clear(); }
+Error SketchCache::cache_range(Range range) noexcept { return impl_->cache_range(range); }
+Error SketchCache::add(ShortId item) noexcept { return impl_->add(item); }
+Error SketchCache::remove(ShortId item) noexcept { return impl_->remove(item); }
+std::size_t SketchCache::size() const noexcept { return impl_->size(); }
+bool SketchCache::contains(ShortId item) const noexcept { return impl_->contains(item); }
+Error SketchCache::encode(Range range, std::span<Cell> output) const noexcept { return impl_->encode(range, output); }
+SketchView SketchCache::view() const noexcept { return impl_->view(); }
 } // namespace snowstorm
