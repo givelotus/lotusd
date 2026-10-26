@@ -15,6 +15,10 @@ foreach(FEATURE WALLET CLI TX SEEDER CHAINSTATE IGUANA)
 endforeach()
 
 option(BUILD_WALLET "Activate the wallet functionality" ON)
+
+# snowstorm-frozen:option:begin
+option(ENABLE_SNOWSTORM "Build the Snowstorm reconciliation core and contract tests" OFF)
+# snowstorm-frozen:option:end
 if(BUILD_ZMQ)
 	message(FATAL_ERROR "ZeroMQ is not part of Lotus V2; remove -DBUILD_ZMQ=ON")
 endif()
@@ -831,6 +835,12 @@ endif()
 add_subdirectory(test)
 add_subdirectory(avalanche/test)
 add_subdirectory(pow/test)
+
+# snowstorm-frozen:registration:begin
+if(ENABLE_SNOWSTORM)
+	add_subdirectory(snowstorm)
+endif()
+# snowstorm-frozen:registration:end
 
 # Benchmark suite.
 add_subdirectory(bench)
