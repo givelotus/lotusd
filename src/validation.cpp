@@ -284,6 +284,15 @@ class NativeAdmissionPreparation {
     int m_consensus_sigchecks{0};
     mutable bool m_reused GUARDED_BY(cs_main){false};
 
+    static bool SameCoin(const Coin &current, const Coin &prepared) {
+        return !current.IsSpent() && !prepared.IsSpent() &&
+               current.GetTxOut() == prepared.GetTxOut() &&
+               current.GetHeight() == prepared.GetHeight() &&
+               current.IsCoinBase() == prepared.IsCoinBase() &&
+               current.nFeePerOutput == prepared.nFeePerOutput &&
+               current.nExpirationHeight == prepared.nExpirationHeight;
+    }
+
     NativeAdmissionPreparation(const CTransaction &tx,
                               const node::ChainAndMempoolSnapshot &snapshot,
                               const lotus::v2::ChainId &chain,
@@ -317,6 +326,21 @@ public:
             chainstate.m_chainman.GetParams().V2ChainId() == m_chain_id &&
             GetActiveV2ChainId() == m_chain_id && m_rules == Rules::Current();
     }
+    /** The sigcheck count to reuse if `coins` are exactly the prepared coins. */
+    std::optional<int> MatchResolved(const CTransaction &tx,
+                                     const std::vector<Coin> &coins) const
+        EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+        AssertLockHeld(cs_main);
+        if (coins.size() != m_coins.size() || coins.size() != tx.vin.size()) {
+            return std::nullopt;
+        }
+        for (size_t i = 0; i < coins.size(); ++i) {
+            if (tx.vin[i].nFlags != 1 || !SameCoin(coins[i], m_coins[i])) {
+                return std::nullopt;
+            }
+        }
+        return m_standard_sigchecks;
+    }
     std::optional<int> Match(const CTransaction &tx,
                             const CCoinsViewCache &view, uint32_t flags) const
         EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
@@ -332,14 +356,7 @@ public:
             // Current preparation supports real native spends only. Mint
             // slots are not UTXOs and must never be looked up as if they were.
             if (tx.vin[i].nFlags != 1) return std::nullopt;
-            const Coin &current = view.AccessCoin(tx.vin[i].prevout);
-            const Coin &prepared = m_coins[i];
-            if (current.IsSpent() || prepared.IsSpent() ||
-                current.GetTxOut() != prepared.GetTxOut() ||
-                current.GetHeight() != prepared.GetHeight() ||
-                current.IsCoinBase() != prepared.IsCoinBase() ||
-                current.nFeePerOutput != prepared.nFeePerOutput ||
-                current.nExpirationHeight != prepared.nExpirationHeight) {
+            if (!SameCoin(view.AccessCoin(tx.vin[i].prevout), m_coins[i])) {
                 return std::nullopt;
             }
         }
@@ -2568,6 +2585,24 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
         const CTransaction &tx = *ws.m_ptx;
         const uint32_t scriptVerifyFlags =
             ws.m_next_block_script_verify_flags | STANDARD_SCRIPT_VERIFY_FLAGS;
+        // Signatures verified before the lock count only if nothing they relied
+        // on has changed: same tip, flags and chain, and identical coins.
+        if (precomputed_batch != nullptr && idx < precomputed_batch->size()) {
+            const auto &native = (*precomputed_batch)[idx].native;
+            if (native &&
+                native->MatchesContext(tx, m_active_chainstate, m_pool,
+                                       ws.m_next_block_script_verify_flags)) {
+                if (const auto sigchecks =
+                        native->MatchResolved(tx, ws.m_resolved_inputs)) {
+                    TxSigCheckLimiter limiter;
+                    if (limiter.consume_and_check(*sigchecks)) {
+                        ws.m_sig_checks_standard = *sigchecks;
+                        native->MarkReused();
+                        continue;
+                    }
+                }
+            }
+        }
         ScriptCacheKey hashCacheEntry(
             tx, scriptVerifyFlags, val_cache.ScriptExecutionCacheHasher());
         ScriptCacheElement elem(hashCacheEntry, 0);
@@ -3699,6 +3734,55 @@ void VerifyNativeSignatureBatch(
                                signature_cache);
 }
 } // namespace
+
+void PrepareNativeRawTxBatch(ChainstateManager &chainman,
+                             const CTxMemPool &pool, const Package &txs,
+                             std::vector<PrecomputedBatchTxData> &precomputed) {
+    AssertLockNotHeld(cs_main);
+    assert(precomputed.size() == txs.size());
+    std::vector<size_t> work;
+    work.reserve(txs.size());
+    for (size_t i = 0; i < txs.size(); ++i) {
+        if (txs[i]->nVersion == 7) work.push_back(i);
+    }
+    if (work.empty()) return;
+    const auto snapshot = node::GetGlobalSnapshotPublisher().Load();
+    ValidationCache &validation_cache = chainman.m_validation_cache;
+    std::vector<PrecomputedAdmissionChecks> checks(txs.size());
+    std::vector<lotus::v2::BatchSigCollector> tx_sigs(txs.size());
+    std::atomic<size_t> next{0};
+    const size_t threads = std::clamp<size_t>(
+        std::thread::hardware_concurrency(), 1, work.size());
+    util::GetParallelRangeExecutor().Run(threads, 1, [&](size_t, size_t) {
+        for (size_t k = next.fetch_add(1, std::memory_order_relaxed);
+             k < work.size();
+             k = next.fetch_add(1, std::memory_order_relaxed)) {
+            const size_t i = work[k];
+            std::optional<std::vector<Coin>> coins;
+            uint32_t flags{0};
+            Amount fee{Amount::zero()};
+            if (PrepareNativeCryptoFromSnapshot(chainman, *txs[i], &pool,
+                                                MempoolAdmissionLimits{}, coins,
+                                                flags, fee, snapshot) &&
+                coins) {
+                checks[i].native = NativeAdmissionPreparation::Prepare(
+                    *txs[i], *snapshot, chainman.GetParams().V2ChainId(),
+                    std::move(*coins), fee, validation_cache.m_signature_cache,
+                    &tx_sigs[i]);
+            }
+        }
+    });
+    VerifyNativeSignatureBatch(work, tx_sigs, checks,
+                               validation_cache.m_signature_cache);
+    for (const size_t i : work) {
+        precomputed[i].native = std::move(checks[i].native);
+    }
+}
+
+bool NativeRawTxPreparationReused(const PrecomputedBatchTxData &precomputed) {
+    AssertLockHeld(cs_main);
+    return precomputed.native && precomputed.native->WasReused();
+}
 
 std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
     ChainstateManager &chainman, const std::vector<CTransactionRef> &txs,

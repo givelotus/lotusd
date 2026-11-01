@@ -469,10 +469,30 @@ struct PrecomputedBatchTxData {
     TxValidationState regular_tx_state;
     bool regular_tx_checked{false};
     bool regular_tx_valid{false};
+    /** Set when PrepareNativeRawTxBatch verified this native transaction. The
+     * batch uses it only if tip, flags, chain and every coin field still match;
+     * otherwise it runs the scripts itself. */
+    std::shared_ptr<const NativeAdmissionPreparation> native;
 };
 
 void PrecomputeSingleTxData(const CTransaction &tx,
                             PrecomputedBatchTxData &out);
+
+/**
+ * Verify native transactions of a raw batch against the published chain snapshot,
+ * so that the signature work happens before the caller takes cs_main. Anything
+ * the snapshot can't answer, such as a parent earlier in the same batch, is left
+ * for ProcessRawTxBatch to verify. A failure here decides nothing either: the
+ * batch checks that transaction again and reports the real reason.
+ */
+void PrepareNativeRawTxBatch(ChainstateManager &chainman,
+                             const CTxMemPool &pool, const Package &txs,
+                             std::vector<PrecomputedBatchTxData> &precomputed)
+    LOCKS_EXCLUDED(cs_main);
+
+/** Whether a batch used this preparation instead of running the scripts. */
+bool NativeRawTxPreparationReused(const PrecomputedBatchTxData &precomputed)
+    EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 /**
  * [Patch 036 optimization] Validate and optionally commit an all-or-nothing

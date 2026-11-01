@@ -897,6 +897,122 @@ static void RequireNativeScriptsUncached(ChainstateManager &chainman,
     }
 }
 
+// A raw batch prepared before cs_main may use that work only for the exact chain
+// context and coins it was prepared against.
+BOOST_FIXTURE_TEST_CASE(raw_batch_preparation_is_bound_to_tip_and_coins,
+                        TestChain100Setup) {
+    using namespace lotus::v2;
+    auto program = NativeBenchmarkProgram();
+    program.insert(program.begin(), {0x01, 0x42, 0x79});
+    Output output;
+    output.value = 1000000;
+    output.branches = {BranchLeaf(program)};
+    output.paths = {{0}};
+    const auto funding =
+        MineV2Coinbase(std::vector<CTxOut>(10, CTxOut::FromV2Output(output)));
+    auto spend = [&](uint32_t index) {
+        return MakeTransactionRef(NativeBenchmarkSpend(
+            *funding, index, {funding->vout[index].nValue - 10000 * SATOSHI}, 0,
+            program));
+    };
+    struct Outcome {
+        bool prepared;
+        bool reused;
+        bool accepted;
+        std::string reason;
+    };
+    // Prepare, let the world change, then admit. A dry run leaves the pool alone.
+    auto run = [&](const CTransactionRef &tx,
+                   const std::function<void()> &between) {
+        RequireNativeScriptsUncached(*m_node.chainman, tx);
+        WITH_LOCK(cs_main, ::node::PublishChainTipSnapshot(
+                               *m_node.chainman, m_node.mempool.get()));
+        const Package txs{tx};
+        std::vector<PrecomputedBatchTxData> pre(1);
+        PrecomputeSingleTxData(*tx, pre[0]);
+        PrepareNativeRawTxBatch(*m_node.chainman, *m_node.mempool, txs, pre);
+        const bool prepared{pre[0].native != nullptr};
+        if (between) between();
+        RequireNativeScriptsUncached(*m_node.chainman, tx);
+        LOCK(cs_main);
+        const auto result = ProcessRawTxBatch(
+            m_node.chainman->ActiveChainstate(), *m_node.mempool, txs,
+            /*test_accept=*/true, CFeeRate(Amount::zero()), &pre);
+        return Outcome{prepared, NativeRawTxPreparationReused(pre[0]),
+                       result.m_state.IsValid(),
+                       result.m_state.GetRejectReason()};
+    };
+    auto replace_coin = [&](uint32_t index, auto make) {
+        LOCK(cs_main);
+        auto &view = m_node.chainman->ActiveChainstate().CoinsTip();
+        const COutPoint previous(funding->GetId(), index);
+        const auto old = view.GetCoin(previous);
+        BOOST_REQUIRE(old);
+        ::Coin changed{make(*old)};
+        BOOST_REQUIRE(view.SpendCoin(previous));
+        view.AddCoin(previous, std::move(changed), false);
+    };
+
+    // Nothing changed: the scripts don't run again.
+    {
+        const auto outcome = run(spend(0), {});
+        BOOST_CHECK(outcome.prepared);
+        BOOST_CHECK(outcome.reused);
+        BOOST_CHECK_MESSAGE(outcome.accepted, outcome.reason);
+    }
+    // A bad signature is never reported as prepared, and the batch rejects it.
+    {
+        auto bad = CMutableTransaction(*spend(1));
+        bad.vin[0].vWitnesses[0].arguments[0][10] ^= 1;
+        const auto outcome = run(MakeTransactionRef(std::move(bad)), {});
+        BOOST_CHECK(!outcome.prepared);
+        BOOST_CHECK(!outcome.reused);
+        BOOST_CHECK(!outcome.accepted);
+    }
+    // Same output, different coin metadata: still valid, but checked again. A
+    // comparison of the output alone would reuse these.
+    for (uint32_t field = 0; field < 4; ++field) {
+        const uint32_t index{field + 2};
+        const auto outcome = run(spend(index), [&] {
+            replace_coin(index, [&](const ::Coin &old) {
+                return ::Coin(old.GetTxOut(),
+                              old.GetHeight() - (field == 0 ? 1 : 0),
+                              field == 1 ? false : old.IsCoinBase(),
+                              old.nFeePerOutput + (field == 2 ? 1 : 0),
+                              field == 3 ? 9999999 : old.nExpirationHeight);
+            });
+        });
+        BOOST_CHECK(outcome.prepared);
+        BOOST_CHECK(!outcome.reused);
+        BOOST_CHECK_MESSAGE(outcome.accepted, outcome.reason);
+    }
+    // The coin's value changed, which invalidates the signature: the verified
+    // signature must not carry over.
+    {
+        const auto outcome = run(spend(6), [&] {
+            replace_coin(6, [&](const ::Coin &old) {
+                auto changed = old.GetTxOut().ToV2Output();
+                --changed.value;
+                return ::Coin(CTxOut::FromV2Output(changed), old.GetHeight(),
+                              old.IsCoinBase(), old.nFeePerOutput,
+                              old.nExpirationHeight);
+            });
+        });
+        BOOST_CHECK(outcome.prepared);
+        BOOST_CHECK(!outcome.reused);
+        BOOST_CHECK(!outcome.accepted);
+    }
+    // A new tip voids the preparation, even though the coin is untouched.
+    {
+        const auto outcome = run(spend(7), [&] {
+            MineV2Coinbase({CTxOut::FromV2Output(output)});
+        });
+        BOOST_CHECK(outcome.prepared);
+        BOOST_CHECK(!outcome.reused);
+        BOOST_CHECK_MESSAGE(outcome.accepted, outcome.reason);
+    }
+}
+
 BOOST_FIXTURE_TEST_CASE(v2_staged_native_success_reuse_and_authoritative_fallback,
                         TestChain100Setup) {
     using namespace lotus::v2;
