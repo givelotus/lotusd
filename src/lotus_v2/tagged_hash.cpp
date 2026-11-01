@@ -27,6 +27,7 @@ constexpr std::string_view TagView(HashDomain domain) noexcept {
     case HashDomain::Utxo: return "Lotus/v2/utxo";
     case HashDomain::PreconsensusBatch: return "lotus.v2.preconsensus.batch";
     case HashDomain::State: return "Lotus/v2/state";
+    case HashDomain::HeaderHistory: return "Lotus/v2/header/history";
     case HashDomain::ContractState: return "Lotus/v2/contractstate";
     case HashDomain::SimPlaceholder: return "Lotus/v2/sim/placeholder";
     case HashDomain::VmProfile: return "Lotus/v2/vmprofile";

@@ -91,7 +91,7 @@ if(NOT TARGET Boost::headers)
     find_package(Boost 1.64 REQUIRED)
 endif()
 
-target_sources(lotus_v2_header PRIVATE header.cpp transaction.cpp monetary.cpp
+target_sources(lotus_v2_header PRIVATE header.cpp header_history.cpp transaction.cpp monetary.cpp
     deferred_checks.cpp)
 target_link_libraries(lotus_v2_header PUBLIC lotus_v2_blake3 Boost::headers)
 
