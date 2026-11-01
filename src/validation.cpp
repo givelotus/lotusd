@@ -3240,7 +3240,8 @@ bool PrepareNativeCryptoFromSnapshot(
             lotus::v2::Outpoint outpoint{};
             std::copy_n(in.prevout.GetTxId().begin(), 32, outpoint.tx_id.begin());
             outpoint.index = in.prevout.GetN();
-            const auto coin = lotus::v2::SmtFind(snapshot->tip_utxo_root, outpoint);
+            const auto *coin = lotus::v2::SmtFindBorrowed(
+                snapshot->tip_utxo_root.get(), outpoint);
             // Missing leaves may mean the publisher lags the authoritative
             // view. Explicit coverage also distinguishes an empty genesis root.
             if (!coin || coin->output.legacy_script ||

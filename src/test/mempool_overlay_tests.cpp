@@ -121,6 +121,36 @@ BOOST_AUTO_TEST_CASE(utxo_arena_reuses_imported_subtrees_and_invalidates_mutatio
     BOOST_CHECK(SmtRoot(base) == original_root);
 }
 
+BOOST_AUTO_TEST_CASE(smt_borrowed_lookup_matches_owned_lookup) {
+    using namespace lotus::v2;
+    std::vector<lotus::v2::Coin> coins(64);
+    std::shared_ptr<const SmtNode> root;
+    BOOST_CHECK(SmtFindBorrowed(nullptr, Outpoint{}) == nullptr);
+    for (size_t i = 0; i < coins.size(); ++i) {
+        auto &coin = coins[i];
+        coin.outpoint.tx_id[0] = static_cast<uint8_t>(i);
+        coin.output.value = 1000 + i;
+        coin.output.legacy_script = std::vector<uint8_t>{OP_TRUE};
+        coin.creation_height = 10;
+        coin.expiration_height = 100010;
+    }
+    SmtBatchUpdateParallel(root, {}, coins);
+    for (const auto &coin : coins) {
+        const auto owned = SmtFind(root, coin.outpoint);
+        BOOST_REQUIRE(owned);
+        const lotus::v2::Coin *borrowed = SmtFindBorrowed(root.get(), coin.outpoint);
+        BOOST_REQUIRE(borrowed != nullptr);
+        BOOST_CHECK(borrowed == owned.get());
+    }
+    Outpoint absent{};
+    absent.tx_id[0] = 200;
+    BOOST_CHECK(SmtFindBorrowed(root.get(), absent) == nullptr);
+    // The same transaction id with another index is a different coin.
+    absent = coins[0].outpoint;
+    absent.index = 9;
+    BOOST_CHECK(SmtFindBorrowed(root.get(), absent) == nullptr);
+}
+
 BOOST_AUTO_TEST_CASE(smt_lookup_preserves_pinned_snapshot_and_returned_coin) {
     using namespace lotus::v2;
     std::vector<lotus::v2::Coin> coins(128);
