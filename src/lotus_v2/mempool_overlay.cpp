@@ -568,6 +568,29 @@ void SmtBatchUpdateParallel(
     root = ZipSmtFromDepth4(0, 0, shards);
 }
 
+const Coin *SmtFindBorrowed(const SmtNode *root,
+                            const Outpoint &outpoint) noexcept {
+    if (!root) {
+        return nullptr;
+    }
+    const Hash key = OutpointKey(outpoint);
+    const SmtNode *curr = root;
+    unsigned depth = 0;
+    while (curr && depth < 256) {
+        if (curr->IsLeaf()) {
+            if (curr->key == key && curr->coin &&
+                curr->coin->outpoint == outpoint) {
+                return curr->coin.get();
+            }
+            return nullptr;
+        }
+        const unsigned bit = SmtKeyBit(key, depth);
+        curr = curr->child[bit].get();
+        ++depth;
+    }
+    return nullptr;
+}
+
 std::shared_ptr<const Coin> SmtFind(const std::shared_ptr<const SmtNode> &root,
                                     const Outpoint &outpoint) {
     // A finalized immutable root owns every descendant transitively. Pin it
