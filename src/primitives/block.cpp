@@ -1273,6 +1273,52 @@ bool AddTransactionToOverlay(lotus::v2::MerklixOverlayManager &manager,
                                    fee_sats, sigchecks);
 }
 
+lotus::v2::EpochUnionOutcome UnionTransactionIntoOverlay(
+    lotus::v2::MerklixOverlayManager &manager,
+    const CTransactionRef &ptx,
+    int64_t fee_sats,
+    int64_t sigchecks,
+    uint32_t peer_sample_support,
+    uint32_t peer_sample_size) {
+    if (!ptx || ptx->IsCoinBase()) {
+        return lotus::v2::EpochUnionOutcome::REJECTED_EPOCH_LOCKED;
+    }
+    const auto &spec = manager.GetSpeculativeOverlay();
+    lotus::v2::OverlayTxEntry entry{};
+    ExtractOverlayTxData(*ptx, spec.GetHeight(), spec.GetParentMtp(), fee_sats,
+                         entry.tx_id, entry.tx_hash, entry.linear_cost,
+                         entry.spent_outpoints, entry.created_coins);
+    entry.effective_cost = lotus::v2::TransactionEffectiveCost(
+        entry.linear_cost, kDefaultMonetaryProfile);
+    entry.fee_sats = fee_sats;
+    entry.sigchecks = sigchecks;
+    entry.payload_bytes = OverlayPayloadBytes(ptx);
+    entry.tx_ref = ptx;
+    return manager.UnionEpochTransaction(entry, peer_sample_support,
+                                         peer_sample_size);
+}
+
+bool StageTransactionIntoOverlay(lotus::v2::MerklixOverlayManager &manager,
+                                 const CTransactionRef &ptx,
+                                 int64_t fee_sats,
+                                 int64_t sigchecks) {
+    if (!ptx || ptx->IsCoinBase()) {
+        return false;
+    }
+    const auto &spec = manager.GetSpeculativeOverlay();
+    lotus::v2::OverlayTxEntry entry{};
+    ExtractOverlayTxData(*ptx, spec.GetHeight(), spec.GetParentMtp(), fee_sats,
+                         entry.tx_id, entry.tx_hash, entry.linear_cost,
+                         entry.spent_outpoints, entry.created_coins);
+    entry.effective_cost = lotus::v2::TransactionEffectiveCost(
+        entry.linear_cost, kDefaultMonetaryProfile);
+    entry.fee_sats = fee_sats;
+    entry.sigchecks = sigchecks;
+    entry.payload_bytes = OverlayPayloadBytes(ptx);
+    entry.tx_ref = ptx;
+    return manager.StageIncomingTransaction(entry);
+}
+
 size_t AddTransactionsToOverlayBatch(
     lotus::v2::MempoolOverlayLayer &overlay,
     std::span<const std::tuple<CTransactionRef, int64_t, int64_t>> txs) {

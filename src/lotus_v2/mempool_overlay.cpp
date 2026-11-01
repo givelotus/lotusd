@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstring>
 #include <thread>
 
@@ -2230,6 +2231,37 @@ bool MempoolOverlayLayer::Contains(const Hash &tx_id) const {
     return active_txs_.find(tx_id) != active_txs_.end();
 }
 
+bool MempoolOverlayLayer::SpendsOutpoint(const Outpoint &outpoint) const {
+    auto it = spent_outpoints_.find(outpoint);
+    return it != spent_outpoints_.end() && it->second > 0;
+}
+
+std::vector<Hash> MempoolOverlayLayer::FindTransactionsSpending(
+    std::span<const Outpoint> outpoints) const {
+    std::vector<Hash> matching;
+    if (outpoints.empty()) {
+        return matching;
+    }
+    for (const auto &[tx_id, entry] : active_txs_) {
+        bool matches = false;
+        for (const auto &op : entry.spent_outpoints) {
+            for (const auto &target : outpoints) {
+                if (op == target) {
+                    matches = true;
+                    break;
+                }
+            }
+            if (matches) {
+                break;
+            }
+        }
+        if (matches) {
+            matching.push_back(tx_id);
+        }
+    }
+    return matching;
+}
+
 bool MempoolOverlayLayer::AddTransaction(
     const Hash &tx_id,
     const Hash &tx_hash,
@@ -2404,7 +2436,119 @@ std::vector<Coin> MempoolOverlayLayer::GetNetInsertedCoins() const {
 // MerklixOverlayManager
 // ============================================================================
 
+Hash ComputePreconsensusTiebreakScore(const Hash &finalized_batch_id,
+                                      const Hash &tx_id) {
+    std::array<uint8_t, 64> payload{};
+    std::memcpy(payload.data(), finalized_batch_id.data(), 32);
+    std::memcpy(payload.data() + 32, tx_id.data(), 32);
+    return TaggedHash(HashDomain::PreconsensusBatch, payload);
+}
+
 MerklixOverlayManager::MerklixOverlayManager() = default;
+
+MerklixOverlayManager::MerklixOverlayManager(
+    const MerklixOverlayManager &other)
+    : next_epoch_id_(other.next_epoch_id_),
+      speculative_layer_(other.speculative_layer_),
+      frozen_epochs_(other.frozen_epochs_),
+      union_round_(other.union_round_),
+      max_unrestricted_union_rounds_(other.max_unrestricted_union_rounds_),
+      epoch_snowballed_locked_(other.epoch_snowballed_locked_),
+      conflicted_outpoints_(other.conflicted_outpoints_),
+      quarantined_txs_(other.quarantined_txs_),
+      deferred_next_epoch_txs_(other.deferred_next_epoch_txs_),
+      incoming_mempool_txs_(other.incoming_mempool_txs_),
+      active_layer_start_ns_(other.active_layer_start_ns_),
+      last_layer_convergence_ms_(
+          other.last_layer_convergence_ms_.load(std::memory_order_relaxed)),
+      quarantined_tx_count_(
+          other.quarantined_tx_count_.load(std::memory_order_relaxed)),
+      total_quarantined_events_(
+          other.total_quarantined_events_.load(std::memory_order_relaxed)),
+      late_drip_deferred_count_(
+          other.late_drip_deferred_count_.load(std::memory_order_relaxed)) {}
+
+MerklixOverlayManager &MerklixOverlayManager::operator=(
+    const MerklixOverlayManager &other) {
+    if (this != &other) {
+        next_epoch_id_ = other.next_epoch_id_;
+        speculative_layer_ = other.speculative_layer_;
+        frozen_epochs_ = other.frozen_epochs_;
+        union_round_ = other.union_round_;
+        max_unrestricted_union_rounds_ = other.max_unrestricted_union_rounds_;
+        epoch_snowballed_locked_ = other.epoch_snowballed_locked_;
+        conflicted_outpoints_ = other.conflicted_outpoints_;
+        quarantined_txs_ = other.quarantined_txs_;
+        deferred_next_epoch_txs_ = other.deferred_next_epoch_txs_;
+        incoming_mempool_txs_ = other.incoming_mempool_txs_;
+        active_layer_start_ns_ = other.active_layer_start_ns_;
+        last_layer_convergence_ms_.store(
+            other.last_layer_convergence_ms_.load(std::memory_order_relaxed),
+            std::memory_order_relaxed);
+        quarantined_tx_count_.store(
+            other.quarantined_tx_count_.load(std::memory_order_relaxed),
+            std::memory_order_relaxed);
+        total_quarantined_events_.store(
+            other.total_quarantined_events_.load(std::memory_order_relaxed),
+            std::memory_order_relaxed);
+        late_drip_deferred_count_.store(
+            other.late_drip_deferred_count_.load(std::memory_order_relaxed),
+            std::memory_order_relaxed);
+    }
+    return *this;
+}
+
+MerklixOverlayManager::MerklixOverlayManager(
+    MerklixOverlayManager &&other) noexcept
+    : next_epoch_id_(other.next_epoch_id_),
+      speculative_layer_(std::move(other.speculative_layer_)),
+      frozen_epochs_(std::move(other.frozen_epochs_)),
+      union_round_(other.union_round_),
+      max_unrestricted_union_rounds_(other.max_unrestricted_union_rounds_),
+      epoch_snowballed_locked_(other.epoch_snowballed_locked_),
+      conflicted_outpoints_(std::move(other.conflicted_outpoints_)),
+      quarantined_txs_(std::move(other.quarantined_txs_)),
+      deferred_next_epoch_txs_(std::move(other.deferred_next_epoch_txs_)),
+      incoming_mempool_txs_(std::move(other.incoming_mempool_txs_)),
+      active_layer_start_ns_(other.active_layer_start_ns_),
+      last_layer_convergence_ms_(
+          other.last_layer_convergence_ms_.load(std::memory_order_relaxed)),
+      quarantined_tx_count_(
+          other.quarantined_tx_count_.load(std::memory_order_relaxed)),
+      total_quarantined_events_(
+          other.total_quarantined_events_.load(std::memory_order_relaxed)),
+      late_drip_deferred_count_(
+          other.late_drip_deferred_count_.load(std::memory_order_relaxed)) {}
+
+MerklixOverlayManager &MerklixOverlayManager::operator=(
+    MerklixOverlayManager &&other) noexcept {
+    if (this != &other) {
+        next_epoch_id_ = other.next_epoch_id_;
+        speculative_layer_ = std::move(other.speculative_layer_);
+        frozen_epochs_ = std::move(other.frozen_epochs_);
+        union_round_ = other.union_round_;
+        max_unrestricted_union_rounds_ = other.max_unrestricted_union_rounds_;
+        epoch_snowballed_locked_ = other.epoch_snowballed_locked_;
+        conflicted_outpoints_ = std::move(other.conflicted_outpoints_);
+        quarantined_txs_ = std::move(other.quarantined_txs_);
+        deferred_next_epoch_txs_ = std::move(other.deferred_next_epoch_txs_);
+        incoming_mempool_txs_ = std::move(other.incoming_mempool_txs_);
+        active_layer_start_ns_ = other.active_layer_start_ns_;
+        last_layer_convergence_ms_.store(
+            other.last_layer_convergence_ms_.load(std::memory_order_relaxed),
+            std::memory_order_relaxed);
+        quarantined_tx_count_.store(
+            other.quarantined_tx_count_.load(std::memory_order_relaxed),
+            std::memory_order_relaxed);
+        total_quarantined_events_.store(
+            other.total_quarantined_events_.load(std::memory_order_relaxed),
+            std::memory_order_relaxed);
+        late_drip_deferred_count_.store(
+            other.late_drip_deferred_count_.load(std::memory_order_relaxed),
+            std::memory_order_relaxed);
+    }
+    return *this;
+}
 
 void MerklixOverlayManager::ResetToTip(
     const Hash &tip_block_id,
@@ -2413,6 +2557,18 @@ void MerklixOverlayManager::ResetToTip(
     uint64_t next_height,
     uint64_t parent_mtp) {
     frozen_epochs_.clear();
+    next_epoch_id_ = 1;
+    union_round_ = 0;
+    epoch_snowballed_locked_ = false;
+    conflicted_outpoints_.clear();
+    quarantined_txs_.clear();
+    deferred_next_epoch_txs_.clear();
+    incoming_mempool_txs_.clear();
+    active_layer_start_ns_ = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+    quarantined_tx_count_.store(0, std::memory_order_relaxed);
     speculative_layer_.Reset(tip_block_id, std::move(base_utxo_root),
                              base_mon_state, next_height, parent_mtp,
                              next_epoch_id_);
@@ -2420,6 +2576,18 @@ void MerklixOverlayManager::ResetToTip(
 
 void MerklixOverlayManager::Clear() {
     frozen_epochs_.clear();
+    next_epoch_id_ = 1;
+    union_round_ = 0;
+    epoch_snowballed_locked_ = false;
+    conflicted_outpoints_.clear();
+    quarantined_txs_.clear();
+    deferred_next_epoch_txs_.clear();
+    incoming_mempool_txs_.clear();
+    active_layer_start_ns_ = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+    quarantined_tx_count_.store(0, std::memory_order_relaxed);
     speculative_layer_.Reset(speculative_layer_.GetParentBlockId(),
                              speculative_layer_.GetBaseUtxoRoot(),
                              speculative_layer_.GetBaseMonetaryState(),
@@ -2524,11 +2692,436 @@ bool MerklixOverlayManager::RemoveTransaction(const Hash &tx_id) {
     return speculative_layer_.RemoveTransaction(tx_id);
 }
 
+EpochUnionOutcome MerklixOverlayManager::UnionEpochTransaction(
+    const Hash &tx_id,
+    const Hash &tx_hash,
+    uint64_t linear_cost,
+    const std::vector<Outpoint> &spent_outpoints,
+    const std::vector<Coin> &created_coins,
+    int64_t fee_sats,
+    int64_t sigchecks,
+    std::shared_ptr<const void> tx_ref,
+    uint32_t peer_sample_support,
+    uint32_t peer_sample_size) {
+    OverlayTxEntry entry{};
+    entry.tx_id = tx_id;
+    entry.tx_hash = tx_hash;
+    entry.linear_cost = linear_cost;
+    entry.effective_cost =
+        TransactionEffectiveCost(linear_cost, kDefaultMonetaryProfile);
+    entry.fee_sats = fee_sats;
+    entry.sigchecks = sigchecks;
+    entry.spent_outpoints = spent_outpoints;
+    entry.created_coins = created_coins;
+    entry.tx_ref = std::move(tx_ref);
+    return UnionEpochTransaction(entry, peer_sample_support, peer_sample_size);
+}
+
+EpochUnionOutcome MerklixOverlayManager::UnionEpochTransaction(
+    const OverlayTxEntry &entry,
+    uint32_t peer_sample_support,
+    uint32_t peer_sample_size) {
+    MempoolOverlayLayer &active_epoch = speculative_layer_;
+    const MempoolOverlayLayer *crystallized_base =
+        !frozen_epochs_.empty() ? &frozen_epochs_.back() : nullptr;
+
+    // 1. If the active epoch has already snowballed (beta_snow consecutive
+    // matching rounds), it is immutable: reject any mutation or double-spend
+    // against this epoch.
+    if (epoch_snowballed_locked_) {
+        if (active_epoch.Contains(entry.tx_id)) {
+            return EpochUnionOutcome::ALREADY_PRESENT;
+        }
+        return EpochUnionOutcome::REJECTED_EPOCH_LOCKED;
+    }
+
+    // 2. Duplicate checks in CrystallizedBase, active epoch, or quarantine set.
+    if (crystallized_base != nullptr &&
+        crystallized_base->Contains(entry.tx_id)) {
+        return EpochUnionOutcome::ALREADY_PRESENT;
+    }
+    if (quarantined_txs_.find(entry.tx_id) != quarantined_txs_.end()) {
+        return EpochUnionOutcome::QUARANTINED_CONFLICT;
+    }
+    if (active_epoch.Contains(entry.tx_id)) {
+        return EpochUnionOutcome::ALREADY_PRESENT;
+    }
+
+    // Any attempt to double-spend an outpoint already spent in a snowballed /
+    // crystallized base layer (`frozen_epochs_.back()`) is rejected as locked.
+    if (crystallized_base != nullptr) {
+        for (const auto &op : entry.spent_outpoints) {
+            if (crystallized_base->SpendsOutpoint(op)) {
+                return EpochUnionOutcome::REJECTED_EPOCH_LOCKED;
+            }
+        }
+    }
+
+    // 3. Two-Phase Anti-Drip Union Gate:
+    //    Phase 1 (union_round_ <= max_unrestricted_union_rounds_): admit any
+    //    valid transaction into the active epoch.
+    //    Phase 2 (union_round_ > max_unrestricted_union_rounds_): only admit
+    //    into the active epoch if >= 50% of sampled peers already advertise it
+    //    (peer_sample_support * 2 >= peer_sample_size); otherwise defer to
+    //    Epoch E+1.
+    if (union_round_ > max_unrestricted_union_rounds_ &&
+        peer_sample_size > 0 &&
+        static_cast<uint64_t>(peer_sample_support) * 2ULL <
+            static_cast<uint64_t>(peer_sample_size)) {
+        const bool already_deferred = std::any_of(
+            deferred_next_epoch_txs_.begin(), deferred_next_epoch_txs_.end(),
+            [&](const OverlayTxEntry &e) { return e.tx_id == entry.tx_id; });
+        if (!already_deferred) {
+            deferred_next_epoch_txs_.push_back(entry);
+            late_drip_deferred_count_.fetch_add(1, std::memory_order_relaxed);
+        }
+        return EpochUnionOutcome::DEFERRED_LATE_DRIP;
+    }
+
+    // 4. Option B Same-Epoch Conflict Detection & Transitive Quarantine:
+    //    Check whether `entry` spends any outpoint that is either already in
+    //    `conflicted_outpoints_` or currently spent in `active_epoch`.
+    bool has_conflict = false;
+    for (const auto &op : entry.spent_outpoints) {
+        if (conflicted_outpoints_.find(op) != conflicted_outpoints_.end() ||
+            active_epoch.SpendsOutpoint(op)) {
+            has_conflict = true;
+            break;
+        }
+    }
+
+    if (!has_conflict) {
+        if (active_layer_start_ns_ == 0 ||
+            GetActiveLayerDeltaTxCount() == 0) {
+            active_layer_start_ns_ = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch())
+                    .count());
+        }
+        active_epoch.AddTransaction(
+            entry.tx_id, entry.tx_hash, entry.linear_cost,
+            entry.spent_outpoints, entry.created_coins, entry.fee_sats,
+            entry.sigchecks, entry.tx_ref, entry.payload_bytes);
+        return EpochUnionOutcome::ADMITTED;
+    }
+
+    // Quarantine `entry` and compute the order-independent transitive closure
+    // over `conflicted_outpoints_` and `active_epoch` so that triple spends
+    // (T1, T2, T3) and multi-input bridging spends (T1 on U1, T2 on {U1, U2},
+    // T3 on U2) always converge to the exact same (active_txs_, quarantined_txs_,
+    // conflicted_outpoints_) regardless of arrival order.
+    for (const auto &op : entry.spent_outpoints) {
+        conflicted_outpoints_.insert(op);
+    }
+    // Any transaction spending an output created by a quarantined transaction
+    // must also be quarantined regardless of arrival order (T1 -> T2 -> T_child
+    // vs T2 -> T_child -> T1).
+    for (const auto &coin : entry.created_coins) {
+        conflicted_outpoints_.insert(coin.outpoint);
+    }
+    if (quarantined_txs_.emplace(entry.tx_id, entry).second) {
+        total_quarantined_events_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // Include both spent outpoints and created outpoints of `entry` in the
+    // initial search wave in case an active transaction in `active_epoch` was
+    // added before the conflict.
+    std::vector<Outpoint> wave = entry.spent_outpoints;
+    for (const auto &coin : entry.created_coins) {
+        wave.push_back(coin.outpoint);
+    }
+    while (!wave.empty()) {
+        std::vector<Hash> colliding_ids =
+            active_epoch.FindTransactionsSpending(wave);
+        wave.clear();
+        for (const Hash &colliding_id : colliding_ids) {
+            if (crystallized_base != nullptr &&
+                crystallized_base->Contains(colliding_id)) {
+                continue;
+            }
+            auto it = active_epoch.GetOrderedTxs().find(colliding_id);
+            if (it == active_epoch.GetOrderedTxs().end()) {
+                continue;
+            }
+            OverlayTxEntry removed_entry = it->second;
+            active_epoch.RemoveTransaction(colliding_id);
+            for (const auto &op : removed_entry.spent_outpoints) {
+                if (conflicted_outpoints_.insert(op).second) {
+                    wave.push_back(op);
+                }
+            }
+            // Any active transaction in this epoch spending an output created
+            // by a quarantined transaction must also be removed from the epoch.
+            for (const auto &coin : removed_entry.created_coins) {
+                if (conflicted_outpoints_.insert(coin.outpoint).second) {
+                    wave.push_back(coin.outpoint);
+                }
+            }
+            if (quarantined_txs_.emplace(removed_entry.tx_id,
+                                         std::move(removed_entry))
+                    .second) {
+                total_quarantined_events_.fetch_add(1,
+                                                    std::memory_order_relaxed);
+            }
+        }
+    }
+
+    quarantined_tx_count_.store(quarantined_txs_.size(),
+                                std::memory_order_relaxed);
+    return EpochUnionOutcome::QUARANTINED_CONFLICT;
+}
+
+QuarantineResolutionResult
+MerklixOverlayManager::ResolveQuarantinedTxsWithBatchId(
+    const Hash &finalized_batch_id) {
+    QuarantineResolutionResult result;
+
+    struct ScoredCandidate {
+        Hash score;
+        OverlayTxEntry entry;
+    };
+
+    std::unordered_map<Outpoint, Hash, OutpointHasher> pending_output_producers;
+    for (const auto &[tx_id, entry] : quarantined_txs_) {
+        for (const auto &coin : entry.created_coins) {
+            pending_output_producers.emplace(coin.outpoint, tx_id);
+        }
+    }
+    for (const auto &def_entry : deferred_next_epoch_txs_) {
+        for (const auto &coin : def_entry.created_coins) {
+            pending_output_producers.emplace(coin.outpoint, def_entry.tx_id);
+        }
+    }
+
+    std::vector<ScoredCandidate> candidates;
+    candidates.reserve(quarantined_txs_.size());
+    for (auto &[tx_id, entry] : quarantined_txs_) {
+        candidates.push_back(ScoredCandidate{
+            ComputePreconsensusTiebreakScore(finalized_batch_id, tx_id),
+            std::move(entry)});
+    }
+
+    std::sort(candidates.begin(), candidates.end(),
+              [](const ScoredCandidate &a, const ScoredCandidate &b) {
+                  if (a.score != b.score) {
+                      return a.score < b.score;
+                  }
+                  return CtorTxIdCompare{}(a.entry.tx_id, b.entry.tx_id);
+              });
+
+    std::unordered_set<Outpoint, OutpointHasher> claimed_outpoints;
+    std::map<Hash, bool, CtorTxIdCompare> promoted_tx_ids;
+    std::map<Hash, bool, CtorTxIdCompare> rejected_tx_ids;
+
+    auto resolve_entry_list = [&](auto &list, auto get_entry) {
+        std::vector<uint8_t> decided(list.size(), 0);
+        bool made_progress = true;
+        while (made_progress) {
+            made_progress = false;
+            for (size_t i = 0; i < list.size(); ++i) {
+                if (decided[i]) {
+                    continue;
+                }
+                OverlayTxEntry &entry = get_entry(list[i]);
+                bool has_conflict = false;
+                bool waiting_on_parent = false;
+                for (const auto &op : entry.spent_outpoints) {
+                    if (claimed_outpoints.find(op) != claimed_outpoints.end() ||
+                        speculative_layer_.SpendsOutpoint(op)) {
+                        has_conflict = true;
+                        break;
+                    }
+                    auto it_prod = pending_output_producers.find(op);
+                    if (it_prod != pending_output_producers.end() &&
+                        it_prod->second != entry.tx_id) {
+                        const Hash &parent_id = it_prod->second;
+                        if (rejected_tx_ids.count(parent_id) > 0) {
+                            has_conflict = true;
+                            break;
+                        }
+                        if (promoted_tx_ids.count(parent_id) == 0) {
+                            waiting_on_parent = true;
+                        }
+                    }
+                }
+                if (has_conflict) {
+                    decided[i] = 1;
+                    rejected_tx_ids.emplace(entry.tx_id, true);
+                    result.rejected_losers.push_back(std::move(entry));
+                    made_progress = true;
+                    break;
+                }
+                if (!waiting_on_parent) {
+                    decided[i] = 1;
+                    promoted_tx_ids.emplace(entry.tx_id, true);
+                    for (const auto &op : entry.spent_outpoints) {
+                        claimed_outpoints.insert(op);
+                    }
+                    speculative_layer_.AddTransaction(
+                        entry.tx_id, entry.tx_hash, entry.linear_cost,
+                        entry.spent_outpoints, entry.created_coins,
+                        entry.fee_sats, entry.sigchecks, entry.tx_ref,
+                        entry.payload_bytes);
+                    result.promoted_winners.push_back(std::move(entry));
+                    made_progress = true;
+                    break;
+                }
+            }
+        }
+        for (size_t i = 0; i < list.size(); ++i) {
+            if (!decided[i]) {
+                OverlayTxEntry &entry = get_entry(list[i]);
+                rejected_tx_ids.emplace(entry.tx_id, true);
+                result.rejected_losers.push_back(std::move(entry));
+            }
+        }
+    };
+
+    resolve_entry_list(
+        candidates,
+        [](ScoredCandidate &cand) -> OverlayTxEntry & { return cand.entry; });
+
+    // Also promote any Phase 2 late-drip deferred transactions into the new
+    // open epoch E+1 if their inputs are unspent and their parents succeeded,
+    // sorted deterministically by ComputePreconsensusTiebreakScore.
+    std::vector<ScoredCandidate> deferred_candidates;
+    deferred_candidates.reserve(deferred_next_epoch_txs_.size());
+    for (auto &def_entry : deferred_next_epoch_txs_) {
+        deferred_candidates.push_back(ScoredCandidate{
+            ComputePreconsensusTiebreakScore(finalized_batch_id,
+                                             def_entry.tx_id),
+            std::move(def_entry)});
+    }
+    std::sort(deferred_candidates.begin(), deferred_candidates.end(),
+              [](const ScoredCandidate &a, const ScoredCandidate &b) {
+                  if (a.score != b.score) {
+                      return a.score < b.score;
+                  }
+                  return CtorTxIdCompare{}(a.entry.tx_id, b.entry.tx_id);
+              });
+    resolve_entry_list(
+        deferred_candidates,
+        [](ScoredCandidate &cand) -> OverlayTxEntry & { return cand.entry; });
+
+    quarantined_txs_.clear();
+    conflicted_outpoints_.clear();
+    deferred_next_epoch_txs_.clear();
+    quarantined_tx_count_.store(0, std::memory_order_relaxed);
+    union_round_ = 0;
+    epoch_snowballed_locked_ = false;
+    return result;
+}
+
+Hash MerklixOverlayManager::GetParentBaseRoot() const {
+    return frozen_epochs_.empty() ? EmptyTxRoot()
+                                  : frozen_epochs_.back().GetSubtreeARoot();
+}
+
+Hash MerklixOverlayManager::GetActiveSketchRoot() const {
+    return speculative_layer_.GetSubtreeARoot();
+}
+
+size_t MerklixOverlayManager::GetActiveLayerDeltaTxCount() const noexcept {
+    const size_t base_count =
+        frozen_epochs_.empty() ? 0 : frozen_epochs_.back().GetTxCount();
+    const size_t spec_count = speculative_layer_.GetTxCount();
+    return spec_count >= base_count ? (spec_count - base_count) : 0;
+}
+
+LayerSyncRelation MerklixOverlayManager::ClassifyPeerLayerSketch(
+    const Hash &peer_parent_base_root,
+    const Hash &peer_active_sketch_root) const {
+    const Hash local_base = GetParentBaseRoot();
+    const Hash local_active = GetActiveSketchRoot();
+    if (peer_parent_base_root == local_base) {
+        return LayerSyncRelation::SAME_PARENT_BASE;
+    }
+    if (peer_parent_base_root == local_active && local_active != local_base) {
+        return LayerSyncRelation::PEER_AHEAD_CONFIRMS_LOCAL;
+    }
+    if (peer_active_sketch_root == local_base) {
+        return LayerSyncRelation::LOCAL_AHEAD_OF_PEER;
+    }
+    return LayerSyncRelation::DIVERGENT_BASE;
+}
+
+bool MerklixOverlayManager::StageIncomingTransaction(
+    const OverlayTxEntry &entry) {
+    if (speculative_layer_.Contains(entry.tx_id) ||
+        quarantined_txs_.find(entry.tx_id) != quarantined_txs_.end()) {
+        return false;
+    }
+    const bool already_staged = std::any_of(
+        incoming_mempool_txs_.begin(), incoming_mempool_txs_.end(),
+        [&](const OverlayTxEntry &e) { return e.tx_id == entry.tx_id; });
+    if (already_staged) {
+        return false;
+    }
+    incoming_mempool_txs_.push_back(entry);
+    return true;
+}
+
+bool MerklixOverlayManager::StageIncomingTransaction(
+    const Hash &tx_id,
+    const Hash &tx_hash,
+    uint64_t linear_cost,
+    const std::vector<Outpoint> &spent_outpoints,
+    const std::vector<Coin> &created_coins,
+    int64_t fee_sats,
+    int64_t sigchecks,
+    std::shared_ptr<const void> tx_ref) {
+    OverlayTxEntry entry{};
+    entry.tx_id = tx_id;
+    entry.tx_hash = tx_hash;
+    entry.linear_cost = linear_cost;
+    entry.effective_cost =
+        TransactionEffectiveCost(linear_cost, kDefaultMonetaryProfile);
+    entry.fee_sats = fee_sats;
+    entry.sigchecks = sigchecks;
+    entry.spent_outpoints = spent_outpoints;
+    entry.created_coins = created_coins;
+    entry.tx_ref = std::move(tx_ref);
+    return StageIncomingTransaction(entry);
+}
+
+size_t MerklixOverlayManager::PromoteIncomingToActiveSketchLayer() {
+    if (incoming_mempool_txs_.empty()) {
+        return 0;
+    }
+    std::vector<OverlayTxEntry> staged = std::move(incoming_mempool_txs_);
+    incoming_mempool_txs_.clear();
+    size_t promoted = 0;
+    for (const auto &entry : staged) {
+        const auto outcome = UnionEpochTransaction(entry, 1, 1);
+        if (outcome == EpochUnionOutcome::ADMITTED) {
+            ++promoted;
+        }
+    }
+    return promoted;
+}
+
 const MempoolOverlayLayer &MerklixOverlayManager::FreezeEpochBatch() {
     (void)speculative_layer_.GetSubtreeARoot();
     (void)speculative_layer_.GetUtxoRootDigest();
+    const uint64_t now_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+    if (active_layer_start_ns_ > 0 && now_ns >= active_layer_start_ns_) {
+        const uint64_t elapsed_ms =
+            std::max<uint64_t>(1, (now_ns - active_layer_start_ns_) / 1'000'000ULL);
+        last_layer_convergence_ms_.store(elapsed_ms, std::memory_order_relaxed);
+    }
+    active_layer_start_ns_ = now_ns;
+    speculative_layer_.SetLayerId(next_epoch_id_);
     frozen_epochs_.push_back(speculative_layer_);
     ++next_epoch_id_;
+    speculative_layer_.SetLayerId(next_epoch_id_);
+    union_round_ = 0;
+    epoch_snowballed_locked_ = false;
+    if (!incoming_mempool_txs_.empty()) {
+        PromoteIncomingToActiveSketchLayer();
+    }
     return frozen_epochs_.back();
 }
 

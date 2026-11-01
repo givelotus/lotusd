@@ -765,6 +765,63 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
                 continue;
             }
 
+            // Avalanche DAG transitive confidence: when a positive vote is
+            // registered for a MempoolBatchVoteItem at epoch_seq = E', walk its
+            // parent_batch_id ancestor chain and transitively register a
+            // positive vote on any unfinalized ancestor batch in the DAG.
+            if (isBatchItem && v.GetError() == 0) {
+                std::vector<uint256> ancestorBatchIds;
+                {
+                    LOCK(cs_mempoolBatches);
+                    uint256 curId =
+                        std::get<const MempoolBatchVoteItem>(item).GetId();
+                    for (size_t depth = 0; depth < 64; ++depth) {
+                        auto bIt = m_mempoolBatches.find(curId);
+                        if (bIt == m_mempoolBatches.end() ||
+                            bIt->second.parent_batch_id.IsNull()) {
+                            break;
+                        }
+                        curId = bIt->second.parent_batch_id;
+                        ancestorBatchIds.push_back(curId);
+                    }
+                }
+                // Apply from oldest ancestor to newest so parent epochs
+                // finalize before child epochs in `updates`.
+                for (auto rIt = ancestorBatchIds.rbegin();
+                     rIt != ancestorBatchIds.rend(); ++rIt) {
+                    const uint256 &ancBatchId = *rIt;
+                    const AnyVoteItem ancItem{MempoolBatchVoteItem(ancBatchId)};
+                    auto ancIt = voteRecordsWriteView->find(ancItem);
+                    if (ancIt == voteRecordsWriteView.end()) {
+                        continue;
+                    }
+                    auto &ancVr = ancIt->second;
+                    if (!ancVr.registerVote(nodeid, 0)) {
+                        continue;
+                    }
+                    if (!ancVr.hasFinalized()) {
+                        updates.emplace_back(ancItem,
+                                             ancVr.isAccepted()
+                                                 ? VoteStatus::Accepted
+                                                 : VoteStatus::Rejected);
+                        continue;
+                    }
+                    if (ancVr.isAccepted() &&
+                        !hasMempoolBatchConflict(ancBatchId)) {
+                        m_adaptiveEpochController.recordCleanFastPath();
+                    }
+                    countItem(ancItem,
+                              ancVr.isAccepted()
+                                  ? node::AvalancheItemOutcome::FINALIZED
+                                  : node::AvalancheItemOutcome::INVALIDATED);
+                    updates.emplace_back(ancItem,
+                                         ancVr.isAccepted()
+                                             ? VoteStatus::Finalized
+                                             : VoteStatus::Invalid);
+                    voteRecordsWriteView->erase(ancIt);
+                }
+            }
+
             if (!vr.hasFinalized()) {
                 // This item has not been finalized, so we have nothing more to
                 // do.
@@ -1315,6 +1372,36 @@ bool Processor::nodeSupportsMempoolBatch(NodeId nodeid) const {
     return batchPollPeers.count(nodeid) != 0;
 }
 
+bool Processor::hasBatchPollPeers() const {
+    LOCK(cs_batchPollPeers);
+    return !batchPollPeers.empty();
+}
+
+NodeId Processor::selectBatchPollPeer() {
+    std::vector<NodeId> candidates;
+    size_t startIdx = 0;
+    {
+        LOCK(cs_batchPollPeers);
+        if (batchPollPeers.empty()) {
+            return NO_NODE;
+        }
+        candidates.assign(batchPollPeers.begin(), batchPollPeers.end());
+        std::sort(candidates.begin(), candidates.end());
+        startIdx = m_batchPollPeerCursor++ % candidates.size();
+    }
+    auto qView = queries.getReadView();
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        const NodeId cand = candidates[(startIdx + i) % candidates.size()];
+        const bool hasInflight = std::any_of(
+            qView->begin(), qView->end(),
+            [cand](const Query &q) { return q.nodeid == cand; });
+        if (!hasInflight) {
+            return cand;
+        }
+    }
+    return candidates[startIdx];
+}
+
 void Processor::promoteAndPollStakeContenders(const CBlockIndex *pprev) {
     assert(pprev);
 
@@ -1728,6 +1815,35 @@ void Processor::finalizeMempoolBatch(const uint256 &batchId) {
     }
 
     if (newlyFinalized) {
+        // Transitively finalize any unfinalized ancestor batches along
+        // parent_batch_id in ascending epoch_seq order first.
+        std::vector<uint256> unfinalizedAncestors;
+        {
+            LOCK(cs_mempoolBatches);
+            uint256 curParent = batch.parent_batch_id;
+            for (size_t depth = 0; depth < 64 && !curParent.IsNull(); ++depth) {
+                auto pIt = m_mempoolBatches.find(curParent);
+                if (pIt == m_mempoolBatches.end()) {
+                    break;
+                }
+                const auto &finVec =
+                    m_finalizedMempoolBatches[pIt->second.prev_block_hash];
+                const bool pFinalized = std::any_of(
+                    finVec.begin(), finVec.end(),
+                    [&](const MempoolBatchAnnouncement &b) {
+                        return b.ComputeBatchId() == curParent;
+                    });
+                if (!pFinalized) {
+                    unfinalizedAncestors.push_back(curParent);
+                }
+                curParent = pIt->second.parent_batch_id;
+            }
+        }
+        for (auto rIt = unfinalizedAncestors.rbegin();
+             rIt != unfinalizedAncestors.rend(); ++rIt) {
+            finalizeMempoolBatch(*rIt);
+        }
+
         std::optional<MempoolBatchAnnouncement> pipelinedNextBatch;
         if (mempool) {
             LOCK(mempool->cs);
@@ -1743,11 +1859,28 @@ void Processor::finalizeMempoolBatch(const uint256 &batchId) {
                     break;
                 }
             }
-            if (!already_frozen &&
-                overlay_mgr.GetSpeculativeOverlay().GetParentBlockId() == expectedParentBlock &&
-                overlay_mgr.GetSpeculativeOverlay().GetSubtreeARoot() ==
-                    target_root) {
-                mempool->FreezeEpochBatch();
+            if (!already_frozen) {
+                if (overlay_mgr.GetSpeculativeOverlay().GetParentBlockId() ==
+                        expectedParentBlock &&
+                    overlay_mgr.GetSpeculativeOverlay().GetSubtreeARoot() ==
+                        target_root) {
+                    mempool->FreezeEpochBatch();
+                } else {
+                    mempool->VerifyOrAdoptEpochBatch(
+                        batch.prev_block_hash, batch.epoch_seq,
+                        batch.subtree_a_root, batch.utxo_root, batch.tx_count);
+                }
+            }
+
+            // Advance all transactions in frozen epochs <= batch.epoch_seq to
+            // TxPreconsensusState::FINALIZED (transitively finalizing any
+            // earlier snowballed epochs) and deterministically resolve Option B
+            // quarantined conflicts from Epoch E into Epoch E+1 using
+            // BatchId(E).
+            mempool->MarkEpochFinalized(batch.epoch_seq);
+            if (overlay_mgr.GetQuarantinedTxCount() > 0 ||
+                !overlay_mgr.GetDeferredNextEpochTxs().empty()) {
+                mempool->ResolveEpochQuarantineWithBatchId(batchId);
             }
 
             // Event-driven back-to-back pipelining: if the speculative overlay
@@ -1814,20 +1947,40 @@ bool Processor::tryFreezeAndRegisterNextEpochBatch(
         const auto &specOverlay = overlay_mgr.GetSpeculativeOverlay();
         lotus::v2::Hash expectedParentBlock{};
         std::memcpy(expectedParentBlock.data(), prevBlockHash.begin(), 32);
-        if (specOverlay.GetParentBlockId() != expectedParentBlock ||
-            specOverlay.GetTxCount() <= baselineTxCount) {
-            return false;
+
+        // If MarkEpochSnowballed already crystallized and froze nextEpochSeq,
+        // reuse that frozen layer directly.
+        const lotus::v2::MempoolOverlayLayer *existingFrozen = nullptr;
+        for (const auto &layer : overlay_mgr.GetFrozenEpochs()) {
+            if (layer.GetLayerId() == nextEpochSeq &&
+                layer.GetParentBlockId() == expectedParentBlock &&
+                layer.GetTxCount() > baselineTxCount) {
+                existingFrozen = &layer;
+                break;
+            }
         }
-        const size_t tailTxCount = specOverlay.GetTxCount() - baselineTxCount;
-        const auto now = Now<SteadyMilliseconds>();
-        if (!force && !m_adaptiveEpochController.shouldPipelineNextBatch(
-                          tailTxCount, now)) {
-            return false;
+        if (existingFrozen != nullptr) {
+            createdBatch = BuildBatchAnnouncementFromLayer(
+                prevBlockHash, nextEpochSeq, parentBatchId, *existingFrozen);
+            m_adaptiveEpochController.recordBatchFrozen(
+                Now<SteadyMilliseconds>());
+        } else {
+            if (specOverlay.GetParentBlockId() != expectedParentBlock ||
+                specOverlay.GetTxCount() <= baselineTxCount) {
+                return false;
+            }
+            const size_t tailTxCount =
+                specOverlay.GetTxCount() - baselineTxCount;
+            const auto now = Now<SteadyMilliseconds>();
+            if (!force && !m_adaptiveEpochController.shouldPipelineNextBatch(
+                              tailTxCount, now)) {
+                return false;
+            }
+            const auto &frozenLayer = mempool->FreezeEpochBatch();
+            createdBatch = BuildBatchAnnouncementFromLayer(
+                prevBlockHash, nextEpochSeq, parentBatchId, frozenLayer);
+            m_adaptiveEpochController.recordBatchFrozen(now);
         }
-        const auto &frozenLayer = mempool->FreezeEpochBatch();
-        createdBatch = BuildBatchAnnouncementFromLayer(
-            prevBlockHash, nextEpochSeq, parentBatchId, frozenLayer);
-        m_adaptiveEpochController.recordBatchFrozen(now);
     }
 
     if (!registerMempoolBatch(*createdBatch, /*accepted=*/true,
@@ -1838,6 +1991,399 @@ bool Processor::tryFreezeAndRegisterNextEpochBatch(
         *outBatch = *createdBatch;
     }
     return true;
+}
+
+bool Processor::stepEpochSnowballReconciliation(
+    const BlockHash &prevBlockHash,
+    uint32_t epochSeq,
+    bool treeChangedInRound,
+    uint32_t betaOverride,
+    bool autoRegisterBatch,
+    MempoolBatchAnnouncement *outBatch) {
+    if (!mempool || epochSeq == 0) {
+        return false;
+    }
+
+    uint256 subARoot{};
+    uint256 utxoRootHash{};
+    uint32_t txCount = 0;
+    {
+        LOCK(mempool->cs);
+        auto &overlay_mgr = mempool->GetMerklixOverlay();
+        const lotus::v2::MempoolOverlayLayer *activeLayer =
+            &overlay_mgr.GetSpeculativeOverlay();
+        bool foundFrozenLayer = false;
+        for (const auto &layer : overlay_mgr.GetFrozenEpochs()) {
+            if (layer.GetLayerId() == epochSeq) {
+                activeLayer = &layer;
+                foundFrozenLayer = true;
+                break;
+            }
+        }
+        if (!foundFrozenLayer && !overlay_mgr.GetFrozenEpochs().empty()) {
+            const auto &lastFrozen = overlay_mgr.GetFrozenEpochs().back();
+            if (activeLayer->GetSubtreeARoot() ==
+                    lastFrozen.GetSubtreeARoot() ||
+                activeLayer->GetTxCount() <= lastFrozen.GetTxCount()) {
+                txCount = 0;
+            } else {
+                txCount = static_cast<uint32_t>(activeLayer->GetTxCount());
+            }
+        } else {
+            txCount = static_cast<uint32_t>(activeLayer->GetTxCount());
+        }
+        if (txCount > 0) {
+            const auto subA = activeLayer->GetSubtreeARoot();
+            const auto utxoR = activeLayer->GetUtxoRootDigest();
+            std::memcpy(subARoot.begin(), subA.data(), 32);
+            std::memcpy(utxoRootHash.begin(), utxoR.data(), 32);
+            overlay_mgr.AdvanceUnionRound();
+        }
+    }
+
+    if (txCount == 0) {
+        return false;
+    }
+
+    const uint32_t beta =
+        betaOverride > 0
+            ? betaOverride
+            : std::max(1U, m_epochSnowballBeta.load(std::memory_order_relaxed));
+    bool newlySnowballed = false;
+    bool isSnowballedNow = false;
+    uint256 parentBatchId = uint256::ZERO;
+
+    {
+        LOCK(cs_mempoolBatches);
+        if (epochSeq > 1) {
+            auto finIt = m_finalizedMempoolBatches.find(prevBlockHash);
+            if (finIt != m_finalizedMempoolBatches.end()) {
+                for (const auto &b : finIt->second) {
+                    if (b.epoch_seq == epochSeq - 1) {
+                        parentBatchId = b.ComputeBatchId();
+                        break;
+                    }
+                }
+            }
+            if (parentBatchId.IsNull()) {
+                auto slotMapIt = m_epochBatchBySlot.find(prevBlockHash);
+                if (slotMapIt != m_epochBatchBySlot.end()) {
+                    auto prevSlotIt = slotMapIt->second.find(epochSeq - 1);
+                    if (prevSlotIt != slotMapIt->second.end()) {
+                        parentBatchId = prevSlotIt->second;
+                    }
+                }
+            }
+        }
+
+        EpochSnowballState &st = m_epochSnowballStates[prevBlockHash][epochSeq];
+        st.prev_block_hash = prevBlockHash;
+        st.epoch_seq = epochSeq;
+        ++st.total_reconciliation_rounds;
+
+        if (!treeChangedInRound && st.current_subtree_a_root == subARoot &&
+            st.current_utxo_root == utxoRootHash) {
+            ++st.consecutive_unchanged_rounds;
+            ++st.root_confidence[subARoot];
+        } else {
+            st.current_subtree_a_root = subARoot;
+            st.current_utxo_root = utxoRootHash;
+            st.current_tx_count = txCount;
+            if (!treeChangedInRound) {
+                st.consecutive_unchanged_rounds = 1;
+                ++st.root_confidence[subARoot];
+            } else {
+                // Note: st.root_confidence is intentionally preserved across
+                // root changes (Snowball stateful confidence vs Snowflake).
+                st.consecutive_unchanged_rounds = 0;
+            }
+        }
+
+        if (!st.snowballed && st.consecutive_unchanged_rounds >= beta &&
+            st.root_confidence[subARoot] >= beta) {
+            st.snowballed = true;
+            newlySnowballed = true;
+        }
+        isSnowballedNow = st.snowballed;
+    }
+
+    if (!isSnowballedNow) {
+        return false;
+    }
+
+    MempoolBatchAnnouncement batch;
+    {
+        LOCK(mempool->cs);
+        if (newlySnowballed) {
+            mempool->MarkEpochSnowballed(epochSeq);
+        }
+        auto &overlay_mgr = mempool->GetMerklixOverlay();
+        const lotus::v2::MempoolOverlayLayer *crystallizedLayer =
+            &overlay_mgr.GetSpeculativeOverlay();
+        for (const auto &layer : overlay_mgr.GetFrozenEpochs()) {
+            if (layer.GetLayerId() == epochSeq) {
+                crystallizedLayer = &layer;
+                break;
+            }
+        }
+        if (!overlay_mgr.GetFrozenEpochs().empty() &&
+            crystallizedLayer == &overlay_mgr.GetSpeculativeOverlay()) {
+            crystallizedLayer = &overlay_mgr.GetFrozenEpochs().back();
+        }
+        batch = BuildBatchAnnouncementFromLayer(prevBlockHash, epochSeq,
+                                                parentBatchId,
+                                                *crystallizedLayer);
+    }
+
+    const uint256 batchId = batch.ComputeBatchId();
+    {
+        LOCK(cs_mempoolBatches);
+        m_epochSnowballStates[prevBlockHash][epochSeq].snowballed_batch_id =
+            batchId;
+    }
+
+    if (autoRegisterBatch) {
+        registerMempoolBatch(batch, /*accepted=*/true, /*reconcile=*/true);
+    }
+    if (outBatch != nullptr) {
+        *outBatch = batch;
+    }
+    return true;
+}
+
+bool Processor::reconcileEpochWithPeerMempools(
+    const BlockHash &prevBlockHash,
+    uint32_t epochSeq,
+    std::span<CTxMemPool *const> sampledPeerMempools,
+    uint32_t betaOverride,
+    bool autoRegisterBatch,
+    MempoolBatchAnnouncement *outBatch) {
+    if (!mempool || epochSeq == 0) {
+        return false;
+    }
+
+    struct CandidatePeerTx {
+        CTransactionRef ptx;
+        int64_t fee_sats{0};
+        int64_t sigchecks{1};
+        uint32_t support_count{0};
+    };
+
+    uint256 localParentBaseRoot;
+    uint256 localActiveSketchRoot;
+    {
+        LOCK(mempool->cs);
+        localParentBaseRoot = mempool->GetParentBaseRoot();
+        localActiveSketchRoot = mempool->GetActiveSketchRoot();
+    }
+
+    uint32_t validSampledPeers = 0;
+    for (CTxMemPool *peerPool : sampledPeerMempools) {
+        if (peerPool && peerPool != mempool) {
+            ++validSampledPeers;
+        }
+    }
+    const uint32_t sampleSize = std::max<uint32_t>(1U, validSampledPeers);
+    std::map<TxId, CandidatePeerTx> peerTxById;
+    std::vector<TxId> peerTxOrder;
+    std::map<TxId, CandidatePeerTx> nextLayerPeerTxById;
+    std::vector<TxId> nextLayerPeerTxOrder;
+
+    for (CTxMemPool *peerPool : sampledPeerMempools) {
+        if (!peerPool || peerPool == mempool) {
+            continue;
+        }
+        uint256 peerParentBaseRoot;
+        uint256 peerActiveSketchRoot;
+        {
+            LOCK(peerPool->cs);
+            peerParentBaseRoot = peerPool->GetParentBaseRoot();
+            peerActiveSketchRoot = peerPool->GetActiveSketchRoot();
+        }
+        lotus::v2::LayerSyncRelation rel;
+        {
+            LOCK(mempool->cs);
+            rel = mempool->ClassifyPeerLayerSketch(peerParentBaseRoot,
+                                                   peerActiveSketchRoot);
+        }
+
+        LOCK(peerPool->cs);
+        auto &peerOverlay = peerPool->GetMerklixOverlay();
+        std::unordered_set<TxId, SaltedTxIdHasher> seenInPeer;
+
+        auto record_entry = [&](const lotus::v2::OverlayTxEntry &oentry,
+                                std::map<TxId, CandidatePeerTx> &targetMap,
+                                std::vector<TxId> &targetOrder) {
+            if (!oentry.tx_ref) {
+                return;
+            }
+            const auto ptx =
+                std::static_pointer_cast<const CTransaction>(oentry.tx_ref);
+            if (!ptx || !seenInPeer.insert(ptx->GetId()).second) {
+                return;
+            }
+            auto [it, inserted] = targetMap.emplace(
+                ptx->GetId(),
+                CandidatePeerTx{ptx, oentry.fee_sats, oentry.sigchecks, 0});
+            if (inserted) {
+                targetOrder.push_back(ptx->GetId());
+            }
+            ++it->second.support_count;
+        };
+
+        if (rel == lotus::v2::LayerSyncRelation::PEER_AHEAD_CONFIRMS_LOCAL) {
+            // Peer has already crystallized our active_sketch_root (R_1) as its
+            // parent_base_root and moved to R_2! Do NOT mix R_2 into R_1;
+            // count this peer as confirming R_1, and stage R_2 delta txs to
+            // adopt if R_1 crystallizes on our node in this round.
+            const auto deltaTxs =
+                peerPool->GetActiveLayerDeltaTransactionsWithMetadata();
+            for (const auto &[ptx, fee_sats, sigchecks] : deltaTxs) {
+                if (!ptx || !seenInPeer.insert(ptx->GetId()).second) {
+                    continue;
+                }
+                auto [it, inserted] = nextLayerPeerTxById.emplace(
+                    ptx->GetId(),
+                    CandidatePeerTx{ptx, fee_sats, sigchecks, 0});
+                if (inserted) {
+                    nextLayerPeerTxOrder.push_back(ptx->GetId());
+                }
+                ++it->second.support_count;
+            }
+            continue;
+        }
+        if (rel == lotus::v2::LayerSyncRelation::LOCAL_AHEAD_OF_PEER) {
+            continue;
+        }
+
+        const lotus::v2::MempoolOverlayLayer *peerActiveLayer =
+            &peerOverlay.GetSpeculativeOverlay();
+        for (const auto &layer : peerOverlay.GetFrozenEpochs()) {
+            if (layer.GetLayerId() == epochSeq) {
+                peerActiveLayer = &layer;
+                break;
+            }
+        }
+        for (const auto &[_, oentry] : peerActiveLayer->GetOrderedTxs()) {
+            record_entry(oentry, peerTxById, peerTxOrder);
+        }
+        // Also exchange quarantined transactions for the active epoch so Option
+        // B conflict sets converge symmetrically regardless of poll order.
+        for (const auto &[_, qentry] : peerOverlay.GetQuarantinedTxs()) {
+            record_entry(qentry, peerTxById, peerTxOrder);
+        }
+    }
+
+    bool treeChanged = false;
+    {
+        LOCK(mempool->cs);
+        auto &overlay_mgr = mempool->GetMerklixOverlay();
+        const auto get_active_roots = [&]() {
+            const lotus::v2::MempoolOverlayLayer *active =
+                &overlay_mgr.GetSpeculativeOverlay();
+            for (const auto &layer : overlay_mgr.GetFrozenEpochs()) {
+                if (layer.GetLayerId() == epochSeq) {
+                    active = &layer;
+                    break;
+                }
+            }
+            return std::make_pair(active->GetSubtreeARoot(),
+                                  active->GetUtxoRootDigest());
+        };
+        const auto [beforeSubA, beforeUtxo] = get_active_roots();
+        const size_t beforeQuarantined = overlay_mgr.GetQuarantinedTxCount();
+
+        for (const TxId &txid : peerTxOrder) {
+            const auto &cand = peerTxById.at(txid);
+            mempool->UnionTransactionIntoActiveEpoch(
+                cand.ptx, cand.fee_sats, cand.sigchecks, cand.support_count,
+                sampleSize);
+        }
+
+        const auto [afterSubA, afterUtxo] = get_active_roots();
+        const size_t afterQuarantined = overlay_mgr.GetQuarantinedTxCount();
+        treeChanged = (afterSubA != beforeSubA) || (afterUtxo != beforeUtxo) ||
+                      (afterQuarantined != beforeQuarantined);
+    }
+
+    const bool snowballed = stepEpochSnowballReconciliation(
+        prevBlockHash, epochSeq, treeChanged, betaOverride, autoRegisterBatch,
+        outBatch);
+
+    // If our active layer R_1 just crystallized (promoting our parent_base_root
+    // to R_1), immediately union any next-layer delta transactions from peers
+    // that were already anchored on parent_base_root = R_1!
+    if (snowballed && !nextLayerPeerTxOrder.empty()) {
+        LOCK(mempool->cs);
+        for (const TxId &txid : nextLayerPeerTxOrder) {
+            const auto &cand = nextLayerPeerTxById.at(txid);
+            mempool->UnionTransactionIntoActiveEpoch(
+                cand.ptx, cand.fee_sats, cand.sigchecks, cand.support_count,
+                sampleSize);
+        }
+    }
+
+    return snowballed;
+}
+
+bool Processor::reconcileEpochWithPeerMempools(
+    const BlockHash &prevBlockHash,
+    std::span<CTxMemPool *const> sampledPeerMempools,
+    uint32_t betaOverride,
+    bool autoRegisterBatch,
+    MempoolBatchAnnouncement *outBatch) {
+    if (!mempool) {
+        return false;
+    }
+    uint32_t activeEpochSeq = 1;
+    {
+        LOCK(mempool->cs);
+        const auto &frozen = mempool->GetMerklixOverlay().GetFrozenEpochs();
+        activeEpochSeq = static_cast<uint32_t>(frozen.size() + 1);
+    }
+    return reconcileEpochWithPeerMempools(
+        prevBlockHash, activeEpochSeq, sampledPeerMempools, betaOverride,
+        autoRegisterBatch, outBatch);
+}
+
+bool Processor::isEpochSnowballed(const BlockHash &prevBlockHash,
+                                  uint32_t epochSeq) const {
+    LOCK(cs_mempoolBatches);
+    auto pIt = m_epochSnowballStates.find(prevBlockHash);
+    if (pIt == m_epochSnowballStates.end()) {
+        return false;
+    }
+    auto eIt = pIt->second.find(epochSeq);
+    return eIt != pIt->second.end() && eIt->second.snowballed;
+}
+
+uint32_t Processor::getEpochSnowballConfidence(
+    const BlockHash &prevBlockHash,
+    uint32_t epochSeq,
+    const uint256 &subtreeARoot) const {
+    LOCK(cs_mempoolBatches);
+    auto pIt = m_epochSnowballStates.find(prevBlockHash);
+    if (pIt == m_epochSnowballStates.end()) {
+        return 0;
+    }
+    auto eIt = pIt->second.find(epochSeq);
+    if (eIt == pIt->second.end()) {
+        return 0;
+    }
+    auto cIt = eIt->second.root_confidence.find(subtreeARoot);
+    return cIt != eIt->second.root_confidence.end() ? cIt->second : 0;
+}
+
+uint32_t Processor::getEpochSnowballConsecutiveRounds(
+    const BlockHash &prevBlockHash, uint32_t epochSeq) const {
+    LOCK(cs_mempoolBatches);
+    auto pIt = m_epochSnowballStates.find(prevBlockHash);
+    if (pIt == m_epochSnowballStates.end()) {
+        return 0;
+    }
+    auto eIt = pIt->second.find(epochSeq);
+    return eIt != pIt->second.end() ? eIt->second.consecutive_unchanged_rounds
+                                    : 0;
 }
 
 void Processor::rejectMempoolBatch(const uint256 &batchId) {
@@ -2078,6 +2624,9 @@ void Processor::updatedBlockTip() {
             std::erase_if(m_conflictedBatchEpochs, [&](const auto &entry) {
                 return entry.first != *m_mempoolBatchParent;
             });
+            std::erase_if(m_epochSnowballStates, [&](const auto &entry) {
+                return entry.first != *m_mempoolBatchParent;
+            });
         }
         WITH_LOCK(cs_activeTipHash,
                   m_activeTipHash = activeTip->GetBlockHash());
@@ -2104,8 +2653,9 @@ void Processor::transactionAddedToMempool(const CTransactionRef &tx) {
 }
 
 void Processor::runEventLoop() {
-    // Don't poll if quorum hasn't been established yet
-    if (!isQuorumEstablished()) {
+    const bool quorumEstablished = isQuorumEstablished();
+    // Don't poll if neither staking quorum nor epoch batch peers are available.
+    if (!quorumEstablished && !hasBatchPollPeers()) {
         return;
     }
 
@@ -2139,7 +2689,7 @@ void Processor::runEventLoop() {
             for (const auto &[item, record] : *voteRecordsReadView) {
                 if (!record.shouldPoll()) continue;
                 if (std::holds_alternative<const MempoolBatchVoteItem>(item)) batches = true;
-                else regular = true;
+                else if (quorumEstablished) regular = true;
             }
             // No peer is needed when no item can be polled. Passing an
             // always-false capability predicate to selectNode would falsely
@@ -2147,9 +2697,14 @@ void Processor::runEventLoop() {
             if (!regular && !batches) {
                 return;
             }
-            nodeid = peerManager->selectNode([&](NodeId id) {
-                return regular || (batches && nodeSupportsMempoolBatch(id));
-            });
+            if (quorumEstablished) {
+                nodeid = peerManager->selectNode([&](NodeId id) {
+                    return regular || (batches && nodeSupportsMempoolBatch(id));
+                });
+            }
+            if (nodeid == NO_NODE && batches) {
+                nodeid = selectBatchPollPeer();
+            }
             if (nodeid == NO_NODE) {
                 return;
             }

@@ -284,6 +284,21 @@ class Processor final : public NetEventsInterface {
     // Positive opt-ins only, bounded by connected peers and erased on teardown.
     mutable Mutex cs_batchPollPeers;
     std::unordered_set<NodeId> batchPollPeers GUARDED_BY(cs_batchPollPeers);
+    size_t m_batchPollPeerCursor GUARDED_BY(cs_batchPollPeers){0};
+
+    struct EpochSnowballState {
+        BlockHash prev_block_hash{};
+        uint32_t epoch_seq{1};
+        uint256 current_subtree_a_root{};
+        uint256 current_utxo_root{};
+        uint32_t current_tx_count{0};
+        uint32_t total_reconciliation_rounds{0};
+        uint32_t consecutive_unchanged_rounds{0};
+        std::unordered_map<uint256, uint32_t, SaltedUint256Hasher>
+            root_confidence;
+        bool snowballed{false};
+        uint256 snowballed_batch_id{};
+    };
 
     mutable Mutex cs_mempoolBatches;
     std::unordered_map<uint256, MempoolBatchAnnouncement, SaltedUint256Hasher>
@@ -305,10 +320,15 @@ class Processor final : public NetEventsInterface {
         m_conflictedBatchEpochs GUARDED_BY(cs_mempoolBatches);
     std::unordered_set<uint256, SaltedUint256Hasher>
         m_conflictedBatchIds GUARDED_BY(cs_mempoolBatches);
+    std::unordered_map<BlockHash,
+                       std::unordered_map<uint32_t, EpochSnowballState>,
+                       SaltedUint256Hasher>
+        m_epochSnowballStates GUARDED_BY(cs_mempoolBatches);
 
 public:
     static constexpr size_t MAX_MEMPOOL_BATCH_RECORDS = 1024;
     static constexpr uint16_t DEFAULT_FAST_PATH_CONFIDENCE_THRESHOLD = AVALANCHE_FINALIZATION_SCORE;
+    static constexpr uint32_t DEFAULT_EPOCH_SNOWBALL_BETA = 3;
 
     using MempoolBatchFinalizedCallback =
         std::function<void(const MempoolBatchAnnouncement &)>;
@@ -384,6 +404,7 @@ private:
     AdaptiveEpochController m_adaptiveEpochController;
     std::atomic<uint16_t> m_fastPathConfidenceThreshold{
         DEFAULT_FAST_PATH_CONFIDENCE_THRESHOLD};
+    std::atomic<uint32_t> m_epochSnowballBeta{DEFAULT_EPOCH_SNOWBALL_BETA};
 
     Processor(Config avaconfig, interfaces::Chain &chain, CConnman *connmanIn,
               ChainstateManager &chainman, CTxMemPool *mempoolIn,
@@ -659,9 +680,76 @@ public:
         MempoolBatchAnnouncement *outBatch = nullptr, bool force = false)
         EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches, !cs_finalizedItems);
 
+    void setEpochSnowballBeta(uint32_t beta) {
+        m_epochSnowballBeta.store(std::max(1U, beta),
+                                  std::memory_order_relaxed);
+    }
+    uint32_t getEpochSnowballBeta() const {
+        return m_epochSnowballBeta.load(std::memory_order_relaxed);
+    }
+
+    /**
+     * Step one round of Snowball-Union reconciliation for (prevBlockHash,
+     * epochSeq). Tracks both stateful cumulative confidence per SubtreeARoot
+     * and consecutive unchanged reconciliation rounds; once both reach
+     * beta (betaOverride if > 0, else m_epochSnowballBeta), transitions the
+     * epoch to SNOWBALLED and (if autoRegisterBatch is true) registers the
+     * crystallized MempoolBatchAnnouncement for Avalanche finalization voting.
+     */
+    bool stepEpochSnowballReconciliation(
+        const BlockHash &prevBlockHash,
+        uint32_t epochSeq,
+        bool treeChangedInRound,
+        uint32_t betaOverride = 0,
+        bool autoRegisterBatch = true,
+        MempoolBatchAnnouncement *outBatch = nullptr)
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches, !cs_finalizedItems);
+
+    /**
+     * Reconcile the active epoch (prevBlockHash, epochSeq) against a random
+     * sample of peer mempools using parent_base_root layer classification,
+     * Merklix union, Phase 2 anti-drip filtering, and Option B conflict
+     * quarantine, then step the Snowball confidence state machine.
+     */
+    bool reconcileEpochWithPeerMempools(
+        const BlockHash &prevBlockHash,
+        uint32_t epochSeq,
+        std::span<CTxMemPool *const> sampledPeerMempools,
+        uint32_t betaOverride = 0,
+        bool autoRegisterBatch = true,
+        MempoolBatchAnnouncement *outBatch = nullptr)
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches, !cs_finalizedItems);
+
+    /**
+     * Numberless self-clocking overload: reconciles the local ActiveSketchLayer
+     * anchored at local parent_base_root against sampledPeerMempools.
+     */
+    bool reconcileEpochWithPeerMempools(
+        const BlockHash &prevBlockHash,
+        std::span<CTxMemPool *const> sampledPeerMempools,
+        uint32_t betaOverride = 0,
+        bool autoRegisterBatch = true,
+        MempoolBatchAnnouncement *outBatch = nullptr)
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches, !cs_finalizedItems);
+
+    bool isEpochSnowballed(const BlockHash &prevBlockHash,
+                           uint32_t epochSeq) const
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches);
+    uint32_t getEpochSnowballConfidence(const BlockHash &prevBlockHash,
+                                        uint32_t epochSeq,
+                                        const uint256 &subtreeARoot) const
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches);
+    uint32_t getEpochSnowballConsecutiveRounds(const BlockHash &prevBlockHash,
+                                               uint32_t epochSeq) const
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches);
+
     void setNodeMempoolBatchServices(NodeId nodeid, ServiceFlags services)
         EXCLUSIVE_LOCKS_REQUIRED(!cs_batchPollPeers);
     bool nodeSupportsMempoolBatch(NodeId nodeid) const
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_batchPollPeers);
+    bool hasBatchPollPeers() const
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_batchPollPeers);
+    NodeId selectBatchPollPeer()
         EXCLUSIVE_LOCKS_REQUIRED(!cs_batchPollPeers);
 
     bool isPreconsensusActivated(const CBlockIndex *pprev) const

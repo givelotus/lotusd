@@ -238,6 +238,7 @@ struct BlockUndoMessage;
 class UtxoOverlayArena;
 class MempoolOverlayLayer;
 class MerklixOverlayManager;
+enum class EpochUnionOutcome : uint8_t;
 } // namespace lotus::v2
 
 struct V2TemplateBaseState {
@@ -305,6 +306,17 @@ bool AddTransactionToOverlay(lotus::v2::MerklixOverlayManager &manager,
                              const CTransactionRef &ptx,
                              int64_t fee_sats = 0,
                              int64_t sigchecks = 0);
+lotus::v2::EpochUnionOutcome UnionTransactionIntoOverlay(
+    lotus::v2::MerklixOverlayManager &manager,
+    const CTransactionRef &ptx,
+    int64_t fee_sats = 0,
+    int64_t sigchecks = 0,
+    uint32_t peer_sample_support = 1,
+    uint32_t peer_sample_size = 1);
+bool StageTransactionIntoOverlay(lotus::v2::MerklixOverlayManager &manager,
+                                 const CTransactionRef &ptx,
+                                 int64_t fee_sats = 0,
+                                 int64_t sigchecks = 0);
 size_t AddTransactionsToOverlayBatch(
     lotus::v2::MempoolOverlayLayer &overlay,
     std::span<const std::tuple<CTransactionRef, int64_t, int64_t>> txs);
