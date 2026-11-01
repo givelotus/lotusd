@@ -5916,6 +5916,11 @@ void PeerManagerImpl::ProcessInvalidTx(NodeId nodeid,
         return;
     }
 
+    // A native TxId doesn't commit to witnesses, so this failure may be down to
+    // this copy's witness alone. Refusing the TxId, or dropping its announcements,
+    // would let anyone holding a transaction block its honest copies until the next
+    // tip for the price of one bad body.
+    const bool native{ptx->nVersion == 7};
     {
         LOCK(m_recent_rejects_mutex);
         if (state.GetResult() == TxValidationResult::TX_PACKAGE_RECONSIDERABLE) {
@@ -5926,12 +5931,12 @@ void PeerManagerImpl::ProcessInvalidTx(NodeId nodeid,
             m_recent_rejects_package_reconsiderable.insert(txid);
             m_has_recent_rejects_reconsiderable.store(
                 true, std::memory_order_relaxed);
-        } else {
+        } else if (!native) {
             m_recent_rejects.insert(txid);
             m_has_recent_rejects.store(true, std::memory_order_relaxed);
         }
     }
-    if (TxRequestSize() > 0) {
+    if (!native && TxRequestSize() > 0) {
         WITH_LOCK(cs_txrequest, m_txrequest.ForgetInvId(txid));
     }
 
