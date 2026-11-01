@@ -343,6 +343,10 @@ public:
                                       bool stalled)
         EXCLUSIVE_LOCKS_REQUIRED(NetEventsInterface::g_msgproc_mutex) = 0;
 
+    /** Record a block as known to a V2 peer, as its messages would. */
+    virtual void UnitTestRecordPeerKnownBlock(NodeId peer_id,
+                                              const BlockHash &hash) = 0;
+
     /** Public for unit testing. */
     virtual void UnitTestMisbehaving(const NodeId peer_id) = 0;
 
