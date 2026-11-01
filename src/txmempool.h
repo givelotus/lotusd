@@ -347,6 +347,10 @@ public:
     typedef std::set<txiter, CompareIteratorById> setEntries;
     typedef std::set<txiter, CompareIteratorByRevEntryId> setRevTopoEntries;
 
+    using LiveTxTree =
+        RadixTree<CTxMemPoolEntry, MemPoolEntryRadixTreeAdapter,
+                  GlobalConcurrentSlabAllocator<std::byte, 1024>>;
+    LiveTxTree m_tx_tree;
     RadixTree<CTxMemPoolEntry, MemPoolEntryRadixTreeAdapter> finalizedTxs;
 
 private:
@@ -573,8 +577,18 @@ public:
     }
 
     bool exists(const TxId &txid) const {
-        LOCK(cs);
-        return mapTx.count(txid) != 0;
+        return m_tx_tree.get(txid) != nullptr;
+    }
+
+    /**
+     * Lock-free lookup, as are exists(), get() and info(). Each answer is correct
+     * for that one index at some moment, with no atomicity against the other
+     * indices: an entry appears here before mapNextTx and its links are updated,
+     * and leaves after. Only immutable fields and the modified fee may be read
+     * from the result without cs; its parent and child links can dangle.
+     */
+    RCUPtr<const CTxMemPoolEntry> getEntry(const TxId &txid) const {
+        return m_tx_tree.get(txid);
     }
 
     bool setAvalancheFinalized(const CTxMemPoolEntryRef &tx,

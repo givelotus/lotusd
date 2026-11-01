@@ -190,6 +190,7 @@ CTxMemPool::txiter CTxMemPool::addUnchecked(
     // Sanity check: We should always end up inserting at the end of the
     // entry_id index
     assert(&*mapTx.get<entry_id>().rbegin() == &*newit);
+    m_tx_tree.insert(entry);
 
     // Update cachedInnerUsage to include contained transaction's usage.
     // (When we update the entry for in-mempool parents, memory usage will be
@@ -305,6 +306,7 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason) {
     cachedInnerUsage -=
         memusage::DynamicUsage((*it)->GetMemPoolParentsConst()) +
         memusage::DynamicUsage((*it)->GetMemPoolChildrenConst());
+    m_tx_tree.remove(txid);
     mapTx.erase(it);
     nTransactionsUpdated++;
 }
@@ -450,6 +452,7 @@ void CTxMemPool::_clear() {
     m_pending_overlay_removes.clear();
     m_merklix_overlay.Clear();
     m_overlay_warm.store(true, std::memory_order_relaxed);
+    m_tx_tree = LiveTxTree{};
     mapTx.clear();
     m_next_tx.clear();
     mapTx.get_allocator().resource()->ReleaseUnusedChunks();
@@ -682,6 +685,7 @@ void CTxMemPool::check(const CCoinsViewCache &active_coins_tip,
         check_total_fee += entry->GetFee();
         innerUsage += entry->DynamicMemoryUsage();
         const CTransaction &tx = entry->GetTx();
+        assert(m_tx_tree.get(tx.GetId()).get() == entry.get());
         innerUsage += memusage::DynamicUsage(entry->GetMemPoolParentsConst()) +
                       memusage::DynamicUsage(entry->GetMemPoolChildrenConst());
 
@@ -745,13 +749,13 @@ void CTxMemPool::check(const CCoinsViewCache &active_coins_tip,
         AddCoins(mempoolDuplicate, tx, std::numeric_limits<int>::max());
     }
 
-    mapNextTx.forEach([&](const COutPoint &, const CTransactionRef &nextTx) {
-        AssertLockHeld(cs);
-        txiter it = mapTx.find(nextTx->GetId());
-        assert(it != mapTx.end());
-        assert((*it)->GetSharedTx() == nextTx);
-        return true;
-    });
+    mapNextTx.forEach([&](const COutPoint &, const CTransactionRef &nextTx)
+                          NO_THREAD_SAFETY_ANALYSIS {
+                              txiter it = mapTx.find(nextTx->GetId());
+                              assert(it != mapTx.end());
+                              assert((*it)->GetSharedTx() == nextTx);
+                              return true;
+                          });
 
     assert(totalTxSize == checkTotal);
     assert(m_total_fee == check_total_fee);
@@ -783,11 +787,11 @@ void CTxMemPool::getAllTxIds(std::vector<TxId> &vtxid) const {
     }
 }
 
-static TxMempoolInfo
-GetInfo(CTxMemPool::indexed_transaction_set::const_iterator it) {
-    return TxMempoolInfo{(*it)->GetSharedTx(), (*it)->GetTime(),
-                         (*it)->GetFee(), (*it)->GetTxSize(),
-                         (*it)->GetModifiedFee() - (*it)->GetFee()};
+static TxMempoolInfo GetInfo(const CTxMemPoolEntry &entry) {
+    const Amount fee = entry.GetFee();
+    const Amount modified_fee = entry.GetModifiedFee();
+    return TxMempoolInfo{entry.GetSharedTx(), entry.GetTime(), fee,
+                         entry.GetTxSize(), modified_fee - fee};
 }
 
 std::vector<TxMempoolInfo> CTxMemPool::infoAll() const {
@@ -798,7 +802,7 @@ std::vector<TxMempoolInfo> CTxMemPool::infoAll() const {
 
     const auto &index = mapTx.get<entry_id>();
     for (auto it = index.begin(); it != index.end(); ++it) {
-        ret.push_back(GetInfo(mapTx.project<0>(it)));
+        ret.push_back(GetInfo(**it));
     }
 
     return ret;
@@ -983,23 +987,17 @@ bool CTxMemPool::isWorthPolling(const CTransactionRef &tx) const {
 }
 
 CTransactionRef CTxMemPool::get(const TxId &txid) const {
-    LOCK(cs);
-    indexed_transaction_set::const_iterator i = mapTx.find(txid);
-    if (i == mapTx.end()) {
-        return nullptr;
-    }
-
-    return (*i)->GetSharedTx();
+    RCUPtr<const CTxMemPoolEntry> entry = m_tx_tree.get(txid);
+    return entry ? entry->GetSharedTx() : nullptr;
 }
 
 TxMempoolInfo CTxMemPool::info(const TxId &txid) const {
-    LOCK(cs);
-    indexed_transaction_set::const_iterator i = mapTx.find(txid);
-    if (i == mapTx.end()) {
+    RCUPtr<const CTxMemPoolEntry> entry = m_tx_tree.get(txid);
+    if (!entry) {
         return TxMempoolInfo();
     }
 
-    return GetInfo(i);
+    return GetInfo(*entry);
 }
 
 CFeeRate CTxMemPool::estimateFee() const {
@@ -1143,7 +1141,7 @@ size_t CTxMemPool::DynamicMemoryUsage() const {
     // count it even when most slots are free. Entries are separate objects.
     return mapTx.get_allocator().resource()->TotalAllocatedBytes() +
            memusage::MallocUsage(sizeof(CTxMemPoolEntry)) * mapTx.size() +
-           memusage::DynamicUsage(mapNextTx) +
+           memusage::DynamicUsage(mapNextTx) + m_tx_tree.nodeMemoryUsage() +
            memusage::DynamicUsage(mapDeltas) + cachedInnerUsage;
 }
 
@@ -1161,7 +1159,8 @@ bool CTxMemPool::CanFitRawTxBatch(
     const size_t next_tx_node_usage = NextTxMap::EntryUsageUpperBound();
     std::set<TxId> staged;
     for (const auto *entry : entries) {
-        usage += entry_overhead + entry->DynamicMemoryUsage();
+        usage += entry_overhead + entry->DynamicMemoryUsage() +
+                 LiveTxTree::NodeBytes();
         std::set<TxId> parents;
         for (const auto &input : entry->GetTx().vin) {
             usage += next_tx_node_usage;

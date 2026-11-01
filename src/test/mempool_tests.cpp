@@ -25,6 +25,8 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <chrono>
+#include <future>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -532,7 +534,8 @@ BOOST_AUTO_TEST_CASE(MempoolSizeLimitTest) {
         const size_t retained =
             pool.mapTx.get_allocator().resource()->TotalAllocatedBytes() +
             pool.mapNextTx.nodeCount() *
-                CTxMemPool::NextTxMap::Tree::NodeBytes();
+                CTxMemPool::NextTxMap::Tree::NodeBytes() +
+            pool.m_tx_tree.nodeMemoryUsage();
         const size_t usage = pool.DynamicMemoryUsage();
         BOOST_REQUIRE_GE(usage, retained);
         return retained + (usage - retained) * numerator / denominator;
@@ -1740,6 +1743,58 @@ BOOST_AUTO_TEST_CASE(DeserializeTransactionRef) {
     BOOST_REQUIRE_EQUAL(decoded.size(), 2U);
     BOOST_CHECK(decoded[0]->GetHash() == expected->GetHash());
     BOOST_CHECK(decoded[0] != decoded[1]);
+}
+
+BOOST_AUTO_TEST_CASE(lock_free_tx_tree_lookups) {
+    CTxMemPool &pool = *m_node.mempool;
+    TestMemPoolEntryHelper entry;
+    CMutableTransaction mtx;
+    mtx.vin.emplace_back(TxId{uint256{uint8_t(42)}}, 0);
+    mtx.vout.emplace_back(5000 * SATOSHI, CScript() << OP_TRUE);
+    const CTransactionRef tx = MakeTransactionRef(mtx);
+    const TxId txid = tx->GetId();
+
+    {
+        LOCK2(cs_main, pool.cs);
+        pool.addUnchecked(entry.Fee(1200 * SATOSHI).Time(777).FromTx(tx));
+    }
+
+    // Exercise lock-free exists, get, info, and getEntry without pool.cs
+    BOOST_CHECK(pool.exists(txid));
+    BOOST_CHECK(!pool.exists(TxId{uint256{uint8_t(99)}}));
+    const CTransactionRef got = pool.get(txid);
+    BOOST_REQUIRE(got != nullptr);
+    BOOST_CHECK(got->GetId() == txid);
+    const TxMempoolInfo info = pool.info(txid);
+    BOOST_REQUIRE(info.tx != nullptr);
+    BOOST_CHECK(info.tx->GetId() == txid);
+    BOOST_CHECK_EQUAL(info.fee, 1200 * SATOSHI);
+    BOOST_CHECK_EQUAL(info.m_time.count(), 777);
+    const auto rcu_entry = pool.getEntry(txid);
+    BOOST_REQUIRE(rcu_entry != nullptr);
+    BOOST_CHECK(rcu_entry->GetTx().GetId() == txid);
+
+    // None of these may wait for a thread that holds the pool lock.
+    {
+        LOCK(pool.cs);
+        auto reader = std::async(std::launch::async, [&] {
+            return pool.exists(txid) && pool.get(txid) != nullptr &&
+                   pool.info(txid).tx != nullptr &&
+                   pool.getEntry(txid) != nullptr && pool.isSpent(mtx.vin[0].prevout);
+        });
+        BOOST_REQUIRE(reader.wait_for(std::chrono::seconds{30}) ==
+                      std::future_status::ready);
+        BOOST_CHECK(reader.get());
+    }
+
+    {
+        LOCK2(cs_main, pool.cs);
+        pool.removeRecursive(*tx, MemPoolRemovalReason::MANUAL);
+    }
+    BOOST_CHECK(!pool.exists(txid));
+    BOOST_CHECK(pool.get(txid) == nullptr);
+    BOOST_CHECK(pool.info(txid).tx == nullptr);
+    BOOST_CHECK(pool.getEntry(txid) == nullptr);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
