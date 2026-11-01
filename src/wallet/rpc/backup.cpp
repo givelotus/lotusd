@@ -11,6 +11,7 @@
 #include <interfaces/chain.h>
 #include <key_io.h>
 #include <merkleblock.h>
+#include <primitives/block.h>
 #include <rpc/server.h>
 #include <rpc/util.h>
 #include <script/descriptor.h>
@@ -428,7 +429,8 @@ RPCHelpMan importprunedfunds() {
     return RPCHelpMan{
         "importprunedfunds",
         "Imports funds without rescan. Corresponding address or script must "
-        "previously be included in wallet. Aimed towards pruned wallets. The "
+        "previously be included in wallet. The block named by the proof must "
+        "still be on disk, because the proof is checked against it. The "
         "end-user is responsible to import additional transactions that "
         "subsequently spend the imported outputs or rescan after the point in "
         "the blockchain the transaction is included.\n",
@@ -470,13 +472,39 @@ RPCHelpMan importprunedfunds() {
                                    "Something wrong with merkleblock");
             }
 
+            const lotus::v2::ChainId chain_id =
+                pwallet->chain().params().V2ChainId();
+            const ScopedV2ChainId chain_scope(chain_id);
+
             LOCK(pwallet->cs_wallet);
             int height;
+            CBlock block;
             if (!pwallet->chain().findAncestorByHash(
                     pwallet->GetLastBlockHash(), merkleBlock.header.GetHash(),
-                    FoundBlock().height(height))) {
+                    FoundBlock().height(height).data(block))) {
                 throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
                                    "Block not found in chain");
+            }
+
+            // The block header commits to a native transaction root, which a
+            // legacy partial merkle tree can't be checked against. The proof
+            // only means something once it is compared to the block itself.
+            if (block.vtx.empty()) {
+                throw JSONRPCError(RPC_MISC_ERROR,
+                                   "Block not available (pruned data)");
+            }
+            std::vector<uint256> verified_matches;
+            switch (VerifyMerkleBlockAgainstAuthenticatedBlock(
+                merkleBlock, block, merkleBlock.header.GetHash(),
+                block.GetBlockHeader(), block.vtx.size(), verified_matches)) {
+                case MerkleBlockVerifyResult::VALID:
+                    break;
+                case MerkleBlockVerifyResult::CORRUPT_BLOCK:
+                    throw JSONRPCError(RPC_INTERNAL_ERROR,
+                                       "Corrupt block on disk");
+                case MerkleBlockVerifyResult::INVALID_PROOF:
+                    throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                                       "Something wrong with merkleblock");
             }
 
             std::vector<uint256>::const_iterator it;
