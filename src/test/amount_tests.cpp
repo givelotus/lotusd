@@ -6,7 +6,12 @@
 
 #include <test/util/setup_common.h>
 
+#include <tinyformat.h>
+#include <univalue.h>
+
 #include <boost/test/unit_test.hpp>
+
+#include <limits>
 
 #include <array>
 #include <limits>
@@ -101,6 +106,31 @@ BOOST_AUTO_TEST_CASE(AmountTests) {
 
     BOOST_CHECK_EQUAL(COIN - COIN, Amount::zero());
     BOOST_CHECK_EQUAL(COIN - 2 * COIN, -1 * COIN);
+}
+
+BOOST_AUTO_TEST_CASE(univalue_conversion_matches_printf_formatting) {
+    const auto &currency = Currency::get();
+    const auto expected = [&](const Amount value) {
+        const int64_t raw{value / SATOSHI};
+        int64_t quotient = value / currency.baseunit;
+        int64_t remainder = (value % currency.baseunit) / currency.subunit;
+        if (raw < 0) {
+            quotient = -quotient;
+            remainder = -remainder;
+        }
+        return strprintf("%s%d.%0*d", raw < 0 ? "-" : "", quotient,
+                         currency.decimals, remainder);
+    };
+    for (const int64_t raw :
+         {int64_t{0}, int64_t{1}, int64_t{-1}, int64_t{9}, int64_t{10},
+          int64_t{99}, int64_t{100}, int64_t{101}, int64_t{-101},
+          int64_t{100'000'000}, int64_t{123'456'789}, int64_t{-123'456'789},
+          int64_t{21'000'000'000'000'000},
+          std::numeric_limits<int64_t>::max(),
+          -std::numeric_limits<int64_t>::max()}) {
+        const Amount value{raw * SATOSHI};
+        BOOST_CHECK_EQUAL(UniValue(value).getValStr(), expected(value));
+    }
 }
 
 BOOST_AUTO_TEST_CASE(MoneyRangeTest) {

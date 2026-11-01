@@ -12,6 +12,8 @@
 
 #include <tinyformat.h>
 
+#include <charconv>
+
 #include <atomic>
 
 using namespace std::string_view_literals;
@@ -50,13 +52,27 @@ Amount::operator UniValue() const {
     const auto &currency = Currency::get();
     int64_t quotient = *this / currency.baseunit;
     int64_t remainder = (*this % currency.baseunit) / currency.subunit;
+    // Verbose mempool RPCs format several of these per transaction.
+    char buf[64];
+    char *p = buf;
     if (amount < 0) {
+        *p++ = '-';
         quotient = -quotient;
         remainder = -remainder;
     }
+    p = std::to_chars(p, buf + sizeof(buf), quotient).ptr;
+    *p++ = '.';
+    if (currency.decimals == 0) {
+        // Nothing in the fraction, but it has always been printed.
+        *p++ = '0';
+    }
+    for (int i = currency.decimals - 1; i >= 0; --i) {
+        p[i] = static_cast<char>('0' + (remainder % 10));
+        remainder /= 10;
+    }
+    p += currency.decimals;
     return UniValue(UniValue::VNUM,
-                    strprintf("%s%d.%0*d", amount < 0 ? "-" : "", quotient,
-                              currency.decimals, remainder));
+                    std::string(buf, static_cast<size_t>(p - buf)));
 }
 
 std::optional<Amount> Amount::CheckedAdd(const Amount &other) const noexcept {
