@@ -160,6 +160,9 @@ struct MonetaryState {
     uint64_t tail_subsidy{};
     Hash prev_work{}; // LE unsigned u256.
     uint64_t ema_block_cost{};
+    Hash history_root{};
+
+    bool operator==(const MonetaryState &) const noexcept = default;
 };
 std::array<uint8_t, 56> EncodeMonetaryState(const MonetaryState &state);
 MonetaryState DecodeMonetaryState(const std::vector<uint8_t> &wire);

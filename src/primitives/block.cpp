@@ -100,8 +100,7 @@ bool FlushV2BlockStatesToDiskLocked(std::unique_lock<std::mutex> &lock) {
             it != g_v2_state_snapshots.end() &&
             it->second.utxo_root == snapshot.utxo_root &&
             it->second.circulating_supply == snapshot.circulating_supply &&
-            lotus::v2::EncodeMonetaryState(it->second.mon_state) ==
-                lotus::v2::EncodeMonetaryState(snapshot.mon_state)) {
+            it->second.mon_state == snapshot.mon_state) {
             it->second.persisted_to_disk = true;
         } else {
             all_written = false;
@@ -138,8 +137,7 @@ bool CacheV2BlockStateLocked(std::unique_lock<std::mutex> &lock, const BlockHash
         if (current == g_v2_state_snapshots.end() ||
             current->second.utxo_root != snapshot.utxo_root ||
             current->second.circulating_supply != snapshot.circulating_supply ||
-            lotus::v2::EncodeMonetaryState(current->second.mon_state) !=
-                lotus::v2::EncodeMonetaryState(snapshot.mon_state)) return false;
+            current->second.mon_state != snapshot.mon_state) return false;
         g_v2_state_snapshots.erase(current);
         auto position = g_v2_state_lru_pos.find(oldest);
         if (position != g_v2_state_lru_pos.end()) {
@@ -551,7 +549,8 @@ bool MonetaryStatesEqual(const lotus::v2::MonetaryState &a,
                          const lotus::v2::MonetaryState &b) noexcept {
     return a.bootstrap_reserve == b.bootstrap_reserve &&
            a.tail_subsidy == b.tail_subsidy && a.prev_work == b.prev_work &&
-           a.ema_block_cost == b.ema_block_cost;
+           a.ema_block_cost == b.ema_block_cost &&
+           a.history_root == b.history_root;
 }
 
 V2BlockStateSnapshot BuildNextV2BlockState(const CBlock &block,
