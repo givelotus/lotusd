@@ -66,6 +66,11 @@ public:
             used, used + bytes, std::memory_order_relaxed));
         return Reservation{m_state, bytes};
     }
+    /** Whether TryReserve(bytes) would succeed now. */
+    bool HasRoom(size_t bytes) const noexcept {
+        return bytes <= m_state->limit -
+                            m_state->used.load(std::memory_order_relaxed);
+    }
     size_t Used() const noexcept {
         return m_state->used.load(std::memory_order_relaxed);
     }

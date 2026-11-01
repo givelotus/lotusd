@@ -20,6 +20,7 @@
 #include <logging.h>
 #include <net.h>
 #include <net_processing.h>
+#include <node/txadmission.h>
 #include <netmessagemaker.h>
 #include <pow/pow.h>
 #include <primitives/block.h>
@@ -2742,6 +2743,213 @@ BOOST_AUTO_TEST_CASE(tachyon_avalanche_snapsync_reverse_peel_and_opt_out) {
     BOOST_CHECK(swarm_err.find("no NODE_UTXO_SHARD") != std::string::npos);
 }
 
+
+BOOST_AUTO_TEST_CASE(short_id_announcements_outlive_the_body_in_flight) {
+    struct ResetClock {
+        ~ResetClock() {
+            SetMockTime(0);
+            gArgs.ClearForcedArg("-highbandwidthtx");
+        }
+    } reset_clock;
+    gArgs.ForceSetArg("-highbandwidthtx", "0");
+    auto &chainman{static_cast<TestChainstateManager &>(*m_node.chainman)};
+    chainman.JumpOutOfIbd();
+    const Config &config{chainman.GetConfig()};
+    std::atomic<bool> interrupt{false};
+    FastRandomContext rng{uint256{0x81}};
+    NodeId next_id{1300};
+    int64_t now{1'700'000'000};
+
+    enum class Case { REJECTED, ACCEPTED, DROPPED, QUEUED_THEN_ACCEPTED };
+    for (const Case test_case : {Case::REJECTED, Case::ACCEPTED, Case::DROPPED,
+                                 Case::QUEUED_THEN_ACCEPTED}) {
+        const bool parallel{test_case == Case::DROPPED ||
+                            test_case == Case::QUEUED_THEN_ACCEPTED};
+        BOOST_TEST_MESSAGE("case " << int(test_case));
+        now += 1000;
+        SetMockTime(now);
+        MockRelayTick tick{std::chrono::seconds{now}};
+        auto connman = std::make_unique<ConnmanTestMsg>(config, 123, 456,
+                                                        *m_node.addrman);
+        PeerManager::Options peer_opts;
+        peer_opts.deterministic_rng = true;
+        peer_opts.parallel_admission = parallel;
+        peer_opts.parallel_admission_threads = 2;
+        auto peerman =
+            PeerManager::make(*connman, *m_node.addrman, nullptr, chainman,
+                              *m_node.mempool, nullptr, peer_opts);
+        CConnman::Options opts;
+        opts.m_msgproc = {peerman.get()};
+        opts.nSendBufferMaxSize = 16 * 1024 * 1024;
+        connman->Init(opts);
+        std::vector<CNode *> peers;
+        CTransactionRef tx;
+        {
+        LOCK(NetEventsInterface::g_msgproc_mutex);
+        for (int i = 0; i < 2; ++i) {
+            CAddress addr(MakeTestIp(0xa0b0c1a0 + next_id), NODE_NONE);
+            auto *peer = new CNode(next_id++, nullptr, addr, 0, 0, 0,
+                                   CAddress(), "",
+                                   ConnectionType::OUTBOUND_FULL_RELAY, false);
+            connman->Handshake(*peer, true, NODE_NETWORK, NODE_NETWORK,
+                               PROTOCOL_VERSION, true);
+            connman->AddTestNode(*peer);
+            peers.push_back(peer);
+            DataStream offer{};
+            offer << txrelay::SENDINVSHORT_VERSION
+                  << uint64_t{txrelay::TXRELAY_INVSHORT};
+            peerman->ProcessMessage(config, *peer, NetMsgType::SENDINVSHORT,
+                                    offer, 0us, interrupt);
+            peer->m_bip152_highbandwidth_to = false;
+            peer->m_bip152_highbandwidth_from = false;
+            WITH_LOCK(peer->cs_vSend, peer->vSendMsg.clear());
+        }
+        CNode &sender{*peers[0]};
+        CNode &announcer{*peers[1]};
+        const auto tip{WITH_LOCK(cs_main, return chainman.ActiveTip())};
+        const auto epoch{
+            txrelay::MakeEpochKey(tip->GetBlockHash(), tip->nHeight)};
+        tx = MakeNonCoinbaseTx(rng, uint8_t(rng.randbits(8)));
+        BOOST_REQUIRE(tx);
+        if (test_case == Case::REJECTED) {
+            // Zero fee: refused by policy, so this copy gets a non-valid verdict
+            // that says nothing about what another peer could send.
+            LOCK(cs_main);
+            const CTxIn &in{tx->vin[0]};
+            chainman.ActiveChainstate().CoinsTip().AddCoin(
+                in.prevout,
+                Coin(CTxOut(tx->GetValueOut(),
+                            GetScriptForDestination(
+                                ScriptHash(MakeRedeemScriptForAttempt(
+                                    in.prevout.GetN())))),
+                     /*nHeightIn=*/1, /*Coinbase=*/false),
+                /*possible_overwrite=*/true);
+        } else {
+            FundTxInputInCoinsTip(chainman, *tx);
+        }
+        const uint64_t sid{
+            txrelay::ComputeShortId(epoch.k0, epoch.k1, tx->GetId(), 64)};
+        DataStream inv{};
+        inv << epoch.epoch_id << std::vector<uint64_t>{sid};
+        peerman->ProcessMessage(config, announcer, NetMsgType::INVSHORT, inv,
+                                0us, interrupt);
+        const auto requests_from_announcer =
+            [&]() EXCLUSIVE_LOCKS_REQUIRED(
+                NetEventsInterface::g_msgproc_mutex) {
+            BOOST_REQUIRE(peerman->SendMessages(config, &announcer));
+            bool requested{false};
+            V1TransportDeserializer deserializer(config, announcer.GetId());
+            LOCK(announcer.cs_vSend);
+            for (const auto &chunk : announcer.vSendMsg) {
+                Span<const uint8_t> bytes{chunk};
+                while (!bytes.empty()) {
+                    BOOST_REQUIRE_GE(deserializer.Read(config, bytes), 0);
+                    if (!deserializer.Complete()) continue;
+                    bool rejected{false};
+                    auto message = deserializer.GetMessage(0us, rejected);
+                    BOOST_REQUIRE(!rejected);
+                    if (message.m_type != NetMsgType::GETSHORTTX) continue;
+                    ShortTxRequest request;
+                    message.m_recv >> request;
+                    requested |= std::count(request.short_ids.begin(),
+                                            request.short_ids.end(), sid) > 0;
+                }
+            }
+            announcer.vSendMsg.clear();
+            return requested;
+        };
+        const auto advance_past_request_delay = [&] {
+            now += 60;
+            SetMockTime(now);
+            tick.Set(std::chrono::seconds{now});
+        };
+        const std::vector<CTransactionRef> body{tx};
+        switch (test_case) {
+            case Case::REJECTED: {
+                peerman->ProcessShortTxResponse(sender, body);
+                BOOST_CHECK(!m_node.mempool->exists(tx->GetId()));
+                advance_past_request_delay();
+                BOOST_CHECK(requests_from_announcer());
+                break;
+            }
+            case Case::ACCEPTED: {
+                peerman->ProcessShortTxResponse(sender, body);
+                BOOST_CHECK(m_node.mempool->exists(tx->GetId()));
+                advance_past_request_delay();
+                BOOST_CHECK(!requests_from_announcer());
+                break;
+            }
+            case Case::DROPPED: {
+                // A sender that disconnected never gets a verdict for its
+                // queued bodies. The other announcer is still asked.
+                sender.fDisconnect = true;
+                peerman->ProcessShortTxResponse(sender, body);
+                advance_past_request_delay();
+                bool requested{false};
+                const auto deadline{SteadyClock::now() +
+                                    std::chrono::seconds{10}};
+                while (!requested && SteadyClock::now() < deadline) {
+                    connman->ProcessMessagesOnce(announcer);
+                    requested = requests_from_announcer();
+                    std::this_thread::yield();
+                }
+                BOOST_CHECK(requested);
+                BOOST_CHECK(!m_node.mempool->exists(tx->GetId()));
+                break;
+            }
+            case Case::QUEUED_THEN_ACCEPTED: {
+                {
+                    // With cs_main pinned the verdict cannot arrive, so the
+                    // body is known to be in flight: no second copy is fetched.
+                    LOCK(cs_main);
+                    peerman->ProcessShortTxResponse(sender, body);
+                    advance_past_request_delay();
+                    BOOST_CHECK(!requests_from_announcer());
+                }
+                const auto deadline{SteadyClock::now() +
+                                    std::chrono::seconds{10}};
+                while (!m_node.mempool->exists(tx->GetId()) &&
+                       SteadyClock::now() < deadline) {
+                    connman->ProcessMessagesOnce(announcer);
+                    std::this_thread::yield();
+                }
+                BOOST_CHECK(m_node.mempool->exists(tx->GetId()));
+                // The verdict is delivered on the message thread: wait for it
+                // to clear the announcement before checking for a request.
+                for (int i = 0; i < 1000; ++i) {
+                    connman->ProcessMessagesOnce(announcer);
+                    std::this_thread::yield();
+                }
+                advance_past_request_delay();
+                BOOST_CHECK(!requests_from_announcer());
+                break;
+            }
+        }
+        }
+        peerman->StopTxAdmission();
+        for (CNode *peer : peers) {
+            peerman->FinalizeNode(config, *peer);
+        }
+        connman->ClearTestNodes();
+        if (m_node.mempool->exists(tx->GetId())) {
+            LOCK2(cs_main, m_node.mempool->cs);
+            m_node.mempool->_clear();
+        }
+    }
+    chainman.ResetIbd();
+}
+
+BOOST_AUTO_TEST_CASE(retained_budget_reports_room_as_reserve_would) {
+    node::TxAdmissionRetainedBudget budget{100};
+    BOOST_CHECK(budget.HasRoom(100));
+    BOOST_CHECK(!budget.HasRoom(101));
+    auto reservation{budget.TryReserve(60)};
+    BOOST_REQUIRE(reservation);
+    BOOST_CHECK(budget.HasRoom(40));
+    BOOST_CHECK(!budget.HasRoom(41));
+    reservation.reset();
+    BOOST_CHECK(budget.HasRoom(100));
+}
 
 BOOST_AUTO_TEST_CASE(relay_epoch_responses_use_authoritative_requests) {
     LOCK(NetEventsInterface::g_msgproc_mutex);

@@ -1248,7 +1248,29 @@ private:
     std::deque<TxAdmissionDone>
         m_tx_admission_done GUARDED_BY(m_tx_admission_done_mutex);
     /** Transactions queued for or in admission, by txid. */
-    std::set<TxId> m_tx_admission_inflight GUARDED_BY(g_msgproc_mutex);
+    struct InflightAdmission {
+        //! Short-ID request keys registered for this transaction when it was
+        //! queued. Erasing these exact keys, not those of the epochs current
+        //! at the verdict, leaves nothing behind across an epoch rotation.
+        std::array<TxId, 2> short_id_keys;
+        size_t short_id_key_count{0};
+    };
+    std::unordered_map<TxId, InflightAdmission, SaltedTxIdHasher>
+        m_tx_admission_inflight GUARDED_BY(g_msgproc_mutex);
+    struct InflightShortId {
+        TxId txid;
+        //! Transactions sharing this key: a ground collision keeps the entry
+        //! until the last of them has its verdict.
+        uint32_t refs{0};
+    };
+    /**
+     * Short-ID request keys of the transactions in m_tx_admission_inflight.
+     * While a key is here no peer is asked for that body, but announcements
+     * of it stay registered in m_txrequest so that another announcer can be
+     * asked if the body in flight does not get into the mempool.
+     */
+    std::unordered_map<TxId, InflightShortId, SaltedTxIdHasher>
+        m_tx_admission_inflight_shortids GUARDED_BY(g_msgproc_mutex);
 
     void ThreadTxAdmission()
         EXCLUSIVE_LOCKS_REQUIRED(!m_tx_admission_done_mutex,
@@ -3469,7 +3491,20 @@ bool PeerManagerImpl::QueueTxForAdmission(CNode &pfrom, const PeerRef &peer,
     if (!PrepareTxAdmission(pfrom, ptx)) {
         return true;
     }
-    m_tx_admission_inflight.insert(txid);
+    InflightAdmission &inflight{m_tx_admission_inflight[txid]};
+    m_txrelay_index.ForEachEpoch([&](const txrelay::EpochKey &epoch)
+                                     EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex) {
+        if (inflight.short_id_key_count == inflight.short_id_keys.size()) {
+            return;
+        }
+        const TxId key{txrelay::ShortIdRequestKey(
+            epoch.epoch_id, m_txrelay_index.ShortId(epoch, txid))};
+        inflight.short_id_keys[inflight.short_id_key_count++] = key;
+        auto &entry{m_tx_admission_inflight_shortids[key]};
+        if (entry.refs++ == 0) {
+            entry.txid = txid;
+        }
+    });
     ++peer->m_tx_admission_pending;
     // g_msgproc_mutex serializes every producer; only the consumer can
     // change queue capacity after HasRoom, and it can only free space.
@@ -3515,7 +3550,18 @@ bool PeerManagerImpl::ProcessTxAdmissionDone() {
                 case TxAdmissionDone::Kind::DROPPED:
                     break;
             }
-            m_tx_admission_inflight.erase(d.tx->GetId());
+            if (const auto it{m_tx_admission_inflight.find(d.tx->GetId())};
+                it != m_tx_admission_inflight.end()) {
+                for (size_t i = 0; i < it->second.short_id_key_count; ++i) {
+                    const auto entry{m_tx_admission_inflight_shortids.find(
+                        it->second.short_id_keys[i])};
+                    if (entry != m_tx_admission_inflight_shortids.end() &&
+                        --entry->second.refs == 0) {
+                        m_tx_admission_inflight_shortids.erase(entry);
+                    }
+                }
+                m_tx_admission_inflight.erase(it);
+            }
             Assume(peer.m_tx_admission_pending > 0);
             --peer.m_tx_admission_pending;
         }
@@ -4254,10 +4300,11 @@ void PeerManagerImpl::ForgetShortIdRequests(const TxId &txid) {
     if (m_txrequest.Size() == 0) {
         return;
     }
-    for (const auto &epoch : m_txrelay_index.Epochs()) {
+    m_txrelay_index.ForEachEpoch([&](const txrelay::EpochKey &epoch)
+                                     EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
         m_txrequest.ForgetInvId(TxId{txrelay::ShortIdRequestKey(
             epoch.epoch_id, m_txrelay_index.ShortId(epoch, txid))});
-    }
+    });
 }
 
 void PeerManagerImpl::MaybeDrainRelayQueue() {
@@ -5749,6 +5796,7 @@ void PeerManagerImpl::ProcessValidTx(
     // As this version of the transaction was acceptable, we can forget about
     // any requests for it. No-op if the tx is not in txrequest.
     m_txrequest.ForgetInvId(tx->GetId());
+    ForgetShortIdRequests(tx->GetId());
 
     m_mempool.withOrphanage([&tx](TxOrphanage &orphanage) {
         orphanage.AddChildrenToWorkSet(*tx);
@@ -5800,8 +5848,19 @@ bool PeerManagerImpl::PrepareTxAdmission(CNode &pfrom,
     const TxId &txid = tx.GetId();
 
     m_txrequest.ReceivedResponse(pfrom.GetId(), txid);
-    // Whichever way it came, it answers announcements of its short id.
-    ForgetShortIdRequests(txid);
+    // Whichever way it came, it answers this peer's announcements of its short
+    // id. Other peers' stay registered until the transaction is accepted: this
+    // copy may never get a verdict, or may fail where another would not.
+    m_txrelay_index.ForEachEpoch([&](const txrelay::EpochKey &epoch)
+                                     EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+        m_txrequest.ReceivedResponse(
+            pfrom.GetId(),
+            TxId{txrelay::ShortIdRequestKey(
+                epoch.epoch_id, m_txrelay_index.ShortId(epoch, txid))});
+    });
+    if (m_mempool.exists(txid)) {
+        ForgetShortIdRequests(txid);
+    }
     if (auto *m{node::GetNodeMetrics()}) {
         m->txrelay_body_recv.Inc();
         if (AlreadyHaveTx(txid, /*include_reconsiderable=*/true)) {
@@ -7319,6 +7378,7 @@ void PeerManagerImpl::ProcessMessage(
         std::vector<TxId> have;
         std::vector<TxId> known_txids;
         std::vector<TxId> missing_req_keys;
+        uint64_t in_flight{0};
         known_txids.reserve(short_ids.size());
         missing_req_keys.reserve(short_ids.size());
         for (const uint64_t short_id : short_ids) {
@@ -7333,8 +7393,18 @@ void PeerManagerImpl::ProcessMessage(
                 }
                 continue;
             }
-            missing_req_keys.emplace_back(
-                txrelay::ShortIdRequestKey(epoch_id, short_id));
+            const TxId req_key{txrelay::ShortIdRequestKey(epoch_id, short_id)};
+            missing_req_keys.emplace_back(req_key);
+            // A body being admitted is known to this peer too. The announcement
+            // is still recorded below: admission may yet fail. An ambiguous key
+            // cannot name a transaction.
+            if (const auto it{m_tx_admission_inflight_shortids.find(req_key)};
+                it != m_tx_admission_inflight_shortids.end()) {
+                ++in_flight;
+                if (it->second.refs == 1) {
+                    known_txids.push_back(it->second.txid);
+                }
+            }
         }
         if (!known_txids.empty()) {
             if (auto *tx_relay = peer->GetTxRelay()) {
@@ -7349,7 +7419,7 @@ void PeerManagerImpl::ProcessMessage(
                 }
             }
         }
-        const uint64_t missing{missing_req_keys.size()};
+        const uint64_t missing{missing_req_keys.size() - in_flight};
         if (!missing_req_keys.empty()) {
             LOCK(cs_main);
             const bool preferred = isPreferredDownloadPeer(pfrom);
@@ -10173,7 +10243,18 @@ bool PeerManagerImpl::ProcessMessages(const Config &config, CNode *pfrom,
     const bool admit_in_parallel =
         parallel_admission && msg.m_type == NetMsgType::TX &&
         !RejectIncomingTxs(*pfrom) && !m_chainman.IsInitialBlockDownload();
-    if (parallel_admission && !admit_in_parallel &&
+    // Short-ID relay does not depend on the verdicts: announcements and requests
+    // change no mempool state, and a response joins the queue behind this
+    // peer's earlier transactions. A response the retained budget cannot take
+    // would be validated serially, overtaking them, so it waits instead.
+    const bool pipeline_short_id_relay =
+        parallel_admission && !RejectIncomingTxs(*pfrom) &&
+        !m_chainman.IsInitialBlockDownload() &&
+        (msg.m_type == NetMsgType::INVSHORT ||
+         msg.m_type == NetMsgType::GETSHORTTX ||
+         (msg.m_type == NetMsgType::SHORTTX &&
+          m_tx_admission_retained_budget.HasRoom(msg.m_recv.size())));
+    if (parallel_admission && !admit_in_parallel && !pipeline_short_id_relay &&
         peer->m_tx_admission_pending > 0) {
         // Keep this peer's message order: handle it after the verdicts.
         peer->m_tx_admission_held_msg.emplace(std::move(msg));
@@ -11788,6 +11869,10 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                 if (m_txrelay_index.Find(epoch->epoch_id, *short_id) ==
                     txrelay::TxRelayIndex::Lookup::HAVE) {
                     m_txrequest.ForgetInvId(txid);
+                    continue;
+                }
+                if (m_tx_admission_inflight_shortids.count(txid)) {
+                    // Wait for the verdict rather than fetch a second copy.
                     continue;
                 }
                 auto it{std::find_if(
