@@ -156,10 +156,6 @@ CTxMemPool::CTxMemPool(const Config &config, Options opts)
 CTxMemPool::~CTxMemPool() = default;
 
 bool CTxMemPool::isSpent(const COutPoint &outpoint) const {
-    if (!m_utxo_fast_filter.IsSpentInMempool(outpoint.GetTxId().begin(),
-                                             outpoint.GetN())) {
-        return false;
-    }
     return mapNextTx.contains(outpoint);
 }
 
@@ -1127,10 +1123,6 @@ void CTxMemPool::ClearPrioritisation(const TxId &txid) {
 }
 
 CTransactionRef CTxMemPool::GetConflictTx(const COutPoint &prevout) const {
-    if (!m_utxo_fast_filter.IsSpentInMempool(prevout.GetTxId().begin(),
-                                             prevout.GetN())) {
-        return nullptr;
-    }
     return mapNextTx.get(prevout).value_or(nullptr);
 }
 
