@@ -41,10 +41,12 @@ private:
     struct ListEntry {
         std::shared_ptr<CValidationInterface> callbacks;
         int count = 1;
+        bool wants_spent_coins = false;
     };
     std::list<ListEntry> m_list GUARDED_BY(m_mutex);
     std::unordered_map<CValidationInterface *, std::list<ListEntry>::iterator>
         m_map GUARDED_BY(m_mutex);
+    std::atomic<size_t> m_spent_coins_subscribers{0};
 
 public:
     std::unique_ptr<util::TaskRunnerInterface> m_task_runner;
@@ -53,12 +55,22 @@ public:
         std::unique_ptr<util::TaskRunnerInterface> task_runner)
         : m_task_runner{std::move(Assert(task_runner))} {}
 
+    bool HasSpentCoinsSubscribers() const noexcept {
+        return m_spent_coins_subscribers.load(std::memory_order_relaxed) > 0;
+    }
+
     void Register(std::shared_ptr<CValidationInterface> callbacks)
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
         LOCK(m_mutex);
         auto inserted = m_map.emplace(callbacks.get(), m_list.end());
         if (inserted.second) {
             inserted.first->second = m_list.emplace(m_list.end());
+            inserted.first->second->wants_spent_coins =
+                callbacks->WantsSpentCoinsInMempoolNotification();
+            if (inserted.first->second->wants_spent_coins) {
+                m_spent_coins_subscribers.fetch_add(1,
+                                                    std::memory_order_relaxed);
+            }
         }
         inserted.first->second->callbacks = std::move(callbacks);
     }
@@ -68,6 +80,10 @@ public:
         LOCK(m_mutex);
         auto it = m_map.find(callbacks);
         if (it != m_map.end()) {
+            if (it->second->wants_spent_coins) {
+                m_spent_coins_subscribers.fetch_sub(1,
+                                                    std::memory_order_relaxed);
+            }
             if (!--it->second->count) {
                 m_list.erase(it->second);
             }
@@ -87,6 +103,7 @@ public:
             }
         }
         m_map.clear();
+        m_spent_coins_subscribers.store(0, std::memory_order_relaxed);
     }
 
     auto SnapshotCallbacks() {
@@ -223,6 +240,10 @@ void ValidationSignals::UpdatedBlockTip(const CBlockIndex *pindexNew,
         pindexNew->GetBlockHash().ToString(),
         pindexFork ? pindexFork->GetBlockHash().ToString() : "null",
         fInitialDownload);
+}
+
+bool ValidationSignals::HasSpentCoinsSubscribers() const noexcept {
+    return m_internals->HasSpentCoinsSubscribers();
 }
 
 void ValidationSignals::TransactionAddedToMempool(

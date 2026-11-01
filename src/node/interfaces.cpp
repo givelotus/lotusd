@@ -454,6 +454,9 @@ namespace {
             }
         }
         virtual ~NotificationsProxy() { StopWorker(); }
+        bool WantsSpentCoinsInMempoolNotification() const override {
+            return false;
+        }
         using CValidationInterface::TransactionAddedToMempool;
         void TransactionAddedToMempool(const CTransactionRef &tx,
                                        std::shared_ptr<const std::vector<Coin>>,

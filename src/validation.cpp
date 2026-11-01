@@ -1331,14 +1331,20 @@ bool MemPoolAccept::Finalize(const ATMPArgs &args, Workspace &ws,
                                          batch_parent_iters);
     if (out_iter) *out_iter = newit;
 
-    auto spentCoins = ws.m_resolved_inputs.empty()
-        ? GetSpentCoins(ws.m_ptx, m_view)
-        : std::optional<std::vector<Coin>>(std::move(ws.m_resolved_inputs));
-    Assume(spentCoins.has_value());
-
     if (m_pool.m_opts.signals) {
-        auto coins = spentCoins.has_value()
-            ? std::make_shared<const std::vector<Coin>>(std::move(*spentCoins)) : nullptr;
+        // Every subscriber gets the notification. Only the coins are optional.
+        std::shared_ptr<const std::vector<Coin>> coins;
+        if (m_pool.m_opts.signals->HasSpentCoinsSubscribers()) {
+            auto spentCoins = ws.m_resolved_inputs.empty()
+                ? GetSpentCoins(ws.m_ptx, m_view)
+                : std::optional<std::vector<Coin>>(
+                      std::move(ws.m_resolved_inputs));
+            Assume(spentCoins.has_value());
+            if (spentCoins.has_value()) {
+                coins = std::make_shared<const std::vector<Coin>>(
+                    std::move(*spentCoins));
+            }
+        }
         const auto seq = m_pool.GetAndIncrementSequence();
         if (deferred_notifications) {
             deferred_notifications->push_back({ws.m_ptx, std::move(coins), seq});

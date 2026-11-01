@@ -53,6 +53,13 @@ protected:
     ~CValidationInterface() = default;
     /** Wait for prior callbacks offloaded to a subscriber's secondary queue. */
     virtual void SyncTransactionQueue() {}
+    /**
+     * Whether this subscriber reads spent_coins in TransactionAddedToMempool.
+     * It gets the notification either way. Read once, on registration. If no
+     * subscriber wants them, admission needn't build them, and spent_coins is
+     * null.
+     */
+    virtual bool WantsSpentCoinsInMempoolNotification() const { return true; }
     /** Callback counterpart to SyncTransactionQueue. Built-in subscribers
      * with private queues override this with a nonblocking cutoff fence.
      * The fallback retains correctness for legacy synchronous subscribers.
@@ -201,6 +208,7 @@ protected:
         std::shared_ptr<const std::vector<Coin>> spent_coins) {};
 
     friend class ValidationSignals;
+    friend class ValidationSignalsImpl;
     friend class ValidationInterfaceTest;
 };
 
@@ -222,6 +230,9 @@ public:
     void FlushBackgroundCallbacks();
 
     size_t CallbacksPending();
+
+    /** Whether a registered subscriber reads spent coins from mempool events. */
+    bool HasSpentCoinsSubscribers() const noexcept;
 
     /** Register subscriber */
     void RegisterValidationInterface(CValidationInterface *callbacks);

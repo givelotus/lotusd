@@ -28,6 +28,7 @@ protected:
     void Shutdown();
 
     // CValidationInterface
+    bool WantsSpentCoinsInMempoolNotification() const override { return false; }
     void TransactionAddedToMempool(const CTransactionRef &tx,
                                    std::shared_ptr<const std::vector<Coin>>,
                                    uint64_t mempool_sequence) override;

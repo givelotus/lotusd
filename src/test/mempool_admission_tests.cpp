@@ -434,6 +434,76 @@ BOOST_AUTO_TEST_CASE(staged_admission_matches_serial_admission) {
     }
 }
 
+namespace {
+/** Records what each mempool notification carried. */
+struct AdmissionObserver : CValidationInterface {
+    explicit AdmissionObserver(bool wants) : m_wants{wants} {}
+    bool WantsSpentCoinsInMempoolNotification() const override {
+        return m_wants;
+    }
+    void TransactionAddedToMempool(const CTransactionRef &tx,
+                                   std::shared_ptr<const std::vector<Coin>> coins,
+                                   uint64_t sequence) override {
+        m_txids.push_back(tx->GetId());
+        m_sequences.push_back(sequence);
+        if (coins) {
+            BOOST_CHECK_EQUAL(coins->size(), tx->vin.size());
+            ++m_with_coins;
+        }
+    }
+    const bool m_wants;
+    std::vector<TxId> m_txids;
+    std::vector<uint64_t> m_sequences;
+    size_t m_with_coins{0};
+};
+} // namespace
+
+BOOST_AUTO_TEST_CASE(large_batches_notify_subscribers_that_decline_spent_coins) {
+    ValidationSignals &signals{*Assert(m_node.validation_signals)};
+    const bool fixture_wants_coins{signals.HasSpentCoinsSubscribers()};
+
+    const auto run_batch = [&](bool wants, size_t start, size_t count) {
+        auto observer{std::make_shared<AdmissionObserver>(wants)};
+        signals.RegisterSharedValidationInterface(observer);
+        BOOST_CHECK_EQUAL(signals.HasSpentCoinsSubscribers(),
+                          wants || fixture_wants_coins);
+        std::vector<CTransactionRef> txs;
+        for (size_t i = start; i < start + count; ++i) {
+            const auto &coin{wallet.outputs.at(i)};
+            txs.push_back(BuildSpend(wallet, {coin},
+                                     {coin.amount - 1000 * SATOSHI},
+                                     /*schnorr=*/true));
+        }
+        const auto results{AcceptToMemoryPoolStaged(*m_node.chainman, txs,
+                                                    StagedAdmissionOptions{})};
+        for (const auto &result : results) {
+            BOOST_REQUIRE(result.has_value());
+            BOOST_CHECK(result->m_result_type ==
+                        MempoolAcceptResult::ResultType::VALID);
+        }
+        signals.SyncWithValidationInterfaceQueue();
+        signals.UnregisterSharedValidationInterface(observer);
+        BOOST_REQUIRE_EQUAL(observer->m_txids.size(), txs.size());
+        for (size_t i = 0; i < txs.size(); ++i) {
+            BOOST_CHECK(observer->m_txids[i] == txs[i]->GetId());
+            if (i > 0) {
+                BOOST_CHECK_EQUAL(observer->m_sequences[i],
+                                  observer->m_sequences[i - 1] + 1);
+            }
+        }
+        return observer->m_with_coins;
+    };
+
+    // A batch big enough to trip any size threshold. Declining the coins must
+    // not cost the notification, or a wallet would miss these payments.
+    const size_t declined_coins{run_batch(/*wants=*/false, 0, 200)};
+    BOOST_CHECK_EQUAL(declined_coins, fixture_wants_coins ? 200U : 0U);
+
+    // A subscriber that wants them gets them all, and that doesn't outlast it.
+    BOOST_CHECK_EQUAL(run_batch(/*wants=*/true, 200, 200), 200U);
+    BOOST_CHECK_EQUAL(signals.HasSpentCoinsSubscribers(), fixture_wants_coins);
+}
+
 BOOST_AUTO_TEST_CASE(staged_cheap_rejects_do_not_run_unlocked_scripts) {
     const auto &out = wallet.outputs[0];
     const auto free_tx = BuildSpend(wallet, {out}, {out.amount}, true);

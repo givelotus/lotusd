@@ -888,6 +888,7 @@ public:
                          const CBlockIndex *pindexFork,
                          bool fInitialDownload) override
         EXCLUSIVE_LOCKS_REQUIRED(!m_recent_rejects_mutex, !m_peer_mutex);
+    bool WantsSpentCoinsInMempoolNotification() const override { return false; }
     void TransactionAddedToMempool(const CTransactionRef &tx,
                                    std::shared_ptr<const std::vector<Coin>>,
                                    uint64_t) override {
