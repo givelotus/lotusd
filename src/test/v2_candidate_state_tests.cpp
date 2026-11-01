@@ -116,9 +116,13 @@ BOOST_AUTO_TEST_CASE(child_of_reloaded_parent_is_persisted_on_eviction) {
     parent.nBits = 0x207fffff;
     parent.nHeight = 1;
     parent.nNonce = 0x5501;
-    parent.hashStateRoot = ComputeV2BlockStateRoot(parent, BlockHash{}, 1, 0, false);
+    // A child's history root commits its parent's, so the parent needs a real
+    // place in a chain: here, directly on an unrecorded genesis.
+    const BlockHash genesis_hash{uint256::ONE};
+    parent.hashPrevBlock = genesis_hash;
+    parent.hashStateRoot = ComputeV2BlockStateRoot(parent, genesis_hash, 1, 0, false);
     const auto parent_hash = parent.GetHash();
-    RecordV2BlockState(parent, parent_hash, BlockHash{}, 1, 0);
+    RecordV2BlockState(parent, parent_hash, genesis_hash, 1, 0);
     BOOST_REQUIRE(FlushV2BlockStatesToDisk());
     SetV2StatePersistDir("");
     SetV2StatePersistDir(dir.string());
@@ -171,12 +175,12 @@ BOOST_AUTO_TEST_CASE(failed_import_is_not_published_and_can_retry) {
     lotus::v2::MonetaryState monetary;
     std::shared_ptr<const lotus::v2::SmtNode> root;
     BOOST_REQUIRE(GetV2BlockStateSnapshot(BlockHash{}, root, monetary));
-    BOOST_CHECK(!AttemptStateImport([&] { return ImportV2BlockStateCoinsAndMonetary(hash, {}, monetary, true); }));
+    BOOST_CHECK(!AttemptStateImport([&] { return ImportV2BlockStateCoinsAndMonetary(hash, {}, monetary, lotus::v2::HeaderHistoryFrontier{}, true); }));
     BOOST_CHECK(!GetV2BlockStateSnapshot(hash, root, monetary));
     BOOST_CHECK_EQUAL(GetV2BlockCirculatingSupply(BlockHash{}), 777);
     std::filesystem::remove(dir);
     std::filesystem::create_directory(dir);
-    BOOST_REQUIRE(AttemptStateImport([&] { return ImportV2BlockStateCoinsAndMonetary(hash, {}, monetary, true); }));
+    BOOST_REQUIRE(AttemptStateImport([&] { return ImportV2BlockStateCoinsAndMonetary(hash, {}, monetary, lotus::v2::HeaderHistoryFrontier{}, true); }));
     BOOST_CHECK(std::filesystem::exists(dir / (hash.GetHex() + ".bin")));
     SetV2StatePersistDir("");
     SetV2StatePersistDir(dir.string());

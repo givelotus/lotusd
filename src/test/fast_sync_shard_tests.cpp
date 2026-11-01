@@ -1291,6 +1291,7 @@ BOOST_AUTO_TEST_CASE(parallel_smt_batch_import_and_circulating_supply) {
     const BlockHash pivot_hash{raw_hash};
 
     ImportV2BlockStateCoinsAndMonetary(pivot_hash, utxo.Coins(), mon,
+                                       lotus::v2::HeaderHistoryFrontier{},
                                        /*is_tip=*/true);
 
     std::vector<lotus::v2::Coin> exported_coins;

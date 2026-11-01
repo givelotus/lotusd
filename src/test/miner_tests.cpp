@@ -90,6 +90,23 @@ struct MinerTestingSetup : public AvalancheTestingSetup {
     }
     BlockAssembler AssemblerForTest(const CChainParams &params);
 
+    // These tests move the tip's height to exercise height-dependent rules. A
+    // child's history root commits exactly as many ancestors as its height, so
+    // the tip's recorded frontier has to follow the height it claims.
+    void RecordTipHistoryFrontierForItsHeight() EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+        ChainstateManager &chainman = *Assert(m_node.chainman);
+        CBlockIndex *tip = Assert(chainman.ActiveTip());
+        std::vector<lotus::v2::Coin> coins;
+        lotus::v2::MonetaryState monetary;
+        BOOST_REQUIRE(GetV2BlockStateCoinsAndMonetary(
+            tip->GetBlockHash(), tip->nHeight, coins, monetary));
+        lotus::v2::HeaderHistoryFrontier frontier;
+        BOOST_REQUIRE(chainman.ActiveChainstate().m_header_history_tree.GetFrontierAt(
+            tip->nHeight, frontier));
+        BOOST_REQUIRE(ImportV2BlockStateCoinsAndMonetary(
+            tip->GetBlockHash(), coins, monetary, frontier));
+    }
+
     void AddUnchecked(CTxMemPoolEntryRef entry)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_node.mempool->cs) {
         AssertLockHeld(cs_main);
@@ -361,6 +378,33 @@ void MinerTestingSetup::TestBasicMining(
 
     // Subsidy changing.
     int nHeight = m_node.chainman->ActiveHeight();
+    // These made-up blocks have no recorded V2 state, and a block can't be built
+    // on a parent with no history frontier. Install what a real parent would have.
+    lotus::v2::HeaderHistoryFrontier fake_frontier{};
+    BOOST_REQUIRE(m_node.chainman->ActiveChainstate()
+                      .m_header_history_tree.GetFrontierAt(nHeight, fake_frontier));
+    {
+        const BlockHash real_tip = m_node.chainman->ActiveTip()->GetBlockHash();
+        lotus::v2::Hash256 real_tip_v2{};
+        std::memcpy(real_tip_v2.data(), real_tip.begin(), 32);
+        fake_frontier = lotus::v2::AppendHeaderToFrontier(
+            GetActiveV2ChainId(), fake_frontier, real_tip_v2);
+    }
+    std::shared_ptr<const lotus::v2::SmtNode> fake_parent_utxo;
+    lotus::v2::MonetaryState fake_monetary;
+    BOOST_REQUIRE(GetV2BlockStateSnapshot(m_node.chainman->ActiveTip()->GetBlockHash(),
+                                          fake_parent_utxo, fake_monetary));
+    const auto install_fake_tip_state = [&] {
+        BOOST_REQUIRE(ImportV2BlockStateCoinsAndMonetary(
+            m_node.chainman->ActiveTip()->GetBlockHash(), {}, fake_monetary,
+            fake_frontier));
+    };
+    const auto extend_fake_frontier = [&](const BlockHash &hash) {
+        lotus::v2::Hash256 hash_v2{};
+        std::memcpy(hash_v2.data(), hash.begin(), 32);
+        fake_frontier = lotus::v2::AppendHeaderToFrontier(GetActiveV2ChainId(),
+                                                          fake_frontier, hash_v2);
+    };
     // Create an actual 209999-long block chain (without valid blocks).
     while (m_node.chainman->ActiveHeight() < 209999) {
         CBlockIndex *prev = m_node.chainman->ActiveTip();
@@ -372,10 +416,15 @@ void MinerTestingSetup::TestBasicMining(
         next->nHeight = prev->nHeight + 1;
         next->BuildSkip();
         m_node.chainman->ActiveChain().SetTip(*next);
+        if (m_node.chainman->ActiveHeight() < 209999) {
+            extend_fake_frontier(next->GetBlockHash());
+        }
     }
+    install_fake_tip_state();
     BOOST_CHECK(pblocktemplate =
                     AssemblerForTest(chainparams).CreateNewBlock(scriptPubKey));
     // Extend to a 210000-long block chain.
+    extend_fake_frontier(m_node.chainman->ActiveTip()->GetBlockHash());
     while (m_node.chainman->ActiveHeight() < 210000) {
         CBlockIndex *prev = m_node.chainman->ActiveTip();
         CBlockIndex *next = new CBlockIndex();
@@ -387,6 +436,7 @@ void MinerTestingSetup::TestBasicMining(
         next->BuildSkip();
         m_node.chainman->ActiveChain().SetTip(*next);
     }
+    install_fake_tip_state();
 
     BOOST_CHECK(pblocktemplate =
                     AssemblerForTest(chainparams).CreateNewBlock(scriptPubKey));
@@ -617,6 +667,7 @@ void MinerTestingSetup::TestBasicMining(
         ancestor->nTime += SEQUENCE_LOCK_TIME;
     }
     m_node.chainman->ActiveTip()->nHeight++;
+    RecordTipHistoryFrontierForItsHeight();
     SetMockTime(m_node.chainman->ActiveTip()->GetMedianTimePast() + 1);
 
     for (auto &mempool_entry : {height_locked_entry, time_locked_entry}) {
@@ -820,12 +871,14 @@ void MinerTestingSetup::CreateNewBlock_validity() {
     TestBasicMining(chainparams, scriptPubKey, txFirst, baseheight);
 
     m_node.chainman->ActiveTip()->nHeight--;
+    RecordTipHistoryFrontierForItsHeight();
     SetMockTime(0);
     m_node.mempool->clear(/*include_finalized_txs=*/true);
 
     TestPackageSelection(chainparams, scriptPubKey, txFirst);
 
     m_node.chainman->ActiveChain().Tip()->nHeight--;
+    RecordTipHistoryFrontierForItsHeight();
     SetMockTime(0);
     m_node.mempool->clear(/*include_finalized_txs=*/true);
 
@@ -1210,9 +1263,12 @@ BOOST_FIXTURE_TEST_CASE(CreateNewBlock_1000tx_MerklixOverlay, TestChain100Setup)
     syntheticTipBlock.vtx.push_back(fundRef);
     // This test explicitly installs synthetic funding state. Its synthetic
     // header must commit that state, just like every RecordV2BlockState caller.
+    const BlockHash synthetic_parent =
+        tip->pprev ? tip->pprev->GetBlockHash() : BlockHash{};
     syntheticTipBlock.hashStateRoot = ComputeV2BlockStateRoot(
-        syntheticTipBlock, BlockHash{}, uint64_t(tip->nHeight), 0, false);
-    RecordV2BlockState(syntheticTipBlock, tip->GetBlockHash(), BlockHash{},
+        syntheticTipBlock, synthetic_parent, uint64_t(tip->nHeight), 0, false);
+    BOOST_REQUIRE(!syntheticTipBlock.hashStateRoot.IsNull());
+    RecordV2BlockState(syntheticTipBlock, tip->GetBlockHash(), synthetic_parent,
                        uint64_t(tip->nHeight), 0);
 
     const uint64_t nextHeight = uint64_t(tip->nHeight + 1);

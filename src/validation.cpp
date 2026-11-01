@@ -4046,6 +4046,25 @@ static bool ContextualCheckBlock(const CBlock &block, BlockValidationState &stat
                                  const ChainstateManager &chainman,
                                  const CBlockIndex *pindexPrev);
 
+static lotus::v2::HeaderHistoryFrontier
+BuildAncestorHistoryFrontier(const CBlockIndex *pindex) {
+    lotus::v2::HeaderHistoryFrontier frontier{};
+    if (!pindex || pindex->nHeight <= 0) {
+        return frontier;
+    }
+    const lotus::v2::ChainId chain_id = GetActiveV2ChainId();
+    for (int h = 0; h < pindex->nHeight; ++h) {
+        const CBlockIndex *anc = pindex->GetAncestor(h);
+        // Every index entry links back to genesis, pruned or not.
+        assert(anc != nullptr);
+        lotus::v2::Hash256 bh_v2{};
+        const BlockHash bh = anc->GetBlockHash();
+        std::memcpy(bh_v2.data(), bh.begin(), 32);
+        frontier = lotus::v2::AppendHeaderToFrontier(chain_id, frontier, bh_v2);
+    }
+    return frontier;
+}
+
 bool Chainstate::ActivateVerifiedFastSyncPivot(
     CBlockIndex *pindex_pivot,
     const std::vector<lotus::v2::Coin> &coins,
@@ -4072,6 +4091,16 @@ bool Chainstate::ActivateVerifiedFastSyncPivot(
             ::Coin{CTxOut::FromV2Output(coin.output), uint32_t(coin.creation_height),
                    coin.coinbase, coin.fee_per_output, coin.expiration_height});
     }
+    const lotus::v2::HeaderHistoryFrontier pivot_frontier =
+        BuildAncestorHistoryFrontier(pindex_pivot);
+    // The history root is derived from headers this node already holds, so a
+    // peer's or a header's value is checked against it, never preferred over it.
+    // This also rejects a zero root above genesis.
+    if (monetary_state.history_root !=
+        lotus::v2::HeaderHistoryRoot(GetActiveV2ChainId(), pivot_frontier)) {
+        error = "Pivot history commitment does not match the header chain";
+        return false;
+    }
     const auto root = lotus::v2::StateRoot(GetActiveV2ChainId(),
         pindex_pivot->nHeight, verified.Root(), monetary_state);
     if (root != pindex_pivot->GetBlockHeader().ToV2Header().state_root) {
@@ -4082,7 +4111,8 @@ bool Chainstate::ActivateVerifiedFastSyncPivot(
     // Persist the authenticated native snapshot before publishing the atomic
     // chainstate marker. An interruption before the marker leaves an unused
     // snapshot; after it, startup can reconstruct provisional history.
-    if (!ImportV2BlockStateCoinsAndMonetary(pivot_hash, coins, monetary_state, true)) {
+    if (!ImportV2BlockStateCoinsAndMonetary(pivot_hash, coins, monetary_state,
+                                            pivot_frontier, true)) {
         error = "Failed to persist authenticated pivot state";
         return false;
     }
@@ -4393,6 +4423,21 @@ bool Chainstate::PeelFastSyncBlock(
     CBlockIndex *parent_index = pindex->pprev;
     const lotus::v2::Header parent_hdr =
         parent_index->GetBlockHeader().ToV2Header();
+    // BLOCKUNDO carries the 56 monetary bytes only. The parent's history root
+    // comes from local headers, and the header comparison below authenticates it.
+    lotus::v2::Hash256 parent_block_hash_v2{};
+    std::memcpy(parent_block_hash_v2.data(),
+                parent_index->GetBlockHash().begin(), 32);
+    lotus::v2::HeaderHistoryFrontier parent_frontier{};
+    if (!m_chain.Contains(parent_index) ||
+        m_header_history_tree.GetLeafBlockHash(parent_index->nHeight) !=
+            parent_block_hash_v2 ||
+        !m_header_history_tree.GetFrontierAt(parent_index->nHeight,
+                                             parent_frontier)) {
+        parent_frontier = BuildAncestorHistoryFrontier(parent_index);
+    }
+    parent_mon_state.history_root = lotus::v2::HeaderHistoryRoot(
+        GetActiveV2ChainId(), parent_frontier);
     const lotus::v2::Hash expected_parent_state_root = lotus::v2::StateRoot(
         GetActiveV2ChainId(), static_cast<uint64_t>(parent_index->nHeight),
         parent_utxo.Root(), parent_mon_state);
@@ -4401,10 +4446,13 @@ bool Chainstate::PeelFastSyncBlock(
         return false;
     }
 
-    const lotus::v2::MonetaryState expected_current_mon =
+    lotus::v2::MonetaryState expected_current_mon =
         AdvanceV2BlockMonetaryState(block, parent_mon_state);
-    if (lotus::v2::EncodeMonetaryState(expected_current_mon) !=
-        lotus::v2::EncodeMonetaryState(current_mon_state)) {
+    expected_current_mon.history_root = lotus::v2::HeaderHistoryRoot(
+        GetActiveV2ChainId(),
+        lotus::v2::AppendHeaderToFrontier(GetActiveV2ChainId(), parent_frontier,
+                                          parent_block_hash_v2));
+    if (expected_current_mon != current_mon_state) {
         err_out = "Forward monetary transition mismatch from parent state";
         return false;
     }
@@ -4551,9 +4599,9 @@ bool Chainstate::PeelFastSyncBlock(
         }
     }
 
-    if (!ImportV2BlockStateCoinsAndMonetary(parent_index->GetBlockHash(),
-                                          parent_utxo.Coins(), parent_mon_state,
-                                          /*is_tip=*/false)) {
+    if (!ImportV2BlockStateCoinsAndMonetary(
+            parent_index->GetBlockHash(), parent_utxo.Coins(), parent_mon_state,
+            parent_frontier, /*is_tip=*/false)) {
         err_out = "Failed to persist authenticated peeled parent state";
         return false;
     }
@@ -6500,6 +6548,11 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
         } catch (const V2StateCacheError &error) {
             return state.Error(error.what());
         }
+    }
+    // A null root means this node has lost its record of the parent's history
+    // frontier. That's a local fault, so the block must not be marked invalid.
+    if (expectedStateRoot.IsNull()) {
+        return state.Error("Parent header history frontier is unavailable");
     }
     const bool requireStateRoot =
         !block.hashStateRoot.IsNull() ||
@@ -11634,15 +11687,24 @@ bool ChainstateManager::PopulateAndValidateSnapshot(
         native_coins.push_back(std::move(native_coin));
         cursor->Next();
     }
+    const lotus::v2::HeaderHistoryFrontier base_frontier =
+        WITH_LOCK(::cs_main,
+                  return BuildAncestorHistoryFrontier(snapshot_start_block));
+    // The compiled-in anchor holds the 56 monetary bytes. Its history root is
+    // derived from the snapshot base's headers and checked by the header below.
+    lotus::v2::MonetaryState anchor_monetary = *au_data.native_monetary_state;
+    anchor_monetary.history_root = lotus::v2::HeaderHistoryRoot(
+        GetActiveV2ChainId(), base_frontier);
     const auto native_root = lotus::v2::StateRoot(
         GetActiveV2ChainId(), base_height, verified_native.Root(),
-        *au_data.native_monetary_state);
+        anchor_monetary);
     if (native_root != snapshot_start_block->GetBlockHeader().ToV2Header().state_root) {
         LogPrintf("[snapshot] native anchor state does not match header\n");
         return false;
     }
     if (!ImportV2BlockStateCoinsAndMonetary(
-            base_blockhash, native_coins, *au_data.native_monetary_state)) {
+            base_blockhash, native_coins, anchor_monetary, base_frontier,
+            true)) {
         LogPrintf("[snapshot] failed to persist native anchor state\n");
         return false;
     }

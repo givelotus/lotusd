@@ -127,7 +127,11 @@ void FundTxInputInCoinsTip(ChainstateManager &chainman,
             [&](const auto &old) { return old.outpoint == native.outpoint; }), state_coins.end());
         state_coins.push_back(std::move(native));
     }
-    ImportV2BlockStateCoinsAndMonetary(tip->GetBlockHash(), state_coins, monetary);
+    lotus::v2::HeaderHistoryFrontier tip_frontier{};
+    BOOST_REQUIRE(chainman.ActiveChainstate().m_header_history_tree.GetFrontierAt(
+        tip->nHeight, tip_frontier));
+    ImportV2BlockStateCoinsAndMonetary(tip->GetBlockHash(), state_coins, monetary,
+                                       tip_frontier);
     if (auto *pool = chainman.ActiveChainstate().GetMempool()) {
         LOCK(pool->cs);
         pool->ConnectBlockReset(tip->GetBlockHash(), tip->nHeight + 1,
@@ -2432,9 +2436,11 @@ BOOST_AUTO_TEST_CASE(tachyon_avalanche_snapsync_reverse_peel_and_opt_out) {
             block1_cb_txid = block->vtx[0]->GetId();
             funding_value = block->vtx[0]->GetValueOut();
         } else if (height == 101) {
-            split_value = (funding_value - 65000 * SATOSHI) / 65;
+            // Two outputs stay unspent. Siblings share their txid prefix, which
+            // the shard cap check below relies on.
+            split_value = (funding_value - 65000 * SATOSHI) / 67;
             CMutableTransaction split(*spend(COutPoint(block1_cb_txid, 0), split_value));
-            for (size_t index = 1; index < 65; ++index) split.vout.push_back(split.vout[0]);
+            for (size_t index = 1; index < 67; ++index) split.vout.push_back(split.vout[0]);
             auto tx = MakeTransactionRef(std::move(split));
             block101_txid = tx->GetId(); block->vtx.push_back(tx);
         } else if (height == 102) {
@@ -4044,8 +4050,13 @@ BOOST_AUTO_TEST_CASE(getblockundo_exports_expired_parent_coins) {
         // fixture retain their normal, much later expiration.
         swept.expiration_height = tip->nHeight;
         parent_coins.push_back(swept);
+        lotus::v2::HeaderHistoryFrontier parent_frontier{};
+        BOOST_REQUIRE(m_node.chainman->ActiveChainstate()
+                          .m_header_history_tree.GetFrontierAt(
+                              tip->pprev->nHeight, parent_frontier));
         BOOST_REQUIRE(ImportV2BlockStateCoinsAndMonetary(
-            tip->pprev->GetBlockHash(), parent_coins, parent_monetary, false));
+            tip->pprev->GetBlockHash(), parent_coins, parent_monetary,
+            parent_frontier, false));
 
 
     }
