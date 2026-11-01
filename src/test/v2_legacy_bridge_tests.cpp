@@ -213,6 +213,23 @@ struct BridgeSetup : public TestChain100Setup {
         return mtx;
     }
 
+    /** The reject reason from the batch admission path, or "valid". */
+    std::string BatchReason(const CMutableTransaction &mtx) {
+        LOCK(cs_main);
+        const CTransactionRef tx = MakeTransactionRef(mtx);
+        const auto result =
+            ProcessRawTxBatch(m_node.chainman->ActiveChainstate(),
+                              *m_node.mempool, {tx}, /*test_accept=*/true);
+        const auto it = result.m_tx_results.find(tx->GetId());
+        if (it != result.m_tx_results.end() &&
+            it->second.m_result_type !=
+                MempoolAcceptResult::ResultType::VALID) {
+            return it->second.m_state.GetRejectReason();
+        }
+        return result.m_state.IsValid() ? "valid"
+                                        : result.m_state.GetRejectReason();
+    }
+
     std::string MempoolReason(const CMutableTransaction &mtx) {
         LOCK(cs_main);
         const MempoolAcceptResult result = m_node.chainman->ProcessTransaction(
@@ -283,6 +300,36 @@ BOOST_AUTO_TEST_CASE(p2pkh_bridge_wrong_pubkey_hash) {
     SignBridge(mtx, 0, {coin}, other, 0);
     BOOST_CHECK_EQUAL(BlockReason({mtx}), "bad-txns-v2-legacy-p2pkh");
     BOOST_CHECK_EQUAL(MempoolReason(mtx), "bad-txns-v2-legacy-p2pkh");
+}
+
+// Batch admission applies the same spent-coin rules as single admission, so a
+// key that doesn't hash to the coin's key hash can't take the coin.
+BOOST_AUTO_TEST_CASE(batch_admission_rejects_wrong_pubkey_hash) {
+    const auto [prevout, coin] = FundP2PKH(key);
+    CMutableTransaction mtx = Spend(prevout, coin, other.GetPubKey());
+    SignBridge(mtx, 0, {coin}, other, 0);
+    BOOST_CHECK_EQUAL(BatchReason(mtx), "bad-txns-v2-legacy-p2pkh");
+
+    CMutableTransaction honest = Spend(prevout, coin, key.GetPubKey());
+    SignBridge(honest, 0, {coin}, key, 0);
+    BOOST_CHECK_EQUAL(BatchReason(honest), "valid");
+}
+
+BOOST_AUTO_TEST_CASE(batch_admission_rejects_expired_coin) {
+    const auto [prevout, coin] = FundP2PKH(key);
+    CMutableTransaction mtx = Spend(prevout, coin, key.GetPubKey());
+    SignBridge(mtx, 0, {coin}, key, 0);
+    {
+        LOCK(cs_main);
+        auto &tip = m_node.chainman->ActiveChainstate().CoinsTip();
+        const Coin spent = tip.AccessCoin(prevout);
+        tip.SpendCoin(prevout);
+        tip.AddCoin(prevout,
+                    Coin(spent.GetTxOut(), spent.GetHeight(), false,
+                         /*nFeePerOutputIn=*/0, /*nExpirationHeightIn=*/1),
+                    /*possible_overwrite=*/false);
+    }
+    BOOST_CHECK_EQUAL(BatchReason(mtx), "bad-txns-input-expired");
 }
 
 // The right pubkey with a signature by another key, or over another

@@ -928,84 +928,6 @@ std::optional<LockPoints> CalculateLockPointsFromResolvedCoins(
     return LockPoints{min_height, min_time};
 }
 
-static inline bool ExtractTokenIdAndValueFast(const CTxOut &txout,
-                                              uint256 &tok_id,
-                                              uint64_t &val) {
-    if (!txout.vBranches.empty()) {
-        if ((txout.nFlags & 0x01U) == 0) {
-            return false;
-        }
-        tok_id = txout.tokenId;
-        val = static_cast<uint64_t>(
-            std::max<int64_t>(0, txout.nValue / SATOSHI));
-        return true;
-    }
-    // A legacy output carries no token.
-    return false;
-}
-
-bool CheckTxInputsFromResolvedCoins(const CTransaction &tx,
-                                    TxValidationState &state,
-                                    const std::vector<Coin> &resolved_inputs,
-                                    int nSpendHeight, Amount &txfee) {
-    Amount nValueIn = Amount::zero();
-    // Structural contributions to the conservation kinds.
-    lotus::v2::NativeConservation native;
-    lotus::v2::TokenConservation tokens;
-    for (size_t i = 0; i < tx.vin.size(); ++i) {
-        const auto &in = tx.vin[i];
-        if (in.nFlags == 3) {
-            tokens.AddMint(Consensus::TokenKey(uint256(in.prevout.GetTxId())));
-            continue;
-        }
-        const Coin &coin = resolved_inputs[i];
-        if (coin.IsSpent()) {
-            return state.Invalid(TxValidationResult::TX_MISSING_INPUTS,
-                                 "bad-txns-inputs-missingorspent",
-                                 strprintf("%s: inputs missing/spent", __func__));
-        }
-        if (coin.IsCoinBase() &&
-            nSpendHeight - coin.GetHeight() < COINBASE_MATURITY) {
-            return state.Invalid(
-                TxValidationResult::TX_PREMATURE_SPEND,
-                "bad-txns-premature-spend-of-coinbase",
-                strprintf("tried to spend coinbase at depth %d",
-                          nSpendHeight - coin.GetHeight()));
-        }
-        const CTxOut &prev_txout = coin.GetTxOut();
-        uint256 tok_id;
-        uint64_t tok_val = 0;
-        if (ExtractTokenIdAndValueFast(prev_txout, tok_id, tok_val)) {
-            if (prev_txout.nValue < Amount::zero() ||
-                !tokens.AddInput(Consensus::TokenKey(tok_id), tok_val)) {
-                return state.Invalid(TxValidationResult::TX_CONSENSUS,
-                                     "bad-txns-inputvalues-outofrange");
-            }
-            continue;
-        }
-        nValueIn += prev_txout.nValue;
-        if (!MoneyRange(prev_txout.nValue) || !MoneyRange(nValueIn)) {
-            return state.Invalid(TxValidationResult::TX_CONSENSUS,
-                                 "bad-txns-inputvalues-outofrange");
-        }
-        native.AddInput(uint64_t(prev_txout.nValue / SATOSHI));
-    }
-
-    for (const auto &out : tx.vout) {
-        uint256 tok_id;
-        uint64_t tok_val = 0;
-        if (ExtractTokenIdAndValueFast(out, tok_id, tok_val)) {
-            if (out.nValue < Amount::zero() ||
-                !tokens.AddOutput(Consensus::TokenKey(tok_id), tok_val)) {
-                return state.Invalid(TxValidationResult::TX_CONSENSUS,
-                                     "bad-txns-vout-negative");
-            }
-        }
-    }
-
-    return Consensus::FinishTxConservation(tx, native, tokens, nValueIn, state, txfee);
-}
-
 bool AreInputsStandardFromResolvedCoins(
     const CTransaction &tx, const std::vector<Coin> &resolved_inputs) {
     if (tx.IsCoinBase()) {
@@ -1730,8 +1652,9 @@ bool MemPoolAccept::PreChecksBatch(
                              "non-BIP68-final");
     }
 
-    if (!CheckTxInputsFromResolvedCoins(tx, state, ws.m_resolved_inputs,
-                                        tip->nHeight + 1, ws.m_base_fees)) {
+    if (!Consensus::CheckTxInputsFromSpentCoins(tx, ws.m_resolved_inputs, state,
+                                                tip->nHeight + 1,
+                                                ws.m_base_fees)) {
         return false;
     }
 
