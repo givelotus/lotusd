@@ -263,6 +263,8 @@ MonetaryTransition AdvanceMonetary(const MonetaryProfile &profile,
         token_burn + burned_fees + explicit_burn + expired_burned_atoms;
     Int delta = Int(subsidy) - token_burn - burned_fees - underclaim -
                 explicit_burn - expired_burned_atoms;
+    // history_root stays zero: only the caller holds the block's history frontier
+    // and must set it. Copying the parent's root would hide a forgotten update.
     return {{reserve, tail, WorkBytes(work), ema},
             bootstrap,
             subsidy,
