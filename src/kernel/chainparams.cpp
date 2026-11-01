@@ -480,20 +480,20 @@ public:
         m_assumeutxo_data = {
             {.height = 110,
              .hash_serialized =
-                 AssumeutxoHash{uint256S("0x99b8c406f1aa808165216c1840766e939f4e1c226757ffd88a25e5b4ebd54bf1")},
+                 AssumeutxoHash{uint256S("0xc7b79b6e39f939c622e8cdc27879ec79eac5c7035ce659c5c7cf69231690e774")},
              .m_chain_tx_count = 111,
              .blockhash =
-                 BlockHash{uint256S("0x48f1d2577086612cefe7584bc0a1c5d17ac8e0445341a84dca6104dd4ad1a598")},
+                 BlockHash{uint256S("0x0cd6d92233650ab4b14c2e07832037bd69156dc325e6b5fafd91d6e01d207e64")},
              .native_monetary_state = lotus::v2::MonetaryState{0, 200, lotus::v2::Hash{2}, 436}},
             {// For use by test/functional/feature_assumeutxo.py
              .height = 299,
              .hash_serialized =
-                 AssumeutxoHash{uint256S("0xe991114bf2e506b572bf601810835a90ca0d"
-                                         "61244a1275b658a0c4313fa357dd")},
+                 AssumeutxoHash{uint256S("0x57be901aa97b5d41d903747281afd1f299be"
+                                         "845c803cc13a06e5bb625398dc65")},
              .m_chain_tx_count = 334,
              .blockhash =
-                 BlockHash{uint256S("0x233b7fcd1b62350a89af81c97ef7239ab149"
-                                    "479137601a0475044ed694c041c7")},
+                 BlockHash{uint256S("0x18886aeef9f4af6e3df7b8f843547f16bfb6"
+                                    "b10c2873286ddd272ca4dc918788")},
              .native_monetary_state = lotus::v2::MonetaryState{0, 200, lotus::v2::Hash{2}, 583}},
         };
 

@@ -46,6 +46,7 @@ struct UtxoRootsMessage {
     uint64_t height = 0;
     std::array<uint8_t, 56> monetary_state{};
     std::array<ShardRootEntry, kFastSyncShardCount> shards{};
+    Hash history_root{};
     bool operator==(const UtxoRootsMessage &) const = default;
 };
 

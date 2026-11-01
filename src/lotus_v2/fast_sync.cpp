@@ -329,6 +329,7 @@ bool VerifyUtxoRootsAgainstHeader(const Header &pivot_header,
         error = std::string("invalid utxoroots monetary_state: ") + e.what();
         return false;
     }
+    decoded_monetary.history_root = msg.history_root;
     const auto folded_utxo_root = FoldDepth8ShardRoots(msg.shards, &error);
     if (!folded_utxo_root) {
         return false;
@@ -482,7 +483,7 @@ bool DecodeGetUtxoRootsRequest(const std::vector<uint8_t> &bytes,
 
 std::vector<uint8_t> EncodeUtxoRootsMessage(const UtxoRootsMessage &msg) {
     std::vector<uint8_t> out;
-    out.reserve(32 + 8 + 56 + kFastSyncShardCount * 33);
+    out.reserve(32 + 8 + 56 + kFastSyncShardCount * 33 + 32);
     out.insert(out.end(), msg.pivot_block_id.begin(), msg.pivot_block_id.end());
     WriteLE64(out, msg.height);
     out.insert(out.end(), msg.monetary_state.begin(), msg.monetary_state.end());
@@ -491,13 +492,14 @@ std::vector<uint8_t> EncodeUtxoRootsMessage(const UtxoRootsMessage &msg) {
         out.insert(out.end(), shard.subtree_root.begin(),
                    shard.subtree_root.end());
     }
+    out.insert(out.end(), msg.history_root.begin(), msg.history_root.end());
     return out;
 }
 
 bool DecodeUtxoRootsMessage(const std::vector<uint8_t> &bytes,
                             UtxoRootsMessage &out,
                             std::string &error) {
-    constexpr size_t kExpectedSize = 32 + 8 + 56 + kFastSyncShardCount * 33;
+    constexpr size_t kExpectedSize = 32 + 8 + 56 + kFastSyncShardCount * 33 + 32;
     if (bytes.size() != kExpectedSize) {
         error = "invalid utxoroots message size";
         return false;
@@ -517,6 +519,7 @@ bool DecodeUtxoRootsMessage(const std::vector<uint8_t> &bytes,
             return false;
         }
     }
+    std::copy_n(bytes.data() + offset, 32, parsed.history_root.begin());
     out = parsed;
     error.clear();
     return true;
@@ -708,6 +711,7 @@ bool ExportUtxoRoots(const UtxoSet &utxo, const ChainId &chain_id,
     msg.pivot_block_id = pivot_id;
     msg.height = pivot_header.height;
     msg.monetary_state = EncodeMonetaryState(monetary);
+    msg.history_root = monetary.history_root;
     for (size_t s = 0; s < kFastSyncShardCount; ++s) {
         ComputeSubtreeEntry(buckets[s], kMinUtxoShardPrefixDepth,
                             msg.shards[s]);
@@ -912,6 +916,7 @@ bool AssembleAndVerifyFastSyncPivot(
     MonetaryState mon = DecodeMonetaryState(
         std::vector<uint8_t>(roots_msg.monetary_state.begin(),
                              roots_msg.monetary_state.end()));
+    mon.history_root = roots_msg.history_root;
 
     out_utxo = std::move(assembled);
     out_monetary = mon;
@@ -970,6 +975,11 @@ bool ImportVerifiedFastSyncPivotToDisk(
     meta.header.assign(raw_hdr.begin(), raw_hdr.end());
     meta.monetary.assign(roots_msg.monetary_state.begin(),
                          roots_msg.monetary_state.end());
+    if (roots_msg.history_root != Hash{}) {
+        meta.monetary.insert(meta.monetary.end(),
+                             roots_msg.history_root.begin(),
+                             roots_msg.history_root.end());
+    }
     if (!history.empty()) {
         try {
             meta.auxiliary = EncodeDiskChainContext(history, {});

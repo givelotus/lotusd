@@ -199,7 +199,7 @@ class AssumeutxoTest(BitcoinTestFramework):
             [
                 b"\xff" * 32,
                 0,
-                "0160df847a5c5ae9a996b522a00a56aae9e47c1d42f1d3de97161dc030a9e1c9",
+                "17f63a7c55aef3ad3bb3a142dc709a75e93ca851924fc27187bdbaf1a5a99cff",
                 None,
             ],
             # wrong txid coins count
@@ -221,7 +221,7 @@ class AssumeutxoTest(BitcoinTestFramework):
             [
                 b"\x01",
                 33,
-                "259c5ce6020423c120bade3252f8c105def731c29b1f24ae01aa88d74539b3b6",
+                "b88f38bcb343e6a01d981b8d3cb407bb00cee84dbbcb958078f89430a9dae4e2",
                 None,
             ],
             # wrong coin code VARINT((coinbase ? 1 : 0) | (height << 1))
@@ -229,14 +229,14 @@ class AssumeutxoTest(BitcoinTestFramework):
             [
                 b"\x81\x2a",
                 38,
-                "8de0dcdf125c9d6c5c9b0802668c4b2aacc66cc722041669028a82b3570d8764",
+                "12532c13a332e4ac14d280242de64b5d6ea7fe18f1b1489087fc30e20ee59336",
                 None,
             ],
             # Change height85 to86, preserving the coinbase bit.
             [
                 b"\x81\x2d",
                 38,
-                "f53bd7e3967c1ff1bb226784dbd9d9ee1fd11f1eb100f3e3d2489e0fa93f440c",
+                "3b8c0dfcf1fcdf66435aeb3ef11a1aba364620630ee77b450db51ecce74a8f68",
                 None,
             ],
             # wrong coin case with height 364 and coinbase 0
@@ -269,7 +269,7 @@ class AssumeutxoTest(BitcoinTestFramework):
             log_msg = (
                 custom_message
                 if custom_message is not None
-                else f"[snapshot] bad snapshot content hash: expected e991114bf2e506b572bf601810835a90ca0d61244a1275b658a0c4313fa357dd, got {wrong_hash}"
+                else f"[snapshot] bad snapshot content hash: expected 57be901aa97b5d41d903747281afd1f299be845c803cc13a06e5bb625398dc65, got {wrong_hash}"
             )
             expected_error(log_msg=log_msg)
 
@@ -277,7 +277,7 @@ class AssumeutxoTest(BitcoinTestFramework):
         for node in self.nodes[1:4]:
             msg = (
                 "Unable to load UTXO snapshot: The base block header "
-                "(233b7fcd1b62350a89af81c97ef7239ab149479137601a0475044ed694c041c7) "
+                "(18886aeef9f4af6e3df7b8f843547f16bfb6b10c2873286ddd272ca4dc918788) "
                 "must appear in the headers chain. Make sure all headers are syncing, "
                 "and call loadtxoutset again."
             )
@@ -532,7 +532,7 @@ class AssumeutxoTest(BitcoinTestFramework):
             assert_equal(node.getblockcount(), height - 1)
             msg = (
                 "Unable to load UTXO snapshot: The base block header "
-                "(233b7fcd1b62350a89af81c97ef7239ab149479137601a0475044ed694c041c7) "
+                "(18886aeef9f4af6e3df7b8f843547f16bfb6b10c2873286ddd272ca4dc918788) "
                 "is part of an invalid chain."
             )
             assert_raises_rpc_error(-32603, msg, node.loadtxoutset, dump_output_path)
@@ -612,7 +612,7 @@ class AssumeutxoTest(BitcoinTestFramework):
         def check_dump_output(output):
             assert_equal(
                 output["txoutset_hash"],
-                "e991114bf2e506b572bf601810835a90ca0d61244a1275b658a0c4313fa357dd",
+                "57be901aa97b5d41d903747281afd1f299be845c803cc13a06e5bb625398dc65",
             )
             assert_equal(output["nchaintx"], blocks[SNAPSHOT_BASE_HEIGHT].chain_tx)
 
@@ -647,7 +647,7 @@ class AssumeutxoTest(BitcoinTestFramework):
         dump_output4 = n0.dumptxoutset(path="utxos4.dat", rollback=prev_snap_height)
         assert_equal(
             dump_output4["txoutset_hash"],
-            "d62fb55e7ec68ceac6358dbe21a76a3359bf4c1a47f77b4f75391faead439375",
+            "ed0dcd82fb40b047a8feb2d3d50205987e202be6d6f3e402b24aee8110d28265",
         )
         assert sha256sum_file(dump_output["path"]) != sha256sum_file(
             dump_output4["path"]
@@ -760,7 +760,7 @@ class AssumeutxoTest(BitcoinTestFramework):
         }
         privkey = n0.get_deterministic_priv_key().key
         raw_tx = n1.createrawtransaction(
-            [prevout], {getnewdestination()[2]: 24_990_000}
+            [prevout], {getnewdestination()[2]: 2_500}
         )
         signed_tx = n1.signrawtransactionwithkey(raw_tx, [privkey], [prevout])["hex"]
         signed_txid = FromHex(CTransaction(), signed_tx).txid_hex
