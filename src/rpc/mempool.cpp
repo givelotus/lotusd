@@ -1481,6 +1481,7 @@ static RPCHelpMan testrawtxbatch() {
             CTxMemPool &mempool = EnsureMemPool(node);
             ChainstateManager &chainman = EnsureChainman(node);
             Chainstate &chainstate = chainman.ActiveChainstate();
+            PrepareNativeRawTxBatch(chainman, mempool, txns, precomputed_batch);
 
             const PackageMempoolAcceptResult package_result = [&] {
                 LOCK(::cs_main);
@@ -1753,6 +1754,7 @@ static RPCHelpMan submitrawtxbatch() {
             NodeContext &node = EnsureAnyNodeContext(request.context);
             CTxMemPool &mempool = EnsureMemPool(node);
             ChainstateManager &chainman = EnsureChainman(node);
+            PrepareNativeRawTxBatch(chainman, mempool, txns, precomputed_batch);
 
             UniValue results_arr(UniValue::VARR);
             bool all_allowed = false;
