@@ -163,9 +163,17 @@ void SignatureCache::Set(const uint256 &entry) {
 }
 
 void SignatureCache::SetBatch(const lotus::v2::BatchSigCollector &collector) {
-    const auto &items = collector.LegacyItems();
+    const auto &bip340_items = collector.Items();
+    const auto &legacy_items = collector.LegacyItems();
     uint32_t touched_mask = 0;
-    for (const auto &item : items) {
+    for (const auto &item : bip340_items) {
+        if (item.store_in_cache) {
+            const size_t s = static_cast<size_t>(ReadLE64(item.cache_entry.data())) &
+                             (kNumShards - 1);
+            touched_mask |= (uint32_t{1} << s);
+        }
+    }
+    for (const auto &item : legacy_items) {
         if (item.store_in_cache) {
             const size_t s = static_cast<size_t>(ReadLE64(item.cache_entry.data())) &
                              (kNumShards - 1);
@@ -182,7 +190,21 @@ void SignatureCache::SetBatch(const lotus::v2::BatchSigCollector &collector) {
         }
         Shard &shard = m_shards[s];
         std::unique_lock<std::shared_mutex> lock(shard.mutex);
-        for (const auto &item : items) {
+        for (const auto &item : bip340_items) {
+            if (!item.store_in_cache) {
+                continue;
+            }
+            const size_t item_s =
+                static_cast<size_t>(ReadLE64(item.cache_entry.data())) &
+                (kNumShards - 1);
+            if (item_s != s) {
+                continue;
+            }
+            std::memcpy(entry.begin(), item.cache_entry.data(), 32);
+            g_tls_sigcache.Insert(this, entry);
+            shard.setValid.insert(entry);
+        }
+        for (const auto &item : legacy_items) {
             if (!item.store_in_cache) {
                 continue;
             }
