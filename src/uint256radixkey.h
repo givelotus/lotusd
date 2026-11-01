@@ -33,6 +33,9 @@ struct Uint256RadixKey {
     bool operator!=(const Uint256RadixKey &other) const {
         return !(*this == other);
     }
+    bool operator<(const Uint256RadixKey &other) const {
+        return base < other.base;
+    }
     operator size_t() const { return size_t(base.GetLow64()); }
 };
 

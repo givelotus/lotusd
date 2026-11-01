@@ -3,6 +3,8 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <radix.h>
+#include <radix_map.h>
+#include <random.h>
 
 #include <arith_uint256.h>
 #include <uint256.h>
@@ -850,6 +852,220 @@ BOOST_AUTO_TEST_CASE(radix_adapter) {
     BOOST_CHECK(!mytree.get(1));
     BOOST_CHECK(!mytree.get(2));
     BOOST_CHECK(!mytree.get(3));
+}
+
+BOOST_AUTO_TEST_CASE(radix_tree_map_sorted_order_lower_bound_and_prefix) {
+    // 1. uint64_t map: insertOrAssign, sorted order, forEachFrom
+    RadixTreeMap<uint64_t, std::string> u64_map;
+    BOOST_CHECK(u64_map.empty());
+    BOOST_CHECK(u64_map.insertOrAssign(40, "forty"));
+    BOOST_CHECK(u64_map.insertOrAssign(10, "ten_old"));
+    BOOST_CHECK(u64_map.insertOrAssign(30, "thirty"));
+    BOOST_CHECK(u64_map.insertOrAssign(20, "twenty"));
+    BOOST_CHECK_EQUAL(u64_map.size(), 4U);
+
+    // Replace existing key 10 while a pinned snapshot holds the old value
+    const auto snap_before_assign = u64_map.pinSnapshot();
+    BOOST_CHECK(!u64_map.insertOrAssign(10, "ten_new"));
+    BOOST_CHECK_EQUAL(u64_map.size(), 4U);
+    BOOST_CHECK_EQUAL(u64_map.get(10).value_or(""), "ten_new");
+    BOOST_CHECK_EQUAL(snap_before_assign.get(10).value_or(""), "ten_old");
+
+    std::vector<uint64_t> all_keys;
+    u64_map.forEach([&](uint64_t k, const std::string &) {
+        all_keys.push_back(k);
+    });
+    BOOST_CHECK((all_keys == std::vector<uint64_t>{10, 20, 30, 40}));
+
+    std::vector<uint64_t> from_25;
+    u64_map.forEachFrom(25, [&](uint64_t k, const std::string &) {
+        from_25.push_back(k);
+    });
+    BOOST_CHECK((from_25 == std::vector<uint64_t>{30, 40}));
+
+    std::vector<uint64_t> from_20_stop_1;
+    u64_map.forEachFrom(20, [&](uint64_t k, const std::string &) {
+        from_20_stop_1.push_back(k);
+        return false; // stop after first
+    });
+    BOOST_CHECK((from_20_stop_1 == std::vector<uint64_t>{20}));
+
+    // 2. 128-bit composite pair<uint64_t, uint64_t> map
+    RadixTreeMap<std::pair<uint64_t, uint64_t>, uint64_t> pair_map;
+    pair_map.insertOrAssign({2, 5}, 25);
+    pair_map.insertOrAssign({1, 9}, 19);
+    pair_map.insertOrAssign({2, 1}, 21);
+    pair_map.insertOrAssign({1, 2}, 12);
+
+    std::vector<uint64_t> pair_vals;
+    pair_map.forEach([&](const auto &, uint64_t v) { pair_vals.push_back(v); });
+    BOOST_CHECK((pair_vals == std::vector<uint64_t>{12, 19, 21, 25}));
+
+    std::vector<uint64_t> pair_from;
+    pair_map.forEachFrom({1, 5}, [&](const auto &, uint64_t v) {
+        pair_from.push_back(v);
+    });
+    BOOST_CHECK((pair_from == std::vector<uint64_t>{19, 21, 25}));
+
+    std::vector<uint64_t> pair_prefix2;
+    pair_map.forEachPrefix({2, 0}, 16, [&](const auto &, uint64_t v) {
+        pair_prefix2.push_back(v);
+    });
+    BOOST_CHECK((pair_prefix2 == std::vector<uint64_t>{21, 25}));
+}
+
+namespace {
+/** Routes on the outpoint's own bytes, which is what a naive index would do. */
+struct OrderedOutpointKey {
+    Uint256RadixKey txid;
+    uint32_t n{0};
+
+    uint32_t GetNibble(uint32_t level) const {
+        return level < 8 ? (n >> (4 * level)) & 0x0fU
+                         : txid.GetNibble(level - 8);
+    }
+    bool operator==(const OrderedOutpointKey &other) const {
+        return n == other.n && txid == other.txid;
+    }
+    bool operator!=(const OrderedOutpointKey &other) const {
+        return !(*this == other);
+    }
+};
+
+struct OrderedOutpointEncoder {
+    using EncodedType = OrderedOutpointKey;
+    static OrderedOutpointKey encode(const COutPoint &k) {
+        return {Uint256RadixKey{k.GetTxId()}, k.GetN()};
+    }
+};
+
+template <typename Map> size_t NodesAfterSiblingChurn(size_t parents) {
+    Map map;
+    FastRandomContext rng{/*fDeterministic=*/true};
+    for (size_t i = 0; i < parents; ++i) {
+        const TxId txid{rng.rand256()};
+        // A parent with two outputs spent in the pool, later confirmed.
+        BOOST_REQUIRE(map.insert(COutPoint(txid, 0), 1));
+        BOOST_REQUIRE(map.insert(COutPoint(txid, 1), 2));
+        BOOST_REQUIRE(map.erase(COutPoint(txid, 0)));
+        BOOST_REQUIRE(map.erase(COutPoint(txid, 1)));
+    }
+    BOOST_CHECK(map.empty());
+    return map.nodeCount();
+}
+} // namespace
+
+BOOST_AUTO_TEST_CASE(radix_tree_map_outpoint_nodes_stay_bounded_under_churn) {
+    constexpr size_t PARENTS{2000};
+    // No more than two outpoints are ever live, so the salted index needs only
+    // the shallow path those two happen to share.
+    const size_t salted = NodesAfterSiblingChurn<
+        RadixTreeMap<COutPoint, uint32_t, SaltedOutpointEncoder>>(PARENTS);
+    BOOST_CHECK_LT(salted, 1024U);
+
+    // Routing on the outpoint's own bytes leaks a spine per parent, about 9 KB
+    // each. This is the failure the salted key exists to prevent.
+    const size_t ordered = NodesAfterSiblingChurn<
+        RadixTreeMap<COutPoint, uint32_t, OrderedOutpointEncoder>>(PARENTS);
+    BOOST_CHECK_GT(ordered, PARENTS * 60);
+
+    // The nodes are reported, so a memory limit can see them.
+    RadixTreeMap<COutPoint, uint32_t, OrderedOutpointEncoder> counted;
+    const TxId txid{uint256::ONE};
+    counted.insert(COutPoint(txid, 0), 1);
+    counted.insert(COutPoint(txid, 1), 2);
+    BOOST_CHECK_GT(counted.nodeCount(), 60U);
+    BOOST_CHECK_GT(counted.DynamicMemoryUsage(),
+                   counted.nodeCount() * 16 * sizeof(void *));
+    counted.clear();
+    BOOST_CHECK_EQUAL(counted.nodeCount(), 0U);
+    BOOST_CHECK_EQUAL(counted.DynamicMemoryUsage(), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(radix_tree_map_salted_outpoint_lookup) {
+    RadixTreeMap<COutPoint, uint32_t, SaltedOutpointEncoder> map;
+    const TxId txid_a{uint256S(
+        "1111111111111111111111111111111111111111111111111111111111111111")};
+    const TxId txid_b{uint256S(
+        "1111111111111111111111111111111111111111111111111111111111111112")};
+    BOOST_CHECK(map.insert(COutPoint(txid_a, 7), 107));
+    BOOST_CHECK(!map.insert(COutPoint(txid_a, 7), 999));
+    BOOST_CHECK(map.insert(COutPoint(txid_a, 256), 356));
+    BOOST_CHECK(map.insert(COutPoint(txid_b, 7), 207));
+
+    BOOST_CHECK_EQUAL(map.get(COutPoint(txid_a, 7)).value_or(0), 107U);
+    BOOST_CHECK_EQUAL(map.get(COutPoint(txid_a, 256)).value_or(0), 356U);
+    BOOST_CHECK_EQUAL(map.get(COutPoint(txid_b, 7)).value_or(0), 207U);
+    BOOST_CHECK(!map.contains(COutPoint(txid_a, 0)));
+    BOOST_CHECK(!map.contains(COutPoint(txid_b, 256)));
+
+    size_t visited{0};
+    map.forEach([&](const COutPoint &, uint32_t) { ++visited; });
+    BOOST_CHECK_EQUAL(visited, 3U);
+
+    BOOST_CHECK(map.erase(COutPoint(txid_a, 7)));
+    BOOST_CHECK(!map.contains(COutPoint(txid_a, 7)));
+    BOOST_CHECK_EQUAL(map.size(), 2U);
+}
+
+BOOST_AUTO_TEST_CASE(radix_tree_map_concurrent_snapshots_and_slab_reclamation) {
+    RadixTreeMap<uint64_t, uint64_t> map;
+    for (uint64_t i = 0; i < 512; ++i) {
+        BOOST_REQUIRE(map.insertOrAssign(i, i * 10));
+    }
+    const auto pinned = map.pinSnapshot();
+    BOOST_CHECK_EQUAL(pinned.size(), 512U);
+
+    // Mutate and erase in the live map across multiple threads while readers
+    // concurrently verify the immutable pinned snapshot.
+    std::atomic<bool> stop{false};
+    std::atomic<size_t> reader_failures{0};
+    std::vector<std::thread> readers;
+    for (int t = 0; t < 4; ++t) {
+        readers.emplace_back([&]() {
+            while (!stop.load(std::memory_order_relaxed)) {
+                size_t count = 0;
+                uint64_t expected_k = 0;
+                pinned.forEach([&](uint64_t k, uint64_t v) {
+                    if (k != expected_k || v != k * 10) {
+                        reader_failures.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    ++expected_k;
+                    ++count;
+                });
+                if (count != 512U) {
+                    reader_failures.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        });
+    }
+
+    for (uint64_t round = 1; round <= 4; ++round) {
+        for (uint64_t i = 0; i < 256; ++i) {
+            BOOST_CHECK(map.erase(i));
+        }
+        for (uint64_t i = 256; i < 512; ++i) {
+            BOOST_CHECK(!map.insertOrAssign(i, i * 10 + round));
+        }
+        for (uint64_t i = 0; i < 256; ++i) {
+            BOOST_CHECK(map.insertOrAssign(i, i * 10 + round));
+        }
+    }
+
+    stop.store(true, std::memory_order_relaxed);
+    for (auto &th : readers) {
+        th.join();
+    }
+    BOOST_CHECK_EQUAL(reader_failures.load(), 0U);
+
+    BOOST_CHECK_EQUAL(map.size(), 512U);
+    for (uint64_t i = 0; i < 512; ++i) {
+        BOOST_CHECK_EQUAL(map.get(i).value_or(0), i * 10 + 4);
+        BOOST_CHECK_EQUAL(pinned.get(i).value_or(0), i * 10);
+    }
+    map.clear();
+    BOOST_CHECK(map.empty());
+    RCULock::synchronize();
 }
 
 BOOST_AUTO_TEST_SUITE_END()
