@@ -22,6 +22,7 @@
 #include <concepts>
 #include <cstddef>
 #include <memory>
+#include <limits>
 #include <vector>
 
 /**
@@ -425,6 +426,10 @@ inline void UnserializeTransaction(TxType &tx, Stream &s) {
             s >> out.flags >> out.value;
             if ((out.flags & 0xf8) || (out.HasState() && out.IsBurn())) {
                 throw std::ios_base::failure("invalid V2 output flags");
+            }
+            // CTxOut holds the value as a signed amount.
+            if (out.value > uint64_t(std::numeric_limits<int64_t>::max())) {
+                throw std::ios_base::failure("invalid V2 output value");
             }
             if (out.HasToken()) {
                 if (has_coinbase) {
