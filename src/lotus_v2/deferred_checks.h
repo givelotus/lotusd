@@ -128,6 +128,10 @@ public:
     std::string_view Name() const { return key_.name; }
     virtual std::unique_ptr<DeferredAccumulator>
     NewAccumulator(const DeferredTxView &view) const = 0;
+    // True only if a transaction with no records and no HAS_STATE output
+    // always passes this kind's rules, so a caller may skip running it. A kind
+    // that can reject such a transaction must leave this false.
+    virtual bool PassesWithoutRecordsOrState() const { return false; }
 
 private:
     const DeferredKindKey &key_;
@@ -162,6 +166,14 @@ public:
     }
     std::span<const std::shared_ptr<const DeferredCheckKind>> Kinds() const {
         return kinds_;
+    }
+    // Whether every registered kind allows skipping the run for a transaction
+    // with no records and no HAS_STATE output.
+    bool PassesWithoutRecordsOrState() const {
+        for (const auto &kind : kinds_) {
+            if (!kind->PassesWithoutRecordsOrState()) return false;
+        }
+        return true;
     }
     std::span<const std::shared_ptr<const DeferredBlockHook>> BlockHooks() const {
         return hooks_;

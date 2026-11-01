@@ -264,6 +264,39 @@ void FailedInputsNeverReachPhaseTwo() {
     CHECK(stats.finals.load() == 0 && !run.Accepted());
 }
 
+// The fast signature path skips the deferred run when the registry says it
+// may. The answer has to come from the kinds themselves: a registry of two kinds
+// where one doesn't allow the skip must not be mistaken for the consensus pair.
+void SkippingTheRunNeedsEveryKindToAllowIt() {
+    CHECK(DeferredCheckRegistry::Consensus().PassesWithoutRecordsOrState());
+    DummyStats stats;
+    CHECK(!WithDummy(100, stats).PassesWithoutRecordsOrState());
+    DeferredCheckRegistry same_count;
+    same_count.Add(DeferredCheckRegistry::Consensus().Kinds()[0]);
+    same_count.Add(std::make_shared<DummyKind>(100, stats));
+    CHECK(same_count.Kinds().size() ==
+          DeferredCheckRegistry::Consensus().Kinds().size());
+    CHECK(!same_count.PassesWithoutRecordsOrState());
+
+    // What the consensus kinds promise holds when the run actually happens.
+    const std::vector<Output> outputs{Plain(100), Plain(50)};
+    std::vector<DeferredRecords> empty(2);
+    std::string error;
+    CHECK(RunDeferredChecks(DeferredCheckRegistry::Consensus(),
+                            DeferredTxView{outputs, empty.size()}, empty,
+                            error) == DeferredOutcome::Accepted);
+    // HAS_STATE is outside the promise.
+    Output stateful = Plain(50);
+    stateful.flags = OUTPUT_FLAG_HAS_STATE;
+    stateful.state_root.fill(9);
+    const std::vector<Output> with_state{Plain(100), stateful};
+    std::vector<DeferredRecords> empty_again(2);
+    CHECK(RunDeferredChecks(DeferredCheckRegistry::Consensus(),
+                            DeferredTxView{with_state, empty_again.size()},
+                            empty_again, error) == DeferredOutcome::Failed &&
+          error == "state-output-unauthorized");
+}
+
 void ConsensusKinds() {
     Output stateful = Plain(50);
     stateful.flags = OUTPUT_FLAG_HAS_STATE;
@@ -563,6 +596,7 @@ int main() {
         SchedulingAndOrder();
         FinalRulesAndFailFast();
         FailedInputsNeverReachPhaseTwo();
+        SkippingTheRunNeedsEveryKindToAllowIt();
         ConsensusKinds();
         MaxFlowFeasibility();
         ConservationKinds();
