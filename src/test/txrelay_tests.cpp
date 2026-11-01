@@ -785,7 +785,9 @@ BOOST_AUTO_TEST_CASE(persistent_inventory_unchanged_turn_has_bounded_lookup_work
     BOOST_CHECK_EQUAL(after.enqueue_rank_lookups, before.enqueue_rank_lookups);
     BOOST_CHECK_EQUAL(after.new_admission_facts, before.new_admission_facts);
     BOOST_CHECK_EQUAL(after.peer_suffix_checks, before.peer_suffix_checks);
-    BOOST_CHECK_EQUAL(after.authoritative_lookups - before.authoritative_lookups, 6U);
+    // Nothing has been removed since the ranks were looked up, so what those
+    // lookups recorded is still good, and selection needn't repeat them.
+    BOOST_CHECK_EQUAL(after.authoritative_lookups, before.authoritative_lookups);
     BOOST_CHECK_EQUAL(after.selection_chunks - before.selection_chunks, 2U);
     const auto newest = MakeTx(rng);
     AddToMempool(m_node, newest);
@@ -796,7 +798,44 @@ BOOST_AUTO_TEST_CASE(persistent_inventory_unchanged_turn_has_bounded_lookup_work
     BOOST_CHECK_EQUAL(added.enqueue_rank_lookups - after.enqueue_rank_lookups, 1U);
     BOOST_CHECK_EQUAL(added.new_admission_facts - after.new_admission_facts, 1U);
     BOOST_CHECK_EQUAL(added.peer_suffix_checks - after.peer_suffix_checks, 2U);
-    BOOST_CHECK_EQUAL(added.authoritative_lookups - after.authoritative_lookups, 6U);
+    BOOST_CHECK_EQUAL(added.authoritative_lookups, after.authoritative_lookups);
+}
+
+BOOST_AUTO_TEST_CASE(relay_selection_rechecks_recorded_facts_after_a_removal) {
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    MockTick clock{4'400'000ms};
+    PeerManager::Options opts;
+    opts.txrelay_rate_max = 200;
+    opts.txrelay_shortids = false;
+    opts.txrecon_interval = 0ms;
+    RelayHarness h{m_node, opts};
+    CNode &peer = h.AddPeer();
+    h.SendAll();
+    FastRandomContext rng{uint256{45}};
+    std::vector<CTransactionRef> txs;
+    for (size_t i = 0; i < 4; ++i) {
+        txs.push_back(MakeTx(rng));
+        AddToMempool(m_node, txs.back());
+    }
+    h.peerman->RelayTransactionBatch(txs);
+
+    // Two per tick. Nothing has been removed yet, so these need no lookup.
+    clock.Set(4'400'010ms);
+    CheckRelayOrder(h.SendAll().at(peer.GetId()).inv_txids,
+                    {txs[0]->GetId(), txs[1]->GetId()});
+    const auto before = h.peerman->GetRelayInventoryWorkForTest();
+
+    {
+        LOCK2(cs_main, m_node.mempool->cs);
+        m_node.mempool->removeRecursive(*txs[2], MemPoolRemovalReason::CONFLICT);
+    }
+
+    // Selection can't trust the facts recorded for the removed transaction, and
+    // must not announce it however good they look.
+    clock.Set(4'400'020ms);
+    CheckRelayOrder(h.SendAll().at(peer.GetId()).inv_txids, {txs[3]->GetId()});
+    const auto after = h.peerman->GetRelayInventoryWorkForTest();
+    BOOST_CHECK(after.authoritative_lookups > before.authoritative_lookups);
 }
 
 BOOST_AUTO_TEST_CASE(shortid_index_epochs_and_collisions) {

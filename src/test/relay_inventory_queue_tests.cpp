@@ -368,4 +368,31 @@ BOOST_AUTO_TEST_CASE(update_rank_only_touches_present_entries) {
     BOOST_CHECK_EQUAL(queue.Size(), 2U);
 }
 
+BOOST_AUTO_TEST_CASE(entry_facts_follow_the_rank) {
+    txrelay::RelayInventoryQueue queue;
+    const auto facts = [](uint32_t vsize) {
+        return txrelay::RelayInventoryQueue::EntryFacts{1000 * SATOSHI, vsize, 7};
+    };
+    queue.SetRank(QueueId(1), 10, facts(100));
+    BOOST_CHECK_EQUAL(queue.Peek()->facts.vsize, 100U);
+    BOOST_CHECK_EQUAL(queue.Peek()->facts.removal_seq, 7U);
+    BOOST_CHECK_EQUAL(queue.Find(QueueId(1))->facts.vsize, 100U);
+    BOOST_CHECK_EQUAL(queue.PeekPrefix(1).at(0).facts.vsize, 100U);
+
+    // A second sighting of the same rank refreshes them.
+    queue.SetRank(QueueId(1), 10, facts(200));
+    BOOST_CHECK_EQUAL(queue.Peek()->facts.vsize, 200U);
+    // A rank change with nothing recorded must not keep the old incarnation's.
+    queue.UpdateRankIfPresent(QueueId(1), 11);
+    BOOST_CHECK_EQUAL(queue.Peek()->facts.vsize, 0U);
+    queue.SetRank(QueueId(1), 12, facts(300));
+    BOOST_CHECK_EQUAL(queue.Peek()->facts.vsize, 300U);
+    // Going stale drops them, and a new rank supplies its own.
+    queue.SetRank(QueueId(1), std::nullopt, facts(400));
+    BOOST_CHECK_EQUAL(queue.Peek()->facts.vsize, 0U);
+    queue.SetRank(QueueId(1), 13);
+    BOOST_CHECK_EQUAL(queue.Peek()->facts.vsize, 0U);
+    BOOST_CHECK_EQUAL(queue.Pop()->facts.vsize, 0U);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

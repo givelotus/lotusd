@@ -5,6 +5,7 @@
 #ifndef BITCOIN_NET_RELAY_INVENTORY_QUEUE_H
 #define BITCOIN_NET_RELAY_INVENTORY_QUEUE_H
 
+#include <consensus/amount.h>
 #include <primitives/txid.h>
 #include <util/hasher.h>
 
@@ -43,9 +44,23 @@ template <typename RankLess = RelayRankLess> class BasicRelayInventoryQueue {
                                                uint64_t>);
 
 public:
+    /**
+     * What selection needs from the mempool entry, recorded when the rank was
+     * looked up so that selection can skip the lookup. removal_seq is the
+     * mempool's removal sequence read before that lookup: while it is
+     * unchanged, the entry is still there, and these fields are immutable for
+     * the life of an entry. A vsize of 0 means nothing is recorded.
+     */
+    struct EntryFacts {
+        Amount fee{Amount::zero()};
+        uint32_t vsize{0};
+        uint64_t removal_seq{0};
+    };
+
     struct Candidate {
         TxId txid;
         std::optional<uint64_t> entry_id;
+        EntryFacts facts{};
     };
 
 private:
@@ -54,6 +69,7 @@ private:
     using Node = typename Entries::value_type;
     struct Record {
         std::optional<uint64_t> entry_id;
+        EntryFacts facts{};
         size_t heap_index{0};
         Node *previous{nullptr};
         Node *next{nullptr};
@@ -180,18 +196,23 @@ public:
     std::optional<Candidate> Find(const TxId &txid) const {
         const auto it = m_entries.find(txid);
         if (it == m_entries.end()) return std::nullopt;
-        return Candidate{it->first, it->second.entry_id};
+        return Candidate{it->first, it->second.entry_id, it->second.facts};
     }
 
     /** Insert or rekey the single record for txid. Return true on insertion.
      * A duplicate with unchanged rank does not change stale-tail position.
      * Allocation failure leaves existing membership/rank/order unchanged.
      */
-    bool SetRank(const TxId &txid, std::optional<uint64_t> entry_id) {
+    bool SetRank(const TxId &txid, std::optional<uint64_t> entry_id,
+                 EntryFacts facts = {}) {
         auto [it, inserted] = m_entries.try_emplace(txid);
         Node *node = &*it;
         auto &record = node->second;
-        if (!inserted && record.entry_id == entry_id) return false;
+        if (!inserted && record.entry_id == entry_id) {
+            if (entry_id && facts.vsize > 0) record.facts = facts;
+            return false;
+        }
+        record.facts = entry_id ? facts : EntryFacts{};
 
         if (entry_id) {
             if (inserted || !record.entry_id) {
@@ -233,6 +254,7 @@ public:
         Node *node = &*it;
         auto &record = node->second;
         if (record.entry_id == entry_id) return false;
+        record.facts = {};
         if (entry_id) {
             if (!record.entry_id) {
                 m_heap.push_back(node);
@@ -255,7 +277,7 @@ public:
     std::optional<Candidate> Peek() const {
         const Node *node = First();
         if (!node) return std::nullopt;
-        return Candidate{node->first, node->second.entry_id};
+        return Candidate{node->first, node->second.entry_id, node->second.facts};
     }
 
     /** Copy at most limit candidates in selection order without changing the
@@ -278,7 +300,8 @@ public:
             const size_t index = frontier.back();
             frontier.pop_back();
             const Node *node = m_heap[index];
-            result.push_back({node->first, node->second.entry_id});
+            result.push_back(
+                {node->first, node->second.entry_id, node->second.facts});
             if (index < m_heap.size() / 2) {
                 const size_t left = 2 * index + 1;
                 frontier.push_back(left);
@@ -300,7 +323,7 @@ public:
     std::optional<Candidate> Pop() {
         Node *node = First();
         if (!node) return std::nullopt;
-        Candidate result{node->first, node->second.entry_id};
+        Candidate result{node->first, node->second.entry_id, node->second.facts};
         EraseNode(node);
         return result;
     }

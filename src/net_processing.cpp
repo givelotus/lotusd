@@ -4482,14 +4482,26 @@ void PeerManagerImpl::DrainRelayQueue() {
     std::vector<const std::vector<NodeId> *> parent_route(batch.size(),
                                                           nullptr);
     std::vector<std::optional<uint64_t>> admission_ranks(batch.size());
+    using EntryFacts = txrelay::RelayInventoryQueue::EntryFacts;
+    std::vector<EntryFacts> admission_facts(batch.size());
+    // Read before the lookups: if a removal happens after them, this no longer
+    // matches and the recorded facts aren't used.
+    const uint64_t drain_removal_seq{m_mempool.GetRemovalSequence()};
+    const auto facts_of = [&](const CTxMemPoolEntry &entry) {
+        return EntryFacts{entry.GetFee(),
+                          static_cast<uint32_t>(entry.GetTxSize()),
+                          drain_removal_seq};
+    };
     m_relay_inventory_work.enqueue_rank_lookups += batch.size();
     const bool need_parent_routes =
         targets.size() > fanout && !m_relay_routes.empty();
     if (!need_parent_routes) {
+        RCULock lock;
         for (size_t i = 0; i < batch.size(); ++i) {
-            if (const auto entry = m_mempool.getEntry(batch[i].txid)) {
-                admission_ranks[i] = entry->GetEntryId();
-            }
+            m_mempool.withEntry(batch[i].txid, [&](const CTxMemPoolEntry &entry) {
+                admission_ranks[i] = entry.GetEntryId();
+                admission_facts[i] = facts_of(entry);
+            });
         }
     } else {
         LOCK(m_mempool.cs);
@@ -4499,6 +4511,7 @@ void PeerManagerImpl::DrainRelayQueue() {
                 continue;
             }
             admission_ranks[i] = (**it)->GetEntryId();
+            admission_facts[i] = facts_of(***it);
             if (!batch[i].local) {
                 for (const auto &parent : (**it)->GetMemPoolParentsConst()) {
                     const auto route{
@@ -4581,8 +4594,8 @@ void PeerManagerImpl::DrainRelayQueue() {
         }
         LOCK(target.relay->m_tx_inventory_mutex);
         for (const uint32_t i : target.picks) {
-            target.relay->m_tx_inventory_to_send.SetRank(batch[i].txid,
-                                                        admission_ranks[i]);
+            target.relay->m_tx_inventory_to_send.SetRank(
+                batch[i].txid, admission_ranks[i], admission_facts[i]);
         }
     }
 
@@ -11698,23 +11711,53 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                         CTransactionRef tx;
                         Amount fee;
                         size_t vsize{0};
+                        bool present{false};
                     };
                     std::vector<Prepared> prepared(prefix.size());
-                    m_relay_inventory_work.authoritative_lookups += prefix.size();
                     ++m_relay_inventory_work.selection_chunks;
-                    for (size_t i = 0; i < prefix.size(); ++i) {
-                        const auto entry = m_mempool.getEntry(prefix[i].txid);
-                        if (!entry) continue;
-                        prepared[i].entry_id = entry->GetEntryId();
-                        prepared[i].tx = entry->GetSharedTx();
-                        prepared[i].fee = entry->GetFee();
-                        prepared[i].vsize = entry->GetTxSize();
+                    // Without a bloom filter or body push only the rank and
+                    // fee matter, and those were recorded when the rank was
+                    // looked up. They still hold if nothing has been removed
+                    // from the mempool since then.
+                    const bool need_tx_ref =
+                        high_bandwidth_peer ||
+                        static_cast<bool>(tx_relay->m_bloom_filter);
+                    const uint64_t removal_seq{m_mempool.GetRemovalSequence()};
+                    {
+                        RCULock lock;
+                        for (size_t i = 0; i < prefix.size(); ++i) {
+                            const auto &facts = prefix[i].facts;
+                            if (!need_tx_ref && prefix[i].entry_id &&
+                                facts.vsize > 0 &&
+                                facts.removal_seq == removal_seq) {
+                                prepared[i].entry_id = prefix[i].entry_id;
+                                prepared[i].fee = facts.fee;
+                                prepared[i].vsize = facts.vsize;
+                                prepared[i].present = true;
+                                continue;
+                            }
+                            ++m_relay_inventory_work.authoritative_lookups;
+                            m_mempool.withEntry(
+                                prefix[i].txid,
+                                [&](const CTxMemPoolEntry &entry) {
+                                    prepared[i].entry_id = entry.GetEntryId();
+                                    if (need_tx_ref) {
+                                        prepared[i].tx = entry.GetSharedTx();
+                                    }
+                                    prepared[i].fee = entry.GetFee();
+                                    prepared[i].vsize = entry.GetTxSize();
+                                    prepared[i].present = true;
+                                });
+                        }
                     }
                     bool changed = false;
                     for (size_t i = 0; i < prefix.size(); ++i) {
                         if (prepared[i].entry_id != prefix[i].entry_id) {
                             tx_relay->m_tx_inventory_to_send.SetRank(
-                                prefix[i].txid, prepared[i].entry_id);
+                                prefix[i].txid, prepared[i].entry_id,
+                                {prepared[i].fee,
+                                 static_cast<uint32_t>(prepared[i].vsize),
+                                 removal_seq});
                             changed = true;
                         }
                     }
@@ -11735,7 +11778,7 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                             continue;
                         }
                         auto &txinfo = prepared[i];
-                        if (!txinfo.tx) continue;
+                        if (!txinfo.present) continue;
                         if (txinfo.fee < filterrate.GetFee(txinfo.vsize)) {
                             continue;
                         }
