@@ -940,6 +940,43 @@ PinnedWindowIds(const txrelay::TxRelayIndex::WindowTree &tree) {
 }
 } // namespace
 
+// Admission can evict a batch member before the caller relays the batch. By then
+// the removal has passed, so relaying it must not put it back in the index.
+BOOST_FIXTURE_TEST_CASE(relaying_a_departed_transaction_leaves_no_trace,
+                        TestingSetup) {
+    FastRandomContext rng{true};
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    MockTick clock{1'000'001ms};
+    PeerManager::Options opts;
+    opts.txrelay_tick = 10ms;
+    RelayHarness h{m_node, opts};
+    CNode &peer = h.AddPeer(ConnectionType::OUTBOUND_FULL_RELAY);
+    BOOST_CHECK(h.peerman->SendMessages(h.config, &peer));
+    h.Drain(peer);
+
+    TestMemPoolEntryHelper entry;
+    const CTransactionRef kept{MakeTx(rng)};
+    {
+        LOCK2(cs_main, m_node.mempool->cs);
+        m_node.mempool->addUnchecked(entry.FromTx(kept));
+    }
+    // Relaying something starts the index's first epoch at the next tick.
+    h.peerman->RelayTransaction(kept->GetId());
+    clock.Set(1'000'020ms);
+    BOOST_CHECK_EQUAL(h.SendAll().at(peer.GetId()).Total(), 1U);
+    BOOST_REQUIRE_EQUAL(h.peerman->GetTxRelayIndexSizeForTest(), 1U);
+
+    const CTransactionRef gone_in_batch{MakeTx(rng)};
+    const CTransactionRef gone_alone{MakeTx(rng)};
+    const std::vector<CTransactionRef> batch{gone_in_batch, kept};
+    h.peerman->RelayTransactionBatch(batch);
+    h.peerman->RelayTransaction(gone_alone->GetId());
+    BOOST_CHECK_EQUAL(h.peerman->GetTxRelayIndexSizeForTest(), 1U);
+
+    clock.Set(1'000'100ms);
+    BOOST_CHECK_EQUAL(h.SendAll().at(peer.GetId()).Total(), 0U);
+}
+
 BOOST_AUTO_TEST_CASE(shortid_buckets_keep_every_colliding_transaction) {
     using txrelay::TxRelayIndex;
     FastRandomContext rng{true};

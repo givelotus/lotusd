@@ -335,6 +335,9 @@ public:
     virtual RelayInventoryWork GetRelayInventoryWorkForTest() const
         EXCLUSIVE_LOCKS_REQUIRED(NetEventsInterface::g_msgproc_mutex) = 0;
 
+    /** Transactions the relay index holds, for relay tests. */
+    virtual size_t GetTxRelayIndexSizeForTest() const = 0;
+
     /** Set only the stalled marker in relay tests, without a live quorum. */
     virtual void UnitTestSetStalledTx(NodeId peer_id, const TxId &txid,
                                       bool stalled)

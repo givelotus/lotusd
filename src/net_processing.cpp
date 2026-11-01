@@ -1021,6 +1021,9 @@ public:
     void RelayProof(const avalanche::ProofId &proofid) override
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
     void SetBestHeight(int height) override { m_best_height = height; };
+    size_t GetTxRelayIndexSizeForTest() const override {
+        return m_txrelay_index.Size();
+    }
     RelayInventoryWork GetRelayInventoryWorkForTest() const override
         EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex) {
         return m_relay_inventory_work;
@@ -4024,6 +4027,13 @@ void PeerManagerImpl::RelayTransaction(const TxId &txid) {
     // Index the short id now, so that an announcement of this transaction
     // arriving before the next tick is recognised as known.
     m_txrelay_index.Add(txid, GetTime<std::chrono::microseconds>());
+    // The transaction may have left the mempool already, in which case the
+    // removal has been and gone and nothing else would take it back out. Checking
+    // after the add means a removal from here on still reaches the index. The
+    // queue needs no such care: selection looks each entry up before sending.
+    if (!m_mempool.exists(txid)) {
+        m_txrelay_index.Remove(txid);
+    }
     const auto queued{RelayTickNow()};
     WITH_LOCK(m_relay_queue_mutex,
               m_relay_queue.push_back({txid, local, queued}));
@@ -4048,6 +4058,13 @@ void PeerManagerImpl::RelayTransactionBatch(
     }
     const auto now{GetTime<std::chrono::microseconds>()};
     m_txrelay_index.AddBatch(txs, now);
+    // As in RelayTransaction: a batch member can be evicted while the batch is
+    // being admitted, and must not stay indexed.
+    for (const auto &tx : txs) {
+        if (tx && !m_mempool.exists(tx->GetId())) {
+            m_txrelay_index.Remove(tx->GetId());
+        }
+    }
     const auto queued{RelayTickNow()};
     {
         LOCK(m_relay_queue_mutex);
