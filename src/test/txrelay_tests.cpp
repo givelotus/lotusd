@@ -1001,6 +1001,57 @@ BOOST_FIXTURE_TEST_CASE(relaying_a_departed_transaction_leaves_no_trace,
     BOOST_CHECK_EQUAL(h.SendAll().at(peer.GetId()).Total(), 0U);
 }
 
+// A peer's V2 known block, once recorded, must not keep every later SendMessages
+// waiting for cs_main. A new known block still has to be recorded under it.
+BOOST_AUTO_TEST_CASE(send_messages_takes_cs_main_only_for_a_new_v2_known_block) {
+    auto &chainman = static_cast<TestChainstateManager &>(*m_node.chainman);
+    chainman.JumpOutOfIbd();
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    MockTick clock{1'000'001ms};
+    PeerManager::Options opts;
+    opts.txrelay_tick = 10ms;
+    RelayHarness h{m_node, opts};
+    CNode &peer = h.AddPeer(ConnectionType::OUTBOUND_FULL_RELAY);
+    BOOST_CHECK(h.peerman->SendMessages(h.config, &peer));
+    h.Drain(peer);
+
+    // Whether SendMessages finishes while another thread holds cs_main.
+    auto finishes_while_cs_main_is_held = [&] {
+        std::promise<void> held;
+        std::atomic<bool> finished{false};
+        bool held_until_finished{false};
+        std::thread holder{[&] {
+            LOCK(cs_main);
+            held.set_value();
+            const auto give_up{std::chrono::steady_clock::now() + 1500ms};
+            while (!finished && std::chrono::steady_clock::now() < give_up) {
+                std::this_thread::sleep_for(1ms);
+            }
+            held_until_finished = finished;
+        }};
+        held.get_future().wait();
+        BOOST_CHECK(h.peerman->SendMessages(h.config, &peer));
+        finished = true;
+        holder.join();
+        return held_until_finished;
+    };
+
+    // A real block, because until a peer has one the sendheaders negotiation
+    // takes cs_main on every pass by itself. That needs a second pass to finish.
+    const BlockHash first{
+        WITH_LOCK(cs_main, return chainman.ActiveTip()->GetBlockHash())};
+    h.peerman->UnitTestRecordPeerKnownBlock(peer.GetId(), first);
+    BOOST_CHECK(h.peerman->SendMessages(h.config, &peer));
+    BOOST_CHECK(h.peerman->SendMessages(h.config, &peer));
+    BOOST_CHECK(finishes_while_cs_main_is_held());
+
+    // A different block waits for the lock, then the next pass is free again.
+    const BlockHash second{uint256{0x72}};
+    h.peerman->UnitTestRecordPeerKnownBlock(peer.GetId(), second);
+    BOOST_CHECK(!finishes_while_cs_main_is_held());
+    BOOST_CHECK(finishes_while_cs_main_is_held());
+}
+
 BOOST_AUTO_TEST_CASE(shortid_buckets_keep_every_colliding_transaction) {
     using txrelay::TxRelayIndex;
     FastRandomContext rng{true};

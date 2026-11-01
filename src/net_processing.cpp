@@ -728,6 +728,9 @@ struct Peer {
 
     /** Whether we've started headers synchronization with this peer. */
     std::atomic<bool> m_sync_started{false};
+    /** The last block this peer told us of over V2 that SendMessages recorded. */
+    BlockHash m_last_v2_known_block
+        GUARDED_BY(NetEventsInterface::g_msgproc_mutex){};
 
     /** When SendMessages last ran the block sync checks for this peer. */
     SteadyClock::time_point m_last_block_sync_pass
@@ -1043,6 +1046,10 @@ public:
         } else {
             relay->m_avalanche_stalled_txids.erase(txid);
         }
+    }
+    void UnitTestRecordPeerKnownBlock(NodeId peer_id,
+                                      const BlockHash &hash) override {
+        m_v2_protocol_handler.RecordPeerKnownBlock(peer_id, hash);
     }
     void UnitTestMisbehaving(NodeId peer_id) override
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex) {
@@ -11401,9 +11408,15 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
     const bool need_initial_sync =
         !peer->m_sync_started.load(std::memory_order_relaxed) &&
         CanServeBlocks(*peer);
+    // Every V2 peer soon has a known block, so asking only whether it has one
+    // would take cs_main on every pass for every peer. Only a new one needs it.
+    const auto v2_known_block{
+        m_v2_protocol_handler.GetLastPeerKnownBlock(pto->GetId())};
+    const bool has_new_v2_known_block{
+        v2_known_block.has_value() &&
+        *v2_known_block != peer->m_last_v2_known_block};
     if (need_initial_sync || has_headers_to_relay ||
-        m_chainman.IsInitialBlockDownload() ||
-        m_v2_protocol_handler.GetLastPeerKnownBlock(pto->GetId()).has_value()) {
+        m_chainman.IsInitialBlockDownload() || has_new_v2_known_block) {
         LOCK(cs_main);
 
         CNodeState &state = *State(pto->GetId());
@@ -11510,6 +11523,7 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
             if (auto known_hash =
                     m_v2_protocol_handler.GetLastPeerKnownBlock(pto->GetId())) {
                 UpdateBlockAvailability(pto->GetId(), *known_hash);
+                peer->m_last_v2_known_block = *known_hash;
             }
             ProcessBlockAvailability(pto->GetId());
 
