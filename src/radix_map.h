@@ -335,11 +335,10 @@ public:
      * Lock-free point lookup returning a copy of Value if present.
      */
     std::optional<Value> get(const Key &k) const {
-        RCUPtr<const Entry> entry = m_tree.get(KeyEncoder::encode(k));
-        if (!entry) {
-            return std::nullopt;
-        }
-        return entry->value;
+        std::optional<Value> out;
+        m_tree.withLeaf(KeyEncoder::encode(k),
+                        [&](const Entry &entry) { out.emplace(entry.value); });
+        return out;
     }
 
     /**
@@ -360,7 +359,17 @@ public:
      * Lock-free existence check.
      */
     bool contains(const Key &k) const {
-        return m_tree.get(KeyEncoder::encode(k)) != nullptr;
+        return m_tree.contains(KeyEncoder::encode(k));
+    }
+
+    /**
+     * Call fn(const Entry &) if k is present, and return whether it was. The
+     * entry is only borrowed, so fn must not keep a reference to it.
+     */
+    template <typename Callable>
+    bool withEntry(const Key &k, Callable &&fn) const {
+        return m_tree.withLeaf(KeyEncoder::encode(k),
+                               std::forward<Callable>(fn));
     }
 
     /**

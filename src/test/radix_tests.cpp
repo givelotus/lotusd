@@ -29,6 +29,7 @@ template <typename K> struct TestElement {
 
     TestElement(K keyIn) : key(keyIn) {}
     const K &getId() const { return key; }
+    uint32_t getRefCount() const { return refcount.load(); }
 
     IMPLEMENT_RCU_REFCOUNT(uint32_t);
 };
@@ -1006,6 +1007,39 @@ BOOST_AUTO_TEST_CASE(radix_tree_map_salted_outpoint_lookup) {
     BOOST_CHECK(map.erase(COutPoint(txid_a, 7)));
     BOOST_CHECK(!map.contains(COutPoint(txid_a, 7)));
     BOOST_CHECK_EQUAL(map.size(), 2U);
+}
+
+BOOST_AUTO_TEST_CASE(radix_borrowed_lookups_leave_reference_counts_alone) {
+    using Element = TestElement<uint32_t>;
+    RadixTree<Element> tree;
+    auto element = RCUPtr<Element>::make(uint32_t{0x12345678});
+    BOOST_CHECK(tree.insert(element));
+    const uint32_t refcount{element->getRefCount()};
+
+    const auto &const_tree{tree};
+    BOOST_CHECK(const_tree.contains(0x12345678));
+    BOOST_CHECK(!const_tree.contains(0x12345679));
+    bool called{false};
+    BOOST_CHECK(const_tree.withLeaf(0x12345678, [&](const Element &leaf) {
+        called = true;
+        // Compare with the tree's own reference while the borrow is live.
+        BOOST_CHECK_EQUAL(leaf.getRefCount(), refcount);
+    }));
+    BOOST_CHECK(called);
+    called = false;
+    BOOST_CHECK(!const_tree.withLeaf(0x12345679,
+                                     [&](const Element &) { called = true; }));
+    BOOST_CHECK(!called);
+
+    // The same calls inside a caller's section, which is how batches use them.
+    {
+        RCULock lock;
+        BOOST_CHECK(const_tree.contains(0x12345678));
+        BOOST_CHECK(const_tree.withLeaf(0x12345678, [](const Element &) {}));
+        BOOST_CHECK(RCULock::isLocked());
+    }
+    BOOST_CHECK(!RCULock::isLocked());
+    BOOST_CHECK_EQUAL(element->getRefCount(), refcount);
 }
 
 BOOST_AUTO_TEST_CASE(radix_tree_map_concurrent_snapshots_and_slab_reclamation) {

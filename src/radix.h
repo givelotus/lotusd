@@ -195,8 +195,7 @@ public:
     }
 
     /** Lookup while the caller already owns an RCU read section. This is
-     * useful when joining two pinned immutable trees during traversal; RCU
-     * read sections themselves must not be nested.
+     * useful when joining two pinned immutable trees during traversal.
      */
     RCUPtr<T> getWithinReadSection(const KeyType &key) {
         assert(RCULock::isLocked());
@@ -227,6 +226,29 @@ public:
         T const *ptr =
             const_cast<RadixTree *>(this)->getWithinReadSection(key).release();
         return RCUPtr<const T>::acquire(ptr);
+    }
+
+    /** Whether key is present, without touching the leaf's reference count. */
+    bool contains(const KeyType &key) const {
+        RCULock lock;
+        return findLeaf(key) != nullptr;
+    }
+
+    /**
+     * Call fn(const T &) if key is present, and return whether it was. The leaf
+     * is only borrowed, with no reference count change, so fn must not keep a
+     * pointer or reference to it past its return. Inside a caller's RCULock,
+     * the lock here costs one thread-local check.
+     */
+    template <typename Callable>
+    bool withLeaf(const KeyType &key, Callable &&fn) const {
+        RCULock lock;
+        const T *leaf = findLeaf(key);
+        if (leaf == nullptr) {
+            return false;
+        }
+        fn(*leaf);
+        return true;
     }
 
     template <typename Callable> bool forEachLeaf(Callable &&func) const {
@@ -471,6 +493,18 @@ private:
     }
 
 #undef SEEK_LEAF_LOOP
+
+    /** The leaf for key, or nullptr. Only valid within the current section. */
+    const T *findLeaf(const KeyType &key) const {
+        assert(RCULock::isLocked());
+        uint32_t level = TOP_LEVEL;
+        RadixElement e = root.load();
+        while (e.isNode()) {
+            e = e.getNode()->get(level--, key)->load();
+        }
+        const T *leaf = e.getLeaf();
+        return leaf != nullptr && getId(*leaf) == key ? leaf : nullptr;
+    }
 
     template <typename Callable>
     bool forEachLeaf(RadixElement e, Callable &&func) const {

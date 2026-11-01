@@ -587,9 +587,7 @@ public:
         return m_total_fee;
     }
 
-    bool exists(const TxId &txid) const {
-        return m_tx_tree.get(txid) != nullptr;
-    }
+    bool exists(const TxId &txid) const { return m_tx_tree.contains(txid); }
 
     /**
      * Lock-free lookup, as are exists(), get() and info(). Each answer is correct
@@ -600,6 +598,17 @@ public:
      */
     RCUPtr<const CTxMemPoolEntry> getEntry(const TxId &txid) const {
         return m_tx_tree.get(txid);
+    }
+
+    /**
+     * Call fn(const CTxMemPoolEntry &) if txid is in the pool, and return
+     * whether it was. Same contract as getEntry(), with no reference count
+     * change: fn must not keep a reference to the entry past its return. Hold
+     * an RCULock around a batch of these to share one read section.
+     */
+    template <typename Callable>
+    bool withEntry(const TxId &txid, Callable &&fn) const {
+        return m_tx_tree.withLeaf(txid, std::forward<Callable>(fn));
     }
 
     bool setAvalancheFinalized(const CTxMemPoolEntryRef &tx,
@@ -682,8 +691,11 @@ public:
         if (m_unbroadcast_count.load(std::memory_order_relaxed) == 0) {
             return false;
         }
-        RCUPtr<const CTxMemPoolEntry> entry = m_tx_tree.get(txid);
-        return entry && entry->IsUnbroadcast();
+        bool unbroadcast{false};
+        m_tx_tree.withLeaf(txid, [&](const CTxMemPoolEntry &entry) {
+            unbroadcast = entry.IsUnbroadcast();
+        });
+        return unbroadcast;
     }
 
     /** Guards this internal counter for external reporting */

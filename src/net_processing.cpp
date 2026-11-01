@@ -4131,9 +4131,12 @@ std::vector<CTransactionRef> PeerManagerImpl::ResolveRelayShortIds(
     }
     std::vector<CTransactionRef> txs;
     txs.reserve(txids.size());
-    for (const TxId &txid : txids) {
-        if (auto entry{m_mempool.getEntry(txid)}) {
-            txs.push_back(entry->GetSharedTx());
+    {
+        RCULock lock;
+        for (const TxId &txid : txids) {
+            m_mempool.withEntry(txid, [&](const CTxMemPoolEntry &entry) {
+                txs.push_back(entry.GetSharedTx());
+            });
         }
     }
     // A peer fetched them: they have been broadcast (as for getdata).
