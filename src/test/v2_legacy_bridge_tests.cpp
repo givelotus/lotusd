@@ -332,6 +332,51 @@ BOOST_AUTO_TEST_CASE(batch_admission_rejects_expired_coin) {
     BOOST_CHECK_EQUAL(BatchReason(mtx), "bad-txns-input-expired");
 }
 
+// A value that CTxOut can't hold would decode negative and serialize as zero,
+// giving the transaction the identity of its honest zero-value twin.
+BOOST_AUTO_TEST_CASE(native_output_value_above_int64_is_undecodable) {
+    CMutableTransaction mtx;
+    mtx.nVersion = 7;
+    lotus::v2::Output native;
+    native.value = 1;
+    const std::vector<uint8_t> program{0x4e};
+    native.branches = {lotus::v2::BranchLeaf(program)};
+    native.paths = {{0}};
+    CTxIn in(COutPoint(TxId(uint256S("01")), 0));
+    in.nFlags = 1;
+    in.nPathIndex = 0;
+    lotus::v2::BranchWitness witness;
+    witness.script = program;
+    in.vWitnesses = {witness};
+    mtx.vin.push_back(in);
+    mtx.vout.push_back(CTxOut::FromV2Output(native));
+
+    mtx.vout[0] = [&] {
+        native.value = 0x0102030405060708;
+        return CTxOut::FromV2Output(native);
+    }();
+    DataStream encoded{};
+    encoded << CTransaction(mtx);
+    std::vector<uint8_t> bytes(UCharCast(encoded.data()),
+                               UCharCast(encoded.data()) + encoded.size());
+    const std::array<uint8_t, 8> marker{8, 7, 6, 5, 4, 3, 2, 1};
+    const auto at =
+        std::search(bytes.begin(), bytes.end(), marker.begin(), marker.end());
+    BOOST_REQUIRE(at != bytes.end());
+
+    const auto decode = [](const std::vector<uint8_t> &data) {
+        DataStream stream{data};
+        CMutableTransaction out;
+        stream >> out;
+    };
+    BOOST_CHECK_NO_THROW(decode(bytes));
+    std::fill(at, at + 8, 0xff);
+    *(at + 7) = 0x7f;
+    BOOST_CHECK_NO_THROW(decode(bytes));
+    *(at + 7) = 0x80;
+    BOOST_CHECK_THROW(decode(bytes), std::ios_base::failure);
+}
+
 // The right pubkey with a signature by another key, or over another
 // message, fails the signature check.
 BOOST_AUTO_TEST_CASE(p2pkh_bridge_bad_signatures) {
