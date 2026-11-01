@@ -103,6 +103,45 @@ BOOST_AUTO_TEST_CASE(round_robin_keeps_per_peer_order) {
     BOOST_CHECK_EQUAL(q.GetStats().queued, 0U);
 }
 
+BOOST_AUTO_TEST_CASE(single_peer_batches_keep_the_counts) {
+    TxAdmissionQueue q{{}};
+    size_t bytes{0};
+    for (uint32_t i = 0; i < 10; ++i) {
+        auto item = Item(1, 100 + i);
+        bytes += item.tx->GetTotalSize();
+        q.Push(std::move(item));
+    }
+    const auto first = q.TakeBatch(4, std::chrono::milliseconds{0});
+    BOOST_REQUIRE_EQUAL(first.size(), 4U);
+    for (size_t i = 0; i < first.size(); ++i) {
+        BOOST_CHECK(first[i].tx->vout[0].nValue == int64_t(100 + i) * SATOSHI);
+        bytes -= first[i].tx->GetTotalSize();
+    }
+    auto stats = q.GetStats();
+    BOOST_CHECK_EQUAL(stats.queued, 6U);
+    BOOST_CHECK_EQUAL(stats.queued_bytes, bytes);
+    BOOST_CHECK_EQUAL(stats.peers, 1U);
+    BOOST_CHECK_EQUAL(stats.taken, 4U);
+
+    // A second peer arriving returns the queue to taking turns, and the first
+    // peer's order carries on from where it stopped.
+    q.Push(Item(2, 200));
+    const auto second = q.TakeBatch(3, std::chrono::milliseconds{0});
+    BOOST_REQUIRE_EQUAL(second.size(), 3U);
+    BOOST_CHECK_EQUAL(second[0].peer, 1);
+    BOOST_CHECK(second[0].tx->vout[0].nValue == 104 * SATOSHI);
+    BOOST_CHECK_EQUAL(second[1].peer, 2);
+    BOOST_CHECK_EQUAL(second[2].peer, 1);
+
+    // Draining the last peer leaves nothing behind.
+    BOOST_CHECK_EQUAL(q.TakeBatch(100, std::chrono::milliseconds{0}).size(), 4U);
+    stats = q.GetStats();
+    BOOST_CHECK_EQUAL(stats.queued, 0U);
+    BOOST_CHECK_EQUAL(stats.queued_bytes, 0U);
+    BOOST_CHECK_EQUAL(stats.peers, 0U);
+    BOOST_CHECK(q.Push(Item(3, 300)));
+}
+
 BOOST_AUTO_TEST_CASE(bounded_per_peer_total_and_bytes) {
     TxAdmissionQueue::Limits limits;
     limits.max_per_peer = 3;
