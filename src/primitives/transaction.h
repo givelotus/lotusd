@@ -391,7 +391,26 @@ public:
             s.seek(m_serialize_size);
             return;
         }
+        if (HasCachedWireBytes()) {
+            s.write(MakeByteSpan(GetCachedWireBytes()));
+            return;
+        }
         s.write(MakeByteSpan(SerializeToScratch()));
+    }
+
+    bool HasCachedWireBytes() const noexcept {
+        return m_wire_data != nullptr && m_serialize_size > 0;
+    }
+
+    /** Bytes of GetStorageSize() that only duplicate the decoded fields. */
+    size_t RetainedWireBytes() const noexcept {
+        return m_wire_data != nullptr ? m_serialize_size : 0;
+    }
+
+    Span<const uint8_t> GetCachedWireBytes() const noexcept {
+        return HasCachedWireBytes()
+                   ? Span<const uint8_t>{m_wire_data, m_serialize_size}
+                   : Span<const uint8_t>{};
     }
 
     /**
@@ -447,13 +466,14 @@ public:
     std::string ToString() const;
 
 private:
-    /** Inputs, outputs and long scripts placed in storage. */
+    /** Inputs, outputs, long scripts and wire bytes placed in storage. */
     struct Layout {
         Span<const CTxIn> vin;
         Span<const CTxOut> vout;
         uint256 hash;
         uint32_t serialize_size;
         uint32_t long_script_bytes;
+        const uint8_t *wire_data{nullptr};
         uint32_t nVersion;
         uint32_t nLockTime;
         /** Whether this object frees the storage. */
@@ -467,6 +487,7 @@ private:
     const uint256 hash;
     const uint32_t m_serialize_size;
     const uint32_t m_long_script_bytes;
+    const uint8_t *const m_wire_data{nullptr};
     /** Whether this object frees its storage, which starts at vin.data(). */
     const bool m_owns_storage;
 

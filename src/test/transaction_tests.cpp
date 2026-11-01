@@ -1377,4 +1377,55 @@ BOOST_AUTO_TEST_CASE(contiguous_streams_are_read_in_place) {
     BOOST_CHECK(scratch == sentinel);
 }
 
+BOOST_AUTO_TEST_CASE(cached_wire_bytes_match_canonical_serialization) {
+    CMutableTransaction mtx;
+    mtx.nVersion = 2;
+    mtx.vin.emplace_back(TxId(uint256::ONE), 3);
+    // Long enough to live in the storage tail rather than inside the CScript.
+    mtx.vin[0].scriptSig = CScript() << std::vector<uint8_t>(100, 0x42);
+    mtx.vout.emplace_back(50000 * SATOSHI, CScript() << OP_TRUE);
+    mtx.nLockTime = 17;
+
+    DataStream expected{};
+    expected << mtx;
+    const size_t size{expected.size()};
+    const std::vector<uint8_t> raw(UCharCast(expected.data()),
+                                   UCharCast(expected.data()) + size);
+
+    const auto check{[&](const CTransactionRef &tx) {
+        BOOST_REQUIRE(tx->HasCachedWireBytes());
+        const auto retained{tx->GetCachedWireBytes()};
+        BOOST_CHECK_EQUAL(retained.size(), size);
+        // The bytes live in the transaction's own allocation, so holding the
+        // transaction can't pin whatever buffer it was decoded from.
+        BOOST_CHECK(retained.data() != raw.data());
+        const auto *storage{reinterpret_cast<const uint8_t *>(tx->vin.data())};
+        BOOST_CHECK(retained.data() >= storage);
+        BOOST_CHECK(retained.data() + retained.size() <=
+                    storage + tx->GetStorageSize());
+
+        DataStream actual{};
+        actual << *tx;
+        BOOST_CHECK_EQUAL(HexStr(actual), HexStr(expected));
+        BOOST_CHECK_EQUAL(::GetSerializeSize(*tx), size);
+        BOOST_CHECK(std::equal(retained.begin(), retained.end(), raw.begin()));
+    }};
+
+    check(MakeTransactionRef(mtx));
+    check(MakeTransactionRef(ScanTransactionWire(raw)));
+
+    // A default-constructed transaction keeps nothing and still serializes.
+    const CTransaction empty;
+    BOOST_CHECK(!empty.HasCachedWireBytes());
+    DataStream empty_stream{};
+    empty_stream << empty;
+    BOOST_CHECK_EQUAL(empty_stream.size(), ::GetSerializeSize(empty));
+
+    // Retained bytes are real memory, so usage must count them.
+    const auto tx{MakeTransactionRef(mtx)};
+    BOOST_CHECK_GE(tx->GetStorageSize(), size);
+    BOOST_CHECK_EQUAL(tx->RetainedWireBytes(), size);
+    BOOST_CHECK_EQUAL(empty.RetainedWireBytes(), 0U);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

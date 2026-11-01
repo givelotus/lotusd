@@ -5643,7 +5643,10 @@ void PeerManagerImpl::ProcessInvalidTx(NodeId nodeid,
     }
     m_txrequest.ForgetInvId(txid);
 
-    if (maybe_add_extra_compact_tx && RecursiveDynamicUsage(*ptx) < 100000) {
+    // Retained wire bytes duplicate the fields, so they would halve the size this
+    // gate was chosen to admit.
+    if (maybe_add_extra_compact_tx &&
+        RecursiveDynamicUsage(*ptx) - ptx->RetainedWireBytes() < 100000) {
         AddToCompactExtraTransactions(ptx);
     }
 

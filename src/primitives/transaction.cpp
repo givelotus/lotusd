@@ -222,20 +222,22 @@ constexpr uint8_t NULL_TRANSACTION_WIRE[] = {2, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 /**
  * Transaction storage holds the inputs, then the outputs, then the bytes of
- * the long scripts.
+ * the long scripts, then the canonical serialized wire bytes.
  */
 struct StorageOffsets {
     size_t vout;
     size_t scripts;
+    size_t wire;
     size_t total;
 };
 StorageOffsets Offsets(size_t n_inputs, size_t n_outputs,
-                       size_t long_script_bytes) {
+                       size_t long_script_bytes, size_t wire_bytes) {
     StorageOffsets offsets;
     offsets.vout = (n_inputs * sizeof(CTxIn) + alignof(CTxOut) - 1) &
                    ~(alignof(CTxOut) - 1);
     offsets.scripts = offsets.vout + n_outputs * sizeof(CTxOut);
-    offsets.total = offsets.scripts + long_script_bytes;
+    offsets.wire = offsets.scripts + long_script_bytes;
+    offsets.total = offsets.wire + wire_bytes;
     return offsets;
 }
 static_assert(alignof(CTxIn) <= alignof(std::max_align_t) &&
@@ -346,17 +348,22 @@ TransactionWire ScanTransactionWire(Span<const uint8_t> bytes) {
 }
 
 size_t CTransaction::StorageSize(const TransactionWire &wire) {
-    return Offsets(wire.n_inputs, wire.n_outputs, wire.long_script_bytes).total;
+    return Offsets(wire.n_inputs, wire.n_outputs, wire.long_script_bytes,
+                   wire.bytes.size())
+        .total;
 }
 
 size_t CTransaction::GetStorageSize() const {
-    return Offsets(vin.size(), vout.size(), m_long_script_bytes).total;
+    return Offsets(vin.size(), vout.size(), m_long_script_bytes,
+                   m_wire_data ? m_serialize_size : 0)
+        .total;
 }
 
 CTransaction::Layout CTransaction::Place(const TransactionWire &wire,
                                          void *storage, bool owned) {
     const StorageOffsets offsets =
-        Offsets(wire.n_inputs, wire.n_outputs, wire.long_script_bytes);
+        Offsets(wire.n_inputs, wire.n_outputs, wire.long_script_bytes,
+                wire.bytes.size());
     auto *base = static_cast<std::byte *>(storage);
     auto *scripts = reinterpret_cast<uint8_t *>(base + offsets.scripts);
     size_t scripts_used = 0;
@@ -409,9 +416,13 @@ CTransaction::Layout CTransaction::Place(const TransactionWire &wire,
     layout.vout = {
         std::launder(reinterpret_cast<const CTxOut *>(base + offsets.vout)),
         wire.n_outputs};
-    // Hash now: the serialization is not kept, and a contiguous stream may
-    // release it as soon as this returns.
+    // Hash now, from the bytes this transaction keeps.
     layout.hash = HashSerialization(bytes);
+    uint8_t *wire_dst = reinterpret_cast<uint8_t *>(base + offsets.wire);
+    if (!bytes.empty()) {
+        std::memcpy(wire_dst, bytes.data(), bytes.size());
+    }
+    layout.wire_data = bytes.empty() ? nullptr : wire_dst;
     layout.serialize_size = bytes.size();
     layout.long_script_bytes = wire.long_script_bytes;
     layout.owned = owned;
@@ -434,6 +445,7 @@ CTransaction::CTransaction(const Layout &layout)
       nLockTime(layout.nLockTime), hash(layout.hash),
       m_serialize_size(layout.serialize_size),
       m_long_script_bytes(layout.long_script_bytes),
+      m_wire_data(layout.wire_data),
       m_owns_storage(layout.owned) {}
 
 /**
@@ -443,7 +455,7 @@ CTransaction::CTransaction(const Layout &layout)
 CTransaction::CTransaction()
     : vin(), vout(), nVersion(CTransaction::CURRENT_VERSION), nLockTime(0),
       hash(), m_serialize_size(sizeof(NULL_TRANSACTION_WIRE)),
-      m_long_script_bytes(0), m_owns_storage(false) {}
+      m_long_script_bytes(0), m_wire_data(nullptr), m_owns_storage(false) {}
 
 CTransaction::CTransaction(const CMutableTransaction &tx)
     : CTransaction(OwnedLayout(SerializeWire(tx, TransactionScratchBuffer()))) {
