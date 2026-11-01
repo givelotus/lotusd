@@ -188,8 +188,32 @@ class MerkleBlockTest(BitcoinTestFramework):
         for n in self.nodes:
             assert not n.verifytxoutproof(ToHex(tweaked_proof))
 
-        # TODO: try more variants, eg transactions at different depths, and
-        # verify that the proofs are invalid
+        # Native 1-transaction (coinbase-only) block round-trip and forgery checks:
+        cb_blockhash = self.generate(self.nodes[0], 1)[0]
+        self.sync_blocks()
+        cb_block = self.nodes[0].getblock(cb_blockhash, True)
+        assert_equal(len(cb_block["tx"]), 1)
+        cb_txid = cb_block["tx"][0]
+
+        cb_proof = self.nodes[0].gettxoutproof([cb_txid], cb_blockhash)
+        for n in self.nodes:
+            assert_equal(n.verifytxoutproof(cb_proof), [cb_txid])
+
+        # Forgery 1: real 1-tx header and nTransactions=1, but arbitrary fake leaf txid
+        forged_cb_fake_id = FromHex(CMerkleBlock(), cb_proof)
+        forged_cb_fake_id.txn.nTransactions = 1
+        forged_cb_fake_id.txn.vHash = [int(txid1, 16)]
+        forged_cb_fake_id.txn.vBits = [True] + [False] * 7
+        for n in self.nodes:
+            assert_equal(n.verifytxoutproof(ToHex(forged_cb_fake_id)), [])
+
+        # Forgery 2: real 1-tx header and nTransactions=1, with leaf set to native header.hashMerkleRoot
+        forged_cb_root_leaf = FromHex(CMerkleBlock(), cb_proof)
+        forged_cb_root_leaf.txn.nTransactions = 1
+        forged_cb_root_leaf.txn.vHash = [forged_cb_root_leaf.header.hashMerkleRoot]
+        forged_cb_root_leaf.txn.vBits = [True] + [False] * 7
+        for n in self.nodes:
+            assert_equal(n.verifytxoutproof(ToHex(forged_cb_root_leaf)), [])
 
 
 if __name__ == "__main__":

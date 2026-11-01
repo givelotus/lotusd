@@ -185,4 +185,21 @@ private:
                  const std::set<TxId> *txids);
 };
 
+enum class MerkleBlockVerifyResult {
+    VALID,
+    INVALID_PROOF,
+    CORRUPT_BLOCK,
+};
+
+/**
+ * Authenticate a CBlock body against the expected indexed header and block hash
+ * (including native BlockMerkleRoot commitment and mutation check), then verify
+ * a CMerkleBlock partial tree against that authenticated block's legacy txid
+ * Merkle root and transaction positions.
+ */
+MerkleBlockVerifyResult VerifyMerkleBlockAgainstAuthenticatedBlock(
+    CMerkleBlock &merkle_block, const CBlock &block,
+    const BlockHash &expected_block_hash, const CBlockHeader &expected_header,
+    uint32_t expected_num_txs, std::vector<uint256> &matched_out);
+
 #endif // BITCOIN_MERKLEBLOCK_H
