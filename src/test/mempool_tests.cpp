@@ -1900,4 +1900,56 @@ BOOST_FIXTURE_TEST_CASE(relay_watermark_and_removal_sequence, TestingSetup) {
     BOOST_CHECK_GT(pool.GetRemovalSequence(), first_sequence + 1);
 }
 
+BOOST_AUTO_TEST_CASE(limit_size_acts_only_when_there_is_something_to_do) {
+    CTxMemPool &pool{*Assert(m_node.mempool)};
+    LOCK2(cs_main, pool.cs);
+    Assert(pool.size() == 0);
+    CCoinsViewCache &coins{m_node.chainman->ActiveChainstate().CoinsTip()};
+    TestMemPoolEntryHelper entry;
+
+    const auto make_tx = [](int n) {
+        CMutableTransaction tx;
+        tx.vin.resize(1);
+        tx.vin[0].scriptSig = CScript() << OP_1;
+        tx.vin[0].prevout = COutPoint(TxId{ArithToUint256(n)}, 0);
+        tx.vout.resize(1);
+        tx.vout[0].scriptPubKey = CScript() << OP_1 << OP_EQUAL;
+        tx.vout[0].nValue = 1 * COIN;
+        return MakeTransactionRef(tx);
+    };
+
+    // Nothing is expired and the pool is under its limit: no change.
+    const int64_t now{GetTime()};
+    pool.addUnchecked(entry.Time(now).FromTx(make_tx(1)));
+    pool.LimitSize(coins);
+    BOOST_CHECK_EQUAL(pool.size(), 1U);
+    BOOST_CHECK_EQUAL(pool.Expire(std::chrono::seconds{now}), 0);
+    BOOST_CHECK_EQUAL(pool.size(), 1U);
+
+    // An expired entry goes, though the pool is under its limit.
+    const auto expiry{std::chrono::duration_cast<std::chrono::seconds>(
+        pool.m_opts.expiry)};
+    const CTransactionRef old_tx{make_tx(2)};
+    pool.addUnchecked(entry.Time(now - expiry.count() - 1).FromTx(old_tx));
+    BOOST_CHECK_EQUAL(pool.size(), 2U);
+    pool.LimitSize(coins);
+    BOOST_CHECK_EQUAL(pool.size(), 1U);
+    BOOST_CHECK(!pool.exists(old_tx->GetId()));
+
+    // Over the limit with nothing expired: trimmed.
+    pool.TrimToSize(pool.DynamicMemoryUsageLocked());
+    BOOST_CHECK_EQUAL(pool.size(), 1U);
+    pool.TrimToSize(0);
+    BOOST_CHECK_EQUAL(pool.size(), 0U);
+
+    // A fee delta is still applied once there is one.
+    const CTransactionRef prioritised{make_tx(3)};
+    pool.PrioritiseTransaction(prioritised->GetId(), 7 * SATOSHI);
+    pool.addUnchecked(entry.Fee(100 * SATOSHI).Time(now).FromTx(prioritised));
+    BOOST_CHECK_EQUAL(
+        pool.info(prioritised->GetId()).nFeeDelta, 7 * SATOSHI);
+    pool.ClearPrioritisation(prioritised->GetId());
+    pool.removeRecursive(*prioritised, MemPoolRemovalReason::MANUAL);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

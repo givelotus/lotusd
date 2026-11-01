@@ -173,7 +173,7 @@ CTxMemPool::txiter CTxMemPool::addUnchecked(
     entry->SetEntryId(nextEntryId++);
 
     // Update transaction for any feeDelta created by PrioritiseTransaction
-    {
+    if (!mapDeltas.empty()) {
         Amount feeDelta = Amount::zero();
         ApplyDelta(entry->GetTx().GetId(), feeDelta);
         // The following call to UpdateModifiedFee assumes no previous fee
@@ -1056,6 +1056,9 @@ void CTxMemPool::PrioritiseTransaction(const TxId &txid,
 
 void CTxMemPool::ApplyDelta(const TxId &txid, Amount &nFeeDelta) const {
     AssertLockHeld(cs);
+    if (mapDeltas.empty()) {
+        return;
+    }
     std::map<TxId, Amount>::const_iterator pos = mapDeltas.find(txid);
     if (pos == mapDeltas.end()) {
         return;
@@ -1147,8 +1150,8 @@ void CCoinsViewMemPool::Reset() {
     m_non_base_coins.clear();
 }
 
-size_t CTxMemPool::DynamicMemoryUsage() const {
-    LOCK(cs);
+size_t CTxMemPool::DynamicMemoryUsageLocked() const {
+    AssertLockHeld(cs);
     // Node and bucket storage belongs to the allocator's retained chunks;
     // count it even when most slots are free. Entries are separate objects.
     return mapTx.get_allocator().resource()->TotalAllocatedBytes() +
@@ -1157,11 +1160,16 @@ size_t CTxMemPool::DynamicMemoryUsage() const {
            memusage::DynamicUsage(mapDeltas) + cachedInnerUsage;
 }
 
+size_t CTxMemPool::DynamicMemoryUsage() const {
+    LOCK(cs);
+    return DynamicMemoryUsageLocked();
+}
+
 bool CTxMemPool::CanFitRawTxBatch(
     const std::vector<const CTxMemPoolEntry *> &entries) const {
     AssertLockHeld(cs);
     const size_t memory_limit = static_cast<size_t>(std::max<int64_t>(0, m_opts.max_size_bytes));
-    size_t usage = DynamicMemoryUsage();
+    size_t usage = DynamicMemoryUsageLocked();
     const size_t entry_overhead = memusage::MallocUsage(sizeof(CTxMemPoolEntry));
     const size_t initial_usage = usage;
     size_t staged_nodes = 0;
@@ -1292,9 +1300,12 @@ void CTxMemPool::RemoveStaged(const setEntries &stage,
 
 int CTxMemPool::Expire(std::chrono::seconds time) {
     AssertLockHeld(cs);
-    ScopedSnapshotDefer snapshot_defer(*this);
     indexed_transaction_set::index<entry_time>::type::iterator it =
         mapTx.get<entry_time>().begin();
+    if (it == mapTx.get<entry_time>().end() || (*it)->GetTime() >= time) {
+        return 0;
+    }
+    ScopedSnapshotDefer snapshot_defer(*this);
     setEntries toremove;
     size_t skippedFinalizedTxs{0};
     while (it != mapTx.get<entry_time>().end() && (*it)->GetTime() < time) {
@@ -1325,8 +1336,17 @@ int CTxMemPool::Expire(std::chrono::seconds time) {
 void CTxMemPool::LimitSize(CCoinsViewCache &coins_cache) {
     AssertLockHeld(::cs_main);
     AssertLockHeld(cs);
+    const auto expire_before = GetTime<std::chrono::seconds>() - m_opts.expiry;
+    const auto &by_time = mapTx.get<entry_time>();
+    const bool has_expired{!by_time.empty() &&
+                           (*by_time.begin())->GetTime() < expire_before};
+    if (!has_expired &&
+        DynamicMemoryUsageLocked() <=
+            static_cast<size_t>(std::max<int64_t>(0, m_opts.max_size_bytes))) {
+        return;
+    }
     ScopedSnapshotDefer snapshot_defer(*this);
-    int expired = Expire(GetTime<std::chrono::seconds>() - m_opts.expiry);
+    int expired = Expire(expire_before);
     if (expired != 0) {
         LogDebug(BCLog::MEMPOOL,
                  "Expired %i transactions from the memory pool\n", expired);
@@ -1405,12 +1425,15 @@ void CTxMemPool::trackPackageRemoved(const CFeeRate &rate) {
 void CTxMemPool::TrimToSize(size_t sizelimit,
                             std::vector<COutPoint> *pvNoSpendsRemaining) {
     AssertLockHeld(cs);
+    if (mapTx.empty() || DynamicMemoryUsageLocked() <= sizelimit) {
+        return;
+    }
     ScopedSnapshotDefer snapshot_defer(*this);
 
     unsigned nTxnRemoved = 0;
     size_t finalizedTxsSkipped = 0;
     CFeeRate maxFeeRateRemoved(Amount::zero());
-    while (!mapTx.empty() && DynamicMemoryUsage() > sizelimit) {
+    while (!mapTx.empty() && DynamicMemoryUsageLocked() > sizelimit) {
         auto &by_modified_feerate = mapTx.get<modified_feerate>();
         // Lowest fee first
         auto rit = by_modified_feerate.rbegin();
