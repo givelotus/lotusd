@@ -2421,4 +2421,42 @@ BOOST_AUTO_TEST_CASE(v2_legacy_state_output) {
                 std::vector<uint8_t>(wire.begin(), wire.end()));
 }
 
+BOOST_AUTO_TEST_CASE(native_transaction_retains_its_exact_wire_bytes) {
+    CMutableTransaction mtx;
+    mtx.nVersion = 7;
+    mtx.vin.emplace_back(TxId(uint256::ONE), 0);
+    mtx.vin[0].nFlags = 1;
+    lotus::v2::BranchWitness witness;
+    witness.script = {0x4e};
+    witness.arguments = {{0x01, 0x02, 0x03}};
+    mtx.vin[0].vWitnesses = {witness};
+    lotus::v2::Output out;
+    out.value = 50000;
+    out.branches = {lotus::v2::BranchLeaf(std::vector<uint8_t>{0x4e})};
+    out.paths = {{0}};
+    mtx.vout.push_back(CTxOut::FromV2Output(out));
+
+    DataStream expected{};
+    expected << mtx;
+    const std::vector<uint8_t> raw(UCharCast(expected.data()),
+                                   UCharCast(expected.data()) + expected.size());
+
+    const auto check{[&](const CTransactionRef &tx) {
+        BOOST_REQUIRE(tx->HasCachedWireBytes());
+        const auto retained{tx->GetCachedWireBytes()};
+        BOOST_CHECK(std::equal(retained.begin(), retained.end(), raw.begin(),
+                               raw.end()));
+        DataStream actual{};
+        actual << *tx;
+        BOOST_CHECK_EQUAL(HexStr(actual), HexStr(expected));
+        BOOST_CHECK_EQUAL(::GetSerializeSize(*tx), raw.size());
+        // Native heap fields stay separate, so usage counts them and the wire.
+        BOOST_CHECK_GE(RecursiveDynamicUsage(*tx), tx->GetStorageSize());
+        BOOST_CHECK_EQUAL(tx->RetainedWireBytes(), raw.size());
+    }};
+    check(MakeTransactionRef(mtx));
+    CMutableTransaction scanned;
+    check(MakeTransactionRef(ScanTransactionWire(raw, &scanned)));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
