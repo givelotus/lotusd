@@ -757,7 +757,9 @@ size_t EffectiveBatchThreads(size_t total_items, size_t requested_threads) {
 } // namespace
 
 bool BatchSigCollector::Add(std::span<const uint8_t> pubkey,
-                            std::span<const uint8_t> sig, const Hash &msg) {
+                            std::span<const uint8_t> sig, const Hash &msg,
+                            const uint8_t *cache_entry32,
+                            bool store_in_cache) {
     if (pubkey.size() != 32 || sig.size() < 64) return false;
     secp256k1_xonly_pubkey parsed;
     if (!secp256k1_xonly_pubkey_parse(secp256k1_context_static, &parsed,
@@ -769,6 +771,10 @@ bool BatchSigCollector::Add(std::span<const uint8_t> pubkey,
     std::memcpy(item.parsed_pubkey.data(), parsed.data, 64);
     std::memcpy(item.sig.data(), sig.data(), 64);
     item.msg = msg;
+    if (store_in_cache && cache_entry32 != nullptr) {
+        std::memcpy(item.cache_entry.data(), cache_entry32, 32);
+        item.store_in_cache = true;
+    }
     items_.push_back(item);
     return true;
 }

@@ -145,6 +145,8 @@ struct BatchSigItem {
     std::array<uint8_t, 64> parsed_pubkey{};
     std::array<uint8_t, 64> sig{};
     Hash msg{};
+    std::array<uint8_t, 32> cache_entry{};
+    bool store_in_cache{false};
 };
 
 struct LegacyBatchSigItem {
@@ -169,7 +171,8 @@ public:
     // the tuple for deferred batch verification. Returns false if `pubkey` or
     // `sig` encoding is invalid.
     bool Add(std::span<const uint8_t> pubkey, std::span<const uint8_t> sig,
-             const Hash &msg);
+             const Hash &msg, const uint8_t *cache_entry32 = nullptr,
+             bool store_in_cache = false);
 
     // Validates that `pubkey` is a valid 33/65-byte secp256k1 public key and
     // `sig64` is 64 bytes, then records the tuple for deferred legacy Schnorr
