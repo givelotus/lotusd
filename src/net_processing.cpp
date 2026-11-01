@@ -89,6 +89,10 @@
 static constexpr auto UNCONDITIONAL_RELAY_DELAY = 2min;
 /** Most transactions the admission thread takes into one staged batch. */
 static constexpr size_t TX_ADMISSION_MAX_BATCH{256};
+/**
+ * Longest SendMessages defers a peer's block sync checks because cs_main is busy.
+ */
+static constexpr auto MAX_BLOCK_SYNC_DEFERRAL{1s};
 /** How long the idle admission thread waits before checking for shutdown. */
 static constexpr auto TX_ADMISSION_IDLE_WAIT{100ms};
 /**
@@ -716,6 +720,16 @@ struct Peer {
     /** Whether we've sent our peer a sendheaders message. **/
     std::atomic<bool> m_sent_sendheaders{false};
 
+    /** Whether we consider this a preferred download peer. */
+    std::atomic<bool> m_preferred_download{false};
+
+    /** Whether we've started headers synchronization with this peer. */
+    std::atomic<bool> m_sync_started{false};
+
+    /** When SendMessages last ran the block sync checks for this peer. */
+    SteadyClock::time_point m_last_block_sync_pass
+        GUARDED_BY(NetEventsInterface::g_msgproc_mutex){};
+
     /** When to potentially disconnect peer for stalling headers download */
     std::chrono::microseconds m_headers_sync_timeout
         GUARDED_BY(NetEventsInterface::g_msgproc_mutex){0us};
@@ -866,14 +880,14 @@ public:
     void BlockConnected(ChainstateRole role,
                         const std::shared_ptr<const CBlock> &pblock,
                         const CBlockIndex *pindexConnected) override
-        EXCLUSIVE_LOCKS_REQUIRED(!m_recent_confirmed_transactions_mutex);
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_txrequest, !m_recent_confirmed_transactions_mutex);
     void BlockDisconnected(const std::shared_ptr<const CBlock> &block,
                            const CBlockIndex *pindex) override
         EXCLUSIVE_LOCKS_REQUIRED(!m_recent_confirmed_transactions_mutex);
     void UpdatedBlockTip(const CBlockIndex *pindexNew,
                          const CBlockIndex *pindexFork,
                          bool fInitialDownload) override
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
+        EXCLUSIVE_LOCKS_REQUIRED(!m_recent_rejects_mutex, !m_peer_mutex);
     void TransactionAddedToMempool(const CTransactionRef &tx,
                                    std::shared_ptr<const std::vector<Coin>>,
                                    uint64_t) override {
@@ -917,13 +931,15 @@ public:
     RelayReconSet(const uint256 &context_id) const override;
     void AddRelayShortIdAnnouncements(
         const CNode &node, const uint256 &epoch_id,
-        const std::vector<uint64_t> &short_ids) override {
+        const std::vector<uint64_t> &short_ids) override
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_txrequest, !m_peer_mutex) {
         const auto now{GetTime<std::chrono::microseconds>()};
-        LOCK(cs_main);
+        const bool preferred = isPreferredDownloadPeer(node);
+        LOCK(cs_txrequest);
         for (const uint64_t short_id : short_ids) {
             AddTxAnnouncement(
                 node, TxId{txrelay::ShortIdRequestKey(epoch_id, short_id)}, now,
-                SHORTID_REQUEST_PARAMS);
+                SHORTID_REQUEST_PARAMS, preferred);
         }
     }
     bool HaveRelayShortId(const uint256 &context_id,
@@ -935,10 +951,10 @@ public:
         NodeId peer_id, const uint256 &epoch_id,
         std::span<const CTransactionRef> txs,
         bool allow_unsolicited) override
-        EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !m_peer_mutex);
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_txrequest, g_msgproc_mutex, !m_peer_mutex);
     void ProcessShortTxResponse(CNode &node,
                                 std::span<const CTransactionRef> txs) override
-        EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !m_peer_mutex,
+        EXCLUSIVE_LOCKS_REQUIRED(!m_recent_rejects_mutex, !cs_txrequest, g_msgproc_mutex, !m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex);
     void BlockChecked(const CBlock &block,
                       const BlockValidationState &state) override
@@ -950,22 +966,22 @@ public:
     /** Implement NetEventsInterface */
     void InitializeNode(const Config &config, CNode &node,
                         ServiceFlags our_services) override
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_txrequest, !m_peer_mutex);
     void FinalizeNode(const Config &config, const CNode &node) override
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, !cs_proofrequest,
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_txrequest, !m_peer_mutex, !cs_proofrequest,
                                  !m_headers_presync_mutex);
     void PrepareMessageTurn(Span<CNode *const> nodes,
                             const std::atomic<bool> &interrupt) override
         EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex);
     bool ProcessMessages(const Config &config, CNode *pfrom,
                          std::atomic<bool> &interrupt) override
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
+        EXCLUSIVE_LOCKS_REQUIRED(!m_recent_rejects_mutex, !cs_txrequest, !m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
                                  !m_most_recent_block_mutex, !cs_proofrequest,
                                  !m_headers_presync_mutex,
                                  !m_tx_admission_done_mutex, g_msgproc_mutex);
     bool SendMessages(const Config &config, CNode *pto) override
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
+        EXCLUSIVE_LOCKS_REQUIRED(!m_recent_rejects_mutex, !cs_txrequest, !m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
                                  !m_most_recent_block_mutex, !cs_proofrequest,
                                  g_msgproc_mutex);
@@ -974,10 +990,10 @@ public:
         return &m_v2_protocol_handler;
     }
     void MarkPeerKnownTx(NodeId peer_id, const TxId &txid) override
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_txrequest, !m_peer_mutex);
     void MarkPeerKnownTxBatch(NodeId peer_id,
                               std::span<const CTransactionRef> txs) override
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_txrequest, !m_peer_mutex);
 
     /** Implement PeerManager */
     void StartScheduledTasks(CScheduler &scheduler) override;
@@ -1029,7 +1045,7 @@ public:
                         const std::string &msg_type, DataStream &vRecv,
                         const std::chrono::microseconds time_received,
                         const std::atomic<bool> &interruptMsgProc) override
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
+        EXCLUSIVE_LOCKS_REQUIRED(!m_recent_rejects_mutex, !cs_txrequest, !m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
                                  !m_most_recent_block_mutex, !cs_proofrequest,
                                  !m_headers_presync_mutex, g_msgproc_mutex);
@@ -1143,7 +1159,7 @@ private:
     void ProcessInvalidTx(NodeId nodeid, const CTransactionRef &tx,
                           const TxValidationState &result,
                           bool maybe_add_extra_compact_tx)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, g_msgproc_mutex, cs_main);
+        EXCLUSIVE_LOCKS_REQUIRED(!m_recent_rejects_mutex, !cs_txrequest, !m_peer_mutex, g_msgproc_mutex, cs_main);
 
     struct PackageToValidate {
         const Package m_txns;
@@ -1170,7 +1186,7 @@ private:
      */
     void ProcessPackageResult(const PackageToValidate &package_to_validate,
                               const PackageMempoolAcceptResult &package_result)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, g_msgproc_mutex, cs_main);
+        EXCLUSIVE_LOCKS_REQUIRED(!m_recent_rejects_mutex, !cs_txrequest, !m_peer_mutex, g_msgproc_mutex, cs_main);
 
     /**
      * Look for a child of this transaction in the orphanage to form a
@@ -1180,7 +1196,8 @@ private:
      */
     std::optional<PackageToValidate> Find1P1CPackage(const CTransactionRef &ptx,
                                                      NodeId nodeid)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, g_msgproc_mutex, cs_main);
+        EXCLUSIVE_LOCKS_REQUIRED(!m_recent_rejects_mutex, !m_peer_mutex,
+                                 g_msgproc_mutex, cs_main);
 
     /**
      * Handle a transaction whose result was
@@ -1189,13 +1206,13 @@ private:
      */
     void ProcessValidTx(NodeId nodeid, const CTransactionRef &tx,
                         std::vector<CTransactionRef> *relay_batch = nullptr)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, g_msgproc_mutex, cs_main);
+        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, g_msgproc_mutex, !cs_txrequest);
 
     void ProcessSingleTx(CNode &pfrom, Peer &peer, const CTransactionRef &ptx,
                          const PrecomputedAdmissionChecks *precomputed = nullptr,
                          bool measure_lock = true,
                          std::vector<CTransactionRef> *relay_batch = nullptr)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
+        EXCLUSIVE_LOCKS_REQUIRED(!m_recent_rejects_mutex, !cs_txrequest, !m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
                                  g_msgproc_mutex);
 
@@ -1282,9 +1299,9 @@ private:
     bool QueueTxForAdmission(CNode &pfrom, const PeerRef &peer,
                              const CTransactionRef &ptx, bool count_full,
                              bool notify = true)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
+        EXCLUSIVE_LOCKS_REQUIRED(!m_recent_rejects_mutex, !cs_txrequest, !m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
-                                 g_msgproc_mutex, cs_main);
+                                 g_msgproc_mutex);
     /** Handle verdicts from the admission thread. Returns whether any. */
     bool ProcessTxAdmissionDone()
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
@@ -1297,9 +1314,9 @@ private:
      * should be submitted to the mempool.
      */
     bool PrepareTxAdmission(CNode &pfrom, const CTransactionRef &ptx)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
+        EXCLUSIVE_LOCKS_REQUIRED(!m_recent_rejects_mutex, !cs_txrequest, !m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
-                                 g_msgproc_mutex, cs_main);
+                                 g_msgproc_mutex);
     /**
      * The part of handling a received transaction that comes after mempool
      * admission: relay, orphans, reject filters, conflicting pool, package
@@ -1308,12 +1325,12 @@ private:
     void FinishTxAdmission(CNode &pfrom, Peer &peer, const CTransactionRef &ptx,
                            const MempoolAcceptResult &result,
                            std::vector<CTransactionRef> *relay_batch = nullptr)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
+        EXCLUSIVE_LOCKS_REQUIRED(!m_recent_rejects_mutex, !cs_txrequest, !m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
                                  g_msgproc_mutex, cs_main);
     void ProcessTxBatch(CNode &pfrom, Peer &peer,
                         const std::vector<CTransactionRef> &ptxs)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_txrequest, !m_recent_rejects_mutex, !m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
                                  g_msgproc_mutex);
     struct PreverifiedAvaSignature {
@@ -1328,7 +1345,7 @@ private:
     void ProcessAvaResponseBatch(const Config &config, CNode &pfrom, Peer &peer,
                                  std::vector<CNetMessage> &ava_batch,
                                  const std::atomic<bool> &interruptMsgProc)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
+        EXCLUSIVE_LOCKS_REQUIRED(!m_recent_rejects_mutex, !cs_txrequest, !m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
                                  !m_most_recent_block_mutex, !cs_proofrequest,
                                  !m_headers_presync_mutex, g_msgproc_mutex);
@@ -1349,7 +1366,7 @@ private:
      *                     this peer will be empty.
      */
     bool ProcessOrphanTx(const Config &config, Peer &peer)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, g_msgproc_mutex);
+        EXCLUSIVE_LOCKS_REQUIRED(!m_recent_rejects_mutex, !cs_txrequest, !m_peer_mutex, g_msgproc_mutex);
 
     /**
      * Process a single headers message from a peer.
@@ -1468,13 +1485,16 @@ private:
      */
     void AddTxAnnouncement(const CNode &node, const TxId &txid,
                            std::chrono::microseconds current_time)
-        EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
-        AddTxAnnouncement(node, txid, current_time, TX_REQUEST_PARAMS);
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_txrequest, !m_peer_mutex) {
+        const bool preferred = isPreferredDownloadPeer(node);
+        LOCK(cs_txrequest);
+        AddTxAnnouncement(node, txid, current_time, TX_REQUEST_PARAMS,
+                          preferred);
     }
     void AddTxAnnouncement(const CNode &node, const TxId &txid,
                            std::chrono::microseconds current_time,
-                           const DataRequestParameters &params)
-        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+                           const DataRequestParameters &params, bool preferred)
+        EXCLUSIVE_LOCKS_REQUIRED(cs_txrequest);
 
     /**
      * Register with InvRequestTracker that a PROOF INV has been received from a
@@ -1554,7 +1574,11 @@ private:
     ChainstateManager &m_chainman;
     CTxMemPool &m_mempool;
     avalanche::Processor *const m_avalanche;
-    InvRequestTracker<TxId> m_txrequest GUARDED_BY(::cs_main);
+    Mutex cs_txrequest;
+    InvRequestTracker<TxId> m_txrequest GUARDED_BY(cs_txrequest);
+    size_t TxRequestSize() const noexcept NO_THREAD_SAFETY_ANALYSIS {
+        return m_txrequest.Size();
+    }
 
     Mutex cs_proofrequest;
     InvRequestTracker<avalanche::ProofId>
@@ -1648,8 +1672,7 @@ private:
     uint64_t ShortIdFor(const Peer &peer, const TxId &txid,
                         const txrelay::EpochKey &epoch) const;
     /** Forget short-id requests that this transaction fulfils */
-    void ForgetShortIdRequests(const TxId &txid)
-        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+    void ForgetShortIdRequests(const TxId &txid) EXCLUSIVE_LOCKS_REQUIRED(!cs_txrequest);
 
     /**
      * Transactions waiting for the next relay tick. Appending is O(1) per
@@ -1665,7 +1688,7 @@ private:
     // GlobalMutex: taken from many call paths without lock annotations.
     GlobalMutex m_relay_queue_mutex;
     std::vector<RelayQueueEntry> m_relay_queue GUARDED_BY(m_relay_queue_mutex);
-    std::chrono::microseconds m_next_relay_drain GUARDED_BY(g_msgproc_mutex){0};
+    std::atomic<std::chrono::microseconds> m_next_relay_drain{0us};
     uint64_t m_relay_admission_cursor GUARDED_BY(g_msgproc_mutex){0};
     uint64_t m_relay_last_removal_seq GUARDED_BY(g_msgproc_mutex){0};
     RelayInventoryWork m_relay_inventory_work GUARDED_BY(g_msgproc_mutex);
@@ -1737,12 +1760,21 @@ private:
      *  - m_recent_rejects_package_reconsiderable (if
      *    include_reconsiderable = true)
      *  - m_recent_confirmed_transactions
-     * Also responsible for resetting m_recent_rejects and
-     * m_recent_rejects_package_reconsiderable if the chain tip has changed.
+     * Takes no cs_main: the admission thread calls this holding it, and the
+     * message thread without it, with m_recent_rejects_mutex in between.
      *  */
     bool AlreadyHaveTx(const TxId &txid, bool include_reconsiderable)
-        EXCLUSIVE_LOCKS_REQUIRED(cs_main,
-                                 !m_recent_confirmed_transactions_mutex);
+        EXCLUSIVE_LOCKS_REQUIRED(!m_recent_confirmed_transactions_mutex,
+                                 !m_recent_rejects_mutex, !cs_txrequest);
+
+    /**
+     * Guards the rejects filters, which UpdatedBlockTip resets. Nothing is
+     * acquired while holding this. In particular not cs_main: the admission
+     * thread takes this under cs_main.
+     */
+    mutable Mutex m_recent_rejects_mutex;
+    std::atomic<bool> m_has_recent_rejects{false};
+    std::atomic<bool> m_has_recent_rejects_reconsiderable{false};
 
     /**
      * Filter for transactions that were recently rejected by the mempool.
@@ -1763,14 +1795,8 @@ private:
      *
      * Memory used: 1.3 MB
      */
-    CRollingBloomFilter m_recent_rejects GUARDED_BY(::cs_main){120'000,
-                                                               0.000'001};
-
-    /**
-     * Block hash of chain tip the last time we reset m_recent_rejects and
-     * m_recent_rejects_package_reconsiderable.
-     */
-    BlockHash hashRecentRejectsChainTip GUARDED_BY(cs_main);
+    CRollingBloomFilter m_recent_rejects GUARDED_BY(m_recent_rejects_mutex){
+        120'000, 0.000'001};
 
     /**
      * Filter for:
@@ -1798,7 +1824,7 @@ private:
      * rationale.
      */
     CRollingBloomFilter m_recent_rejects_package_reconsiderable
-        GUARDED_BY(::cs_main){120'000, 0.000'001};
+        GUARDED_BY(m_recent_rejects_mutex){120'000, 0.000'001};
 
     /**
      * Filter for transactions that have been recently confirmed.
@@ -1806,6 +1832,7 @@ private:
      * confirmed.
      */
     mutable Mutex m_recent_confirmed_transactions_mutex;
+    std::atomic<bool> m_has_recent_confirmed_transactions{false};
     CRollingBloomFilter m_recent_confirmed_transactions
         GUARDED_BY(m_recent_confirmed_transactions_mutex){24'000, 0.000'001};
 
@@ -2124,7 +2151,7 @@ private:
      */
     uint32_t GetAvalancheVoteForTx(const avalanche::Processor &avalanche,
                                    const TxId &id) const
-        EXCLUSIVE_LOCKS_REQUIRED(!m_mempool.cs,
+        EXCLUSIVE_LOCKS_REQUIRED(!m_recent_rejects_mutex, !m_mempool.cs,
                                  !m_recent_confirmed_transactions_mutex);
 
     /**
@@ -2157,7 +2184,8 @@ private:
                                             const std::chrono::seconds now)
         EXCLUSIVE_LOCKS_REQUIRED(NetEventsInterface::g_msgproc_mutex);
 
-    bool isPreferredDownloadPeer(const CNode &pfrom);
+    bool isPreferredDownloadPeer(const CNode &pfrom)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
 };
 
 const CNodeState *PeerManagerImpl::State(NodeId pnode) const
@@ -2225,9 +2253,8 @@ static void AddKnownProof(Peer &peer, const avalanche::ProofId &proofid) {
 }
 
 bool PeerManagerImpl::isPreferredDownloadPeer(const CNode &pfrom) {
-    LOCK(cs_main);
-    const CNodeState *state = State(pfrom.GetId());
-    return state && state->fPreferredDownload;
+    PeerRef peer = GetPeerRef(pfrom.GetId());
+    return peer && peer->m_preferred_download.load(std::memory_order_relaxed);
 }
 /** Whether this peer can serve us blocks. */
 static bool CanServeBlocks(const Peer &peer) {
@@ -2762,15 +2789,14 @@ void PeerManagerImpl::PushNodeVersion(const Config &config, CNode &pnode,
 
 void PeerManagerImpl::AddTxAnnouncement(const CNode &node, const TxId &txid,
                                         std::chrono::microseconds current_time,
-                                        const DataRequestParameters &params) {
-    // For m_txrequest and state
-    AssertLockHeld(::cs_main);
+                                        const DataRequestParameters &params,
+                                        bool preferred) {
+    AssertLockHeld(cs_txrequest);
 
     if (TooManyAnnouncements(node, m_txrequest, params)) {
         return;
     }
 
-    const bool preferred = isPreferredDownloadPeer(node);
     auto reqtime =
         ComputeRequestTime(node, m_txrequest, params, current_time, preferred);
 
@@ -2812,8 +2838,8 @@ void PeerManagerImpl::InitializeNode(const Config &config, CNode &node,
                                    std::piecewise_construct,
                                    std::forward_as_tuple(nodeid),
                                    std::forward_as_tuple(node.IsInboundConn()));
-        assert(m_txrequest.Count(nodeid) == 0);
     }
+    WITH_LOCK(cs_txrequest, assert(m_txrequest.Count(nodeid) == 0));
 
     if (NetPermissions::HasFlag(node.m_permission_flags,
                                 NetPermissionFlags::BloomFilter)) {
@@ -3028,7 +3054,7 @@ void PeerManagerImpl::FinalizeNode(const Config &config, const CNode &node) {
         m_mempool.withOrphanage([nodeid](TxOrphanage &orphanage) {
             orphanage.EraseForPeer(nodeid);
         });
-        m_txrequest.DisconnectedPeer(nodeid);
+        WITH_LOCK(cs_txrequest, m_txrequest.DisconnectedPeer(nodeid));
         m_num_preferred_download_peers -= state->fPreferredDownload;
         m_peers_downloading_from -= (!state->vBlocksInFlight.empty());
         assert(m_peers_downloading_from >= 0);
@@ -3044,7 +3070,7 @@ void PeerManagerImpl::FinalizeNode(const Config &config, const CNode &node) {
             assert(m_num_preferred_download_peers == 0);
             assert(m_peers_downloading_from == 0);
             assert(m_outbound_peers_with_protect_from_disconnect == 0);
-            assert(m_txrequest.Size() == 0);
+            WITH_LOCK(cs_txrequest, assert(m_txrequest.Size() == 0));
             assert(m_mempool.withOrphanage([](const TxOrphanage &orphanage) {
                 return orphanage.Size();
             }) == 0);
@@ -3475,7 +3501,6 @@ bool PeerManagerImpl::QueueTxForAdmission(CNode &pfrom, const PeerRef &peer,
                                           const CTransactionRef &ptx,
                                           bool count_full, bool notify) {
     AssertLockHeld(g_msgproc_mutex);
-    AssertLockHeld(cs_main);
     const TxId &txid = ptx->GetId();
     if (m_tx_admission_inflight.count(txid)) {
         return false;
@@ -3529,43 +3554,69 @@ bool PeerManagerImpl::ProcessTxAdmissionDone() {
     }
     std::vector<CTransactionRef> relay_batch;
     relay_batch.reserve(done.size());
-    {
+    bool any_needs_cs_main = false;
+    for (const TxAdmissionDone &d : done) {
+        if (d.kind == TxAdmissionDone::Kind::REPLAY ||
+            (d.kind == TxAdmissionDone::Kind::RESULT &&
+             d.result->m_result_type != MempoolAcceptResult::ResultType::VALID)) {
+            any_needs_cs_main = true;
+            break;
+        }
+    }
+    const auto now_sec = GetTime<std::chrono::seconds>();
+    auto handle_done_item = [&](TxAdmissionDone &d, bool cs_main_held)
+        EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !m_peer_mutex,
+                                 !m_recent_confirmed_transactions_mutex)
+        NO_THREAD_SAFETY_ANALYSIS {
+        CNode &node = d.sender->node;
+        Peer &peer = *d.sender->peer;
+        switch (d.kind) {
+            case TxAdmissionDone::Kind::RESULT:
+                if (d.result->m_result_type ==
+                    MempoolAcceptResult::ResultType::VALID) {
+                    ProcessValidTx(node.GetId(), d.tx, &relay_batch);
+                    node.m_last_tx_time = now_sec;
+                } else {
+                    Assert(cs_main_held);
+                    FinishTxAdmission(node, peer, d.tx, *d.result, &relay_batch);
+                }
+                break;
+            case TxAdmissionDone::Kind::REPLAY:
+                Assert(cs_main_held);
+                if (PrepareTxAdmission(node, d.tx)) {
+                    const MempoolAcceptResult result =
+                        m_chainman.ProcessTransaction(d.tx);
+                    FinishTxAdmission(node, peer, d.tx, result, &relay_batch);
+                }
+                break;
+            case TxAdmissionDone::Kind::DROPPED:
+                break;
+        }
+        if (const auto it{m_tx_admission_inflight.find(d.tx->GetId())};
+            it != m_tx_admission_inflight.end()) {
+            for (size_t i = 0; i < it->second.short_id_key_count; ++i) {
+                const auto entry{m_tx_admission_inflight_shortids.find(
+                    it->second.short_id_keys[i])};
+                if (entry != m_tx_admission_inflight_shortids.end() &&
+                    --entry->second.refs == 0) {
+                    m_tx_admission_inflight_shortids.erase(entry);
+                }
+            }
+            m_tx_admission_inflight.erase(it);
+        }
+        Assume(peer.m_tx_admission_pending > 0);
+        --peer.m_tx_admission_pending;
+    };
+    if (!any_needs_cs_main) {
+        for (TxAdmissionDone &d : done) {
+            handle_done_item(d, /*cs_main_held=*/false);
+        }
+    } else {
         const auto waiting = SteadyClock::now();
         LOCK(cs_main);
         node::AdmissionLockTimer timer(waiting);
         for (TxAdmissionDone &d : done) {
-            CNode &node = d.sender->node;
-            Peer &peer = *d.sender->peer;
-            switch (d.kind) {
-                case TxAdmissionDone::Kind::RESULT:
-                    FinishTxAdmission(node, peer, d.tx, *d.result,
-                                      &relay_batch);
-                    break;
-                case TxAdmissionDone::Kind::REPLAY:
-                    if (PrepareTxAdmission(node, d.tx)) {
-                        const MempoolAcceptResult result =
-                            m_chainman.ProcessTransaction(d.tx);
-                        FinishTxAdmission(node, peer, d.tx, result,
-                                          &relay_batch);
-                    }
-                    break;
-                case TxAdmissionDone::Kind::DROPPED:
-                    break;
-            }
-            if (const auto it{m_tx_admission_inflight.find(d.tx->GetId())};
-                it != m_tx_admission_inflight.end()) {
-                for (size_t i = 0; i < it->second.short_id_key_count; ++i) {
-                    const auto entry{m_tx_admission_inflight_shortids.find(
-                        it->second.short_id_keys[i])};
-                    if (entry != m_tx_admission_inflight_shortids.end() &&
-                        --entry->second.refs == 0) {
-                        m_tx_admission_inflight_shortids.erase(entry);
-                    }
-                }
-                m_tx_admission_inflight.erase(it);
-            }
-            Assume(peer.m_tx_admission_pending > 0);
-            --peer.m_tx_admission_pending;
+            handle_done_item(d, /*cs_main_held=*/true);
         }
     }
     if (!relay_batch.empty()) {
@@ -3673,9 +3724,13 @@ void PeerManagerImpl::BlockConnected(
         for (const CTransactionRef &ptx : pblock->vtx) {
             m_recent_confirmed_transactions.insert(ptx->GetId());
         }
+        if (!pblock->vtx.empty()) {
+            m_has_recent_confirmed_transactions.store(
+                true, std::memory_order_relaxed);
+        }
     }
-    {
-        LOCK(cs_main);
+    if (TxRequestSize() > 0) {
+        LOCK(cs_txrequest);
         for (const auto &ptx : pblock->vtx) {
             m_txrequest.ForgetInvId(ptx->GetId());
         }
@@ -3694,6 +3749,7 @@ void PeerManagerImpl::BlockDisconnected(
     // should be just after a new block containing it is found.
     LOCK(m_recent_confirmed_transactions_mutex);
     m_recent_confirmed_transactions.reset();
+    m_has_recent_confirmed_transactions.store(false, std::memory_order_relaxed);
 }
 
 /**
@@ -3795,6 +3851,17 @@ void PeerManagerImpl::NewPoWValidBlock(
 void PeerManagerImpl::UpdatedBlockTip(const CBlockIndex *pindexNew,
                                       const CBlockIndex *pindexFork,
                                       bool fInitialDownload) {
+    // Previously rejected transactions might be valid on the new tip, e.g. due
+    // to a nLockTime'd tx becoming valid, or a double-spend. Give them a second
+    // chance.
+    {
+        LOCK(m_recent_rejects_mutex);
+        m_recent_rejects.reset();
+        m_recent_rejects_package_reconsiderable.reset();
+        m_has_recent_rejects.store(false, std::memory_order_relaxed);
+        m_has_recent_rejects_reconsiderable.store(false,
+                                                  std::memory_order_relaxed);
+    }
     SetBestHeight(pindexNew->nHeight);
     SetServiceFlagsIBDCache(!fInitialDownload);
 
@@ -3882,18 +3949,6 @@ void PeerManagerImpl::BlockChecked(const CBlock &block,
 
 bool PeerManagerImpl::AlreadyHaveTx(const TxId &txid,
                                     bool include_reconsiderable) {
-    if (m_chainman.ActiveChain().Tip()->GetBlockHash() !=
-        hashRecentRejectsChainTip) {
-        // If the chain tip has changed previously rejected transactions
-        // might be now valid, e.g. due to a nLockTime'd tx becoming
-        // valid, or a double-spend. Reset the rejects filter and give
-        // those txs a second chance.
-        hashRecentRejectsChainTip =
-            m_chainman.ActiveChain().Tip()->GetBlockHash();
-        m_recent_rejects.reset();
-        m_recent_rejects_package_reconsiderable.reset();
-    }
-
     if (m_mempool.exists(txid)) {
         return true;
     }
@@ -3912,19 +3967,29 @@ bool PeerManagerImpl::AlreadyHaveTx(const TxId &txid,
         return true;
     }
 
-    if (include_reconsiderable &&
-        m_recent_rejects_package_reconsiderable.contains(txid)) {
-        return true;
-    }
-
-    {
+    if (m_has_recent_confirmed_transactions.load(std::memory_order_relaxed)) {
         LOCK(m_recent_confirmed_transactions_mutex);
         if (m_recent_confirmed_transactions.contains(txid)) {
             return true;
         }
     }
 
-    return m_recent_rejects.contains(txid);
+    if (m_has_recent_rejects.load(std::memory_order_relaxed) ||
+        m_has_recent_rejects_reconsiderable.load(std::memory_order_relaxed)) {
+        LOCK(m_recent_rejects_mutex);
+        if (include_reconsiderable &&
+            m_has_recent_rejects_reconsiderable.load(
+                std::memory_order_relaxed) &&
+            m_recent_rejects_package_reconsiderable.contains(txid)) {
+            return true;
+        }
+        if (m_has_recent_rejects.load(std::memory_order_relaxed) &&
+            m_recent_rejects.contains(txid)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool PeerManagerImpl::AlreadyHaveBlock(const BlockHash &block_hash) {
@@ -3958,9 +4023,13 @@ void PeerManagerImpl::RelayTransaction(const TxId &txid) {
     // Index the short id now, so that an announcement of this transaction
     // arriving before the next tick is recognised as known.
     m_txrelay_index.Add(txid, GetTime<std::chrono::microseconds>());
+    const auto queued{RelayTickNow()};
     WITH_LOCK(m_relay_queue_mutex,
-              m_relay_queue.push_back({txid, local, RelayTickNow()}));
+              m_relay_queue.push_back({txid, local, queued}));
     m_txrelay_wake.store(true, std::memory_order_relaxed);
+    if (queued >= m_next_relay_drain.load(std::memory_order_relaxed)) {
+        m_connman.WakeMessageHandler();
+    }
 }
 
 void PeerManagerImpl::RelayTransactionBatch(
@@ -3989,6 +4058,9 @@ void PeerManagerImpl::RelayTransactionBatch(
         }
     }
     m_txrelay_wake.store(true, std::memory_order_relaxed);
+    if (queued >= m_next_relay_drain.load(std::memory_order_relaxed)) {
+        m_connman.WakeMessageHandler();
+    }
 }
 
 size_t TxRelayFanout(size_t relay_peers, size_t fanout_min, double fanout_pct,
@@ -4224,7 +4296,7 @@ std::vector<CTransactionRef> PeerManagerImpl::FilterRequestedShortTxResponse(
     selected.reserve(txs.size());
     // A wire response is bounded to 4096 bodies by the handler. Lookup is
     // O(log(requests)) per body; no growing request/window scan or copy.
-    LOCK(cs_main);
+    LOCK(cs_txrequest);
     for (const auto &tx : txs) {
         const auto short_id{m_txrelay_index.ShortId(*epoch, tx->GetId())};
         if (m_txrequest.IsRequested(
@@ -4271,29 +4343,24 @@ void PeerManagerImpl::ProcessShortTxResponse(
             if (tx) AddKnownTx(*peer, tx->GetId());
         }
         bool any_queued = false;
-        {
-            const auto waiting = SteadyClock::now();
-            LOCK(cs_main);
-            node::AdmissionLockTimer timer(waiting);
-            for (const auto &tx : txs) {
-                if (!tx) continue;
-                if (!force_relay && m_mempool.exists(tx->GetId())) {
-                    PrepareTxAdmission(node, tx);
-                    continue;
-                }
-                if (!peer->m_tx_admission_held_txs.empty() ||
-                    !QueueTxForAdmission(node, peer, tx, /*count_full=*/true,
-                                         /*notify=*/false)) {
-                    peer->m_tx_admission_held_txs.push_back(tx);
-                } else {
-                    any_queued = true;
-                }
+        for (const auto &tx : txs) {
+            if (!tx) continue;
+            if (!force_relay && m_mempool.exists(tx->GetId())) {
+                PrepareTxAdmission(node, tx);
+                continue;
             }
-            // The primary queue accounts queued bodies. Keep the conservative
-            // whole-response reservation until all additional held bodies drain.
-            if (peer->m_tx_admission_held_txs.empty()) {
-                peer->m_tx_admission_held_budgets.clear();
+            if (!peer->m_tx_admission_held_txs.empty() ||
+                !QueueTxForAdmission(node, peer, tx, /*count_full=*/true,
+                                     /*notify=*/false)) {
+                peer->m_tx_admission_held_txs.push_back(tx);
+            } else {
+                any_queued = true;
             }
+        }
+        // The primary queue accounts queued bodies. Keep the conservative
+        // whole-response reservation until all additional held bodies drain.
+        if (peer->m_tx_admission_held_txs.empty()) {
+            peer->m_tx_admission_held_budgets.clear();
         }
         if (any_queued) {
             m_tx_admission_queue->Notify();
@@ -4313,25 +4380,31 @@ void PeerManagerImpl::ProcessShortTxResponse(
 }
 
 void PeerManagerImpl::ForgetShortIdRequests(const TxId &txid) {
-    AssertLockHeld(::cs_main);
+    if (TxRequestSize() == 0) {
+        return;
+    }
+    LOCK(cs_txrequest);
     if (m_txrequest.Size() == 0) {
         return;
     }
-    m_txrelay_index.ForEachEpoch([&](const txrelay::EpochKey &epoch)
-                                     EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
-        m_txrequest.ForgetInvId(TxId{txrelay::ShortIdRequestKey(
-            epoch.epoch_id, m_txrelay_index.ShortId(epoch, txid))});
-    });
+    m_txrelay_index.ForEachEpoch(
+        [&](const txrelay::EpochKey &epoch)
+            EXCLUSIVE_LOCKS_REQUIRED(cs_txrequest) {
+            m_txrequest.ForgetInvId(TxId{txrelay::ShortIdRequestKey(
+                epoch.epoch_id, m_txrelay_index.ShortId(epoch, txid))});
+        });
 }
 
 void PeerManagerImpl::MaybeDrainRelayQueue() {
     const auto tick_now{RelayTickNow()};
-    if (tick_now < m_next_relay_drain) {
+    const auto next_drain{m_next_relay_drain.load(std::memory_order_relaxed)};
+    if (tick_now < next_drain) {
         return;
     }
-    const bool late{m_next_relay_drain > 0us &&
-                    tick_now >= m_next_relay_drain + m_opts.txrelay_tick};
-    m_next_relay_drain = NextRelayTick(tick_now, m_opts.txrelay_tick);
+    const bool late{next_drain > 0us &&
+                    tick_now >= next_drain + m_opts.txrelay_tick};
+    m_next_relay_drain.store(NextRelayTick(tick_now, m_opts.txrelay_tick),
+                             std::memory_order_relaxed);
     if (late && WITH_LOCK(m_relay_queue_mutex, return !m_relay_queue.empty())) {
         // A tick went by with transactions waiting (the message handler
         // was busy): they go out now, nothing is dropped.
@@ -4587,7 +4660,9 @@ void PeerManagerImpl::MarkPeerKnownTx(NodeId peer_id, const TxId &txid) {
     if (PeerRef peer = GetPeerRef(peer_id)) {
         AddKnownTx(*peer, txid);
     }
-    WITH_LOCK(cs_main, m_txrequest.ForgetInvId(txid));
+    if (TxRequestSize() > 0) {
+        WITH_LOCK(cs_txrequest, m_txrequest.ForgetInvId(txid));
+    }
 }
 
 void PeerManagerImpl::MarkPeerKnownTxBatch(
@@ -4608,12 +4683,22 @@ void PeerManagerImpl::MarkPeerKnownTxBatch(
             }
         }
     }
-    LOCK(cs_main);
-    if (m_txrequest.Size() > 0) {
-        for (const auto &tx : txs) {
-            if (tx) {
-                m_txrequest.ForgetInvId(tx->GetId());
-                ForgetShortIdRequests(tx->GetId());
+    if (TxRequestSize() > 0) {
+        LOCK(cs_txrequest);
+        if (m_txrequest.Size() > 0) {
+            for (const auto &tx : txs) {
+                if (!tx) {
+                    continue;
+                }
+                const TxId &txid = tx->GetId();
+                m_txrequest.ForgetInvId(txid);
+                m_txrelay_index.ForEachEpoch(
+                    [&](const txrelay::EpochKey &epoch)
+                        EXCLUSIVE_LOCKS_REQUIRED(cs_txrequest) {
+                        m_txrequest.ForgetInvId(TxId{txrelay::ShortIdRequestKey(
+                            epoch.epoch_id,
+                            m_txrelay_index.ShortId(epoch, txid))});
+                    });
             }
         }
     }
@@ -5771,16 +5856,24 @@ void PeerManagerImpl::ProcessInvalidTx(NodeId nodeid,
         return;
     }
 
-    if (state.GetResult() == TxValidationResult::TX_PACKAGE_RECONSIDERABLE) {
-        // If the result is TX_PACKAGE_RECONSIDERABLE, add it to
-        // m_recent_rejects_package_reconsiderable because we should not
-        // download or submit this transaction by itself again, but may submit
-        // it as part of a package later.
-        m_recent_rejects_package_reconsiderable.insert(txid);
-    } else {
-        m_recent_rejects.insert(txid);
+    {
+        LOCK(m_recent_rejects_mutex);
+        if (state.GetResult() == TxValidationResult::TX_PACKAGE_RECONSIDERABLE) {
+            // If the result is TX_PACKAGE_RECONSIDERABLE, add it to
+            // m_recent_rejects_package_reconsiderable because we should not
+            // download or submit this transaction by itself again, but may
+            // submit it as part of a package later.
+            m_recent_rejects_package_reconsiderable.insert(txid);
+            m_has_recent_rejects_reconsiderable.store(
+                true, std::memory_order_relaxed);
+        } else {
+            m_recent_rejects.insert(txid);
+            m_has_recent_rejects.store(true, std::memory_order_relaxed);
+        }
     }
-    m_txrequest.ForgetInvId(txid);
+    if (TxRequestSize() > 0) {
+        WITH_LOCK(cs_txrequest, m_txrequest.ForgetInvId(txid));
+    }
 
     // Retained wire bytes duplicate the fields, so they would halve the size this
     // gate was chosen to admit.
@@ -5808,12 +5901,13 @@ void PeerManagerImpl::ProcessValidTx(
     std::vector<CTransactionRef> *relay_batch) {
     AssertLockNotHeld(m_peer_mutex);
     AssertLockHeld(g_msgproc_mutex);
-    AssertLockHeld(cs_main);
 
     // As this version of the transaction was acceptable, we can forget about
     // any requests for it. No-op if the tx is not in txrequest.
-    m_txrequest.ForgetInvId(tx->GetId());
-    ForgetShortIdRequests(tx->GetId());
+    if (TxRequestSize() > 0) {
+        WITH_LOCK(cs_txrequest, m_txrequest.ForgetInvId(tx->GetId()));
+        ForgetShortIdRequests(tx->GetId());
+    }
 
     if (m_mempool.HasOrphans()) {
         m_mempool.withOrphanage([&tx](TxOrphanage &orphanage) {
@@ -5862,22 +5956,25 @@ void PeerManagerImpl::ProcessSingleTx(
 bool PeerManagerImpl::PrepareTxAdmission(CNode &pfrom,
                                          const CTransactionRef &ptx) {
     AssertLockHeld(g_msgproc_mutex);
-    AssertLockHeld(cs_main);
     const CTransaction &tx = *ptx;
     const TxId &txid = tx.GetId();
 
-    m_txrequest.ReceivedResponse(pfrom.GetId(), txid);
-    // Whichever way it came, it answers this peer's announcements of its short
-    // id. Other peers' stay registered until the transaction is accepted: this
-    // copy may never get a verdict, or may fail where another would not.
-    m_txrelay_index.ForEachEpoch([&](const txrelay::EpochKey &epoch)
-                                     EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
-        m_txrequest.ReceivedResponse(
-            pfrom.GetId(),
-            TxId{txrelay::ShortIdRequestKey(
-                epoch.epoch_id, m_txrelay_index.ShortId(epoch, txid))});
-    });
-    if (m_mempool.exists(txid)) {
+    if (TxRequestSize() > 0) {
+        LOCK(cs_txrequest);
+        m_txrequest.ReceivedResponse(pfrom.GetId(), txid);
+        // Whichever way it came, it answers this peer's announcements of its
+        // short id. Other peers' stay registered until the transaction is
+        // accepted: this copy may never get a verdict, or may fail where
+        // another would not.
+        m_txrelay_index.ForEachEpoch([&](const txrelay::EpochKey &epoch)
+                                         EXCLUSIVE_LOCKS_REQUIRED(cs_txrequest) {
+            m_txrequest.ReceivedResponse(
+                pfrom.GetId(),
+                TxId{txrelay::ShortIdRequestKey(
+                    epoch.epoch_id, m_txrelay_index.ShortId(epoch, txid))});
+        });
+    }
+    if (TxRequestSize() > 0 && m_mempool.exists(txid)) {
         ForgetShortIdRequests(txid);
     }
     const bool already_have =
@@ -5906,7 +6003,12 @@ bool PeerManagerImpl::PrepareTxAdmission(CNode &pfrom,
             }
         }
 
-        if (m_recent_rejects_package_reconsiderable.contains(txid)) {
+        if (m_has_recent_rejects_reconsiderable.load(
+                std::memory_order_relaxed) &&
+            WITH_LOCK(m_recent_rejects_mutex,
+                      return m_recent_rejects_package_reconsiderable.contains(
+                          txid))) {
+            LOCK(cs_main);
             LogEvent(BCLog::TXPACKAGES, "relay_orphan_reconsiderable_parent",
                      "found tx {txid} in reconsiderable rejects, looking "
                      "for child in orphanage")
@@ -5958,19 +6060,25 @@ void PeerManagerImpl::FinishTxAdmission(
             unique_parents.end());
 
         std::optional<TxId> rejected_parent_reconsiderable;
-        for (const TxId &parent_txid : unique_parents) {
-            if (m_recent_rejects.contains(parent_txid)) {
-                fRejectedParents = true;
-                break;
-            }
-
-            if (m_recent_rejects_package_reconsiderable.contains(parent_txid) &&
-                !m_mempool.exists(parent_txid)) {
-                if (rejected_parent_reconsiderable.has_value()) {
+        if (m_has_recent_rejects.load(std::memory_order_relaxed) ||
+            m_has_recent_rejects_reconsiderable.load(
+                std::memory_order_relaxed)) {
+            LOCK(m_recent_rejects_mutex);
+            for (const TxId &parent_txid : unique_parents) {
+                if (m_recent_rejects.contains(parent_txid)) {
                     fRejectedParents = true;
                     break;
                 }
-                rejected_parent_reconsiderable = parent_txid;
+
+                if (m_recent_rejects_package_reconsiderable.contains(
+                        parent_txid) &&
+                    !m_mempool.exists(parent_txid)) {
+                    if (rejected_parent_reconsiderable.has_value()) {
+                        fRejectedParents = true;
+                        break;
+                    }
+                    rejected_parent_reconsiderable = parent_txid;
+                }
             }
         }
         if (!fRejectedParents) {
@@ -5998,13 +6106,21 @@ void PeerManagerImpl::FinishTxAdmission(
                     .Field(BCLog::LogField::Count, nEvicted);
             }
 
-            m_txrequest.ForgetInvId(tx.GetId());
+            if (TxRequestSize() > 0) {
+                WITH_LOCK(cs_txrequest, m_txrequest.ForgetInvId(tx.GetId()));
+            }
         } else {
             LogEvent(BCLog::MEMPOOL, "relay_orphan_rejected_parents",
                      "not keeping orphan with rejected parents {txid}")
                 .Field(BCLog::LogField::TxId, tx.GetId());
-            m_recent_rejects.insert(tx.GetId());
-            m_txrequest.ForgetInvId(tx.GetId());
+            {
+                LOCK(m_recent_rejects_mutex);
+                m_recent_rejects.insert(tx.GetId());
+                m_has_recent_rejects.store(true, std::memory_order_relaxed);
+            }
+            if (TxRequestSize() > 0) {
+                WITH_LOCK(cs_txrequest, m_txrequest.ForgetInvId(tx.GetId()));
+            }
         }
     }
     if (state.IsInvalid()) {
@@ -6032,7 +6148,9 @@ void PeerManagerImpl::FinishTxAdmission(
     }
 
     if (state.GetResult() == TxValidationResult::TX_AVALANCHE_RECONSIDERABLE) {
-        m_txrequest.ForgetInvId(tx.GetId());
+        if (TxRequestSize() > 0) {
+            WITH_LOCK(cs_txrequest, m_txrequest.ForgetInvId(tx.GetId()));
+        }
 
         unsigned int nEvicted{0};
         m_mempool.withConflicting(
@@ -6139,7 +6257,10 @@ void PeerManagerImpl::ProcessPackageResult(
     const auto &senders = package_to_validate.m_senders;
 
     if (package_result.m_state.IsInvalid()) {
+        LOCK(m_recent_rejects_mutex);
         m_recent_rejects_package_reconsiderable.insert(GetPackageHash(package));
+        m_has_recent_rejects_reconsiderable.store(
+            true, std::memory_order_relaxed);
     }
     // We currently only expect to process 1-parent-1-child packages. Remove if
     // this changes.
@@ -6196,7 +6317,10 @@ PeerManagerImpl::Find1P1CPackage(const CTransactionRef &ptx, NodeId nodeid) {
 
     const auto &parent_txid{ptx->GetId()};
 
-    Assume(m_recent_rejects_package_reconsiderable.contains(parent_txid));
+    {
+        LOCK(m_recent_rejects_mutex);
+        Assume(m_recent_rejects_package_reconsiderable.contains(parent_txid));
+    }
 
     // Prefer children from this peer. This helps prevent censorship attempts in
     // which an attacker sends lots of fake children for the parent, and we
@@ -6210,8 +6334,9 @@ PeerManagerImpl::Find1P1CPackage(const CTransactionRef &ptx, NodeId nodeid) {
     // These children should be sorted from newest to oldest.
     for (const auto &child : cpfp_candidates_same_peer) {
         Package maybe_cpfp_package{ptx, child};
-        if (!m_recent_rejects_package_reconsiderable.contains(
-                GetPackageHash(maybe_cpfp_package))) {
+        if (!WITH_LOCK(m_recent_rejects_mutex,
+                       return m_recent_rejects_package_reconsiderable.contains(
+                           GetPackageHash(maybe_cpfp_package)))) {
             return PeerManagerImpl::PackageToValidate{ptx, child, nodeid,
                                                       nodeid};
         }
@@ -6246,8 +6371,9 @@ PeerManagerImpl::Find1P1CPackage(const CTransactionRef &ptx, NodeId nodeid) {
         const auto [child_tx, child_sender] =
             cpfp_candidates_different_peer.at(index);
         Package maybe_cpfp_package{ptx, child_tx};
-        if (!m_recent_rejects_package_reconsiderable.contains(
-                GetPackageHash(maybe_cpfp_package))) {
+        if (!WITH_LOCK(m_recent_rejects_mutex,
+                       return m_recent_rejects_package_reconsiderable.contains(
+                           GetPackageHash(maybe_cpfp_package)))) {
             return PeerManagerImpl::PackageToValidate{ptx, child_tx, nodeid,
                                                       child_sender};
         }
@@ -6257,6 +6383,9 @@ PeerManagerImpl::Find1P1CPackage(const CTransactionRef &ptx, NodeId nodeid) {
 
 bool PeerManagerImpl::ProcessOrphanTx(const Config &config, Peer &peer) {
     AssertLockHeld(g_msgproc_mutex);
+    if (!m_mempool.HasOrphans()) {
+        return false;
+    }
     LOCK(cs_main);
 
     while (CTransactionRef porphanTx =
@@ -6545,8 +6674,9 @@ PeerManagerImpl::GetAvalancheVoteForTx(const avalanche::Processor &avalanche,
     {
         LOCK(::cs_main);
 
-        // Invalid tx. m_recent_rejects needs cs_main
-        if (m_recent_rejects.contains(id)) {
+        if (m_has_recent_rejects.load(std::memory_order_relaxed) &&
+            WITH_LOCK(m_recent_rejects_mutex,
+                      return m_recent_rejects.contains(id))) {
             return 1;
         }
 
@@ -7016,6 +7146,8 @@ void PeerManagerImpl::ProcessMessage(
                 (!pfrom.IsInboundConn() ||
                  pfrom.HasPermission(NetPermissionFlags::NoBan)) &&
                 !pfrom.IsAddrFetchConn() && CanServeBlocks(*peer);
+            peer->m_preferred_download.store(state->fPreferredDownload,
+                                             std::memory_order_relaxed);
             m_num_preferred_download_peers += state->fPreferredDownload;
         }
 
@@ -7442,8 +7574,9 @@ void PeerManagerImpl::ProcessMessage(
         }
         const uint64_t missing{missing_req_keys.size() - in_flight};
         if (!missing_req_keys.empty()) {
-            LOCK(cs_main);
-            const bool preferred = isPreferredDownloadPeer(pfrom);
+            const bool preferred =
+                peer->m_preferred_download.load(std::memory_order_relaxed);
+            LOCK(cs_txrequest);
             for (const TxId &req_key : missing_req_keys) {
                 if (interruptMsgProc) {
                     return;
@@ -7565,7 +7698,6 @@ void PeerManagerImpl::ProcessMessage(
             }
 
             if (inv.IsMsgTx()) {
-                LOCK(cs_main);
                 const TxId txid(inv.hash);
                 const bool fAlreadyHave =
                     AlreadyHaveTx(txid, /*include_reconsiderable=*/true);
@@ -9297,7 +9429,12 @@ void PeerManagerImpl::ProcessMessage(
                                     conflicting.EraseTx(txid);
                                 });
 
-                            m_recent_rejects.insert(txid);
+                            {
+                                LOCK(m_recent_rejects_mutex);
+                                m_recent_rejects.insert(txid);
+                                m_has_recent_rejects.store(
+                                    true, std::memory_order_relaxed);
+                            }
 
                             AddToCompactExtraTransactions(tx);
 
@@ -9383,20 +9520,24 @@ void PeerManagerImpl::ProcessMessage(
                                 logVoteUpdate(u, "tx", finalized_txid);
                             }
 
-                            // NO_THREAD_SAFETY_ANALYSIS because
-                            // m_recent_rejects requires cs_main in the lambda
                             m_mempool.withConflicting(
                                 [&](TxConflicting &conflicting)
                                     NO_THREAD_SAFETY_ANALYSIS {
                                         std::vector<CTransactionRef>
                                             conflictingTxs =
                                                 conflicting.GetConflictTxs(tx);
-                                        for (const auto &conflictingTx :
-                                             conflictingTxs) {
-                                            m_recent_rejects.insert(
-                                                conflictingTx->GetId());
-                                            conflicting.EraseTx(
-                                                conflictingTx->GetId());
+                                        if (!conflictingTxs.empty()) {
+                                            LOCK(m_recent_rejects_mutex);
+                                            for (const auto &conflictingTx :
+                                                 conflictingTxs) {
+                                                m_recent_rejects.insert(
+                                                    conflictingTx->GetId());
+                                                conflicting.EraseTx(
+                                                    conflictingTx->GetId());
+                                            }
+                                            m_has_recent_rejects.store(
+                                                true,
+                                                std::memory_order_relaxed);
                                         }
                                     });
                         }
@@ -9422,7 +9563,7 @@ void PeerManagerImpl::ProcessMessage(
                         }
 
                         // Make sure we can request this tx again
-                        m_txrequest.ForgetInvId(txid);
+                        WITH_LOCK(cs_txrequest, m_txrequest.ForgetInvId(txid));
 
                         {
                             // Save the stalled txids so that we can relay them
@@ -10069,7 +10210,7 @@ void PeerManagerImpl::ProcessMessage(
                     // If we receive a NOTFOUND message for a tx we requested,
                     // mark the announcement for it as completed in
                     // InvRequestTracker.
-                    LOCK(::cs_main);
+                    LOCK(cs_txrequest);
                     m_txrequest.ReceivedResponse(pfrom.GetId(), TxId(inv.hash));
                     continue;
                 }
@@ -10205,23 +10346,17 @@ bool PeerManagerImpl::ProcessMessages(const Config &config, CNode *pfrom,
         // the admission queue go first, in order.
         if (!peer->m_tx_admission_held_txs.empty()) {
             bool any_queued = false;
-            bool held_empty = false;
-            {
-                const auto waiting = SteadyClock::now();
-                LOCK(cs_main);
-                node::AdmissionLockTimer timer(waiting);
-                while (!peer->m_tx_admission_held_txs.empty() &&
-                       QueueTxForAdmission(*pfrom, peer,
-                                           peer->m_tx_admission_held_txs.front(),
-                                           /*count_full=*/false,
-                                           /*notify=*/false)) {
-                    peer->m_tx_admission_held_txs.pop_front();
-                    any_queued = true;
-                }
-                held_empty = peer->m_tx_admission_held_txs.empty();
-                if (held_empty) {
-                    peer->m_tx_admission_held_budgets.clear();
-                }
+            while (!peer->m_tx_admission_held_txs.empty() &&
+                   QueueTxForAdmission(*pfrom, peer,
+                                       peer->m_tx_admission_held_txs.front(),
+                                       /*count_full=*/false,
+                                       /*notify=*/false)) {
+                peer->m_tx_admission_held_txs.pop_front();
+                any_queued = true;
+            }
+            const bool held_empty = peer->m_tx_admission_held_txs.empty();
+            if (held_empty) {
+                peer->m_tx_admission_held_budgets.clear();
             }
             if (any_queued) {
                 m_tx_admission_queue->Notify();
@@ -10364,19 +10499,14 @@ bool PeerManagerImpl::ProcessMessages(const Config &config, CNode *pfrom,
                 AddKnownTx(*peer, ptx->GetId());
             }
             bool any_queued = false;
-            {
-                const auto waiting = SteadyClock::now();
-                LOCK(cs_main);
-                node::AdmissionLockTimer timer(waiting);
-                for (auto &ptx : received) {
-                    if (!peer->m_tx_admission_held_txs.empty() ||
-                        !QueueTxForAdmission(*pfrom, peer, ptx,
-                                             /*count_full=*/true,
-                                             /*notify=*/false)) {
-                        peer->m_tx_admission_held_txs.push_back(std::move(ptx));
-                    } else {
-                        any_queued = true;
-                    }
+            for (auto &ptx : received) {
+                if (!peer->m_tx_admission_held_txs.empty() ||
+                    !QueueTxForAdmission(*pfrom, peer, ptx,
+                                         /*count_full=*/true,
+                                         /*notify=*/false)) {
+                    peer->m_tx_admission_held_txs.push_back(std::move(ptx));
+                } else {
+                    any_queued = true;
                 }
             }
             if (any_queued) {
@@ -11096,7 +11226,15 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
 
     MaybeSendSendHeaders(*pto, *peer);
 
-    {
+    const bool has_headers_to_relay =
+        WITH_LOCK(peer->m_block_inv_mutex,
+                  return !peer->m_blocks_for_headers_relay.empty());
+    const bool need_initial_sync =
+        !peer->m_sync_started.load(std::memory_order_relaxed) &&
+        CanServeBlocks(*peer);
+    if (need_initial_sync || has_headers_to_relay ||
+        m_chainman.IsInitialBlockDownload() ||
+        m_v2_protocol_handler.GetLastPeerKnownBlock(pto->GetId()).has_value()) {
         LOCK(cs_main);
 
         CNodeState &state = *State(pto->GetId());
@@ -11153,6 +11291,7 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                         peer->m_starting_height);
 
                     state.fSyncStarted = true;
+                    peer->m_sync_started.store(true, std::memory_order_relaxed);
                     peer->m_headers_sync_timeout =
                         current_time + HEADERS_DOWNLOAD_TIMEOUT_BASE +
                         (
@@ -11166,7 +11305,13 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                             consensusParams.nPowTargetSpacing);
                     nSyncStarted++;
                 }
+            } else {
+                peer->m_sync_started.store(state.fSyncStarted,
+                                           std::memory_order_relaxed);
             }
+        } else {
+            peer->m_sync_started.store(state.fSyncStarted,
+                                       std::memory_order_relaxed);
         }
 
         //
@@ -11672,9 +11817,8 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
     }
 
     std::vector<CInv> vGetData;
-    {
-        LOCK(cs_main);
-
+    auto check_block_sync = [&]()
+        EXCLUSIVE_LOCKS_REQUIRED(cs_main, g_msgproc_mutex) -> bool {
         CNodeState &state = *State(pto->GetId());
 
         // Detect whether we're stalling
@@ -11765,6 +11909,8 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                         // will also result in at least one more getheaders
                         // message to be sent to this peer (eventually).
                         state.fSyncStarted = false;
+                        peer->m_sync_started.store(false,
+                                                   std::memory_order_relaxed);
                         nSyncStarted--;
                         peer->m_headers_sync_timeout = 0us;
                     }
@@ -11832,7 +11978,32 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                 }
             }
         }
-    } // release cs_main
+        return false;
+    };
+    if (need_initial_sync || m_chainman.IsInitialBlockDownload()) {
+        LOCK(cs_main);
+        if (check_block_sync()) {
+            return true;
+        }
+    } else if (const auto sync_now{SteadyClock::now()};
+               sync_now - peer->m_last_block_sync_pass >=
+               MAX_BLOCK_SYNC_DEFERRAL) {
+        // Stall detection, eviction and block requests only live here, so a
+        // busy cs_main can defer them for this peer only so long.
+        LOCK(cs_main);
+        peer->m_last_block_sync_pass = sync_now;
+        if (check_block_sync()) {
+            return true;
+        }
+    } else {
+        TRY_LOCK(cs_main, lock_main);
+        if (lock_main) {
+            peer->m_last_block_sync_pass = sync_now;
+            if (check_block_sync()) {
+                return true;
+            }
+        }
+    }
 
     auto addGetDataAndMaybeFlush = [&](uint32_t type, const uint256 &hash) {
         CInv inv(type, hash);
@@ -11877,8 +12048,14 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
     //
     // Message: getdata (transactions)
     //
-    {
-        LOCK(cs_main);
+    if (TxRequestSize() > 0) {
+        // Transactions announced by short id are fetched with getshorttx,
+        // one request per epoch.
+        std::vector<std::pair<txrelay::EpochKey, std::vector<uint64_t>>>
+            short_requests;
+        std::vector<TxId> full_requests;
+        {
+        LOCK(cs_txrequest);
         std::vector<std::pair<NodeId, TxId>> expired;
         auto requestable =
             m_txrequest.GetRequestable(pto->GetId(), current_time, &expired);
@@ -11888,11 +12065,7 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
             .Field(BCLog::LogField::TxId, entry.second)
             .Field(BCLog::LogField::PeerId, entry.first);
         }
-        // Transactions announced by short id are fetched with getshorttx,
-        // one request per epoch.
         const auto epochs{m_txrelay_index.Epochs()};
-        std::vector<std::pair<txrelay::EpochKey, std::vector<uint64_t>>>
-            short_requests;
         for (const TxId &txid : requestable) {
             std::optional<uint64_t> short_id;
             const txrelay::EpochKey *epoch{nullptr};
@@ -11926,24 +12099,43 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                     current_time + SHORTID_REQUEST_PARAMS.getdata_interval);
                 continue;
             }
-            // Exclude m_recent_rejects_package_reconsiderable: we may be
-            // requesting a missing parent that was previously rejected for
-            // being too low feerate.
-            if (!AlreadyHaveTx(txid, /*include_reconsiderable=*/false)) {
-                addGetDataAndMaybeFlush(MSG_TX, txid);
-                m_txrequest.RequestedData(
-                    pto->GetId(), txid,
-                    current_time + TX_REQUEST_PARAMS.getdata_interval);
-            } else {
-                // We have already seen this transaction, no need to download.
-                // This is just a belt-and-suspenders, as this should already be
-                // called whenever a transaction becomes AlreadyHaveTx().
-                m_txrequest.ForgetInvId(txid);
-            }
+            full_requests.push_back(txid);
+        }
         }
 
-        if (!vGetData.empty()) {
-            MakeAndPushMessage(*pto, NetMsgType::GETDATA, vGetData);
+        // AlreadyHaveTx and sending take locks of their own, so neither happens
+        // under cs_txrequest. The tracker tolerates announcements that went
+        // away meanwhile.
+        if (!full_requests.empty()) {
+            std::vector<bool> have(full_requests.size());
+            for (size_t i = 0; i < full_requests.size(); ++i) {
+                // Exclude m_recent_rejects_package_reconsiderable: we may be
+                // requesting a missing parent that was previously rejected for
+                // being too low feerate.
+                have[i] = AlreadyHaveTx(full_requests[i],
+                                        /*include_reconsiderable=*/false);
+            }
+            {
+                LOCK(cs_txrequest);
+                for (size_t i = 0; i < full_requests.size(); ++i) {
+                    if (have[i]) {
+                        // We have already seen this transaction, no need to
+                        // download. This is just a belt-and-suspenders, as this
+                        // should already be called whenever a transaction
+                        // becomes AlreadyHaveTx().
+                        m_txrequest.ForgetInvId(full_requests[i]);
+                    } else {
+                        m_txrequest.RequestedData(
+                            pto->GetId(), full_requests[i],
+                            current_time + TX_REQUEST_PARAMS.getdata_interval);
+                    }
+                }
+            }
+            for (size_t i = 0; i < full_requests.size(); ++i) {
+                if (!have[i]) {
+                    addGetDataAndMaybeFlush(MSG_TX, full_requests[i]);
+                }
+            }
         }
 
         for (auto &[epoch, short_ids] : short_requests) {
@@ -11965,8 +12157,11 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                 MakeAndPushMessage(*pto, NetMsgType::GETSHORTTX, req);
             }
         }
+    }
 
-    } // release cs_main
+    if (!vGetData.empty()) {
+        MakeAndPushMessage(*pto, NetMsgType::GETDATA, vGetData);
+    }
     MaybeSendFeefilter(*pto, *peer, current_time);
     return true;
 }

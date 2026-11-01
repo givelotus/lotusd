@@ -11,6 +11,7 @@
 #include <boost/multi_index/ordered_index.hpp>
 #include <boost/multi_index_container.hpp>
 
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <functional>
@@ -355,6 +356,9 @@ class InvRequestTrackerImpl : public InvRequestTrackerImplInterface {
     //! Map with this tracker's per-peer statistics.
     std::unordered_map<NodeId, PeerInfo> m_peerinfo;
 
+    //! Atomic size counter for lock-free empty checks.
+    std::atomic<size_t> m_size{0};
+
 public:
     void SanityCheck() const override {
         // Recompute m_peerdata from m_index. This verifies the data in it as it
@@ -425,6 +429,7 @@ private:
         if (--peerit->second.m_total == 0) {
             m_peerinfo.erase(peerit);
         }
+        m_size.fetch_sub(1, std::memory_order_relaxed);
         return m_index.get<Tag>().erase(it);
     }
 
@@ -700,6 +705,7 @@ public:
         // Update accounting metadata.
         ++m_peerinfo[peer].m_total;
         ++m_current_sequence;
+        m_size.fetch_add(1, std::memory_order_relaxed);
     }
 
     //! Find the InvIds to request now from peer.
@@ -845,7 +851,9 @@ public:
 
     //! Count how many announcements are being tracked in total across all peers
     //! and transactions.
-    size_t Size() const override { return m_index.size(); }
+    size_t Size() const override {
+        return m_size.load(std::memory_order_relaxed);
+    }
 
     uint64_t ComputePriority(const uint256 &invid, NodeId peer,
                              bool preferred) const override {

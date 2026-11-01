@@ -2939,6 +2939,128 @@ BOOST_AUTO_TEST_CASE(short_id_announcements_outlive_the_body_in_flight) {
     chainman.ResetIbd();
 }
 
+BOOST_AUTO_TEST_CASE(rejected_transaction_checks_do_not_need_the_chain_lock) {
+    auto &chainman{static_cast<TestChainstateManager &>(*m_node.chainman)};
+    chainman.JumpOutOfIbd();
+    const Config &config{chainman.GetConfig()};
+    auto connman =
+        std::make_unique<ConnmanTestMsg>(config, 123, 456, *m_node.addrman);
+    PeerManager::Options peer_opts;
+    peer_opts.deterministic_rng = true;
+    auto peerman =
+        PeerManager::make(*connman, *m_node.addrman, nullptr, chainman,
+                          *m_node.mempool, nullptr, peer_opts);
+    CConnman::Options opts;
+    opts.m_msgproc = {peerman.get()};
+    opts.nSendBufferMaxSize = 16 * 1024 * 1024;
+    connman->Init(opts);
+    m_node.validation_signals->RegisterValidationInterface(peerman.get());
+    CNode *peer = new CNode(1400, nullptr, CAddress(MakeTestIp(0xa0b0c2a0), NODE_NONE),
+                            0, 0, 0, CAddress(), "",
+                            ConnectionType::OUTBOUND_FULL_RELAY, false);
+    FastRandomContext rng{uint256{0x82}};
+    const CTransactionRef rejected{MakeNonCoinbaseTx(rng, 0x82)};
+    BOOST_REQUIRE(rejected);
+    {
+        // Zero fee: refused by policy, which puts it in the rejects filter.
+        LOCK(cs_main);
+        const COutPoint &prevout{rejected->vin[0].prevout};
+        chainman.ActiveChainstate().CoinsTip().AddCoin(
+            prevout,
+            Coin(CTxOut(rejected->GetValueOut(),
+                        GetScriptForDestination(ScriptHash(
+                            MakeRedeemScriptForAttempt(prevout.GetN())))),
+                 /*nHeightIn=*/1, /*Coinbase=*/false),
+            /*possible_overwrite=*/true);
+    }
+    std::atomic<bool> interrupt{false};
+    const auto announce = [&]() EXCLUSIVE_LOCKS_REQUIRED(
+                              NetEventsInterface::g_msgproc_mutex) {
+        DataStream inv{};
+        inv << std::vector<CInv>{CInv{MSG_TX, rejected->GetId()}};
+        peerman->ProcessMessage(config, *peer, NetMsgType::INV, inv, 0us,
+                                interrupt);
+    };
+    const auto requested = [&]() EXCLUSIVE_LOCKS_REQUIRED(
+                               NetEventsInterface::g_msgproc_mutex) {
+        BOOST_REQUIRE(peerman->SendMessages(config, peer));
+        bool found{false};
+        V1TransportDeserializer deserializer(config, peer->GetId());
+        LOCK(peer->cs_vSend);
+        for (const auto &chunk : peer->vSendMsg) {
+            Span<const uint8_t> bytes{chunk};
+            while (!bytes.empty()) {
+                BOOST_REQUIRE_GE(deserializer.Read(config, bytes), 0);
+                if (!deserializer.Complete()) continue;
+                bool bad{false};
+                auto message = deserializer.GetMessage(0us, bad);
+                if (message.m_type != NetMsgType::GETDATA) continue;
+                std::vector<CInv> invs;
+                message.m_recv >> invs;
+                for (const CInv &inv : invs) {
+                    found |= inv.hash == rejected->GetId();
+                }
+            }
+        }
+        peer->vSendMsg.clear();
+        return found;
+    };
+    int64_t now{1'700'000'000};
+    SetMockTime(now);
+    {
+        LOCK(NetEventsInterface::g_msgproc_mutex);
+        connman->Handshake(*peer, true, NODE_NETWORK, NODE_NETWORK,
+                           PROTOCOL_VERSION, true);
+        connman->AddTestNode(*peer);
+        WITH_LOCK(peer->cs_vSend, peer->vSendMsg.clear());
+        peerman->ProcessShortTxResponse(*peer, {&rejected, 1});
+        BOOST_CHECK(!m_node.mempool->exists(rejected->GetId()));
+
+        // Another thread sits on cs_main, as the admission thread does while it
+        // commits a batch and looks up this same filter. Before this thread
+        // read the tip under the filter's lock, that was a lock inversion.
+        std::atomic<bool> done{false};
+        std::atomic<bool> pinned{false};
+        std::thread holder{[&] {
+            LOCK(cs_main);
+            pinned = true;
+            const auto deadline{SteadyClock::now() + std::chrono::seconds{20}};
+            while (!done && SteadyClock::now() < deadline) {
+                std::this_thread::yield();
+            }
+        }};
+        while (!pinned) {
+            std::this_thread::yield();
+        }
+        const auto begin{SteadyClock::now()};
+        announce();
+        const auto elapsed{SteadyClock::now() - begin};
+        done = true;
+        holder.join();
+        BOOST_CHECK(elapsed < std::chrono::seconds{15});
+
+        // Known rejected: never requested, until the tip moves.
+        now += 60;
+        SetMockTime(now);
+        BOOST_CHECK(!requested());
+    }
+    const CBlockIndex *tip{WITH_LOCK(cs_main, return chainman.ActiveTip())};
+    m_node.validation_signals->UpdatedBlockTip(tip, tip, /*fInitialDownload=*/false);
+    m_node.validation_signals->SyncWithValidationInterfaceQueue();
+    {
+        LOCK(NetEventsInterface::g_msgproc_mutex);
+        announce();
+        now += 60;
+        SetMockTime(now);
+        BOOST_CHECK(requested());
+    }
+    m_node.validation_signals->UnregisterValidationInterface(peerman.get());
+    peerman->FinalizeNode(config, *peer);
+    connman->ClearTestNodes();
+    SetMockTime(0);
+    chainman.ResetIbd();
+}
+
 BOOST_AUTO_TEST_CASE(retained_budget_reports_room_as_reserve_would) {
     node::TxAdmissionRetainedBudget budget{100};
     BOOST_CHECK(budget.HasRoom(100));
