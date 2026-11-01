@@ -58,17 +58,31 @@ class RCUInfos {
     static thread_local RCUInfos infos;
 };
 
+/**
+ * RCU read section. Sections nest: an inner lock on a thread that already holds
+ * one does nothing, and the section ends, with cleanups running, when the
+ * outermost lock is released. A batch can therefore hold one lock around many
+ * lookups that each open their own.
+ */
 class RCULock {
     RCUInfos *infos;
+    const bool owns_section;
 
-    explicit RCULock(RCUInfos *infosIn) : infos(infosIn) { infos->readLock(); }
+    explicit RCULock(RCUInfos *infosIn)
+        : infos(infosIn), owns_section(!infosIn->isLocked()) {
+        if (owns_section) {
+            infos->readLock();
+        }
+    }
     friend class RCUInfos;
 
 public:
     RCULock() : RCULock(&RCUInfos::infos) {}
     ~RCULock() {
-        infos->readFree();
-        infos->runCleanups();
+        if (owns_section) {
+            infos->readFree();
+            infos->runCleanups();
+        }
     }
 
     RCULock(const RCULock &) = delete;

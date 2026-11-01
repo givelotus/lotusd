@@ -167,6 +167,8 @@ RCUInfos::~RCUInfos() {
 }
 
 void RCUInfos::synchronize() {
+    // Waiting from inside a read section would wait on this thread's own state.
+    assert(!isLocked());
     uint64_t syncRev = ++revision;
 
     // Loop a few time lock free.

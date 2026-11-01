@@ -8,7 +8,13 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <atomic>
+#include <atomic>
 #include <chrono>
+#include <optional>
+#include <thread>
+#include <optional>
+#include <thread>
 
 struct RCUTest {
     static uint64_t getRevision() { return RCUInfos::revision.load(); }
@@ -474,6 +480,32 @@ BOOST_AUTO_TEST_CASE(rcu_converting_assignment) {
     BOOST_CHECK(!isDestroyed);
     RCULock::synchronize();
     BOOST_CHECK(isDestroyed);
+}
+
+BOOST_AUTO_TEST_CASE(rcu_read_sections_nest) {
+    BOOST_CHECK(!RCULock::isLocked());
+
+    std::atomic<bool> synced{false};
+    std::thread writer;
+    std::optional<RCULock> outer;
+    outer.emplace();
+    {
+        RCULock inner;
+        BOOST_CHECK(RCULock::isLocked());
+    }
+    // Releasing the inner lock must not end the section: a writer that starts
+    // synchronizing now still has to wait for the outer lock.
+    BOOST_CHECK(RCULock::isLocked());
+    writer = std::thread([&] {
+        RCULock::synchronize();
+        synced = true;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    BOOST_CHECK(!synced);
+    outer.reset();
+    BOOST_CHECK(!RCULock::isLocked());
+    writer.join();
+    BOOST_CHECK(synced);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
