@@ -393,6 +393,14 @@ public:
     size_t nodeCount() const noexcept { return m_tree.nodeCount(); }
 
     /**
+     * What adding one entry can add to DynamicMemoryUsage in the common case:
+     * the entry and one interior node. Keys that share a long prefix can add more.
+     */
+    static constexpr size_t EntryUsageUpperBound() noexcept {
+        return sizeof(Entry) + Tree::NodeBytes();
+    }
+
+    /**
      * Traverse all entries in ascending key order.
      */
     template <typename Callable> bool forEach(Callable &&fn) const {

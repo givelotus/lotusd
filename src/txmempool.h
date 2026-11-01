@@ -18,6 +18,7 @@
 #include <policy/packages.h>
 #include <primitives/transaction.h>
 #include <radix.h>
+#include <radix_map.h>
 #include <support/allocators/chunked_slab.h>
 #include <sync.h>
 #include <lotus_v2/utxo_fast_filter.h>
@@ -374,10 +375,19 @@ private:
         EXCLUSIVE_LOCKS_REQUIRED(cs);
 
 public:
-    indirectmap<
-        COutPoint, CTransactionRef,
-        ChunkedSlabAllocator<std::pair<const COutPoint *const, CTransactionRef>>>
-        mapNextTx GUARDED_BY(cs);
+    using NextTxMap =
+        RadixTreeMap<COutPoint, CTransactionRef, SaltedOutpointEncoder>;
+
+private:
+    /**
+     * Which pool transaction spends each outpoint. Writers hold cs; readers may
+     * be lock-free through mapNextTx below and see each key atomically, with no
+     * ordering across keys or against the rest of the pool's state.
+     */
+    NextTxMap m_next_tx GUARDED_BY(cs);
+
+public:
+    const NextTxMap &mapNextTx{m_next_tx};
     std::map<TxId, Amount> mapDeltas GUARDED_BY(cs);
 
     using Options = kernel::MemPoolOptions;

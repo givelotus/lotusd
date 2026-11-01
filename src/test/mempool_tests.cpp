@@ -531,7 +531,8 @@ BOOST_AUTO_TEST_CASE(MempoolSizeLimitTest) {
         EXCLUSIVE_LOCKS_REQUIRED(pool.cs) {
         const size_t retained =
             pool.mapTx.get_allocator().resource()->TotalAllocatedBytes() +
-            pool.mapNextTx.get_allocator().resource()->TotalAllocatedBytes();
+            pool.mapNextTx.nodeCount() *
+                CTxMemPool::NextTxMap::Tree::NodeBytes();
         const size_t usage = pool.DynamicMemoryUsage();
         BOOST_REQUIRE_GE(usage, retained);
         return retained + (usage - retained) * numerator / denominator;
@@ -1530,14 +1531,11 @@ BOOST_AUTO_TEST_CASE(mempool_slab_allocator_churn) {
 
     const size_t tx_chunks_initial =
         pool.mapTx.get_allocator().resource()->NumAllocatedChunks();
-    const size_t next_chunks_initial =
-        pool.mapNextTx.get_allocator().resource()->NumAllocatedChunks();
     BOOST_CHECK_GE(tx_chunks_initial, 1U);
-    BOOST_CHECK_GE(next_chunks_initial, 1U);
 
     const size_t slab_bytes =
         pool.mapTx.get_allocator().resource()->TotalAllocatedChunkBytes() +
-        pool.mapNextTx.get_allocator().resource()->TotalAllocatedChunkBytes();
+        pool.mapNextTx.DynamicMemoryUsage();
     BOOST_CHECK_GE(pool.DynamicMemoryUsage(), slab_bytes);
     const size_t peak_usage = pool.DynamicMemoryUsage();
 
@@ -1562,18 +1560,66 @@ BOOST_AUTO_TEST_CASE(mempool_slab_allocator_churn) {
         BOOST_CHECK_EQUAL(
             pool.mapTx.get_allocator().resource()->NumAllocatedChunks(),
             tx_chunks_initial);
-        BOOST_CHECK_EQUAL(
-            pool.mapNextTx.get_allocator().resource()->NumAllocatedChunks(),
-            next_chunks_initial);
+        // Interior nodes stay bounded by the entries ever live, not by history.
+        BOOST_CHECK_LE(pool.mapNextTx.nodeCount(), 256U);
     }
 
     pool.clear(/*include_finalized_txs=*/true);
     BOOST_CHECK_EQUAL(pool.size(), 0UL);
     BOOST_CHECK(pool.mapNextTx.empty());
     BOOST_CHECK_LT(pool.DynamicMemoryUsage(), peak_usage);
-    BOOST_CHECK_EQUAL(
-        pool.mapNextTx.get_allocator().resource()->TotalAllocatedChunkBytes(), 0U);
+    BOOST_CHECK_EQUAL(pool.mapNextTx.DynamicMemoryUsage(), 0U);
+    BOOST_CHECK_EQUAL(pool.mapNextTx.nodeCount(), 0U);
+}
 
+BOOST_FIXTURE_TEST_CASE(sibling_spends_leave_no_permanent_memory,
+                        TestingSetup) {
+    // A parent with two outputs spent in the pool used to pin a spine of about 67
+    // interior nodes per parent, invisible to -maxmempool and never recovered.
+    CTxMemPool &pool = *Assert(m_node.mempool);
+    LOCK2(cs_main, pool.cs);
+    pool.clear(/*include_finalized_txs=*/true);
+    TestMemPoolEntryHelper entry;
+    entry.SigChecks(0);
+
+    const auto cycle{[&](const TxId &parent) EXCLUSIVE_LOCKS_REQUIRED(pool.cs) {
+        CMutableTransaction mtx;
+        mtx.nVersion = 2;
+        mtx.vin.resize(2);
+        mtx.vin[0].prevout = COutPoint(parent, 0);
+        mtx.vin[1].prevout = COutPoint(parent, 1);
+        mtx.vout.emplace_back(10000 * SATOSHI, CScript() << OP_TRUE);
+        const CTransactionRef child{MakeTransactionRef(mtx)};
+        pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(child));
+        BOOST_CHECK(pool.mapNextTx.contains(COutPoint(parent, 1)));
+        pool.removeRecursive(*child, REMOVAL_REASON_DUMMY);
+    }};
+
+    const size_t empty_usage{pool.DynamicMemoryUsage()};
+    constexpr size_t PARENTS{5000};
+    FastRandomContext rng{/*fDeterministic=*/true};
+    for (size_t i = 0; i < PARENTS; ++i) {
+        cycle(TxId{rng.rand256()});
+    }
+    BOOST_CHECK(pool.mapNextTx.empty());
+    BOOST_CHECK_LE(pool.mapNextTx.nodeCount(), 1024U);
+    BOOST_CHECK_LE(pool.DynamicMemoryUsage(),
+                   empty_usage + 1024 * CTxMemPool::NextTxMap::Tree::NodeBytes());
+
+    // The conflict lookup still finds the claimant, and a spender is only ever
+    // recorded once per outpoint.
+    const TxId parent{rng.rand256()};
+    CMutableTransaction mtx;
+    mtx.nVersion = 2;
+    mtx.vin.resize(1);
+    mtx.vin[0].prevout = COutPoint(parent, 7);
+    mtx.vout.emplace_back(10000 * SATOSHI, CScript() << OP_TRUE);
+    const CTransactionRef spender{MakeTransactionRef(mtx)};
+    pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(spender));
+    BOOST_CHECK(pool.GetConflictTx(COutPoint(parent, 7)) == spender);
+    BOOST_CHECK(pool.GetConflictTx(COutPoint(parent, 6)) == nullptr);
+    BOOST_CHECK(pool.isSpent(COutPoint(parent, 7)));
+    pool.clear(/*include_finalized_txs=*/true);
 }
 
 BOOST_AUTO_TEST_CASE(MakeTransactionRefConcurrentChurn) {

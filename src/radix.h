@@ -162,9 +162,11 @@ public:
         return m_node_count.load(std::memory_order_relaxed);
     }
 
+    static constexpr size_t NodeBytes() noexcept { return sizeof(RadixNode); }
+
     /** Bytes held by interior nodes. Leaves are their owner's to count. */
     size_t nodeMemoryUsage() const noexcept {
-        return nodeCount() * sizeof(RadixNode);
+        return nodeCount() * NodeBytes();
     }
 
     /**
