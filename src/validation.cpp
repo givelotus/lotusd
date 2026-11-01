@@ -715,12 +715,11 @@ std::optional<ParallelTxScriptError> VerifyTxScriptsFromResolvedCoins(
         {
             // Fast-path scripts stage no deferred records, but the deferred
             // final rules still apply (a HAS_STATE output is then
-            // unauthorized). When no output has HAS_STATE and only the two
-            // standard consensus accumulators are registered, empty records
-            // always pass.
+            // unauthorized). The run can be skipped only when no output has
+            // HAS_STATE and every registered kind says empty records pass.
             if (shape->has_state_output ||
-                lotus::v2::DeferredCheckRegistry::Consensus().Kinds().size() !=
-                    2) {
+                !lotus::v2::DeferredCheckRegistry::Consensus()
+                     .PassesWithoutRecordsOrState()) {
                 V2DeferredTxChecks fast_deferred(tx);
                 for (size_t i = 0; i < tx.vin.size(); ++i) {
                     if (auto reason = fast_deferred.CompleteInput(
@@ -3498,7 +3497,8 @@ NativeAdmissionPreparation::Prepare(
     }
     if (const auto shape = GetV2FastPathShape(tx, result->m_coins)) {
         if (shape->has_state_output ||
-            lotus::v2::DeferredCheckRegistry::Consensus().Kinds().size() != 2) {
+            !lotus::v2::DeferredCheckRegistry::Consensus()
+                 .PassesWithoutRecordsOrState()) {
             V2DeferredTxChecks fast_deferred(tx);
             for (size_t i = 0; i < tx.vin.size(); ++i) {
                 if (fast_deferred

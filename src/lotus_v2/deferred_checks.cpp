@@ -306,6 +306,8 @@ namespace {
         NewAccumulator(const DeferredTxView &view) const override {
             return std::make_unique<StateAuthorizationAccumulator>(view);
         }
+        // Only a HAS_STATE output needs an authorization.
+        bool PassesWithoutRecordsOrState() const override { return true; }
     };
 
 } // namespace
@@ -378,6 +380,8 @@ namespace {
         NewAccumulator(const DeferredTxView &view) const override {
             return std::make_unique<OutputClaimsAccumulator>(view);
         }
+        // No claims are trivially feasible.
+        bool PassesWithoutRecordsOrState() const override { return true; }
     };
 } // namespace
 
