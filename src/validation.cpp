@@ -4103,6 +4103,7 @@ bool Chainstate::ActivateVerifiedFastSyncPivot(
 
     if (m_chain.Tip() != pindex_pivot) {
         m_chain.SetTip(*pindex_pivot);
+        SyncHeaderHistoryTreeToChain();
         setBlockIndexCandidates.insert(pindex_pivot);
         PruneBlockIndexCandidates();
         if (m_mempool) {
@@ -4112,11 +4113,14 @@ bool Chainstate::ActivateVerifiedFastSyncPivot(
                 static_cast<uint64_t>(pindex_pivot->GetMedianTimePast()));
         }
         UpdateTip(pindex_pivot);
-    } else if (m_mempool) {
-        LOCK(m_mempool->cs);
-        m_mempool->ConnectBlockReset(
-            pivot_hash, static_cast<uint64_t>(pindex_pivot->nHeight + 1),
-            static_cast<uint64_t>(pindex_pivot->GetMedianTimePast()));
+    } else {
+        SyncHeaderHistoryTreeToChain();
+        if (m_mempool) {
+            LOCK(m_mempool->cs);
+            m_mempool->ConnectBlockReset(
+                pivot_hash, static_cast<uint64_t>(pindex_pivot->nHeight + 1),
+                static_cast<uint64_t>(pindex_pivot->GetMedianTimePast()));
+        }
     }
 
     ActivateFastSyncPivot(pindex_pivot->nHeight);
@@ -4641,6 +4645,47 @@ void Chainstate::InitCoinsDB(size_t cache_size_bytes, bool in_memory,
                  .obfuscate = true,
                  .options = m_chainman.m_options.coins_db},
         m_chainman.m_options.coins_view);
+}
+
+void Chainstate::SyncHeaderHistoryTreeToChain() {
+    AssertLockHeld(::cs_main);
+    const CBlockIndex *tip = m_chain.Tip();
+    if (!tip || tip->nHeight < 0) {
+        m_header_history_tree.Clear();
+        return;
+    }
+    const uint64_t target_count = static_cast<uint64_t>(tip->nHeight) + 1;
+
+    auto block_hash_v2 = [](const CBlockIndex *pindex) noexcept {
+        lotus::v2::Hash256 out{};
+        const BlockHash bh = pindex->GetBlockHash();
+        std::memcpy(out.data(), bh.begin(), 32);
+        return out;
+    };
+
+    // Drop everything above the fork with the active chain, then append what's
+    // missing. On a normal tip change this touches one leaf. After startup the
+    // tree is empty and is rebuilt here from m_chain, which holds an index entry
+    // for every height whether block data was pruned or the chain started from
+    // a snapshot, so no block data has to be read.
+    while (m_header_history_tree.Count() > target_count) {
+        m_header_history_tree.PopBack();
+    }
+    while (m_header_history_tree.Count() > 0) {
+        const uint64_t h = m_header_history_tree.Count() - 1;
+        if (m_header_history_tree.GetLeafBlockHash(h) ==
+            block_hash_v2(m_chain[static_cast<int>(h)])) {
+            break;
+        }
+        m_header_history_tree.PopBack();
+    }
+    const lotus::v2::ChainId chain_id = GetActiveV2ChainId();
+    while (m_header_history_tree.Count() < target_count) {
+        const CBlockIndex *pindex =
+            m_chain[static_cast<int>(m_header_history_tree.Count())];
+        assert(pindex != nullptr);
+        m_header_history_tree.Append(chain_id, block_hash_v2(pindex));
+    }
 }
 
 void Chainstate::InitCoinsCache(size_t cache_size_bytes) {
@@ -6966,6 +7011,7 @@ bool Chainstate::DisconnectTip(BlockValidationState &state,
     }
 
     m_chain.SetTip(*pindexDelete->pprev);
+    SyncHeaderHistoryTreeToChain();
 
     UpdateTip(pindexDelete->pprev);
     // Let wallets know transactions went from 1-confirmed to
@@ -7190,6 +7236,7 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
 
     // Update m_chain & related variables.
     m_chain.SetTip(*pindexNew);
+    SyncHeaderHistoryTreeToChain();
     UpdateTip(pindexNew);
 
     const auto time_6{SteadyClock::now()};
@@ -7775,6 +7822,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState &state,
             // state now, then it's better to know immediately rather than
             // randomly have it cause a problem in a race.
             m_chainman.CheckBlockIndex();
+            SyncHeaderHistoryTreeToChain();
 
             if (blocks_connected) {
                 const CBlockIndex *pindexFork = m_chain.FindFork(starting_tip);
@@ -9561,6 +9609,7 @@ bool Chainstate::LoadChainTip() {
     const CBlockIndex *tip = m_chain.Tip();
 
     if (tip && tip->GetBlockHash() == coins_cache.GetBestBlock()) {
+        SyncHeaderHistoryTreeToChain();
         return true;
     }
 
@@ -9571,6 +9620,7 @@ bool Chainstate::LoadChainTip() {
         return false;
     }
     m_chain.SetTip(*pindex);
+    SyncHeaderHistoryTreeToChain();
     PruneBlockIndexCandidates();
 
     tip = m_chain.Tip();
@@ -10007,6 +10057,7 @@ bool Chainstate::ReplayBlocks() {
     cache.SetBestBlock(pindexNew->GetBlockHash());
     // local CCoinsViewCache goes out of scope
     cache.Flush(/*reallocate_cache=*/false);
+    SyncHeaderHistoryTreeToChain();
     m_chainman.GetNotifications().progress(bilingual_str{}, 100, false);
     return true;
 }
@@ -10235,6 +10286,7 @@ bool Chainstate::LoadGenesisBlock() {
         return false;
     }
 
+    SyncHeaderHistoryTreeToChain();
     return true;
 }
 
@@ -11600,6 +11652,7 @@ bool ChainstateManager::PopulateAndValidateSnapshot(
     // The remainder of this function requires modifying data protected by
     // cs_main.
     LOCK(::cs_main);
+    snapshot_chainstate.SyncHeaderHistoryTreeToChain();
 
     // Fake various pieces of CBlockIndex state:
     CBlockIndex *index = nullptr;
