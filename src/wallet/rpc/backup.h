@@ -18,5 +18,6 @@ Span<const CRPCCommand> GetWalletDumpRPCCommands();
 RPCHelpMan importmulti();
 RPCHelpMan dumpwallet();
 RPCHelpMan importwallet();
+RPCHelpMan importprunedfunds();
 
 #endif // BITCOIN_WALLET_RPC_BACKUP_H

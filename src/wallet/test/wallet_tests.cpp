@@ -9,6 +9,7 @@
 #include <interfaces/chain.h>
 #include <key_io.h>
 #include <logging.h>
+#include <merkleblock.h>
 #include <lotus_v2/fee_hysteresis.h>
 #include <node/blockstorage.h>
 #include <node/context.h>
@@ -497,6 +498,81 @@ BOOST_FIXTURE_TEST_CASE(importwallet_rescan, TestChain100Setup) {
 // This is a regression test written to verify a bugfix for the immature credit
 // function. Similar tests probably should be written for the other credit and
 // debit functions.
+
+// A merkle proof carrying a real header says nothing unless it is compared to
+// what that header commits to. Otherwise anyone can make a wallet show a
+// payment as confirmed in a block that never contained it.
+BOOST_FIXTURE_TEST_CASE(importprunedfunds_rejects_forged_proof,
+                        TestChain100Setup) {
+    WalletContext context;
+    context.args = &m_args;
+    context.chain = m_node.chain.get();
+    auto wallet = std::make_shared<CWallet>(
+        m_node.chain.get(), "", CreateMockWalletDatabase());
+    wallet->SetupLegacyScriptPubKeyMan();
+    {
+        LOCK(wallet->cs_wallet);
+        wallet->SetLastBlockProcessed(
+            WITH_LOCK(cs_main, return m_node.chainman->ActiveHeight()),
+            WITH_LOCK(cs_main, return m_node.chainman->ActiveTip()
+                                   ->GetBlockHash()));
+        auto spk_man = wallet->GetLegacyScriptPubKeyMan();
+        LOCK(spk_man->cs_KeyStore);
+        BOOST_REQUIRE(spk_man->AddKeyPubKey(coinbaseKey,
+                                            coinbaseKey.GetPubKey()));
+    }
+    AddWallet(context, wallet);
+
+    // A transaction paying the wallet that no block contains.
+    CMutableTransaction mtx;
+    mtx.vin.emplace_back(COutPoint(TxId(uint256::ONE), 0));
+    mtx.vout.emplace_back(1000 * COIN,
+                          GetScriptForRawPubKey(coinbaseKey.GetPubKey()));
+    const CTransaction unmined{mtx};
+
+    const CBlockIndex *tip =
+        WITH_LOCK(cs_main, return m_node.chainman->ActiveTip());
+    CMerkleBlock forged;
+    forged.header = tip->GetBlockHeader();
+    forged.txn = CPartialMerkleTree({unmined.GetId(), uint256::ONE},
+                                    {true, false});
+    DataStream proof{};
+    proof << forged;
+
+    JSONRPCRequest request;
+    request.context = &context;
+    request.URI = "/wallet/";
+    request.params.setArray();
+    request.params.push_back(EncodeHexTx(unmined));
+    request.params.push_back(HexStr(proof));
+    BOOST_CHECK_THROW(importprunedfunds().HandleRequest(GetConfig(), request),
+                      UniValue);
+    {
+        LOCK(wallet->cs_wallet);
+        BOOST_CHECK(wallet->mapWallet.count(unmined.GetId()) == 0);
+    }
+
+    // A real proof for a real payment still imports.
+    CBlock tip_block;
+    BOOST_REQUIRE(m_node.chainman->m_blockman.ReadBlock(tip_block, *tip));
+    const CTransactionRef &paid = tip_block.vtx[0];
+    CMerkleBlock genuine(tip_block, std::set<TxId>{paid->GetId()});
+    DataStream genuine_proof{};
+    genuine_proof << genuine;
+    JSONRPCRequest genuine_request;
+    genuine_request.context = &context;
+    genuine_request.URI = "/wallet/";
+    genuine_request.params.setArray();
+    genuine_request.params.push_back(EncodeHexTx(*paid));
+    genuine_request.params.push_back(HexStr(genuine_proof));
+    importprunedfunds().HandleRequest(GetConfig(), genuine_request);
+    {
+        LOCK(wallet->cs_wallet);
+        BOOST_CHECK(wallet->mapWallet.count(paid->GetId()) == 1);
+    }
+    RemoveWallet(context, wallet, /*load_on_start=*/std::nullopt);
+}
+
 BOOST_FIXTURE_TEST_CASE(coin_mark_dirty_immature_credit, TestChain100Setup) {
     ChainstateManager &chainman = *Assert(m_node.chainman);
     CWallet wallet(m_node.chain.get(), "", CreateDummyWalletDatabase());
