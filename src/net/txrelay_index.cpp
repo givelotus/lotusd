@@ -63,12 +63,15 @@ bool TxRelayIndex::InsertUnlocked(Epoch &epoch, const TxId &txid) const {
     if (!epoch.short_id_of.insert(txid, short_id)) {
         return false;
     }
+    if (epoch.by_short_id.insert(short_id, ShortIdBucket{txid, nullptr})) {
+        return true;
+    }
+    // A collision. Keep both: either may be requested under this short id.
     std::vector<TxId> txids;
-    if (auto existing = epoch.by_short_id.getEntry(short_id)) {
-        txids = existing->value;
+    if (const auto existing = epoch.by_short_id.getEntry(short_id)) {
+        existing->value.AppendTo(txids);
     }
     if (!txids.empty()) {
-        // Keep both: either may be requested under this short id.
         ++m_collisions;
         if (auto *m{node::GetNodeMetrics()}) {
             m->txrelay_shortid_collision.Inc();
@@ -80,8 +83,17 @@ bool TxRelayIndex::InsertUnlocked(Epoch &epoch, const TxId &txid) const {
             .Field(BCLog::LogField::ShortId, short_id)
             .Field(BCLog::LogField::Count, uint64_t(txids.size()));
     }
-    txids.push_back(txid);
-    epoch.by_short_id.insertOrAssign(short_id, std::move(txids));
+    const TxId first{txids.empty() ? txid : txids.front()};
+    if (!txids.empty()) {
+        txids.erase(txids.begin());
+        txids.push_back(txid);
+    }
+    epoch.by_short_id.insertOrAssign(
+        short_id,
+        ShortIdBucket{first, txids.empty()
+                                 ? nullptr
+                                 : std::make_shared<const std::vector<TxId>>(
+                                       std::move(txids))});
     return true;
 }
 
@@ -244,13 +256,21 @@ void TxRelayIndex::RemoveFromEpoch(Epoch &epoch, const TxId &txid) {
     }
     const uint64_t short_id{removed_tx->value};
     if (const auto bucket{epoch.by_short_id.getEntry(short_id)}) {
-        std::vector<TxId> txids{bucket->value};
+        std::vector<TxId> txids;
+        bucket->value.AppendTo(txids);
         txids.erase(std::remove(txids.begin(), txids.end(), txid), txids.end());
         if (txids.empty()) {
             epoch.by_short_id.erase(short_id);
-        } else {
-            epoch.by_short_id.insertOrAssign(short_id, std::move(txids));
+            return;
         }
+        const TxId first{txids.front()};
+        txids.erase(txids.begin());
+        epoch.by_short_id.insertOrAssign(
+            short_id,
+            ShortIdBucket{first, txids.empty()
+                                     ? nullptr
+                                     : std::make_shared<const std::vector<TxId>>(
+                                           std::move(txids))});
     }
 }
 
@@ -273,14 +293,13 @@ TxRelayIndex::Lookup TxRelayIndex::Find(const uint256 &epoch_id,
     if (!epoch) {
         return Lookup::UNKNOWN_EPOCH;
     }
-    const auto bucket{epoch->by_short_id.getEntry(short_id)};
-    if (!bucket) {
-        return Lookup::MISSING;
-    }
-    if (out) {
-        out->insert(out->end(), bucket->value.begin(), bucket->value.end());
-    }
-    return Lookup::HAVE;
+    const bool found{epoch->by_short_id.withEntry(
+        short_id, [&](const ShortIdMap::Entry &bucket) {
+            if (out) {
+                bucket.value.AppendTo(*out);
+            }
+        })};
+    return found ? Lookup::HAVE : Lookup::MISSING;
 }
 
 std::vector<TxId> TxRelayIndex::AdmittedSince(Clock since, Clock until) const {

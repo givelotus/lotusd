@@ -940,6 +940,50 @@ PinnedWindowIds(const txrelay::TxRelayIndex::WindowTree &tree) {
 }
 } // namespace
 
+BOOST_AUTO_TEST_CASE(shortid_buckets_keep_every_colliding_transaction) {
+    using txrelay::TxRelayIndex;
+    FastRandomContext rng{true};
+    const auto key{txrelay::MakeEpochKey(BlockHash{rng.rand256()}, 100)};
+
+    // One-bit short ids force collisions.
+    TxRelayIndex index{/*shortid_bits=*/1};
+    index.SetEpoch(key, [] { return TxRelayIndex::Snapshot{}; });
+    std::map<uint64_t, std::set<TxId>> expected;
+    const auto check = [&] {
+        for (uint64_t id = 0; id < 2; ++id) {
+            std::vector<TxId> found;
+            const auto lookup{index.Find(key.epoch_id, id, &found)};
+            BOOST_CHECK(lookup == (expected[id].empty()
+                                       ? TxRelayIndex::Lookup::MISSING
+                                       : TxRelayIndex::Lookup::HAVE));
+            BOOST_CHECK_EQUAL(found.size(), expected[id].size());
+            BOOST_CHECK(std::set<TxId>(found.begin(), found.end()) ==
+                        expected[id]);
+        }
+    };
+
+    std::vector<TxId> txids;
+    for (int i = 0; i < 12; ++i) {
+        const TxId txid{rng.rand256()};
+        txids.push_back(txid);
+        index.Add(txid, std::chrono::microseconds{i});
+        expected[index.ShortId(key, txid)].insert(txid);
+        check();
+    }
+    BOOST_CHECK(index.Collisions() > 0);
+
+    // Removing from the front, middle and end of each bucket keeps the others,
+    // down to and past a single transaction, and a duplicate add changes nothing.
+    index.Add(txids[0], std::chrono::microseconds{20});
+    check();
+    for (const size_t i : {0, 11, 5, 1, 10, 2, 9, 3, 8, 4, 7, 6}) {
+        index.Remove(txids[i]);
+        expected[index.ShortId(key, txids[i])].erase(txids[i]);
+        check();
+    }
+    BOOST_CHECK_EQUAL(index.Size(), 0U);
+}
+
 BOOST_AUTO_TEST_CASE(recon_window_pinned_index_matches_scan) {
     using Index = txrelay::TxRelayIndex;
     using Clock = Index::Clock;

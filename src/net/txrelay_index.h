@@ -211,7 +211,24 @@ public:
     size_t Size() const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
 private:
-    using ShortIdMap = RadixTreeMap<uint64_t, std::vector<TxId>>;
+    /**
+     * The transactions under one short id. Almost every bucket holds one, which
+     * this stores inline so that indexing a transaction allocates only the map
+     * entry. Replaced whole on change, as readers share the old one.
+     */
+    struct ShortIdBucket {
+        TxId first{};
+        std::shared_ptr<const std::vector<TxId>> extra{};
+
+        size_t size() const { return 1 + (extra ? extra->size() : 0); }
+        void AppendTo(std::vector<TxId> &out) const {
+            out.push_back(first);
+            if (extra) {
+                out.insert(out.end(), extra->begin(), extra->end());
+            }
+        }
+    };
+    using ShortIdMap = RadixTreeMap<uint64_t, ShortIdBucket>;
     using TxIdShortMap = RadixTreeMap<TxId, uint64_t>;
 
     struct Epoch {
