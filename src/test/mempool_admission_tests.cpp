@@ -504,6 +504,41 @@ BOOST_AUTO_TEST_CASE(large_batches_notify_subscribers_that_decline_spent_coins) 
     BOOST_CHECK_EQUAL(signals.HasSpentCoinsSubscribers(), fixture_wants_coins);
 }
 
+BOOST_AUTO_TEST_CASE(batch_prechecks_hold_up_against_a_nonempty_pool) {
+    // Both batch entry points look up the mempool in phases that don't hold an
+    // RCU read section of their own. An unauthenticated transaction reaches the
+    // first of them, so these lookups must never require one.
+    const auto spend = [&](size_t i, Amount fee = 1000 * SATOSHI) {
+        const auto &coin{wallet.outputs.at(i)};
+        return BuildSpend(wallet, {coin}, {coin.amount - fee},
+                          /*schnorr=*/true);
+    };
+    const auto already_in_pool{spend(0)};
+    BOOST_REQUIRE(Admit(already_in_pool).m_result_type ==
+                  MempoolAcceptResult::ResultType::VALID);
+
+    // A legacy transaction through staged admission, with the pool non-empty.
+    const auto fresh{spend(1)};
+    const auto conflict{spend(0, 2000 * SATOSHI)};
+    auto staged{AcceptToMemoryPoolStaged(*m_node.chainman,
+                                         {already_in_pool, fresh, conflict},
+                                         StagedAdmissionOptions{})};
+    BOOST_REQUIRE(staged[0] && staged[1] && staged[2]);
+    BOOST_CHECK(staged[1]->m_result_type ==
+                MempoolAcceptResult::ResultType::VALID);
+    BOOST_CHECK(staged[2]->m_result_type !=
+                MempoolAcceptResult::ResultType::VALID);
+
+    // The raw batch path, whose conflict check is a nested lookup.
+    for (const auto &tx : {already_in_pool, spend(0, 3000 * SATOSHI)}) {
+        LOCK(cs_main);
+        const auto result{ProcessRawTxBatch(Active(), *m_node.mempool, {tx},
+                                            /*test_accept=*/false)};
+        BOOST_CHECK(!result.m_state.IsValid());
+    }
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), 2U);
+}
+
 BOOST_AUTO_TEST_CASE(staged_cheap_rejects_do_not_run_unlocked_scripts) {
     const auto &out = wallet.outputs[0];
     const auto free_tx = BuildSpend(wallet, {out}, {out.amount}, true);
