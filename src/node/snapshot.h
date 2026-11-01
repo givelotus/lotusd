@@ -244,6 +244,7 @@ struct ChainAndMempoolSnapshot {
     mutable std::vector<TxId> mempool_txids;
     mutable std::vector<MempoolEntrySnapshot> mempool_entries;
     mutable std::vector<COutPoint> mempool_spent_outpoints;
+    mutable bool mempool_txids_ready{false};
     mutable bool mempool_vectors_ready{false};
     std::shared_ptr<std::mutex> mempool_vectors_mutex{
         std::allocate_shared<std::mutex>(SnapshotAllocator<std::mutex>{})};
@@ -254,6 +255,8 @@ struct ChainAndMempoolSnapshot {
     int64_t overlay_sigchecks{0};
     const MiningTemplateSnapshot &GetMiningTemplate() const;
     void EnsureMiningTemplate() const { (void)GetMiningTemplate(); }
+
+    void EnsureMempoolTxIds() const;
     void EnsureMempoolVectors() const;
 
     const MempoolEntrySnapshot *FindMempoolEntry(const TxId &txid) const {

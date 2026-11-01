@@ -230,6 +230,7 @@ void CRollingBloomFilter::insert(Span<const uint8_t> vKey) {
         }
     }
     nEntriesThisGeneration++;
+    m_has_entries = true;
 
     for (int n = 0; n < nHashFuncs; n++) {
         uint32_t h = RollingBloomHash(n, nTweak, vKey);
@@ -247,6 +248,9 @@ void CRollingBloomFilter::insert(Span<const uint8_t> vKey) {
 }
 
 bool CRollingBloomFilter::contains(Span<const uint8_t> vKey) const {
+    if (!m_has_entries) {
+        return false;
+    }
     for (int n = 0; n < nHashFuncs; n++) {
         uint32_t h = RollingBloomHash(n, nTweak, vKey);
         int bit = h & 0x3F;
@@ -264,5 +268,8 @@ void CRollingBloomFilter::reset() {
     nTweak = FastRandomContext().rand<unsigned int>();
     nEntriesThisGeneration = 0;
     nGeneration = 1;
-    std::fill(data.begin(), data.end(), 0);
+    if (m_has_entries) {
+        std::fill(data.begin(), data.end(), 0);
+        m_has_entries = false;
+    }
 }

@@ -330,6 +330,16 @@ BOOST_AUTO_TEST_CASE(lazy_mempool_snapshots_pin_historical_values) {
     auto after_unbroadcast = publisher.Load();
     pool.clear();
     auto after_clear = publisher.Load();
+    // The txid list alone matches what the full materialization would give,
+    // and materializing the rest afterwards doesn't list a txid twice.
+    before_fee->EnsureMempoolTxIds();
+    const auto txids_alone{before_fee->mempool_txids};
+    BOOST_CHECK_EQUAL(txids_alone.size(), before_fee->mempool_size);
+    BOOST_CHECK(std::is_sorted(txids_alone.begin(), txids_alone.end()));
+    BOOST_CHECK(before_fee->mempool_entries.empty());
+    before_fee->EnsureMempoolVectors();
+    BOOST_CHECK(before_fee->mempool_txids == txids_alone);
+    BOOST_CHECK_EQUAL(before_fee->mempool_entries.size(), txids_alone.size());
     // Materialize only AFTER all mutations, including clear. No live mempool
     // lookups may leak into any of these historical snapshots.
     for (size_t i = 0; i < snapshots.size(); ++i) {

@@ -329,20 +329,43 @@ void InitMiningTemplate(ChainAndMempoolSnapshot &snap,
 
 } // namespace
 
+void ChainAndMempoolSnapshot::EnsureMempoolTxIds() const {
+    std::lock_guard<std::mutex> lock(*mempool_vectors_mutex);
+    if (mempool_txids_ready || mempool_vectors_ready) return;
+    if (entry_tree) {
+        mempool_txids.reserve(mempool_size);
+        entry_tree->forEachLeaf([&](const auto &value) {
+            mempool_txids.push_back(value->entry.txid);
+            return true;
+        });
+    }
+    std::sort(mempool_txids.begin(), mempool_txids.end());
+    mempool_txids_ready = true;
+}
+
 void ChainAndMempoolSnapshot::EnsureMempoolVectors() const {
     std::lock_guard<std::mutex> lock(*mempool_vectors_mutex);
     if (mempool_vectors_ready) return;
     if (entry_tree) {
+        if (!mempool_txids_ready) {
+            mempool_txids.reserve(mempool_size);
+        }
+        mempool_entries.reserve(mempool_size);
         entry_tree->forEachLeaf([&](const auto &value) {
             const auto &entry = value->entry;
-            mempool_txids.push_back(entry.txid);
+            if (!mempool_txids_ready) {
+                mempool_txids.push_back(entry.txid);
+            }
             mempool_entries.push_back(entry);
             for (const auto &input : entry.tx->vin)
                 mempool_spent_outpoints.push_back(input.prevout);
             return true;
         });
     }
-    std::sort(mempool_txids.begin(), mempool_txids.end());
+    if (!mempool_txids_ready) {
+        std::sort(mempool_txids.begin(), mempool_txids.end());
+        mempool_txids_ready = true;
+    }
     std::sort(mempool_entries.begin(), mempool_entries.end(),
               [](const auto &a, const auto &b) { return a.txid < b.txid; });
     std::sort(mempool_spent_outpoints.begin(), mempool_spent_outpoints.end());

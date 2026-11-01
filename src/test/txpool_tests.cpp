@@ -127,4 +127,20 @@ BOOST_AUTO_TEST_CASE(txpool_get_tx) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(txpool_empty_follows_adds_and_erases) {
+    TxPool txpool("testing", 1h, 1h);
+    BOOST_CHECK(txpool.Empty());
+    CMutableTransaction mtx;
+    mtx.vin.emplace_back(TxId(FastRandomContext(true).rand256()), 0);
+    mtx.vin[0].scriptSig = SCRIPT_SIG;
+    mtx.vout.resize(1);
+    mtx.vout[0].nValue = CENT;
+    mtx.vout[0].scriptPubKey = SCRIPT_PUB_KEY;
+    const CTransactionRef tx{MakeTransactionRef(mtx)};
+    BOOST_CHECK(txpool.AddTx(tx, 0));
+    BOOST_CHECK(!txpool.Empty());
+    txpool.EraseTx(tx->GetId());
+    BOOST_CHECK(txpool.Empty());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

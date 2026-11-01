@@ -695,6 +695,14 @@ public:
         return m_sequence_number;
     }
 
+    bool HasOrphans() const noexcept NO_THREAD_SAFETY_ANALYSIS {
+        return m_orphanage && !m_orphanage->Empty();
+    }
+
+    bool HasConflicting() const noexcept NO_THREAD_SAFETY_ANALYSIS {
+        return m_conflicting && !m_conflicting->Empty();
+    }
+
     template <typename Callable>
     auto withOrphanage(Callable &&func) const
         EXCLUSIVE_LOCKS_REQUIRED(!cs_orphanage) {

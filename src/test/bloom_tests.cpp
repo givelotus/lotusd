@@ -1143,4 +1143,18 @@ BOOST_AUTO_TEST_CASE(rolling_bloom) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(rolling_bloom_empty_filter_shortcuts_stay_correct) {
+    CRollingBloomFilter filter{100, 0.000'001};
+    const std::vector<uint8_t> key{1, 2, 3};
+    BOOST_CHECK(!filter.contains(key));
+    filter.reset();
+    BOOST_CHECK(!filter.contains(key));
+    filter.insert(key);
+    BOOST_CHECK(filter.contains(key));
+    filter.reset();
+    BOOST_CHECK(!filter.contains(key));
+    filter.insert(key);
+    BOOST_CHECK(filter.contains(key));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

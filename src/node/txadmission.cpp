@@ -25,7 +25,7 @@ bool TxAdmissionQueue::HasRoom(NodeId peer, size_t tx_bytes, bool count_full) {
     return false;
 }
 
-bool TxAdmissionQueue::Push(TxAdmissionItem item) {
+bool TxAdmissionQueue::Push(TxAdmissionItem item, bool notify) {
     {
         LOCK(m_mutex);
         const auto it = m_queues.find(item.peer);
@@ -46,7 +46,9 @@ bool TxAdmissionQueue::Push(TxAdmissionItem item) {
         ++m_pushed;
         q.push_back(std::move(item));
     }
-    m_cv.notify_one();
+    if (notify) {
+        m_cv.notify_one();
+    }
     return true;
 }
 

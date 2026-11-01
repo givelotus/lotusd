@@ -568,7 +568,7 @@ UniValue MempoolToJSON(const CTxMemPool &pool, bool verbose,
     } else {
         const auto snap_ptr = LoadOrInitMempoolSnapshot(pool);
         const node::ChainAndMempoolSnapshot &snap = *CHECK_NONFATAL(snap_ptr);
-        snap.EnsureMempoolVectors();
+        snap.EnsureMempoolTxIds();
         UniValue a(UniValue::VARR);
         a.reserve(snap.mempool_txids.size());
         for (const TxId &txid : snap.mempool_txids) {

@@ -220,4 +220,29 @@ BOOST_AUTO_TEST_CASE(concurrent_producers_and_consumer) {
     BOOST_CHECK_EQUAL(stats.queued, 0U);
 }
 
+BOOST_AUTO_TEST_CASE(unnotified_pushes_wake_the_consumer_on_notify) {
+    TxAdmissionQueue queue{{}};
+    std::vector<TxAdmissionItem> taken;
+    std::atomic<bool> started{false};
+    std::thread consumer{[&] {
+        started = true;
+        taken = queue.TakeBatch(4, std::chrono::seconds{60});
+    }};
+    while (!started) {
+        std::this_thread::yield();
+    }
+    const auto begin{SteadyClock::now()};
+    BOOST_REQUIRE(queue.Push(Item(1, 1), /*notify=*/false));
+    BOOST_REQUIRE(queue.Push(Item(1, 2), /*notify=*/false));
+    // Keep notifying: the consumer may not have started waiting yet.
+    while (queue.GetStats().taken == 0 &&
+           SteadyClock::now() - begin < std::chrono::seconds{30}) {
+        queue.Notify();
+        std::this_thread::yield();
+    }
+    consumer.join();
+    BOOST_CHECK_EQUAL(taken.size(), 2U);
+    BOOST_CHECK(SteadyClock::now() - begin < std::chrono::seconds{30});
+}
+
 BOOST_AUTO_TEST_SUITE_END()
