@@ -1737,7 +1737,11 @@ bool MemPoolAccept::PreChecksBatch(
     }
 
     if (mempool_nonempty) {
-        if (m_pool.mapTx.find(txid) != m_pool.mapTx.end()) {
+        // One read section for these lookups, which each open their own and so
+        // are safe without it. Coin lookups below can touch the disk, and stay
+        // out of it so as not to hold up reclamation.
+        RCULock rcu_lock;
+        if (m_pool.exists(txid)) {
             return state.Invalid(TxValidationResult::TX_DUPLICATE,
                                  "txn-already-in-mempool");
         }
@@ -1797,9 +1801,9 @@ bool MemPoolAccept::PreChecksBatch(
             }
         }
         if (!resolved && mempool_nonempty) {
-            auto mit = m_pool.mapTx.find(txin.prevout.GetTxId());
-            if (mit != m_pool.mapTx.end()) {
-                const CTransaction &ptx = (*mit)->GetTx();
+            m_pool.withEntry(txin.prevout.GetTxId(),
+                             [&](const CTxMemPoolEntry &parent) {
+                const CTransaction &ptx = parent.GetTx();
                 const uint32_t n = txin.prevout.GetN();
                 if (n < ptx.vout.size() && !ptx.vout[n].IsNull()) {
                     ws.m_resolved_inputs[i] =
@@ -1807,7 +1811,7 @@ bool MemPoolAccept::PreChecksBatch(
                     ws.m_has_mempool_parents = true;
                     resolved = true;
                 }
-            }
+            });
         }
         if (!resolved) {
             if (!coins_cache.HaveCoinInCache(txin.prevout)) {
