@@ -8,6 +8,7 @@
 
 #include <config.h>
 #include <common/args.h>
+#include <arith_uint256.h>
 #include <common/bloom.h>
 #include <lotus_v2/commitment.h>
 #include <net.h>
@@ -36,6 +37,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <future>
 #include <thread>
@@ -1511,6 +1513,71 @@ BOOST_AUTO_TEST_CASE(no_body_push_by_default) {
         BOOST_CHECK_EQUAL(sent.shorttx_txids.size(), push ? 20U : 0U);
         BOOST_CHECK_EQUAL(sent.inv_txids.size(), push ? 0U : 20U);
     }
+}
+
+BOOST_AUTO_TEST_CASE(txrelay_index_lookups_stay_coherent_during_rotation) {
+    // A stable transaction stays findable under the current or previous epoch
+    // while another thread churns entries and rotates epochs underneath readers.
+    using txrelay::TxRelayIndex;
+    TxRelayIndex index{/*shortid_bits=*/32};
+    const TxId stable{uint256::ONE};
+    FastRandomContext rng{/*fDeterministic=*/true};
+    const auto epoch_key{[](uint64_t height) {
+        return txrelay::MakeEpochKey(BlockHash{ArithToUint256(height + 1)},
+                                     height);
+    }};
+    const auto mempool{[&] {
+        TxRelayIndex::Snapshot txs;
+        txs.emplace_back(stable, TxRelayIndex::Clock{});
+        return txs;
+    }};
+    index.SetEpoch(epoch_key(0), mempool);
+
+    std::atomic<bool> stop{false};
+    std::atomic<size_t> failures{0};
+    std::vector<std::thread> readers;
+    for (int t = 0; t < 4; ++t) {
+        readers.emplace_back([&] {
+            while (!stop.load(std::memory_order_relaxed)) {
+                const auto epochs{index.Epochs()};
+                if (epochs.empty()) {
+                    failures.fetch_add(1, std::memory_order_relaxed);
+                }
+                for (const auto &key : epochs) {
+                    std::vector<TxId> found;
+                    // An epoch can rotate out between the two calls, but it can
+                    // never hold the stable transaction under a wrong bucket.
+                    const auto lookup{index.Find(
+                        key.epoch_id, index.ShortId(key, stable), &found)};
+                    if (lookup == TxRelayIndex::Lookup::MISSING ||
+                        (lookup == TxRelayIndex::Lookup::HAVE &&
+                         std::find(found.begin(), found.end(), stable) ==
+                             found.end())) {
+                        failures.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+                (void)index.Size();
+            }
+        });
+    }
+
+    for (uint64_t round = 1; round <= 64; ++round) {
+        std::vector<TxId> churn;
+        for (int i = 0; i < 64; ++i) {
+            churn.emplace_back(rng.rand256());
+            index.Add(churn.back(), TxRelayIndex::Clock{});
+        }
+        index.SetEpoch(epoch_key(round), mempool);
+        for (const auto &txid : churn) {
+            index.Remove(txid);
+        }
+    }
+    stop.store(true, std::memory_order_relaxed);
+    for (auto &reader : readers) {
+        reader.join();
+    }
+    BOOST_CHECK_EQUAL(failures.load(), 0U);
+    BOOST_CHECK_EQUAL(index.Size(), 1U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

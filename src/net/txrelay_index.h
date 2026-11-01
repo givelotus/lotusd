@@ -8,6 +8,7 @@
 #include <primitives/blockhash.h>
 #include <primitives/txid.h>
 #include <radix.h>
+#include <radix_map.h>
 #include <support/allocators/chunked_slab.h>
 #include <sync.h>
 #include <uint256.h>
@@ -189,17 +190,44 @@ public:
     size_t Size() const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
 private:
+    using ShortIdMap = RadixTreeMap<uint64_t, std::vector<TxId>>;
+    using TxIdShortMap = RadixTreeMap<TxId, uint64_t>;
+
     struct Epoch {
         EpochKey key;
-        std::unordered_map<uint64_t, std::vector<TxId>> by_short_id;
-        std::unordered_map<TxId, uint64_t, SaltedTxIdHasher> short_id_of;
+        ShortIdMap by_short_id;
+        TxIdShortMap short_id_of;
+
+        Epoch pinSnapshot() const noexcept {
+            return Epoch{key, by_short_id.pinSnapshot(),
+                         short_id_of.pinSnapshot()};
+        }
     };
+
+    struct EpochSnapshot {
+        std::shared_ptr<const Epoch> current;
+        std::shared_ptr<const Epoch> previous;
+
+        const Epoch *Get(const uint256 &epoch_id) const noexcept {
+            if (current && current->key.epoch_id == epoch_id) {
+                return current.get();
+            }
+            if (previous && previous->key.epoch_id == epoch_id) {
+                return previous.get();
+            }
+            return nullptr;
+        }
+    };
+
+    std::shared_ptr<const EpochSnapshot> LoadEpochs() const noexcept {
+        return std::atomic_load_explicit(&m_published_epochs,
+                                         std::memory_order_acquire);
+    }
+
     //! Index txid in epoch (which the caller owns or guards with m_mutex)
     void InsertUnlocked(Epoch &epoch, const TxId &txid) const;
     static void RemoveFromEpoch(Epoch &epoch, const TxId &txid);
     void RecordEpochChange(const TxId &txid, bool present)
-        EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
-    const Epoch *Get(const uint256 &epoch_id) const
         EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
 
     const unsigned m_bits;
@@ -212,8 +240,9 @@ private:
     bool m_rebuilding GUARDED_BY(m_mutex){false};
     bool m_epoch_overflow GUARDED_BY(m_mutex){false};
     std::vector<std::pair<TxId, bool>> m_epoch_changes GUARDED_BY(m_mutex);
-    std::unique_ptr<Epoch> m_current GUARDED_BY(m_mutex);
-    std::unique_ptr<Epoch> m_previous GUARDED_BY(m_mutex);
+    std::shared_ptr<Epoch> m_current GUARDED_BY(m_mutex);
+    std::shared_ptr<const Epoch> m_previous GUARDED_BY(m_mutex);
+    std::shared_ptr<const EpochSnapshot> m_published_epochs;
     //! (admission time, txid), in admission order
     std::deque<std::pair<Clock, TxId>> m_window GUARDED_BY(m_mutex);
     // Numeric cursors survive deque growth; pruning advances its origin.

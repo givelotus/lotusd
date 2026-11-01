@@ -55,14 +55,18 @@ std::optional<uint64_t> ParseShortIdRequestKey(const uint256 &key,
 }
 
 TxRelayIndex::TxRelayIndex(unsigned shortid_bits)
-    : m_bits{std::clamp(shortid_bits, 1U, 64U)} {}
+    : m_bits{std::clamp(shortid_bits, 1U, 64U)},
+      m_published_epochs{std::make_shared<const EpochSnapshot>()} {}
 
 void TxRelayIndex::InsertUnlocked(Epoch &epoch, const TxId &txid) const {
     const uint64_t short_id{ShortId(epoch.key, txid)};
-    if (!epoch.short_id_of.emplace(txid, short_id).second) {
+    if (!epoch.short_id_of.insert(txid, short_id)) {
         return;
     }
-    auto &txids{epoch.by_short_id[short_id]};
+    std::vector<TxId> txids;
+    if (auto existing = epoch.by_short_id.getEntry(short_id)) {
+        txids = existing->value;
+    }
     if (!txids.empty()) {
         // Keep both: either may be requested under this short id.
         ++m_collisions;
@@ -77,6 +81,7 @@ void TxRelayIndex::InsertUnlocked(Epoch &epoch, const TxId &txid) const {
             .Field(BCLog::LogField::Count, uint64_t(txids.size()));
     }
     txids.push_back(txid);
+    epoch.by_short_id.insertOrAssign(short_id, std::move(txids));
 }
 
 void TxRelayIndex::SetEpoch(const EpochKey &key,
@@ -95,10 +100,8 @@ void TxRelayIndex::SetEpoch(const EpochKey &key,
         // Start tracking before taking the snapshot, covering the gap between
         // releasing the mempool lock and building the new epoch as well.
         const auto txs{snapshot()};
-        auto epoch{std::make_unique<Epoch>()};
+        auto epoch{std::make_shared<Epoch>()};
         epoch->key = key;
-        epoch->by_short_id.reserve(txs.size());
-        epoch->short_id_of.reserve(txs.size());
         for (const auto &[txid, time] : txs) {
             InsertUnlocked(*epoch, txid);
         }
@@ -133,8 +136,14 @@ void TxRelayIndex::SetEpoch(const EpochKey &key,
             m_window.assign(window.begin(), window.end());
             m_window_inversions = 0;
         }
-        m_previous = std::move(m_current);
+        m_previous = m_current
+                         ? std::make_shared<const Epoch>(m_current->pinSnapshot())
+                         : nullptr;
         m_current = std::move(epoch);
+        auto published = std::make_shared<const EpochSnapshot>(
+            EpochSnapshot{m_current, m_previous});
+        std::atomic_store_explicit(&m_published_epochs, std::move(published),
+                                   std::memory_order_release);
         // Epoch membership has changed, and first-epoch construction may have
         // reordered/backfilled the admission window.
         m_query_valid = false;
@@ -159,38 +168,34 @@ void TxRelayIndex::RecordEpochChange(const TxId &txid, bool present) {
 }
 
 std::optional<EpochKey> TxRelayIndex::Current() const {
-    LOCK(m_mutex);
-    if (!m_current) {
+    const auto snap{LoadEpochs()};
+    if (!snap || !snap->current) {
         return std::nullopt;
     }
-    return m_current->key;
+    return snap->current->key;
 }
 
 std::vector<EpochKey> TxRelayIndex::Epochs() const {
-    LOCK(m_mutex);
+    const auto snap{LoadEpochs()};
     std::vector<EpochKey> out;
-    if (m_current) {
-        out.push_back(m_current->key);
+    if (!snap) {
+        return out;
     }
-    if (m_previous) {
-        out.push_back(m_previous->key);
+    if (snap->current) {
+        out.push_back(snap->current->key);
+    }
+    if (snap->previous) {
+        out.push_back(snap->previous->key);
     }
     return out;
 }
 
-const TxRelayIndex::Epoch *TxRelayIndex::Get(const uint256 &epoch_id) const {
-    if (m_current && m_current->key.epoch_id == epoch_id) {
-        return m_current.get();
-    }
-    if (m_previous && m_previous->key.epoch_id == epoch_id) {
-        return m_previous.get();
-    }
-    return nullptr;
-}
-
 std::optional<EpochKey> TxRelayIndex::FindEpoch(const uint256 &epoch_id) const {
-    LOCK(m_mutex);
-    const Epoch *epoch{Get(epoch_id)};
+    const auto snap{LoadEpochs()};
+    if (!snap) {
+        return std::nullopt;
+    }
+    const Epoch *epoch{snap->Get(epoch_id)};
     if (!epoch) {
         return std::nullopt;
     }
@@ -201,7 +206,7 @@ void TxRelayIndex::Add(const TxId &txid, Clock time) {
     LOCK(m_mutex);
     RecordEpochChange(txid, true);
     if (m_current) {
-        if (m_current->short_id_of.count(txid)) {
+        if (m_current->short_id_of.contains(txid)) {
             return;
         }
         InsertUnlocked(*m_current, txid);
@@ -217,19 +222,20 @@ void TxRelayIndex::Add(const TxId &txid, Clock time) {
 }
 
 void TxRelayIndex::RemoveFromEpoch(Epoch &epoch, const TxId &txid) {
-    const auto it{epoch.short_id_of.find(txid)};
-    if (it == epoch.short_id_of.end()) {
+    const auto removed_tx{epoch.short_id_of.extractEntry(txid)};
+    if (!removed_tx) {
         return;
     }
-    const auto bucket{epoch.by_short_id.find(it->second)};
-    if (bucket != epoch.by_short_id.end()) {
-        auto &txids{bucket->second};
+    const uint64_t short_id{removed_tx->value};
+    if (const auto bucket{epoch.by_short_id.getEntry(short_id)}) {
+        std::vector<TxId> txids{bucket->value};
         txids.erase(std::remove(txids.begin(), txids.end(), txid), txids.end());
         if (txids.empty()) {
-            epoch.by_short_id.erase(bucket);
+            epoch.by_short_id.erase(short_id);
+        } else {
+            epoch.by_short_id.insertOrAssign(short_id, std::move(txids));
         }
     }
-    epoch.short_id_of.erase(it);
 }
 
 void TxRelayIndex::Remove(const TxId &txid) {
@@ -246,17 +252,17 @@ void TxRelayIndex::Remove(const TxId &txid) {
 TxRelayIndex::Lookup TxRelayIndex::Find(const uint256 &epoch_id,
                                         uint64_t short_id,
                                         std::vector<TxId> *out) const {
-    LOCK(m_mutex);
-    const Epoch *epoch{Get(epoch_id)};
+    const auto snap{LoadEpochs()};
+    const Epoch *epoch{snap ? snap->Get(epoch_id) : nullptr};
     if (!epoch) {
         return Lookup::UNKNOWN_EPOCH;
     }
-    const auto it{epoch->by_short_id.find(short_id)};
-    if (it == epoch->by_short_id.end()) {
+    const auto bucket{epoch->by_short_id.getEntry(short_id)};
+    if (!bucket) {
         return Lookup::MISSING;
     }
     if (out) {
-        out->insert(out->end(), it->second.begin(), it->second.end());
+        out->insert(out->end(), bucket->value.begin(), bucket->value.end());
     }
     return Lookup::HAVE;
 }
@@ -275,7 +281,7 @@ std::vector<TxId> TxRelayIndex::AdmittedSince(Clock since, Clock until) const {
         if (it->first >= until) {
             continue;
         }
-        if (m_current->short_id_of.count(it->second) &&
+        if (m_current->short_id_of.contains(it->second) &&
             seen.insert(it->second).second) {
             out.push_back(it->second);
         }
@@ -285,7 +291,7 @@ std::vector<TxId> TxRelayIndex::AdmittedSince(Clock since, Clock until) const {
 
 void TxRelayIndex::AddQueryOccurrence(const TxId &txid) const {
     AssertLockHeld(m_mutex);
-    if (++m_query_counts[txid] == 1 && m_current->short_id_of.count(txid)) {
+    if (++m_query_counts[txid] == 1 && m_current->short_id_of.contains(txid)) {
         m_query_tree.insert(RCUPtr<WindowEntry>::make(txid));
     }
 }
@@ -322,7 +328,8 @@ TxRelayIndex::PinAdmittedSince(Clock since, Clock until) const {
         WindowTree fallback;
         for (auto it = m_window.rbegin(); it != m_window.rend(); ++it) {
             if (it->first < since) break;
-            if (it->first < until && m_current->short_id_of.count(it->second)) {
+            if (it->first < until &&
+                m_current->short_id_of.contains(it->second)) {
                 fallback.insert(RCUPtr<WindowEntry>::make(it->second));
             }
         }
@@ -374,8 +381,8 @@ void TxRelayIndex::PruneWindow(Clock before) {
 }
 
 size_t TxRelayIndex::Size() const {
-    LOCK(m_mutex);
-    return m_current ? m_current->short_id_of.size() : 0;
+    const auto snap{LoadEpochs()};
+    return (snap && snap->current) ? snap->current->short_id_of.size() : 0;
 }
 
 } // namespace txrelay
