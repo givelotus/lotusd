@@ -4557,7 +4557,7 @@ void PeerManagerImpl::PushBlockMessage(CNode &node,
                                        const BlockMessageCache::Message &msg) {
     CSerializedNetMsg out;
     out.m_type = NetMsgType::BLOCK;
-    out.data = *msg.data;
+    out.shared_data = msg.data;
     out.m_checksum = msg.checksum;
     m_connman.PushMessage(&node, std::move(out));
 }

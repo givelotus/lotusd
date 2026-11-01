@@ -1133,16 +1133,20 @@ V1TransportDeserializer::GetMessage(const std::chrono::microseconds time,
 void V1TransportSerializer::prepareForTransport(
     const Config &config, CSerializedNetMsg &msg,
     std::vector<uint8_t> &header) const {
+    const auto &payload = msg.Payload();
     // create header
     CMessageHeader hdr(config.GetChainParams().NetMagic(), msg.m_type.c_str(),
-                       msg.data.size());
+                       payload.size());
     if (msg.m_checksum) {
         memcpy(hdr.pchChecksum, msg.m_checksum->data(),
                CMessageHeader::CHECKSUM_SIZE);
     } else {
         // create dbl-sha256 checksum
-        const uint256 hash = Hash(msg.data);
+        const uint256 hash = Hash(payload);
         memcpy(hdr.pchChecksum, hash.begin(), CMessageHeader::CHECKSUM_SIZE);
+        std::array<uint8_t, CMessageHeader::CHECKSUM_SIZE> checksum;
+        memcpy(checksum.data(), hash.begin(), CMessageHeader::CHECKSUM_SIZE);
+        msg.m_checksum = checksum;
     }
 
     // serialize header
@@ -4351,20 +4355,20 @@ bool CConnman::NodeFullyConnected(const CNode *pnode) {
 }
 
 void CConnman::PushMessage(CNode *pnode, CSerializedNetMsg &&msg) {
-    size_t nMessageSize = msg.data.size();
+    const size_t nMessageSize = msg.PayloadSize();
     LogEvent(BCLog::NETDEBUG, "peer_message_sent",
              "sending {msg_type} ({bytes} bytes) peer={peer_id}")
         .Field(BCLog::LogField::MsgType, msg.m_type)
         .Field(BCLog::LogField::Bytes, nMessageSize)
         .Field(BCLog::LogField::PeerId, pnode->GetId());
     if (gArgs.GetBoolArg("-capturemessages", false)) {
-        CaptureMessage(pnode->addr, msg.m_type, msg.data,
+        CaptureMessage(pnode->addr, msg.m_type, msg.Payload(),
                        /*is_incoming=*/false);
     }
 
     TRACE6(net, outbound_message, pnode->GetId(), pnode->m_addr_name.c_str(),
            pnode->ConnectionTypeAsString().c_str(), msg.m_type.c_str(),
-           msg.data.size(), msg.data.data());
+           nMessageSize, msg.PayloadData());
 
     // make sure we use the appropriate network transport format
     std::vector<uint8_t> serializedHeader;
@@ -4388,9 +4392,13 @@ void CConnman::PushMessage(CNode *pnode, CSerializedNetMsg &&msg) {
         if (pnode->nSendSize > nSendBufferMaxSize) {
             pnode->fPauseSend = true;
         }
-        pnode->vSendMsg.push_back(std::move(serializedHeader));
+        pnode->vSendMsg.emplace_back(std::move(serializedHeader));
         if (nMessageSize) {
-            pnode->vSendMsg.push_back(std::move(msg.data));
+            if (msg.shared_data) {
+                pnode->vSendMsg.emplace_back(std::move(msg.shared_data));
+            } else {
+                pnode->vSendMsg.emplace_back(std::move(msg.data));
+            }
         }
 
         // If write queue empty, attempt "optimistic write"
