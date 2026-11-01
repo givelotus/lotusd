@@ -1955,4 +1955,33 @@ BOOST_AUTO_TEST_CASE(transaction_subtree_span_partition_matches_arena) {
     BOOST_CHECK(BuildTxSubtreeA(std::vector{left, right}) == arena.SubtreeARoot(root));
 }
 
+BOOST_FIXTURE_TEST_CASE(fast_filter_does_not_hide_a_mempool_spend, TestingSetup) {
+    CTxMemPool &pool{*Assert(m_node.mempool)};
+    LOCK2(cs_main, pool.cs);
+    CMutableTransaction tx;
+    tx.vin.resize(1);
+    tx.vin[0].prevout = COutPoint(TxId{uint256{0x51}}, 0);
+    tx.vout.resize(1);
+    tx.vout[0].nValue = 1 * COIN;
+    tx.vout[0].scriptPubKey = CScript() << OP_TRUE;
+    TestMemPoolEntryHelper entry;
+    const CTransactionRef ref{MakeTransactionRef(tx)};
+    pool.addUnchecked(entry.FromTx(ref));
+    const COutPoint prevout{tx.vin[0].prevout};
+    BOOST_REQUIRE(pool.isSpent(prevout));
+
+    // The filter holds 64-bit fingerprints, so removing another outpoint with
+    // the same fingerprint clears this one's. It's only a hint: the mempool's
+    // own record of the spend decides conflicts.
+    pool.GetUtxoFastFilter().UnmarkSpentInMempool(prevout.GetTxId().begin(),
+                                                  prevout.GetN());
+    BOOST_CHECK(!pool.IsSpentFast(prevout));
+    BOOST_CHECK(pool.isSpent(prevout));
+    BOOST_CHECK(pool.GetConflictTx(prevout) == ref);
+    pool.GetUtxoFastFilter().MarkSpentInMempool(prevout.GetTxId().begin(),
+                                                prevout.GetN());
+    pool.removeRecursive(*ref, MemPoolRemovalReason::MANUAL);
+    BOOST_CHECK(!pool.isSpent(prevout));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
