@@ -597,8 +597,7 @@ private:
     CSHA256 m_script_execution_cache_hasher;
 
 public:
-    CuckooCache::cache<ScriptCacheElement, ScriptCacheHasher>
-        m_script_execution_cache;
+    ScriptExecutionCache m_script_execution_cache;
     SignatureCache m_signature_cache;
 
     ValidationCache(size_t script_execution_cache_bytes,

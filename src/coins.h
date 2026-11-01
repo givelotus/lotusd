@@ -441,6 +441,15 @@ public:
     const Coin *PeekCoin(const COutPoint &outpoint) const;
 
     /**
+     * Thread-safe coin lookup when no writer is concurrently mutating cacheCoins.
+     * Checks cacheCoins.find(outpoint) WITHOUT inserting on a miss; if not
+     * present in cacheCoins, queries base->GetCoin(outpoint) directly.
+     */
+    std::optional<Coin> ReadCoinSideEffectFree(const COutPoint &outpoint) const;
+    bool ReadCoinSideEffectFree(const COutPoint &outpoint, Coin &coin) const;
+    bool HaveCoinSideEffectFree(const COutPoint &outpoint) const;
+
+    /**
      * Return a reference to Coin in the cache, or coinEmpty if not found.
      * This is more efficient than GetCoin.
      *

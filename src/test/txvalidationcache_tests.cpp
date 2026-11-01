@@ -20,6 +20,10 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <atomic>
+#include <thread>
+#include <vector>
+
 BOOST_AUTO_TEST_SUITE(txvalidationcache_tests)
 
 BOOST_FIXTURE_TEST_CASE(tx_mempool_block_doublespend, TestChain100Setup) {
@@ -724,6 +728,52 @@ BOOST_FIXTURE_TEST_CASE(scriptcache_values, TestChain100Setup) {
     // It would also be acceptable to overwrite, but if we ever come to a
     // situation where this matters then neither alternative is better.
     CHECK_CACHE_HAS(key1A, 42);
+}
+
+BOOST_AUTO_TEST_CASE(script_execution_cache_shards_are_thread_safe) {
+    ScriptExecutionCache cache;
+    const auto [elements, bytes] = cache.setup_bytes(1 << 20);
+    BOOST_CHECK_GE(elements, 16U);
+    BOOST_CHECK_LE(bytes, size_t{1} << 20);
+
+    CMutableTransaction mtx;
+    mtx.vin.resize(1);
+    mtx.vout.resize(1);
+    const CTransaction tx{mtx};
+
+    // An empty shard answers without touching the cuckoo table.
+    ScriptCacheElement missing{ScriptCacheKey(tx, 0, CSHA256()), 7};
+    BOOST_CHECK(!cache.get(missing, /*erase=*/false));
+
+    constexpr uint32_t THREADS{4};
+    constexpr uint32_t KEYS_PER_THREAD{1000};
+    std::atomic<uint32_t> found{0};
+    std::atomic<uint32_t> wrong_value{0};
+    std::vector<std::thread> workers;
+    for (uint32_t t = 0; t < THREADS; ++t) {
+        workers.emplace_back([&, t] {
+            for (uint32_t i = 0; i < KEYS_PER_THREAD; ++i) {
+                const uint32_t flags{t * KEYS_PER_THREAD + i};
+                cache.insert({ScriptCacheKey(tx, flags, CSHA256()), int(flags)});
+            }
+            for (uint32_t i = 0; i < KEYS_PER_THREAD; ++i) {
+                const uint32_t flags{t * KEYS_PER_THREAD + i};
+                ScriptCacheElement elem{ScriptCacheKey(tx, flags, CSHA256()), -1};
+                if (cache.get(elem, /*erase=*/false)) {
+                    found.fetch_add(1, std::memory_order_relaxed);
+                    if (elem.nSigChecks != int(flags)) {
+                        wrong_value.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+            }
+        });
+    }
+    for (auto &worker : workers) {
+        worker.join();
+    }
+    BOOST_CHECK_EQUAL(wrong_value.load(), 0U);
+    // The table holds far more than this, so almost every key must still be there.
+    BOOST_CHECK_GE(found.load(), THREADS * KEYS_PER_THREAD * 99 / 100);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -1359,4 +1359,51 @@ BOOST_AUTO_TEST_CASE(get_spent_coins_test) {
     BOOST_CHECK(!GetSpentCoins(tx_partial, coins_cache).has_value());
 }
 
+BOOST_AUTO_TEST_CASE(ccoins_side_effect_free_lookup) {
+    CCoinsView root;
+    CCoinsViewCacheTest base_cache(&root);
+    const COutPoint base_outpoint{TxId{m_rng.rand256()}, 0};
+    const COutPoint child_outpoint{TxId{m_rng.rand256()}, 1};
+    const COutPoint missing_outpoint{TxId{m_rng.rand256()}, 2};
+    const Coin base_coin{CTxOut{5 * COIN, CScript() << OP_TRUE}, 42,
+                         /*IsCoinbase=*/false};
+    const Coin child_coin{CTxOut{7 * COIN, CScript() << OP_TRUE}, 43,
+                          /*IsCoinbase=*/false};
+    base_cache.AddCoin(base_outpoint, Coin{base_coin},
+                       /*possible_overwrite=*/false);
+
+    CCoinsViewCacheTest child_cache(&base_cache);
+    child_cache.AddCoin(child_outpoint, Coin{child_coin},
+                        /*possible_overwrite=*/false);
+    const size_t usage_before = child_cache.DynamicMemoryUsage();
+    const size_t size_before = child_cache.GetCacheSize();
+
+    // Lookup of coin in base_cache through child_cache must succeed without
+    // populating child_cache.map().
+    Coin out;
+    BOOST_CHECK(child_cache.HaveCoinSideEffectFree(base_outpoint));
+    BOOST_CHECK(child_cache.ReadCoinSideEffectFree(base_outpoint, out));
+    BOOST_CHECK(out == base_coin);
+    const auto opt_base_coin = child_cache.ReadCoinSideEffectFree(base_outpoint);
+    BOOST_REQUIRE(opt_base_coin.has_value());
+    BOOST_CHECK(*opt_base_coin == base_coin);
+    BOOST_CHECK(!child_cache.HaveCoinInCache(base_outpoint));
+    BOOST_CHECK_EQUAL(child_cache.DynamicMemoryUsage(), usage_before);
+    BOOST_CHECK_EQUAL(child_cache.GetCacheSize(), size_before);
+
+    // Lookup of coin in child_cache must also succeed without mutating usage.
+    BOOST_CHECK(child_cache.HaveCoinSideEffectFree(child_outpoint));
+    BOOST_CHECK(child_cache.ReadCoinSideEffectFree(child_outpoint, out));
+    BOOST_CHECK(out == child_coin);
+
+    // Spent coin in child_cache shadows base_cache in side-effect-free lookup.
+    BOOST_CHECK(child_cache.SpendCoin(base_outpoint));
+    BOOST_CHECK(!child_cache.HaveCoinSideEffectFree(base_outpoint));
+    BOOST_CHECK(!child_cache.ReadCoinSideEffectFree(base_outpoint, out));
+
+    // Missing coin returns false without mutating child_cache.
+    BOOST_CHECK(!child_cache.HaveCoinSideEffectFree(missing_outpoint));
+    BOOST_CHECK(!child_cache.ReadCoinSideEffectFree(missing_outpoint, out));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

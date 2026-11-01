@@ -132,6 +132,35 @@ const Coin *CCoinsViewCache::PeekCoin(const COutPoint &outpoint) const {
         ? &it->second.coin : nullptr;
 }
 
+std::optional<Coin>
+CCoinsViewCache::ReadCoinSideEffectFree(const COutPoint &outpoint) const {
+    const auto it = cacheCoins.find(outpoint);
+    if (it != cacheCoins.end()) {
+        if (it->second.coin.IsSpent()) {
+            return std::nullopt;
+        }
+        return it->second.coin;
+    }
+    return base ? base->GetCoin(outpoint) : std::nullopt;
+}
+
+bool CCoinsViewCache::ReadCoinSideEffectFree(const COutPoint &outpoint,
+                                             Coin &coin) const {
+    if (auto opt_coin = ReadCoinSideEffectFree(outpoint)) {
+        coin = std::move(*opt_coin);
+        return true;
+    }
+    return false;
+}
+
+bool CCoinsViewCache::HaveCoinSideEffectFree(const COutPoint &outpoint) const {
+    const auto it = cacheCoins.find(outpoint);
+    if (it != cacheCoins.end()) {
+        return !it->second.coin.IsSpent();
+    }
+    return base ? base->HaveCoin(outpoint) : false;
+}
+
 void CCoinsViewCache::AddCoin(const COutPoint &outpoint, Coin coin,
                               bool possible_overwrite) {
     assert(!coin.IsSpent());
