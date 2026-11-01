@@ -14,19 +14,26 @@
 #include <common/args.h>
 #include <consensus/merkle.h>
 #include <consensus/validation.h>
+#include <blockencodings.h>
+#include <net/v2_protocol_handler.h>
 #include <net_processing.h>
 #include <netmessagemaker.h>
 #include <node/chainstatemanager_args.h>
+#include <node/miner.h>
+#include <node/snapshot.h>
 #include <policy/block/parkingpolicy.h>
 #include <policy/block/preconsensus.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <protocol.h>
+#include <rpc/server.h>
 #include <script/script.h>
 #include <streams.h>
+#include <univalue.h>
 #include <validation.h>
 #include <validationinterface.h>
 #include <future>
+#include <numeric>
 
 #include <test/util/net.h>
 #include <test/util/logging.h>
@@ -1401,6 +1408,1363 @@ BOOST_FIXTURE_TEST_CASE(
     BOOST_REQUIRE_EQUAL(finalizedChain.size(), 2U);
     BOOST_CHECK(finalizedChain[0] == batch1);
     BOOST_CHECK(finalizedChain[1] == batch2);
+}
+
+// ============================================================================
+// 1. Two-Stage Snowstorm (1. mempool -> 2. snowballed) with Stateful
+//    Confidence + Consecutive Streak & Mixed Staking + Non-Staking Network
+//    (2. snowballed -> 3. finalized)
+// ============================================================================
+BOOST_FIXTURE_TEST_CASE(
+    snowball_union_two_stage_and_mixed_staking_nonstaking_lifecycle,
+    AvalancheTestChain100Setup) {
+    ChainstateManager &chainman = *Assert(m_node.chainman);
+    Chainstate &active_chainstate = chainman.ActiveChainstate();
+    CBlockIndex *chaintip =
+        WITH_LOCK(chainman.GetMutex(), return chainman.ActiveTip());
+    const BlockHash tipHash = chaintip->GetBlockHash();
+
+    auto rpc = [&](const std::string &method, UniValue params = UniValue(UniValue::VARR)) {
+        JSONRPCRequest request;
+        request.context = &m_node;
+        request.strMethod = method;
+        request.params = std::move(params);
+        return tableRPC.execute(GlobalConfig{}, request);
+    };
+
+    auto makeTx = [](int idx, Amount val) {
+        CMutableTransaction mtx;
+        mtx.nVersion = 2;
+        mtx.vin.resize(1);
+        mtx.vin[0].prevout = COutPoint(TxId(GetRandHash()), idx);
+        mtx.vin[0].scriptSig = CScript() << int64_t(idx);
+        mtx.vout.emplace_back(val, CScript() << OP_TRUE);
+        return MakeTransactionRef(std::move(mtx));
+    };
+
+    CTransactionRef tx1 = makeTx(1, 10 * COIN);
+    CTransactionRef tx2 = makeTx(2, 20 * COIN);
+    CTransactionRef tx3 = makeTx(3, 30 * COIN);
+    CTransactionRef tx4 = makeTx(4, 40 * COIN);
+    CTransactionRef tx5 = makeTx(5, 50 * COIN);
+
+    // Create 3 additional peer mempools (2 staking peers + 1 non-staking peer)
+    // to model a mixed network where each node starts with a partial subset:
+    //   m_node.mempool (staking node 0): {tx1, tx2}
+    //   peerPool1      (staking node 1): {tx2, tx3}
+    //   peerPool2      (staking node 2): {tx3, tx4}
+    //   nonStakingPool (non-staking 3):  {tx4, tx1}
+    CTxMemPool peerPool1(config, CTxMemPool::Options{});
+    CTxMemPool peerPool2(config, CTxMemPool::Options{});
+    CTxMemPool nonStakingPool(config, CTxMemPool::Options{});
+
+    auto initPoolWithTxs = [&](CTxMemPool &pool,
+                               std::initializer_list<CTransactionRef> txs) {
+        TestMemPoolEntryHelper entry;
+        LOCK2(cs_main, pool.cs);
+        pool.clear();
+        pool.ConnectBlockReset(tipHash, uint64_t(chaintip->nHeight + 1),
+                               uint64_t(chaintip->GetMedianTimePast()));
+        for (const auto &tx : txs) {
+            pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx));
+        }
+    };
+
+    initPoolWithTxs(*m_node.mempool, {tx1, tx2});
+    initPoolWithTxs(peerPool1, {tx2, tx3});
+    initPoolWithTxs(peerPool2, {tx3, tx4});
+    initPoolWithTxs(nonStakingPool, {tx4, tx1});
+
+    {
+        LOCK(::cs_main);
+        node::PublishChainTipSnapshot(chainman, m_node.mempool.get());
+    }
+
+    // Stage 0 check: all transactions in m_node.mempool start in state "mempool"
+    for (const auto &tx : {tx1, tx2}) {
+        UniValue p(UniValue::VARR);
+        p.push_back(tx->GetId().ToString());
+        const auto entryJson = rpc("getmempoolentry", std::move(p));
+        BOOST_CHECK_EQUAL(entryJson["preconsensus_state"].get_str(), "mempool");
+        BOOST_CHECK_EQUAL(entryJson["epoch_seq"].getInt<int>(), 0);
+
+        UniValue rawP(UniValue::VARR);
+        rawP.push_back(tx->GetId().ToString());
+        rawP.push_back(true);
+        const auto rawJson = rpc("getrawtransaction", std::move(rawP));
+        BOOST_CHECK_EQUAL(rawJson["preconsensus_state"].get_str(), "mempool");
+    }
+
+    // Verify stateful Snowball root confidence is preserved across root changes:
+    // Record 2 unchanged rounds on initial root R_init ({tx1, tx2}), then union
+    // {tx3, tx4} to transition to R_full ({tx1, tx2, tx3, tx4}).
+    const uint256 rootInit = ComputeV2SubtreeARoot({tx1, tx2});
+    const uint256 rootFull = ComputeV2SubtreeARoot({tx1, tx2, tx3, tx4});
+    constexpr uint32_t kBeta = 4;
+
+    BOOST_CHECK(!m_node.avalanche->stepEpochSnowballReconciliation(
+        tipHash, 1, /*changed_by_union=*/false, kBeta));
+    BOOST_CHECK_EQUAL(
+        m_node.avalanche->getEpochSnowballConfidence(tipHash, 1, rootInit), 1U);
+    BOOST_CHECK_EQUAL(
+        m_node.avalanche->getEpochSnowballConsecutiveRounds(tipHash, 1), 1U);
+
+    BOOST_CHECK(!m_node.avalanche->stepEpochSnowballReconciliation(
+        tipHash, 1, /*changed_by_union=*/false, kBeta));
+    BOOST_CHECK_EQUAL(
+        m_node.avalanche->getEpochSnowballConfidence(tipHash, 1, rootInit), 2U);
+    BOOST_CHECK_EQUAL(
+        m_node.avalanche->getEpochSnowballConsecutiveRounds(tipHash, 1), 2U);
+
+    // Stage 1: Snowball-Union synchronization across all 4 nodes (staking and
+    // non-staking) WITHOUT any voting messages!
+    std::vector<CTxMemPool *> peerPools = {&peerPool1, &peerPool2,
+                                           &nonStakingPool};
+    bool crystallized = false;
+    for (int r = 0; r < 10 && !crystallized; ++r) {
+        // Also let peer pools reconcile with each other so the entire network
+        // converges to the union {tx1, tx2, tx3, tx4}.
+        {
+            std::vector<std::tuple<CTransactionRef, int64_t, int64_t>> p1Txs;
+            {
+                LOCK(peerPool1.cs);
+                p1Txs = peerPool1.GetActiveEpochTransactionsWithMetadata();
+            }
+            for (CTxMemPool *other : {&peerPool2, &nonStakingPool}) {
+                LOCK(other->cs);
+                for (const auto &[ptx, fee, sig] : p1Txs) {
+                    other->UnionTransactionIntoActiveEpoch(ptx, fee, sig, 2, 3);
+                }
+            }
+        }
+        crystallized = m_node.avalanche->reconcileEpochWithPeerMempools(
+            tipHash, peerPools, kBeta);
+
+        // Stateful confidence on rootInit must never be zeroed out even after
+        // the active root moved to rootFull!
+        BOOST_CHECK_EQUAL(
+            m_node.avalanche->getEpochSnowballConfidence(tipHash, 1, rootInit),
+            2U);
+    }
+
+    BOOST_REQUIRE(crystallized);
+    BOOST_CHECK(m_node.avalanche->isEpochSnowballed(tipHash, 1));
+    BOOST_CHECK_GE(
+        m_node.avalanche->getEpochSnowballConfidence(tipHash, 1, rootFull),
+        kBeta);
+    BOOST_CHECK_GE(
+        m_node.avalanche->getEpochSnowballConsecutiveRounds(tipHash, 1),
+        kBeta);
+
+    // Non-staking node also crystallizes Epoch 1 via Snowball-Union
+    {
+        LOCK(nonStakingPool.cs);
+        BOOST_REQUIRE_EQUAL(nonStakingPool.FreezeEpochBatch().GetLayerId(), 1U);
+        BOOST_CHECK_EQUAL(nonStakingPool.MarkEpochSnowballed(1), 4U);
+    }
+
+    // Verify all 4 transactions on m_node.mempool are now in state "frozen"
+    // with epoch_seq == 1!
+    for (const auto &tx : {tx1, tx2, tx3, tx4}) {
+        UniValue p(UniValue::VARR);
+        p.push_back(tx->GetId().ToString());
+        const auto entryJson = rpc("getmempoolentry", std::move(p));
+        BOOST_CHECK_EQUAL(entryJson["preconsensus_state"].get_str(),
+                          "frozen");
+        BOOST_CHECK_EQUAL(entryJson["epoch_seq"].getInt<int>(), 1);
+
+        UniValue rawP(UniValue::VARR);
+        rawP.push_back(tx->GetId().ToString());
+        rawP.push_back(true);
+        const auto rawJson = rpc("getrawtransaction", std::move(rawP));
+        BOOST_CHECK_EQUAL(rawJson["preconsensus_state"].get_str(),
+                          "frozen");
+    }
+    {
+        const auto infoJson = rpc("getmempoolinfo");
+        BOOST_CHECK_EQUAL(infoJson["snowballed_epochs"].getInt<int>(), 1);
+        BOOST_CHECK_EQUAL(infoJson["snowballed_txs"].getInt<int>(), 4);
+        BOOST_CHECK_EQUAL(infoJson["finalized_epochs"].getInt<int>(), 0);
+        BOOST_CHECK_EQUAL(infoJson["finalized_txs"].getInt<int>(), 0);
+    }
+
+    // Verify Snowballed Lock: a late double-spend arriving after Epoch 1 is
+    // snowballed cannot displace tx1 and returns REJECTED_EPOCH_LOCKED!
+    {
+        CMutableTransaction lateDoubleSpend(*tx1);
+        lateDoubleSpend.vout[0].nValue = 9 * COIN;
+        CTransactionRef lateDsRef =
+            MakeTransactionRef(std::move(lateDoubleSpend));
+        LOCK(m_node.mempool->cs);
+        const auto outcome = m_node.mempool->UnionTransactionIntoActiveEpoch(
+            lateDsRef, 5000, 1, 4, 4);
+        BOOST_CHECK(outcome ==
+                    lotus::v2::EpochUnionOutcome::REJECTED_EPOCH_LOCKED);
+        BOOST_CHECK(m_node.mempool->exists(tx1->GetId()));
+        BOOST_CHECK(!m_node.mempool->exists(lateDsRef->GetId()));
+    }
+
+    // Stage 2: Staking nodes vote on BatchId(1); non-staking nodes obey!
+    auto proof = buildRandomProof(active_chainstate, MIN_VALID_PROOF_SCORE);
+    const ProofId &proofid = proof->getId();
+    BOOST_CHECK(
+        m_node.avalanche->withPeerManager([&](avalanche::PeerManager &pm) {
+            return pm.registerProof(proof);
+        }));
+
+    std::array<CNode *, 8> nodes;
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        CAddress addr;
+        auto node =
+            new CNode(static_cast<NodeId>(i + 400), /*sock=*/nullptr, addr, 0,
+                      0, 0, CAddress(), "", ConnectionType::OUTBOUND_FULL_RELAY,
+                      false);
+        node->SetCommonVersion(PROTOCOL_VERSION);
+        node->m_has_all_wanted_services = true;
+        m_node.peerman->InitializeNode(config, *node, NODE_NETWORK);
+        node->nVersion = 1;
+        node->fSuccessfullyConnected = true;
+        m_connman->AddTestNode(*node);
+        m_node.avalanche->setNodeMempoolBatchServices(node->GetId(),
+                                                      NODE_MERKLIX_EPOCH);
+        nodes[i] = node;
+        m_node.avalanche->withPeerManager([&](avalanche::PeerManager &pm) {
+            BOOST_CHECK(pm.addNode(node->GetId(), proofid,
+                                   DEFAULT_AVALANCHE_MAX_ELEMENT_POLL));
+        });
+    }
+    BOOST_CHECK(m_node.avalanche->isQuorumEstablished());
+    BOOST_CHECK(m_node.avalanche->hasBatchPollPeers());
+    BOOST_CHECK_NE(m_node.avalanche->selectBatchPollPeer(), NO_NODE);
+
+    // Retrieve the BatchId(1) registered when Epoch 1 snowballed
+    auto invs = AvalancheTest::getInvsForNextPoll(*m_node.avalanche);
+    uint256 batch1Id = uint256::ZERO;
+    for (const auto &inv : invs) {
+        if (inv.IsMsgMempoolBatch()) {
+            batch1Id = inv.hash;
+            break;
+        }
+    }
+    BOOST_REQUIRE(!batch1Id.IsNull());
+    MempoolBatchAnnouncement batch1;
+    BOOST_REQUIRE(m_node.avalanche->getMempoolBatch(batch1Id, batch1));
+    BOOST_CHECK_EQUAL(batch1.epoch_seq, 1U);
+    BOOST_CHECK_EQUAL(batch1.tx_count, 4U);
+    BOOST_CHECK_EQUAL(batch1.subtree_a_root, rootFull);
+
+    // Vote yes on BatchId(1) across staking quorum until finalized
+    for (int i = 0;
+         i < 2000 && !m_node.avalanche->isMempoolBatchFinalized(batch1Id); ++i) {
+        const uint64_t round = AvalancheTest::getRound(*m_node.avalanche);
+        const auto polledInvs =
+            AvalancheTest::getInvsForNextPoll(*m_node.avalanche);
+        AvalancheTest::runEventLoop(*m_node.avalanche);
+        std::vector<Vote> votes;
+        for (const auto &inv : polledInvs) {
+            votes.emplace_back(0, inv.hash);
+        }
+        Response response(round, 0, votes);
+        std::vector<VoteItemUpdate> updates;
+        bool disconnect = false;
+        std::string error;
+        BOOST_REQUIRE(m_node.avalanche->registerVotes(
+            AvalancheTest::getPolledNode(*m_node.avalanche, round), response,
+            updates, disconnect, error));
+    }
+    BOOST_CHECK(m_node.avalanche->isMempoolBatchFinalized(batch1Id));
+
+    // Verify all 4 transactions on m_node.mempool are now in state "finalized"
+    for (const auto &tx : {tx1, tx2, tx3, tx4}) {
+        UniValue p(UniValue::VARR);
+        p.push_back(tx->GetId().ToString());
+        const auto entryJson = rpc("getmempoolentry", std::move(p));
+        BOOST_CHECK_EQUAL(entryJson["preconsensus_state"].get_str(),
+                          "finalized");
+        BOOST_CHECK_EQUAL(entryJson["epoch_seq"].getInt<int>(), 1);
+    }
+    {
+        const auto infoJson = rpc("getmempoolinfo");
+        BOOST_CHECK_EQUAL(infoJson["finalized_epochs"].getInt<int>(), 1);
+        BOOST_CHECK_EQUAL(infoJson["finalized_txs"].getInt<int>(), 4);
+    }
+
+    // Also test a late-joining non-staking node that initially had {tx1, tx2, tx5}
+    // (missing {tx3, tx4} and holding extra tx5 for Epoch 2): it reconciles
+    // against the staking quorum's finalized BatchId(1), adopts {tx1, tx2, tx3, tx4}
+    // into FrozenEpoch 1 ("finalized"), and preserves extra tx5 in its
+    // speculative layer ("mempool") for Epoch 2!
+    CTxMemPool lateNonStakingPool(config, CTxMemPool::Options{});
+    initPoolWithTxs(lateNonStakingPool, {tx1, tx2, tx5});
+    {
+        LOCK(lateNonStakingPool.cs);
+        std::vector<std::tuple<CTransactionRef, int64_t, int64_t>> batchTxs = {
+            {tx1, 1000, 1}, {tx2, 1000, 1}, {tx3, 1000, 1}, {tx4, 1000, 1}};
+        BOOST_REQUIRE(lateNonStakingPool.ReconcileEpochBatchTransactions(
+            tipHash, batch1.epoch_seq, batch1.subtree_a_root, batch1.utxo_root,
+            batchTxs));
+        BOOST_CHECK_EQUAL(lateNonStakingPool.MarkEpochFinalized(1), 4U);
+
+        for (const auto &tx : {tx1, tx2, tx3, tx4}) {
+            auto it = lateNonStakingPool.mapTx.find(tx->GetId());
+            BOOST_REQUIRE(it != lateNonStakingPool.mapTx.end());
+            BOOST_CHECK((*it)->GetPreconsensusState() ==
+                        TxPreconsensusState::FINALIZED);
+            BOOST_CHECK_EQUAL((*it)->GetEpochSeq(), 1U);
+        }
+        // Extra tx5 remains in speculative_layer_ in MEMPOOL state for Epoch 2!
+        auto it5 = lateNonStakingPool.mapTx.find(tx5->GetId());
+        BOOST_REQUIRE(it5 != lateNonStakingPool.mapTx.end());
+        BOOST_CHECK((*it5)->GetPreconsensusState() ==
+                    TxPreconsensusState::MEMPOOL);
+        BOOST_CHECK_EQUAL((*it5)->GetEpochSeq(), 0U);
+    }
+}
+
+// ============================================================================
+// 2. Avalanche DAG Transitive Confidence Along parent_batch_id
+// ============================================================================
+BOOST_FIXTURE_TEST_CASE(
+    avalanche_dag_transitive_confidence_along_parent_batch_id,
+    AvalancheTestChain100Setup) {
+    ChainstateManager &chainman = *Assert(m_node.chainman);
+    Chainstate &active_chainstate = chainman.ActiveChainstate();
+    CBlockIndex *chaintip =
+        WITH_LOCK(chainman.GetMutex(), return chainman.ActiveTip());
+    const BlockHash tipHash = chaintip->GetBlockHash();
+
+    auto proof = buildRandomProof(active_chainstate, MIN_VALID_PROOF_SCORE);
+    const ProofId &proofid = proof->getId();
+    BOOST_CHECK(
+        m_node.avalanche->withPeerManager([&](avalanche::PeerManager &pm) {
+            return pm.registerProof(proof);
+        }));
+
+    std::array<CNode *, 8> nodes;
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        CAddress addr;
+        auto node =
+            new CNode(static_cast<NodeId>(i + 500), /*sock=*/nullptr, addr, 0,
+                      0, 0, CAddress(), "", ConnectionType::OUTBOUND_FULL_RELAY,
+                      false);
+        node->SetCommonVersion(PROTOCOL_VERSION);
+        node->m_has_all_wanted_services = true;
+        m_node.peerman->InitializeNode(config, *node, NODE_NETWORK);
+        node->nVersion = 1;
+        node->fSuccessfullyConnected = true;
+        m_connman->AddTestNode(*node);
+        m_node.avalanche->setNodeMempoolBatchServices(node->GetId(),
+                                                      NODE_MERKLIX_EPOCH);
+        nodes[i] = node;
+        m_node.avalanche->withPeerManager([&](avalanche::PeerManager &pm) {
+            BOOST_CHECK(pm.addNode(node->GetId(), proofid,
+                                   DEFAULT_AVALANCHE_MAX_ELEMENT_POLL));
+        });
+    }
+    BOOST_CHECK(m_node.avalanche->isQuorumEstablished());
+
+    auto makeTx = [](int idx, Amount val) {
+        CMutableTransaction mtx;
+        mtx.nVersion = 2;
+        mtx.vin.resize(1);
+        mtx.vin[0].prevout = COutPoint(TxId(GetRandHash()), idx);
+        mtx.vin[0].scriptSig = CScript() << int64_t(idx);
+        mtx.vout.emplace_back(val, CScript() << OP_TRUE);
+        return MakeTransactionRef(std::move(mtx));
+    };
+
+    CTransactionRef tx1 = makeTx(11, 10 * COIN);
+    CTransactionRef tx2 = makeTx(12, 20 * COIN);
+    CTransactionRef tx3 = makeTx(13, 30 * COIN);
+    CTransactionRef tx4 = makeTx(14, 40 * COIN);
+
+    {
+        TestMemPoolEntryHelper entry;
+        LOCK2(cs_main, m_node.mempool->cs);
+        m_node.mempool->clear();
+        m_node.mempool->ConnectBlockReset(tipHash, uint64_t(chaintip->nHeight + 1),
+                                          uint64_t(chaintip->GetMedianTimePast()));
+        m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx1));
+        m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx2));
+        BOOST_REQUIRE_EQUAL(m_node.mempool->FreezeEpochBatch().GetLayerId(), 1U);
+        m_node.mempool->MarkEpochSnowballed(1);
+
+        m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx3));
+        m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx4));
+        BOOST_REQUIRE_EQUAL(m_node.mempool->FreezeEpochBatch().GetLayerId(), 2U);
+        m_node.mempool->MarkEpochSnowballed(2);
+    }
+
+    // Register Epoch 1 (batch1) and child Epoch 2 (batch2, parent_batch_id = batch1Id)
+    MempoolBatchAnnouncement batch1;
+    batch1.prev_block_hash = tipHash;
+    batch1.epoch_seq = 1;
+    batch1.parent_batch_id = uint256::ZERO;
+    batch1.subtree_a_root = ComputeV2SubtreeARoot({tx1, tx2});
+    batch1.utxo_root = uint256::ZERO;
+    batch1.tx_count = 2;
+    batch1.short_ids_hash = GetRandHash();
+    const uint256 batch1Id = batch1.ComputeBatchId();
+
+    MempoolBatchAnnouncement batch2;
+    batch2.prev_block_hash = tipHash;
+    batch2.epoch_seq = 2;
+    batch2.parent_batch_id = batch1Id;
+    batch2.subtree_a_root = ComputeV2SubtreeARoot({tx1, tx2, tx3, tx4});
+    batch2.utxo_root = uint256::ZERO;
+    batch2.tx_count = 4;
+    batch2.short_ids_hash = GetRandHash();
+    const uint256 batch2Id = batch2.ComputeBatchId();
+
+    BOOST_REQUIRE(m_node.avalanche->registerMempoolBatch(batch1, true));
+    BOOST_REQUIRE(m_node.avalanche->registerMempoolBatch(batch2, true));
+
+    // Only cast explicit votes on batch2Id in the response (omit batch1Id from
+    // votes or vote yes on batch2Id when polled) and verify that positive votes
+    // on batch2Id transitively advance confidence on ancestor batch1Id!
+    for (int i = 0;
+         i < 2000 && !m_node.avalanche->isMempoolBatchFinalized(batch2Id); ++i) {
+        const uint64_t round = AvalancheTest::getRound(*m_node.avalanche);
+        const auto polledInvs =
+            AvalancheTest::getInvsForNextPoll(*m_node.avalanche);
+        AvalancheTest::runEventLoop(*m_node.avalanche);
+        std::vector<Vote> votes;
+        for (const auto &inv : polledInvs) {
+            // Even if the peer's vote on batch1 is inconclusive (-1), a yes (0)
+            // vote on child batch2 transitively credits parent batch1!
+            const uint32_t err = (inv.hash == batch2Id) ? 0 : uint32_t(-1);
+            votes.emplace_back(err, inv.hash);
+        }
+        Response response(round, 0, votes);
+        std::vector<VoteItemUpdate> updates;
+        bool disconnect = false;
+        std::string error;
+        BOOST_REQUIRE(m_node.avalanche->registerVotes(
+            AvalancheTest::getPolledNode(*m_node.avalanche, round), response,
+            updates, disconnect, error));
+    }
+
+    BOOST_CHECK(m_node.avalanche->isMempoolBatchFinalized(batch2Id));
+    BOOST_CHECK(m_node.avalanche->isMempoolBatchFinalized(batch1Id));
+
+    // Both Epoch 1 ({tx1, tx2}) and Epoch 2 ({tx3, tx4}) transactions must be
+    // marked FINALIZED!
+    {
+        LOCK(m_node.mempool->cs);
+        for (const auto &tx : {tx1, tx2, tx3, tx4}) {
+            auto it = m_node.mempool->mapTx.find(tx->GetId());
+            BOOST_REQUIRE(it != m_node.mempool->mapTx.end());
+            BOOST_CHECK((*it)->GetPreconsensusState() ==
+                        TxPreconsensusState::FINALIZED);
+        }
+    }
+}
+
+// ============================================================================
+// 3. Two-Phase Anti-Drip Poisoning Defense
+// ============================================================================
+BOOST_FIXTURE_TEST_CASE(two_phase_anti_drip_poisoning_defense,
+                        AvalancheTestChain100Setup) {
+    ChainstateManager &chainman = *Assert(m_node.chainman);
+    CBlockIndex *chaintip =
+        WITH_LOCK(chainman.GetMutex(), return chainman.ActiveTip());
+    const BlockHash tipHash = chaintip->GetBlockHash();
+
+    auto rpc = [&](const std::string &method, UniValue params = UniValue(UniValue::VARR)) {
+        JSONRPCRequest request;
+        request.context = &m_node;
+        request.strMethod = method;
+        request.params = std::move(params);
+        return tableRPC.execute(GlobalConfig{}, request);
+    };
+
+    auto makeTx = [](int idx, Amount val) {
+        CMutableTransaction mtx;
+        mtx.nVersion = 2;
+        mtx.vin.resize(1);
+        mtx.vin[0].prevout = COutPoint(TxId(GetRandHash()), idx);
+        mtx.vin[0].scriptSig = CScript() << int64_t(idx);
+        mtx.vout.emplace_back(val, CScript() << OP_TRUE);
+        return MakeTransactionRef(std::move(mtx));
+    };
+
+    CTransactionRef tx1 = makeTx(21, 10 * COIN);
+    CTransactionRef tx2 = makeTx(22, 20 * COIN);
+    CTransactionRef tx3 = makeTx(23, 30 * COIN);
+    CTransactionRef drip1 = makeTx(24, 40 * COIN);
+    CTransactionRef drip2 = makeTx(25, 50 * COIN);
+    CTransactionRef drip3 = makeTx(26, 60 * COIN);
+
+    {
+        LOCK2(cs_main, m_node.mempool->cs);
+        m_node.mempool->clear();
+        m_node.mempool->ConnectBlockReset(tipHash, uint64_t(chaintip->nHeight + 1),
+                                          uint64_t(chaintip->GetMedianTimePast()));
+        m_node.mempool->GetOverlayManager().SetMaxUnrestrictedUnionRounds(3);
+
+        // Phase 1 (rounds 1..3): unrestricted union admits transactions even
+        // with single-peer support (1/4)
+        BOOST_CHECK_EQUAL(
+            m_node.mempool->GetOverlayManager().AdvanceUnionRound(), 1U);
+        BOOST_CHECK(m_node.mempool->UnionTransactionIntoActiveEpoch(
+                        tx1, 1000, 1, 1, 4) ==
+                    lotus::v2::EpochUnionOutcome::ADMITTED);
+
+        BOOST_CHECK_EQUAL(
+            m_node.mempool->GetOverlayManager().AdvanceUnionRound(), 2U);
+        BOOST_CHECK(m_node.mempool->UnionTransactionIntoActiveEpoch(
+                        tx2, 1000, 1, 1, 4) ==
+                    lotus::v2::EpochUnionOutcome::ADMITTED);
+
+        BOOST_CHECK_EQUAL(
+            m_node.mempool->GetOverlayManager().AdvanceUnionRound(), 3U);
+        BOOST_CHECK(m_node.mempool->UnionTransactionIntoActiveEpoch(
+                        tx3, 1000, 1, 1, 4) ==
+                    lotus::v2::EpochUnionOutcome::ADMITTED);
+    }
+
+    const uint256 expectedEpoch1Root = ComputeV2SubtreeARoot({tx1, tx2, tx3});
+
+    // Phase 2 (rounds 4..6 > R_cut = 3): adversary drips 1 new transaction per
+    // round with support = 1 out of sample_size = 4 (1/4 < alpha_union = 1/2).
+    // Each drip transaction MUST be deferred to Epoch E+1 so Epoch 1 root
+    // remains stable and Snowball-Union converges without stalling!
+    for (const auto &dripTx : {drip1, drip2, drip3}) {
+        LOCK(m_node.mempool->cs);
+        m_node.mempool->GetOverlayManager().AdvanceUnionRound();
+        const auto outcome = m_node.mempool->UnionTransactionIntoActiveEpoch(
+            dripTx, 1000, 1, /*peer_sample_support=*/1, /*peer_sample_size=*/4);
+        BOOST_CHECK(outcome ==
+                    lotus::v2::EpochUnionOutcome::DEFERRED_LATE_DRIP);
+
+        // Active Epoch 1 SubtreeARoot must NOT be perturbed by late drips!
+        uint256 curSubtreeA;
+        std::memcpy(curSubtreeA.begin(),
+                    m_node.mempool->GetOverlayManager()
+                        .GetSpeculativeOverlay()
+                        .GetSubtreeARoot()
+                        .data(),
+                    32);
+        BOOST_CHECK_EQUAL(curSubtreeA, expectedEpoch1Root);
+        BOOST_CHECK(!m_node.avalanche->stepEpochSnowballReconciliation(
+            tipHash, 1, /*changed_by_union=*/false, /*beta=*/4));
+    }
+
+    // One more unchanged round crystallizes Epoch 1 despite the adversary's drip!
+    BOOST_CHECK(m_node.avalanche->stepEpochSnowballReconciliation(
+        tipHash, 1, /*changed_by_union=*/false, /*beta=*/4));
+    BOOST_CHECK(m_node.avalanche->isEpochSnowballed(tipHash, 1));
+
+    {
+        const auto infoJson = rpc("getmempoolinfo");
+        BOOST_CHECK_EQUAL(infoJson["late_drip_deferred_txs"].getInt<int>(), 3);
+        BOOST_CHECK_EQUAL(infoJson["snowballed_epochs"].getInt<int>(), 1);
+        BOOST_CHECK_EQUAL(infoJson["snowballed_txs"].getInt<int>(), 3);
+    }
+
+    // When Epoch 1 finalizes, ResolveEpochQuarantineWithBatchId promotes the
+    // 3 deferred drip transactions into Epoch 2!
+    const uint256 batch1Id = GetRandHash();
+    {
+        LOCK(m_node.mempool->cs);
+        m_node.mempool->MarkEpochFinalized(1);
+        m_node.mempool->ResolveEpochQuarantineWithBatchId(batch1Id);
+    }
+
+    {
+        const auto infoJson = rpc("getmempoolinfo");
+        BOOST_CHECK_EQUAL(infoJson["late_drip_deferred_txs"].getInt<int>(), 0);
+        BOOST_CHECK_EQUAL(infoJson["finalized_epochs"].getInt<int>(), 1);
+        BOOST_CHECK_EQUAL(infoJson["finalized_txs"].getInt<int>(), 3);
+
+        LOCK(m_node.mempool->cs);
+        for (const auto &dripTx : {drip1, drip2, drip3}) {
+            auto it = m_node.mempool->mapTx.find(dripTx->GetId());
+            BOOST_REQUIRE(it != m_node.mempool->mapTx.end());
+            BOOST_CHECK((*it)->GetPreconsensusState() ==
+                        TxPreconsensusState::MEMPOOL);
+            BOOST_CHECK_EQUAL((*it)->GetEpochSeq(), 0U);
+            lotus::v2::Hash tid;
+            std::memcpy(tid.data(), dripTx->GetId().begin(), 32);
+            BOOST_CHECK(m_node.mempool->GetOverlayManager()
+                            .GetSpeculativeOverlay()
+                            .Contains(tid));
+        }
+    }
+}
+
+// ============================================================================
+// 4. Option B Conflict Quarantine + BatchId(E) Resolution Across All Arrival
+//    Orders (Triple Spends & Multi-Input Bridging Spends)
+// ============================================================================
+BOOST_FIXTURE_TEST_CASE(
+    option_b_conflict_quarantine_and_batchid_resolution_all_orders,
+    AvalancheTestChain100Setup) {
+    ChainstateManager &chainman = *Assert(m_node.chainman);
+    CBlockIndex *chaintip =
+        WITH_LOCK(chainman.GetMutex(), return chainman.ActiveTip());
+    const BlockHash tipHash = chaintip->GetBlockHash();
+
+    auto makeTxSpending = [](std::initializer_list<COutPoint> prevouts,
+                             Amount val, int salt) {
+        CMutableTransaction mtx;
+        mtx.nVersion = 2;
+        for (const auto &p : prevouts) {
+            CTxIn in(p);
+            in.scriptSig = CScript() << int64_t(salt);
+            mtx.vin.push_back(std::move(in));
+        }
+        mtx.vout.emplace_back(val, CScript() << int64_t(salt) << OP_TRUE);
+        return MakeTransactionRef(std::move(mtx));
+    };
+
+    const COutPoint uClean(TxId(GetRandHash()), 0);
+    const COutPoint uShared(TxId(GetRandHash()), 1);
+    CTransactionRef txClean = makeTxSpending({uClean}, 50 * COIN, 100);
+
+    // Case A: Triple spends T1, T2, T3 spending the same UTXO uShared arriving
+    // in all 6 permutations across 6 peer mempools.
+    CTransactionRef t1 = makeTxSpending({uShared}, 10 * COIN, 1);
+    CTransactionRef t2 = makeTxSpending({uShared}, 11 * COIN, 2);
+    CTransactionRef t3 = makeTxSpending({uShared}, 12 * COIN, 3);
+    std::array<CTransactionRef, 3> tripleTxs = {t1, t2, t3};
+    std::array<size_t, 3> perm = {0, 1, 2};
+
+    std::vector<std::unique_ptr<CTxMemPool>> pools;
+    do {
+        auto pool =
+            std::make_unique<CTxMemPool>(config, CTxMemPool::Options{});
+        LOCK2(cs_main, pool->cs);
+        pool->ConnectBlockReset(tipHash, uint64_t(chaintip->nHeight + 1),
+                                uint64_t(chaintip->GetMedianTimePast()));
+        BOOST_CHECK(pool->UnionTransactionIntoActiveEpoch(txClean, 1000, 1) ==
+                    lotus::v2::EpochUnionOutcome::ADMITTED);
+        for (size_t idx : perm) {
+            pool->UnionTransactionIntoActiveEpoch(tripleTxs[idx], 1000, 1);
+        }
+        // Every permutation must quarantine all 3 conflicting transactions and
+        // leave only txClean in active Epoch 1!
+        BOOST_CHECK_EQUAL(pool->GetQuarantinedConflictTxCount(), 3U);
+        BOOST_CHECK_EQUAL(pool->GetOverlayManager()
+                              .GetSpeculativeOverlay()
+                              .GetTxCount(),
+                          1U);
+        uint256 subA;
+        std::memcpy(subA.begin(),
+                    pool->GetOverlayManager()
+                        .GetSpeculativeOverlay()
+                        .GetSubtreeARoot()
+                        .data(),
+                    32);
+        BOOST_CHECK_EQUAL(subA, ComputeV2SubtreeARoot({txClean}));
+        pools.push_back(std::move(pool));
+    } while (std::next_permutation(perm.begin(), perm.end()));
+    BOOST_REQUIRE_EQUAL(pools.size(), 6U);
+
+    // Resolve quarantine across all 6 peers using the same finalized BatchId(1):
+    // every peer must deterministically promote the exact same single winner
+    // into Epoch 2 and evict the other 2 losers!
+    const uint256 batch1Id = GetRandHash();
+    TxId expectedWinnerId;
+    for (size_t i = 0; i < pools.size(); ++i) {
+        LOCK(pools[i]->cs);
+        BOOST_REQUIRE_EQUAL(pools[i]->FreezeEpochBatch().GetLayerId(), 1U);
+        pools[i]->MarkEpochFinalized(1);
+        const auto res = pools[i]->ResolveEpochQuarantineWithBatchId(batch1Id);
+        BOOST_REQUIRE_EQUAL(res.promoted_winners.size(), 1U);
+        BOOST_CHECK_EQUAL(res.rejected_losers.size(), 2U);
+        BOOST_CHECK_EQUAL(pools[i]->GetQuarantinedConflictTxCount(), 0U);
+        BOOST_CHECK_EQUAL(pools[i]->GetQuarantineWinnersPromoted(), 1U);
+        BOOST_CHECK_EQUAL(pools[i]->GetQuarantineLosersEvicted(), 2U);
+
+        const auto winnerTx = std::static_pointer_cast<const CTransaction>(
+            res.promoted_winners[0].tx_ref);
+        BOOST_REQUIRE(winnerTx != nullptr);
+        if (i == 0) {
+            expectedWinnerId = winnerTx->GetId();
+        } else {
+            BOOST_CHECK_EQUAL(winnerTx->GetId(), expectedWinnerId);
+        }
+        BOOST_CHECK(pools[i]->exists(expectedWinnerId));
+    }
+
+    // Case B: Multi-input bridging conflict:
+    //   b1 spends {u1}
+    //   b2 spends {u1, u2} (bridges b1 and b3)
+    //   b3 spends {u2}
+    // Verify that even when b1 and b3 arrive first (disjoint) and b2 arrives
+    // third, all 3 connected conflicting transactions {b1, b2, b3} are
+    // quarantined out of Epoch 1, matching the arrival order where b2 arrives
+    // first!
+    const COutPoint u1(TxId(GetRandHash()), 10);
+    const COutPoint u2(TxId(GetRandHash()), 20);
+    CTransactionRef b1 = makeTxSpending({u1}, 10 * COIN, 11);
+    CTransactionRef b2 = makeTxSpending({u1, u2}, 20 * COIN, 22);
+    CTransactionRef b3 = makeTxSpending({u2}, 10 * COIN, 33);
+
+    std::vector<std::array<CTransactionRef, 3>> bridgeOrders = {
+        {b1, b3, b2}, // b1 and b3 admitted first, then b2 bridges them
+        {b2, b1, b3}, // b2 admitted first, then b1 and b3 conflict with b2
+        {b3, b2, b1},
+    };
+    const uint256 bridgeBatchId = GetRandHash();
+    std::vector<TxId> canonicalWinners;
+
+    for (size_t idx = 0; idx < bridgeOrders.size(); ++idx) {
+        CTxMemPool pool(config, CTxMemPool::Options{});
+        LOCK2(cs_main, pool.cs);
+        pool.ConnectBlockReset(tipHash, uint64_t(chaintip->nHeight + 1),
+                               uint64_t(chaintip->GetMedianTimePast()));
+        pool.UnionTransactionIntoActiveEpoch(txClean, 1000, 1);
+        for (const auto &tx : bridgeOrders[idx]) {
+            pool.UnionTransactionIntoActiveEpoch(tx, 1000, 1);
+        }
+        BOOST_CHECK_EQUAL(pool.GetQuarantinedConflictTxCount(), 3U);
+        BOOST_CHECK_EQUAL(
+            pool.GetOverlayManager().GetSpeculativeOverlay().GetTxCount(), 1U);
+
+        BOOST_REQUIRE_EQUAL(pool.FreezeEpochBatch().GetLayerId(), 1U);
+        pool.MarkEpochFinalized(1);
+        const auto res = pool.ResolveEpochQuarantineWithBatchId(bridgeBatchId);
+        // Either b2 won alone (1 winner, 2 losers) OR {b1, b3} both won
+        // because they are mutually compatible once b2 is evicted (2 winners, 1 loser)!
+        BOOST_CHECK(res.promoted_winners.size() == 1U ||
+                    res.promoted_winners.size() == 2U);
+        BOOST_CHECK_EQUAL(
+            res.promoted_winners.size() + res.rejected_losers.size(), 3U);
+
+        std::vector<TxId> winners;
+        for (const auto &w : res.promoted_winners) {
+            const auto ptx =
+                std::static_pointer_cast<const CTransaction>(w.tx_ref);
+            winners.push_back(ptx->GetId());
+        }
+        std::sort(winners.begin(), winners.end());
+        if (idx == 0) {
+            canonicalWinners = winners;
+        } else {
+            BOOST_CHECK(winners == canonicalWinners);
+        }
+    }
+
+    // Case C: Parent-Child Conflict Quarantine & Topological BatchId(E)
+    // Resolution across all 6 arrival permutations of {p1, p2, p2_child}:
+    //   p1       spends {uParent}
+    //   p2       spends {uParent} and creates output (p2->GetId(), 0)
+    //   p2_child spends {(p2->GetId(), 0)}
+    // Verify:
+    //   1. In ALL 6 arrival orders (including p1 -> p2 -> p2_child where p2 is
+    //      the incoming `entry`), all 3 transactions {p1, p2, p2_child} are
+    //      quarantined out of Epoch 1!
+    //   2. Under a BatchId where p1 wins over p2, BOTH p2 AND p2_child are
+    //      rejected in `rejected_losers` (p2_child is never promoted when its
+    //      parent p2 lost!).
+    //   3. Under a BatchId where p2 wins over p1 (even if score(p2_child) <
+    //      score(p2)), BOTH p2 AND p2_child are promoted in `promoted_winners`
+    //      with parent p2 promoted BEFORE child p2_child!
+    const COutPoint uParent(TxId(GetRandHash()), 30);
+    CTransactionRef p1 = makeTxSpending({uParent}, 10 * COIN, 101);
+    CTransactionRef p2 = makeTxSpending({uParent}, 11 * COIN, 202);
+    const COutPoint p2Out(p2->GetId(), 0);
+    CTransactionRef p2_child = makeTxSpending({p2Out}, 9 * COIN, 303);
+
+    lotus::v2::Hash h_p1{}, h_p2{}, h_child{};
+    std::memcpy(h_p1.data(), p1->GetId().begin(), 32);
+    std::memcpy(h_p2.data(), p2->GetId().begin(), 32);
+    std::memcpy(h_child.data(), p2_child->GetId().begin(), 32);
+
+    // Find a batchId where p1 beats p2, and a batchId where p2 beats p1 (and
+    // p2_child has an even smaller score than p2 to test parent-before-child
+    // ordering!).
+    uint256 batchP1Wins = uint256::ZERO;
+    uint256 batchP2Wins = uint256::ZERO;
+    for (int attempt = 0;
+         attempt < 10000 && (batchP1Wins.IsNull() || batchP2Wins.IsNull());
+         ++attempt) {
+        const uint256 candBatch = GetRandHash();
+        lotus::v2::Hash hb{};
+        std::memcpy(hb.data(), candBatch.begin(), 32);
+        const auto s1 =
+            lotus::v2::ComputePreconsensusTiebreakScore(hb, h_p1);
+        const auto s2 =
+            lotus::v2::ComputePreconsensusTiebreakScore(hb, h_p2);
+        const auto sc =
+            lotus::v2::ComputePreconsensusTiebreakScore(hb, h_child);
+        if (s1 < s2 && batchP1Wins.IsNull()) {
+            batchP1Wins = candBatch;
+        }
+        if (sc < s2 && s2 < s1 && batchP2Wins.IsNull()) {
+            batchP2Wins = candBatch;
+        }
+    }
+    BOOST_REQUIRE(!batchP1Wins.IsNull());
+    BOOST_REQUIRE(!batchP2Wins.IsNull());
+
+    std::array<CTransactionRef, 3> pcTxs = {p1, p2, p2_child};
+    for (const uint256 &testBatch : {batchP1Wins, batchP2Wins}) {
+        const bool expectP1Wins = (testBatch == batchP1Wins);
+        std::array<size_t, 3> pcPerm = {0, 1, 2};
+        do {
+            CTxMemPool pool(config, CTxMemPool::Options{});
+            LOCK2(cs_main, pool.cs);
+            pool.ConnectBlockReset(tipHash, uint64_t(chaintip->nHeight + 1),
+                                   uint64_t(chaintip->GetMedianTimePast()));
+            pool.UnionTransactionIntoActiveEpoch(txClean, 1000, 1);
+            for (size_t idx : pcPerm) {
+                pool.UnionTransactionIntoActiveEpoch(pcTxs[idx], 1000, 1);
+            }
+            BOOST_CHECK_EQUAL(pool.GetQuarantinedConflictTxCount(), 3U);
+            BOOST_CHECK_EQUAL(
+                pool.GetOverlayManager().GetSpeculativeOverlay().GetTxCount(),
+                1U);
+
+            BOOST_REQUIRE_EQUAL(pool.FreezeEpochBatch().GetLayerId(), 1U);
+            pool.MarkEpochFinalized(1);
+            const auto res = pool.ResolveEpochQuarantineWithBatchId(testBatch);
+            if (expectP1Wins) {
+                BOOST_REQUIRE_EQUAL(res.promoted_winners.size(), 1U);
+                BOOST_REQUIRE_EQUAL(res.rejected_losers.size(), 2U);
+                const auto w0 = std::static_pointer_cast<const CTransaction>(
+                    res.promoted_winners[0].tx_ref);
+                BOOST_CHECK_EQUAL(w0->GetId(), p1->GetId());
+                BOOST_CHECK(pool.exists(p1->GetId()));
+                BOOST_CHECK(!pool.exists(p2->GetId()));
+                BOOST_CHECK(!pool.exists(p2_child->GetId()));
+            } else {
+                BOOST_REQUIRE_EQUAL(res.promoted_winners.size(), 2U);
+                BOOST_REQUIRE_EQUAL(res.rejected_losers.size(), 1U);
+                const auto w0 = std::static_pointer_cast<const CTransaction>(
+                    res.promoted_winners[0].tx_ref);
+                const auto w1 = std::static_pointer_cast<const CTransaction>(
+                    res.promoted_winners[1].tx_ref);
+                // Parent p2 MUST be promoted before child p2_child even though
+                // score(p2_child) < score(p2)!
+                BOOST_CHECK_EQUAL(w0->GetId(), p2->GetId());
+                BOOST_CHECK_EQUAL(w1->GetId(), p2_child->GetId());
+                BOOST_CHECK(pool.exists(p2->GetId()));
+                BOOST_CHECK(pool.exists(p2_child->GetId()));
+                BOOST_CHECK(!pool.exists(p1->GetId()));
+            }
+        } while (std::next_permutation(pcPerm.begin(), pcPerm.end()));
+    }
+}
+
+// ============================================================================
+// 5. Snapblock (SEALEDHEADER) Zero Failures Under Continuous Ingestion &
+//    Full 4-State Lifecycle (mempool -> snowballed -> finalized -> confirmed)
+// ============================================================================
+BOOST_FIXTURE_TEST_CASE(
+    snapblock_sealedheader_zero_failures_under_continuous_ingestion_and_4state_rpc,
+    AvalancheTestChain100Setup) {
+    // Advance 10 blocks so m_coinbase_txns[0..6] all satisfy COINBASE_MATURITY
+    mineBlocks(10);
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    ChainstateManager &chainman = *Assert(m_node.chainman);
+    Chainstate &active_chainstate = chainman.ActiveChainstate();
+    CBlockIndex *chaintip =
+        WITH_LOCK(chainman.GetMutex(), return chainman.ActiveTip());
+    const BlockHash tipHash = chaintip->GetBlockHash();
+
+    auto rpc = [&](const std::string &method, UniValue params = UniValue(UniValue::VARR)) {
+        JSONRPCRequest request;
+        request.context = &m_node;
+        request.strMethod = method;
+        request.params = std::move(params);
+        return tableRPC.execute(GlobalConfig{}, request);
+    };
+
+    const CScript script =
+        CScript() << ToByteVector(coinbaseKey.GetPubKey()) << OP_CHECKSIG;
+
+    // Create 6 valid transactions spending mature coinbases:
+    //   Epoch 1: {tx0, tx1, tx2, tx3} (4 transactions)
+    //   Epoch 2 continuous tail: {tx4, tx5} (2 transactions)
+    std::vector<CTransactionRef> epoch1Txs;
+    std::vector<CTransactionRef> tailTxs;
+    for (int i = 0; i < 6; ++i) {
+        CMutableTransaction mtx = CreateValidMempoolTransaction(
+            m_coinbase_txns[i], 0, i + 1, coinbaseKey, script,
+            m_coinbase_txns[i]->vout[0].nValue - 1000 * SATOSHI, false);
+        CTransactionRef ref = MakeTransactionRef(std::move(mtx));
+        if (i < 4) {
+            epoch1Txs.push_back(ref);
+        } else {
+            tailTxs.push_back(ref);
+        }
+    }
+
+    // 1. Ingest Epoch 1 transactions ("mempool")
+    {
+        TestMemPoolEntryHelper entry;
+        LOCK2(cs_main, m_node.mempool->cs);
+        m_node.mempool->clear();
+        m_node.mempool->ConnectBlockReset(tipHash, uint64_t(chaintip->nHeight + 1),
+                                          uint64_t(chaintip->GetMedianTimePast()));
+        for (const auto &tx : epoch1Txs) {
+            m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx));
+        }
+        node::PublishChainTipSnapshot(chainman, m_node.mempool.get());
+    }
+
+    // 2. Crystallize Epoch 1 via Snowball ("snowballed")
+    for (int r = 0; r < 4; ++r) {
+        m_node.avalanche->stepEpochSnowballReconciliation(
+            tipHash, 1, /*changed_by_union=*/false, /*beta=*/4);
+    }
+    BOOST_CHECK(m_node.avalanche->isEpochSnowballed(tipHash, 1));
+
+    // 3. Finalize Epoch 1 ("finalized")
+    {
+        LOCK(m_node.mempool->cs);
+        BOOST_CHECK_EQUAL(m_node.mempool->MarkEpochFinalized(1), 4U);
+    }
+
+    // 4. Continuously ingest tail transactions {tx4, tx5} into speculative
+    //    Epoch 2 ("mempool") AFTER Epoch 1 is finalized!
+    {
+        TestMemPoolEntryHelper entry;
+        LOCK2(cs_main, m_node.mempool->cs);
+        for (const auto &tx : tailTxs) {
+            m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx));
+        }
+        node::PublishMempoolSnapshot(*m_node.mempool);
+    }
+
+    // Verify mixed states in mempool before block mining:
+    //   epoch1Txs -> "finalized" (epoch_seq = 1)
+    //   tailTxs   -> "mempool"   (epoch_seq = 0)
+    for (const auto &tx : epoch1Txs) {
+        UniValue p(UniValue::VARR);
+        p.push_back(tx->GetId().ToString());
+        const auto e = rpc("getmempoolentry", std::move(p));
+        BOOST_CHECK_EQUAL(e["preconsensus_state"].get_str(), "finalized");
+        BOOST_CHECK_EQUAL(e["epoch_seq"].getInt<int>(), 1);
+    }
+    for (const auto &tx : tailTxs) {
+        UniValue p(UniValue::VARR);
+        p.push_back(tx->GetId().ToString());
+        const auto e = rpc("getmempoolentry", std::move(p));
+        BOOST_CHECK_EQUAL(e["preconsensus_state"].get_str(), "mempool");
+        BOOST_CHECK_EQUAL(e["epoch_seq"].getInt<int>(), 0);
+    }
+
+    // 5. Construct a V2 block mining the frozen Epoch 1 transactions (or full
+    //    speculative overlay) while continuous ingestion adds another unmined
+    //    transaction to the receiver's speculative layer!
+    CTransactionRef extraUnminedTx = [&]() {
+        CMutableTransaction mtx = CreateValidMempoolTransaction(
+            m_coinbase_txns[6], 0, 7, coinbaseKey, script,
+            m_coinbase_txns[6]->vout[0].nValue - 1000 * SATOSHI, false);
+        return MakeTransactionRef(std::move(mtx));
+    }();
+
+    // Build block containing Epoch 1 + tailTxs from the current speculative
+    // overlay, then ingest extraUnminedTx into the receiver's mempool BEFORE
+    // SEALEDHEADER arrives (simulating continuous tx arrival while block is in
+    // flight)!
+    std::vector<CMutableTransaction> blockMtxs;
+    for (const auto &tx : epoch1Txs) blockMtxs.push_back(CMutableTransaction(*tx));
+    for (const auto &tx : tailTxs) blockMtxs.push_back(CMutableTransaction(*tx));
+    CBlock minedBlock = CreateBlock(blockMtxs, CScript() << OP_TRUE, active_chainstate);
+
+    // Freeze Epoch 2 on the receiver before extraUnminedTx arrives, OR freeze
+    // Epoch 1 only and test matching against FrozenEpoch!
+    {
+        TestMemPoolEntryHelper entry;
+        LOCK2(cs_main, m_node.mempool->cs);
+        // Freeze {epoch1Txs + tailTxs} as FrozenEpoch 2, then add extraUnminedTx
+        // into the live speculative layer for Epoch 3!
+        BOOST_REQUIRE_EQUAL(m_node.mempool->FreezeEpochBatch().GetLayerId(), 2U);
+        m_node.mempool->addUnchecked(
+            entry.Fee(1000 * SATOSHI).FromTx(extraUnminedTx));
+        m_node.mempool->FlushPendingOverlayAdds();
+    }
+
+    // Compute valid V2 state root and PoW for minedBlock
+    {
+        LOCK(cs_main);
+        minedBlock.hashMerkleRoot = BlockMerkleRoot(minedBlock);
+        minedBlock.hashStateRoot = ComputeV2BlockStateRoot(
+            minedBlock, minedBlock.hashPrevBlock, minedBlock.nHeight,
+            uint64_t(chaintip->GetMedianTimePast()), false);
+        minedBlock.SetSize(::GetSerializeSize(minedBlock));
+    }
+    while (!CheckProofOfWork(minedBlock.GetHash(), minedBlock.nBits,
+                             config.GetChainParams().GetConsensus())) {
+        ++minedBlock.nNonce;
+    }
+
+    // 6. Deliver SEALEDHEADER over P2P and verify O(1) Merklix overlay fast-path
+    //    reconstruction with ZERO snapblock_failures even though extraUnminedTx
+    //    was already added to the receiver's speculative tail!
+    CAddress addr;
+    auto *peerNode = new CNode(777, /*sock=*/nullptr, addr, 0, 0, 0, CAddress(),
+                               "", ConnectionType::OUTBOUND_FULL_RELAY, false);
+    peerNode->SetCommonVersion(PROTOCOL_VERSION);
+    peerNode->m_has_all_wanted_services = true;
+    m_node.peerman->InitializeNode(config, *peerNode, NODE_NETWORK);
+    peerNode->nVersion = PROTOCOL_VERSION;
+    peerNode->fSuccessfullyConnected = true;
+    m_connman->AddTestNode(*peerNode);
+
+    SealedHeader sealed(minedBlock);
+    DataStream ss{};
+    ss << sealed;
+    std::atomic<bool> interrupt{false};
+    m_node.peerman->ProcessMessage(config, *peerNode, NetMsgType::SEALEDHEADER,
+                                   ss, GetTime<std::chrono::microseconds>(),
+                                   interrupt);
+
+    // Verify block connected via SEALEDHEADER with 0 snapblock failures!
+    BOOST_CHECK_EQUAL(
+        WITH_LOCK(cs_main, return chainman.ActiveTip()->GetBlockHash()),
+        minedBlock.GetHash());
+
+    {
+        LOCK(::cs_main);
+        node::PublishChainTipSnapshot(chainman, m_node.mempool.get());
+    }
+
+    {
+        const auto infoJson = rpc("getmempoolinfo");
+        BOOST_CHECK_EQUAL(infoJson["snapblock_reconstructed"].getInt<int>(), 1);
+        BOOST_CHECK_EQUAL(
+            infoJson["snapblock_overlay_fastpath"].getInt<int>(), 1);
+        BOOST_CHECK_EQUAL(infoJson["snapblock_failures"].getInt<int>(), 0);
+    }
+
+    // 7. Verify 4th lifecycle state ("confirmed") via getrawtransaction(..., true)
+    //    for all mined transactions, while extraUnminedTx remains in "mempool"!
+    for (const auto &tx : epoch1Txs) {
+        UniValue rawP(UniValue::VARR);
+        rawP.push_back(tx->GetId().ToString());
+        rawP.push_back(true);
+        rawP.push_back(minedBlock.GetHash().ToString());
+        const auto rawJson = rpc("getrawtransaction", std::move(rawP));
+        BOOST_CHECK_EQUAL(rawJson["preconsensus_state"].get_str(), "confirmed");
+        BOOST_CHECK_GE(rawJson["confirmations"].getInt<int>(), 1);
+    }
+    {
+        UniValue p(UniValue::VARR);
+        p.push_back(extraUnminedTx->GetId().ToString());
+        const auto e = rpc("getmempoolentry", std::move(p));
+        BOOST_CHECK_EQUAL(e["preconsensus_state"].get_str(), "mempool");
+    }
+}
+
+// ============================================================================
+// 6. Numberless parent_base_root Self-Clocking Layer Promotion & Boundary Race
+// ============================================================================
+BOOST_FIXTURE_TEST_CASE(
+    parent_base_root_self_clocking_layer_promotion_and_boundary_race,
+    AvalancheTestChain100Setup) {
+    ChainstateManager &chainman = *Assert(m_node.chainman);
+    CBlockIndex *chaintip =
+        WITH_LOCK(chainman.GetMutex(), return chainman.ActiveTip());
+    const BlockHash tipHash = chaintip->GetBlockHash();
+
+    auto rpc = [&](const std::string &method,
+                   UniValue params = UniValue(UniValue::VARR)) {
+        JSONRPCRequest request;
+        request.context = &m_node;
+        request.strMethod = method;
+        request.params = std::move(params);
+        return tableRPC.execute(GlobalConfig{}, request);
+    };
+
+    auto makeTx = [](int idx, Amount val) {
+        CMutableTransaction mtx;
+        mtx.nVersion = 2;
+        mtx.vin.resize(1);
+        mtx.vin[0].prevout = COutPoint(TxId(GetRandHash()), idx);
+        mtx.vin[0].scriptSig = CScript() << int64_t(idx);
+        mtx.vout.emplace_back(val, CScript() << OP_TRUE);
+        return MakeTransactionRef(std::move(mtx));
+    };
+
+    CTransactionRef tx1 = makeTx(61, 10 * COIN);
+    CTransactionRef tx2 = makeTx(62, 20 * COIN);
+    CTransactionRef tx3 = makeTx(63, 30 * COIN);
+    CTransactionRef tx4 = makeTx(64, 40 * COIN);
+
+    const uint256 emptyRoot = []() {
+        uint256 out;
+        const auto h = lotus::v2::EmptyTxRoot();
+        std::memcpy(out.begin(), h.data(), 32);
+        return out;
+    }();
+    const uint256 rootR1 = ComputeV2SubtreeARoot({tx1, tx2});
+    const uint256 rootR2 = ComputeV2SubtreeARoot({tx1, tx2, tx3, tx4});
+
+    // Peer A (aheadPeerPool) and Peer B (m_node.mempool) both start at
+    // parent_base_root = EmptyTxRoot() with Layer 1 candidate R_1 = {tx1, tx2}.
+    CTxMemPool aheadPeerPool(config, CTxMemPool::Options{});
+    {
+        TestMemPoolEntryHelper entry;
+        LOCK2(cs_main, aheadPeerPool.cs);
+        aheadPeerPool.clear();
+        aheadPeerPool.ConnectBlockReset(
+            tipHash, uint64_t(chaintip->nHeight + 1),
+            uint64_t(chaintip->GetMedianTimePast()));
+        aheadPeerPool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx1));
+        aheadPeerPool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx2));
+        BOOST_CHECK_EQUAL(aheadPeerPool.GetParentBaseRoot(), emptyRoot);
+        BOOST_CHECK_EQUAL(aheadPeerPool.GetActiveSketchRoot(), rootR1);
+
+        // Stage {tx3, tx4} into Peer A's IncomingMempool while Layer 1 (R_1)
+        // is snowballing: verify R_1's ActiveSketchRoot is NOT perturbed!
+        BOOST_CHECK(aheadPeerPool.StageIncomingTransaction(tx3, 1000, 1));
+        BOOST_CHECK(aheadPeerPool.StageIncomingTransaction(tx4, 1000, 1));
+        BOOST_CHECK_EQUAL(
+            aheadPeerPool.GetOverlayManager().GetIncomingMempoolTxCount(), 2U);
+        BOOST_CHECK_EQUAL(aheadPeerPool.GetActiveSketchRoot(), rootR1);
+    }
+
+    {
+        TestMemPoolEntryHelper entry;
+        LOCK2(cs_main, m_node.mempool->cs);
+        m_node.mempool->clear();
+        m_node.mempool->ConnectBlockReset(
+            tipHash, uint64_t(chaintip->nHeight + 1),
+            uint64_t(chaintip->GetMedianTimePast()));
+        m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx1));
+        m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx2));
+        BOOST_CHECK_EQUAL(m_node.mempool->GetParentBaseRoot(), emptyRoot);
+        BOOST_CHECK_EQUAL(m_node.mempool->GetActiveSketchRoot(), rootR1);
+    }
+
+    // Peer B (m_node) completes beta - 1 = 3 unchanged rounds on R_1 (beta = 4)
+    constexpr uint32_t kBeta = 4;
+    for (uint32_t r = 0; r < kBeta - 1; ++r) {
+        BOOST_CHECK(!m_node.avalanche->stepEpochSnowballReconciliation(
+            tipHash, 1, /*treeChangedInRound=*/false, kBeta));
+    }
+    BOOST_CHECK(!m_node.avalanche->isEpochSnowballed(tipHash, 1));
+
+    // Meanwhile, Peer A finishes its 4th round on R_1 one tick ahead of Peer B!
+    // Freezing R_1 on Peer A folds R_1 into CrystallizedBase (parent_base_root = R_1)
+    // and automatically promotes Peer A's IncomingMempool ({tx3, tx4}) into
+    // Peer A's new ActiveSketchLayer (active_sketch_root = R_2)!
+    {
+        LOCK(aheadPeerPool.cs);
+        BOOST_CHECK_EQUAL(aheadPeerPool.MarkEpochSnowballed(1), 2U);
+        BOOST_CHECK_EQUAL(aheadPeerPool.GetParentBaseRoot(), rootR1);
+        BOOST_CHECK_EQUAL(aheadPeerPool.GetActiveSketchRoot(), rootR2);
+        BOOST_CHECK_EQUAL(
+            aheadPeerPool.GetOverlayManager().GetIncomingMempoolTxCount(), 0U);
+        BOOST_CHECK_EQUAL(
+            aheadPeerPool.GetOverlayManager().GetActiveLayerDeltaTxCount(), 2U);
+    }
+
+    // Verify Boundary Race Classification on Peer B:
+    // Peer B sees Peer A's parent_base_root == Peer B's active_sketch_root (R_1),
+    // which classifies as PEER_AHEAD_CONFIRMS_LOCAL!
+    {
+        uint256 peerParentBase;
+        uint256 peerActiveSketch;
+        {
+            LOCK(aheadPeerPool.cs);
+            peerParentBase = aheadPeerPool.GetParentBaseRoot();
+            peerActiveSketch = aheadPeerPool.GetActiveSketchRoot();
+        }
+        LOCK(m_node.mempool->cs);
+        BOOST_CHECK(m_node.mempool->ClassifyPeerLayerSketch(
+                        peerParentBase, peerActiveSketch) ==
+                    lotus::v2::LayerSyncRelation::PEER_AHEAD_CONFIRMS_LOCAL);
+    }
+
+    // Now Peer B reconciles with Peer A via numberless reconcileEpochWithPeerMempools:
+    // 1. Peer B counts Peer A's parent_base_root == R_1 as confirming R_1
+    //    WITHOUT mixing {tx3, tx4} into Layer 1 (R_1)!
+    // 2. Peer B completes its 4th round on R_1, crystallizing Layer 1 (R_1)
+    //    with exact root R_1 ({tx1, tx2} in state "snowballed", epoch_seq = 1)
+    //    and promoting Peer B's parent_base_root to R_1!
+    // 3. Peer B immediately adopts Peer A's Layer 2 delta ({tx3, tx4}) into
+    //    Peer B's newly promoted ActiveSketchLayer anchored on R_1!
+    std::vector<CTxMemPool *> sampledPeers = {&aheadPeerPool};
+    MempoolBatchAnnouncement batch1;
+    BOOST_REQUIRE(m_node.avalanche->reconcileEpochWithPeerMempools(
+        tipHash, sampledPeers, kBeta, /*autoRegisterBatch=*/true, &batch1));
+    BOOST_CHECK(m_node.avalanche->isEpochSnowballed(tipHash, 1));
+    BOOST_CHECK_EQUAL(batch1.epoch_seq, 1U);
+    BOOST_CHECK_EQUAL(batch1.tx_count, 2U);
+    BOOST_CHECK_EQUAL(batch1.subtree_a_root, rootR1);
+
+    {
+        LOCK(m_node.mempool->cs);
+        BOOST_CHECK_EQUAL(m_node.mempool->GetParentBaseRoot(), rootR1);
+        BOOST_CHECK_EQUAL(m_node.mempool->GetActiveSketchRoot(), rootR2);
+        BOOST_CHECK_GT(m_node.mempool->GetLastLayerConvergenceMs(), 0U);
+    }
+
+    // Verify tx1, tx2 are "frozen" (epoch_seq = 1) and tx3, tx4 are
+    // "mempool" (epoch_seq = 0) in Layer 2!
+    for (const auto &tx : {tx1, tx2}) {
+        UniValue p(UniValue::VARR);
+        p.push_back(tx->GetId().ToString());
+        const auto e = rpc("getmempoolentry", std::move(p));
+        BOOST_CHECK_EQUAL(e["preconsensus_state"].get_str(), "frozen");
+        BOOST_CHECK_EQUAL(e["epoch_seq"].getInt<int>(), 1);
+    }
+    for (const auto &tx : {tx3, tx4}) {
+        UniValue p(UniValue::VARR);
+        p.push_back(tx->GetId().ToString());
+        const auto e = rpc("getmempoolentry", std::move(p));
+        BOOST_CHECK_EQUAL(e["preconsensus_state"].get_str(), "mempool");
+        BOOST_CHECK_EQUAL(e["epoch_seq"].getInt<int>(), 0);
+    }
+
+    const auto infoJson = rpc("getmempoolinfo");
+    BOOST_CHECK_GT(infoJson["last_layer_convergence_ms"].getInt<int64_t>(), 0);
+}
+
+// ============================================================================
+// 7. Pass 15B: Symmetric Phase 2 Minority-Support Demotion with Hysteresis
+//    (m = 2), Transitive Descendant Closure, and Epoch Deferral Latch
+// ============================================================================
+BOOST_FIXTURE_TEST_CASE(
+    phase2_symmetric_minority_demotion_heals_phase1_split,
+    AvalancheTestChain100Setup) {
+    ChainstateManager &chainman = *Assert(m_node.chainman);
+    CBlockIndex *chaintip =
+        WITH_LOCK(chainman.GetMutex(), return chainman.ActiveTip());
+    const BlockHash tipHash = chaintip->GetBlockHash();
+
+    auto makeTxSpending = [](std::initializer_list<COutPoint> prevouts,
+                             Amount val, int salt) {
+        CMutableTransaction mtx;
+        mtx.nVersion = 2;
+        for (const auto &p : prevouts) {
+            CTxIn in(p);
+            in.scriptSig = CScript() << int64_t(salt);
+            mtx.vin.push_back(std::move(in));
+        }
+        mtx.vout.emplace_back(val, CScript() << int64_t(salt) << OP_TRUE);
+        return MakeTransactionRef(std::move(mtx));
+    };
+
+    const COutPoint u1(TxId(GetRandHash()), 0);
+    const COutPoint u2(TxId(GetRandHash()), 1);
+    const COutPoint u3(TxId(GetRandHash()), 2);
+    CTransactionRef tx1 = makeTxSpending({u1}, 10 * COIN, 701);
+    CTransactionRef tx2 = makeTxSpending({u2}, 20 * COIN, 702);
+    CTransactionRef tx3 = makeTxSpending({u3}, 30 * COIN, 703);
+    // tx4 is an in-epoch child spending tx3's output (tx3->GetId(), 0)
+    CTransactionRef tx4 =
+        makeTxSpending({COutPoint(tx3->GetId(), 0)}, 29 * COIN, 704);
+
+    const uint256 rootAB = ComputeV2SubtreeARoot({tx1, tx2});
+    const uint256 rootABCD = ComputeV2SubtreeARoot({tx1, tx2, tx3, tx4});
+
+    // 3 sampled peers hold {tx1, tx2} in Epoch 1 (they deferred tx3 in Phase 2)
+    std::array<std::unique_ptr<CTxMemPool>, 3> peerPools;
+    std::vector<CTxMemPool *> sampledPeers;
+    for (size_t i = 0; i < 3; ++i) {
+        peerPools[i] =
+            std::make_unique<CTxMemPool>(config, CTxMemPool::Options{});
+        LOCK2(cs_main, peerPools[i]->cs);
+        peerPools[i]->ConnectBlockReset(
+            tipHash, uint64_t(chaintip->nHeight + 1),
+            uint64_t(chaintip->GetMedianTimePast()));
+        BOOST_CHECK(peerPools[i]->UnionTransactionIntoActiveEpoch(
+                        tx1, 1000, 1) == lotus::v2::EpochUnionOutcome::ADMITTED);
+        BOOST_CHECK(peerPools[i]->UnionTransactionIntoActiveEpoch(
+                        tx2, 1000, 1) == lotus::v2::EpochUnionOutcome::ADMITTED);
+        sampledPeers.push_back(peerPools[i].get());
+    }
+
+    // Node A (m_node.mempool) admitted {tx1, tx2, tx3, tx4} during Phase 1
+    // (rounds 1..2 with max_unrestricted_union_rounds = 2).
+    {
+        LOCK2(cs_main, m_node.mempool->cs);
+        m_node.mempool->clear();
+        m_node.mempool->ConnectBlockReset(
+            tipHash, uint64_t(chaintip->nHeight + 1),
+            uint64_t(chaintip->GetMedianTimePast()));
+        auto &overlay_mgr = m_node.mempool->GetOverlayManager();
+        overlay_mgr.SetMaxUnrestrictedUnionRounds(2);
+        overlay_mgr.SetUnionRound(2);
+        for (const auto &tx : {tx1, tx2, tx3, tx4}) {
+            BOOST_CHECK(m_node.mempool->UnionTransactionIntoActiveEpoch(
+                            tx, 1000, 1) ==
+                        lotus::v2::EpochUnionOutcome::ADMITTED);
+        }
+        BOOST_CHECK_EQUAL(m_node.mempool->GetActiveSketchRoot(), rootABCD);
+    }
+
+    constexpr uint32_t kBeta = 3;
+    // Phase 2 Round 1 (union_round = 3 > 2):
+    // support(tx3) = 0/3 < 50%, support(tx4) = 0/3 < 50%.
+    // With hysteresis m = 2, streak reaches 1 < 2 so {tx3, tx4} are NOT yet
+    // demoted on the first low-support sample!
+    BOOST_CHECK(!m_node.avalanche->reconcileEpochWithPeerMempools(
+        tipHash, sampledPeers, kBeta, /*autoRegisterBatch=*/true));
+    {
+        LOCK(m_node.mempool->cs);
+        BOOST_CHECK_EQUAL(m_node.mempool->GetActiveSketchRoot(), rootABCD);
+        BOOST_CHECK_EQUAL(m_node.mempool->GetLateDripDeferredTxCount(), 0U);
+    }
+
+    // Phase 2 Round 2 (union_round = 4 > 2):
+    // Streak reaches 2 == m! Node A automatically demotes tx3 AND its
+    // transitive in-epoch child tx4 from active_epoch into
+    // deferred_next_epoch_txs_, latches both in deferred_txids_for_epoch_, and
+    // heals its active SubtreeARoot to rootAB ({tx1, tx2})!
+    BOOST_CHECK(!m_node.avalanche->reconcileEpochWithPeerMempools(
+        tipHash, sampledPeers, kBeta, /*autoRegisterBatch=*/true));
+    {
+        LOCK(m_node.mempool->cs);
+        BOOST_CHECK_EQUAL(m_node.mempool->GetActiveSketchRoot(), rootAB);
+        BOOST_CHECK_EQUAL(m_node.mempool->GetLateDripDeferredTxCount(), 2U);
+        BOOST_CHECK_EQUAL(
+            m_node.mempool->GetOverlayManager().GetDeferredTxIdsForEpoch().size(),
+            2U);
+        // Demoted non-conflicting transactions remain in CTxMemPool::mapTx!
+        BOOST_CHECK(m_node.mempool->exists(tx3->GetId()));
+        BOOST_CHECK(m_node.mempool->exists(tx4->GetId()));
+
+        // Verify Epoch Deferral Latch: even if a peer sample now claims 3/3
+        // support for tx3 during Epoch 1, tx3 is latched to Epoch 2 and cannot
+        // oscillate back into Epoch 1!
+        BOOST_CHECK(m_node.mempool->UnionTransactionIntoActiveEpoch(
+                        tx3, 1000, 1, /*peer_sample_support=*/3,
+                        /*peer_sample_size=*/3) ==
+                    lotus::v2::EpochUnionOutcome::DEFERRED_LATE_DRIP);
+        BOOST_CHECK_EQUAL(m_node.mempool->GetActiveSketchRoot(), rootAB);
+    }
+
+    // Complete the remaining kBeta - 1 = 2 matching rounds on rootAB to
+    // crystallize and freeze Epoch 1 ({tx1, tx2})!
+    BOOST_CHECK(!m_node.avalanche->reconcileEpochWithPeerMempools(
+        tipHash, sampledPeers, kBeta, /*autoRegisterBatch=*/true));
+    MempoolBatchAnnouncement batch1;
+    BOOST_REQUIRE(m_node.avalanche->reconcileEpochWithPeerMempools(
+        tipHash, sampledPeers, kBeta, /*autoRegisterBatch=*/true, &batch1));
+    BOOST_CHECK(m_node.avalanche->isEpochSnowballed(tipHash, 1));
+    BOOST_CHECK_EQUAL(batch1.epoch_seq, 1U);
+    BOOST_CHECK_EQUAL(batch1.tx_count, 2U);
+    BOOST_CHECK_EQUAL(batch1.subtree_a_root, rootAB);
+
+    // Finalize Epoch 1 and resolve deferred transactions into Epoch 2:
+    // verify {tx3, tx4} are promoted in topological order (parent tx3 before
+    // child tx4) into Epoch 2 so ActiveSketchRoot becomes rootABCD!
+    {
+        LOCK(m_node.mempool->cs);
+        BOOST_CHECK_EQUAL(m_node.mempool->MarkEpochFinalized(1), 2U);
+        const auto res = m_node.mempool->ResolveEpochQuarantineWithBatchId(
+            batch1.ComputeBatchId());
+        BOOST_REQUIRE_EQUAL(res.promoted_winners.size(), 2U);
+        BOOST_CHECK_EQUAL(res.rejected_losers.size(), 0U);
+        const auto w0 = std::static_pointer_cast<const CTransaction>(
+            res.promoted_winners[0].tx_ref);
+        const auto w1 = std::static_pointer_cast<const CTransaction>(
+            res.promoted_winners[1].tx_ref);
+        BOOST_CHECK_EQUAL(w0->GetId(), tx3->GetId());
+        BOOST_CHECK_EQUAL(w1->GetId(), tx4->GetId());
+        BOOST_CHECK_EQUAL(m_node.mempool->GetParentBaseRoot(), rootAB);
+        BOOST_CHECK_EQUAL(m_node.mempool->GetActiveSketchRoot(), rootABCD);
+        BOOST_CHECK_EQUAL(m_node.mempool->GetLateDripDeferredTxCount(), 0U);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

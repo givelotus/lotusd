@@ -54,6 +54,8 @@ struct MempoolEntrySnapshot {
     std::vector<TxId> depends;
     std::vector<TxId> spentby;
     bool unbroadcast{false};
+    uint8_t preconsensus_state{0};
+    uint32_t epoch_seq{0};
 };
 
 /**
