@@ -445,6 +445,12 @@ void CTxMemPool::removeForFinalizedBlock(
 }
 
 void CTxMemPool::_clear() {
+    AssertLockHeld(cs);
+    {
+        StdLockGuard guard(m_unbroadcast_log_mutex);
+        m_unbroadcast_log.clear();
+        m_unbroadcast_count.store(0, std::memory_order_relaxed);
+    }
     m_snapshot_changed_entries.clear();
     m_snapshot_needs_reset = true;
     ++m_snapshot_reset_seq;
@@ -1185,10 +1191,53 @@ bool CTxMemPool::CanFitRawTxBatch(
 }
 
 void CTxMemPool::AddUnbroadcastTx(const TxId &txid) {
+    // Holding cs across the whole update keeps the flag, the count and the log
+    // coherent with removal: nothing can detach the entry between finding it and
+    // counting it.
     LOCK(cs);
-    if (exists(txid) && m_unbroadcast_txids.insert(txid).second) {
-        node::PublishMempoolUnbroadcastSnapshot(*this, txid, true);
+    RCUPtr<const CTxMemPoolEntry> entry = m_tx_tree.get(txid);
+    if (!entry || entry->IsUnbroadcast()) {
+        return;
     }
+    // Count first, so a lock-free reader can't see the flag set and the count low.
+    m_unbroadcast_count.fetch_add(1, std::memory_order_relaxed);
+    entry->SetUnbroadcast(true);
+    {
+        StdLockGuard guard(m_unbroadcast_log_mutex);
+        m_unbroadcast_log.push_back(txid);
+        // Entries stay in the log after removal until compaction. Compact on size
+        // too, so that a burst of submissions between rebroadcasts stays bounded.
+        constexpr size_t MIN_LOG_TO_COMPACT{1024};
+        if (m_unbroadcast_log.size() >= MIN_LOG_TO_COMPACT &&
+            m_unbroadcast_log.size() >=
+                2 * m_unbroadcast_count.load(std::memory_order_relaxed)) {
+            CompactUnbroadcastLog();
+        }
+    }
+    node::PublishMempoolUnbroadcastSnapshot(*this, txid, true);
+}
+
+std::set<TxId> CTxMemPool::CompactUnbroadcastLog() const {
+    std::set<TxId> res;
+    for (const TxId &txid : m_unbroadcast_log) {
+        RCUPtr<const CTxMemPoolEntry> entry = m_tx_tree.get(txid);
+        if (entry && entry->IsUnbroadcast()) {
+            res.insert(txid);
+        }
+    }
+    m_unbroadcast_log.assign(res.begin(), res.end());
+    return res;
+}
+
+std::set<TxId> CTxMemPool::GetUnbroadcastTxs() const {
+    StdLockGuard guard(m_unbroadcast_log_mutex);
+    // An adder counts before it logs and logs under this mutex, so a zero read
+    // here can't discard an entry that is already logged.
+    if (m_unbroadcast_count.load(std::memory_order_relaxed) == 0) {
+        m_unbroadcast_log.clear();
+        return {};
+    }
+    return CompactUnbroadcastLog();
 }
 
 CTxMemPool::ScopedSnapshotDefer::~ScopedSnapshotDefer() {
@@ -1203,15 +1252,22 @@ CTxMemPool::ScopedSnapshotDefer::~ScopedSnapshotDefer() {
 }
 
 void CTxMemPool::RemoveUnbroadcastTx(const TxId &txid, const bool unchecked) {
-    LOCK(cs);
-
-    if (m_unbroadcast_txids.erase(txid)) {
-        node::PublishMempoolUnbroadcastSnapshot(*this, txid, false);
-        LogDebug(
-            BCLog::MEMPOOL, "Removed %i from set of unbroadcast txns%s\n",
-            txid.GetHex(),
-            (unchecked ? " before confirmation that txn was sent out" : ""));
+    if (m_unbroadcast_count.load(std::memory_order_relaxed) == 0) {
+        return;
     }
+    LOCK(cs);
+    RCUPtr<const CTxMemPoolEntry> entry = m_tx_tree.get(txid);
+    if (!entry || !entry->SetUnbroadcast(false)) {
+        return;
+    }
+    m_unbroadcast_count.fetch_sub(1, std::memory_order_relaxed);
+    if (!unchecked) {
+        node::PublishMempoolUnbroadcastSnapshot(*this, txid, false);
+    }
+    LogDebug(
+        BCLog::MEMPOOL, "Removed %i from set of unbroadcast txns%s\n",
+        txid.GetHex(),
+        (unchecked ? " before confirmation that txn was sent out" : ""));
 }
 
 void CTxMemPool::RemoveStaged(const setEntries &stage,

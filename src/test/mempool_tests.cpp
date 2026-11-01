@@ -1797,4 +1797,74 @@ BOOST_AUTO_TEST_CASE(lock_free_tx_tree_lookups) {
     BOOST_CHECK(pool.getEntry(txid) == nullptr);
 }
 
+BOOST_FIXTURE_TEST_CASE(unbroadcast_flag_count_and_log_stay_coherent,
+                        TestingSetup) {
+    CTxMemPool &pool = *Assert(m_node.mempool);
+    TestMemPoolEntryHelper entry;
+    entry.SigChecks(0);
+    {
+        LOCK2(cs_main, pool.cs);
+        pool.clear(/*include_finalized_txs=*/true);
+    }
+    FastRandomContext rng{/*fDeterministic=*/true};
+    const auto make_tx{[&] {
+        CMutableTransaction mtx;
+        mtx.nVersion = 2;
+        mtx.vin.emplace_back(TxId{rng.rand256()}, 0);
+        mtx.vout.emplace_back(10000 * SATOSHI, CScript() << OP_TRUE);
+        return MakeTransactionRef(mtx);
+    }};
+    const auto add_to_pool{[&](const CTransactionRef &tx) {
+        LOCK2(cs_main, pool.cs);
+        pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx));
+    }};
+
+    // A transaction that isn't in the pool can't become unbroadcast, and the flag
+    // doesn't survive removal and re-admission.
+    const CTransactionRef tx{make_tx()};
+    pool.AddUnbroadcastTx(tx->GetId());
+    BOOST_CHECK_EQUAL(pool.GetUnbroadcastTxCount(), 0U);
+    add_to_pool(tx);
+    pool.AddUnbroadcastTx(tx->GetId());
+    pool.AddUnbroadcastTx(tx->GetId());
+    BOOST_CHECK_EQUAL(pool.GetUnbroadcastTxCount(), 1U);
+    BOOST_CHECK(pool.IsUnbroadcastTx(tx->GetId()));
+    BOOST_CHECK_EQUAL(pool.GetUnbroadcastTxs().size(), 1U);
+    {
+        LOCK2(cs_main, pool.cs);
+        pool.removeRecursive(*tx, REMOVAL_REASON_DUMMY);
+    }
+    BOOST_CHECK_EQUAL(pool.GetUnbroadcastTxCount(), 0U);
+    add_to_pool(tx);
+    BOOST_CHECK(!pool.IsUnbroadcastTx(tx->GetId()));
+    BOOST_CHECK(pool.GetUnbroadcastTxs().empty());
+
+    // Racing submissions against removal must leave the count equal to the flags.
+    constexpr size_t RACE_TXS{4000};
+    std::vector<CTransactionRef> txs;
+    for (size_t i = 0; i < RACE_TXS; ++i) {
+        txs.push_back(make_tx());
+        add_to_pool(txs.back());
+    }
+    std::thread submitter{[&] {
+        for (const auto &racing : txs) {
+            pool.AddUnbroadcastTx(racing->GetId());
+        }
+    }};
+    size_t removed{0};
+    for (const auto &racing : txs) {
+        LOCK2(cs_main, pool.cs);
+        pool.removeRecursive(*racing, REMOVAL_REASON_DUMMY);
+        ++removed;
+    }
+    submitter.join();
+    BOOST_CHECK_EQUAL(removed, RACE_TXS);
+    BOOST_CHECK_EQUAL(pool.GetUnbroadcastTxCount(), 0U);
+    BOOST_CHECK(pool.GetUnbroadcastTxs().empty());
+    {
+        LOCK2(cs_main, pool.cs);
+        pool.clear(/*include_finalized_txs=*/true);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

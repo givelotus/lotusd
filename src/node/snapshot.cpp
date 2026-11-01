@@ -199,7 +199,7 @@ MempoolEntrySnapshot MakeMempoolEntrySnapshot(const CTxMemPoolEntry &e,
     for (const auto &child : children) {
         entry_snap.spentby.push_back(child.get()->GetTx().GetId());
     }
-    entry_snap.unbroadcast = mempool.IsUnbroadcastTx(entry_snap.txid);
+    entry_snap.unbroadcast = e.IsUnbroadcast();
     return entry_snap;
 }
 
@@ -223,16 +223,19 @@ void CaptureMempoolEntriesLocked(ChainAndMempoolSnapshot &snap,
                    SnapshotAllocator<MempoolSnapshotTree>{}, *prev->entry_tree,
                    MempoolSnapshotTree::ImmutableSnapshotTag{});
     auto capture = [&](const CTxMemPoolEntry &entry) EXCLUSIVE_LOCKS_REQUIRED(mempool.cs) {
-        tree->insert(RCUPtr<ImmutableMempoolEntry>::make(
+        tree->insertOrAssign(RCUPtr<ImmutableMempoolEntry>::make(
             MakeMempoolEntrySnapshot(entry, mempool)));
     };
     if (full) {
         for (const auto &entry : mempool.mapTx) capture(*entry);
     } else {
         for (const TxId &id : mempool.SnapshotChangedEntries()) {
-            tree->remove(Uint256RadixKey(id));
             const auto it = mempool.mapTx.find(id);
-            if (it != mempool.mapTx.end()) capture(**it);
+            if (it != mempool.mapTx.end()) {
+                capture(**it);
+            } else {
+                tree->remove(Uint256RadixKey(id));
+            }
         }
     }
     snap.entry_tree = std::move(tree);

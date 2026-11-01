@@ -985,7 +985,9 @@ public:
     void SendPings() override EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
     void RelayTransaction(const TxId &txid) override
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
-    void RelayTransactionBatch(std::span<const CTransactionRef> txs) override
+    void RelayTransactionBatch(
+        std::span<const CTransactionRef> txs,
+        std::optional<bool> is_local = std::nullopt) override
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
     void RelayProof(const avalanche::ProofId &proofid) override
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
@@ -3873,8 +3875,7 @@ void PeerManagerImpl::SendPings() {
 }
 
 void PeerManagerImpl::RelayTransaction(const TxId &txid) {
-    const bool local =
-        WITH_LOCK(m_mempool.cs, return m_mempool.IsUnbroadcastTx(txid));
+    const bool local = m_mempool.IsUnbroadcastTx(txid);
     // Index the short id now, so that an announcement of this transaction
     // arriving before the next tick is recognised as known.
     m_txrelay_index.Add(txid, GetTime<std::chrono::microseconds>());
@@ -3884,15 +3885,12 @@ void PeerManagerImpl::RelayTransaction(const TxId &txid) {
 }
 
 void PeerManagerImpl::RelayTransactionBatch(
-    std::span<const CTransactionRef> txs) {
+    std::span<const CTransactionRef> txs, std::optional<bool> is_local) {
     if (txs.empty()) {
         return;
     }
-    // Classify only this batch under one coherent mempool view. Allocate the
-    // flags before taking the lock, rather than copying every unbroadcast id.
-    std::vector<bool> local(txs.size(), false);
-    {
-        LOCK(m_mempool.cs);
+    std::vector<bool> local(txs.size(), is_local.value_or(false));
+    if (!is_local.has_value()) {
         for (size_t i = 0; i < txs.size(); ++i) {
             if (txs[i]) {
                 local[i] = m_mempool.IsUnbroadcastTx(txs[i]->GetId());
@@ -3985,18 +3983,15 @@ std::vector<CTransactionRef> PeerManagerImpl::ResolveRelayShortIds(
     }
     std::vector<CTransactionRef> txs;
     txs.reserve(txids.size());
-    {
-        LOCK(m_mempool.cs);
-        for (const TxId &txid : txids) {
-            if (auto tx{m_mempool.get(txid)}) {
-                txs.push_back(std::move(tx));
-            }
+    for (const TxId &txid : txids) {
+        if (auto tx{m_mempool.get(txid)}) {
+            txs.push_back(std::move(tx));
         }
     }
     // A peer fetched them: they have been broadcast (as for getdata).
     // Publish the completed batch before returning it to the peer, rather
     // than cloning the immutable snapshot once for every fetched transaction.
-    {
+    if (m_mempool.GetUnbroadcastTxCount() > 0) {
         LOCK(m_mempool.cs);
         CTxMemPool::ScopedSnapshotDefer defer(m_mempool);
         for (const auto &tx : txs) {
