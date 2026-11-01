@@ -1867,4 +1867,37 @@ BOOST_FIXTURE_TEST_CASE(unbroadcast_flag_count_and_log_stay_coherent,
     }
 }
 
+BOOST_FIXTURE_TEST_CASE(relay_watermark_and_removal_sequence, TestingSetup) {
+    CTxMemPool &pool = *Assert(m_node.mempool);
+    TestMemPoolEntryHelper entry;
+    entry.SigChecks(0);
+    LOCK2(cs_main, pool.cs);
+    pool.clear(/*include_finalized_txs=*/true);
+
+    const uint64_t first_watermark{pool.GetRelayAdmissionWatermark()};
+    const uint64_t first_sequence{pool.GetRemovalSequence()};
+    CMutableTransaction mtx;
+    mtx.nVersion = 2;
+    mtx.vin.emplace_back(TxId{uint256::ONE}, 0);
+    mtx.vout.emplace_back(10000 * SATOSHI, CScript() << OP_TRUE);
+    const CTransactionRef tx{MakeTransactionRef(mtx)};
+
+    // An admission moves only the watermark, and to the id the entry was given.
+    pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx));
+    BOOST_CHECK_EQUAL(pool.GetRelayAdmissionWatermark(), first_watermark + 1);
+    BOOST_CHECK_EQUAL(pool.getEntry(tx->GetId())->GetEntryId(),
+                      pool.GetRelayAdmissionWatermark());
+    BOOST_CHECK_EQUAL(pool.GetRemovalSequence(), first_sequence);
+
+    // A removal moves only the sequence, and the entry is gone once it has moved.
+    pool.removeRecursive(*tx, REMOVAL_REASON_DUMMY);
+    BOOST_CHECK(!pool.exists(tx->GetId()));
+    BOOST_CHECK_EQUAL(pool.GetRemovalSequence(), first_sequence + 1);
+    BOOST_CHECK_EQUAL(pool.GetRelayAdmissionWatermark(), first_watermark + 1);
+
+    pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx));
+    pool.clear(/*include_finalized_txs=*/true);
+    BOOST_CHECK_GT(pool.GetRemovalSequence(), first_sequence + 1);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

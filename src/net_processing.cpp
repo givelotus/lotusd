@@ -1644,6 +1644,7 @@ private:
     std::vector<RelayQueueEntry> m_relay_queue GUARDED_BY(m_relay_queue_mutex);
     std::chrono::microseconds m_next_relay_drain GUARDED_BY(g_msgproc_mutex){0};
     uint64_t m_relay_admission_cursor GUARDED_BY(g_msgproc_mutex){0};
+    uint64_t m_relay_last_removal_seq GUARDED_BY(g_msgproc_mutex){0};
     RelayInventoryWork m_relay_inventory_work GUARDED_BY(g_msgproc_mutex);
     /**
      * Recently relayed transactions and the peers they were announced to, so
@@ -1667,7 +1668,7 @@ private:
         EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !m_peer_mutex);
     /** Apply only new live admissions to existing queued IDs, before selection. */
     void RefreshRelayInventoryAdmissions()
-        EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, cs_main, !m_peer_mutex);
+        EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !m_peer_mutex);
     /** Wake the message handler at each relay tick while inventory waits */
     void ScheduleRelayTick(CScheduler &scheduler);
     /**
@@ -3998,14 +3999,15 @@ uint64_t PeerManagerImpl::ShortIdFor(const Peer &peer, const TxId &txid,
 std::vector<CTransactionRef> PeerManagerImpl::ResolveRelayShortIds(
     const uint256 &context_id, const std::vector<uint64_t> &short_ids) const {
     std::vector<TxId> txids;
+    txids.reserve(short_ids.size());
     for (const uint64_t short_id : short_ids) {
         m_txrelay_index.Find(context_id, short_id, &txids);
     }
     std::vector<CTransactionRef> txs;
     txs.reserve(txids.size());
     for (const TxId &txid : txids) {
-        if (auto tx{m_mempool.get(txid)}) {
-            txs.push_back(std::move(tx));
+        if (auto entry{m_mempool.getEntry(txid)}) {
+            txs.push_back(entry->GetSharedTx());
         }
     }
     // A peer fetched them: they have been broadcast (as for getdata).
@@ -4332,12 +4334,24 @@ void PeerManagerImpl::DrainRelayQueue() {
         target_index.emplace(targets[t].id, t);
     }
 
+    const size_t fanout{TxRelayFanout(targets.size(), m_opts.txrelay_fanout_min,
+                                      m_opts.txrelay_fanout_pct,
+                                      m_opts.txrelay_fanout_max)};
+
     // The nearest in-mempool parent that was relayed recently, if any.
     std::vector<const std::vector<NodeId> *> parent_route(batch.size(),
                                                           nullptr);
     std::vector<std::optional<uint64_t>> admission_ranks(batch.size());
     m_relay_inventory_work.enqueue_rank_lookups += batch.size();
-    {
+    const bool need_parent_routes =
+        targets.size() > fanout && !m_relay_routes.empty();
+    if (!need_parent_routes) {
+        for (size_t i = 0; i < batch.size(); ++i) {
+            if (const auto entry = m_mempool.getEntry(batch[i].txid)) {
+                admission_ranks[i] = entry->GetEntryId();
+            }
+        }
+    } else {
         LOCK(m_mempool.cs);
         for (size_t i = 0; i < batch.size(); ++i) {
             const auto it{m_mempool.GetIter(batch[i].txid)};
@@ -4345,20 +4359,18 @@ void PeerManagerImpl::DrainRelayQueue() {
                 continue;
             }
             admission_ranks[i] = (**it)->GetEntryId();
-            for (const auto &parent : (**it)->GetMemPoolParentsConst()) {
-                const auto route{
-                    m_relay_routes.find(parent.get()->GetTx().GetId())};
-                if (route != m_relay_routes.end()) {
-                    parent_route[i] = &route->second;
-                    break;
+            if (!batch[i].local) {
+                for (const auto &parent : (**it)->GetMemPoolParentsConst()) {
+                    const auto route{
+                        m_relay_routes.find(parent.get()->GetTx().GetId())};
+                    if (route != m_relay_routes.end()) {
+                        parent_route[i] = &route->second;
+                        break;
+                    }
                 }
             }
         }
     }
-
-    const size_t fanout{TxRelayFanout(targets.size(), m_opts.txrelay_fanout_min,
-                                      m_opts.txrelay_fanout_pct,
-                                      m_opts.txrelay_fanout_max)};
     std::vector<size_t> candidates;
     std::vector<bool> chosen(targets.size());
     std::vector<std::pair<TxId, std::vector<NodeId>>> new_routes;
@@ -4448,15 +4460,45 @@ void PeerManagerImpl::DrainRelayQueue() {
 
 void PeerManagerImpl::RefreshRelayInventoryAdmissions() {
     AssertLockHeld(g_msgproc_mutex);
-    AssertLockHeld(cs_main);
     const uint64_t cursor = m_relay_admission_cursor;
-    auto admissions = WITH_LOCK(
-        m_mempool.cs, return m_mempool.ReadRelayAdmissionsAfter(cursor));
+    const uint64_t watermark = m_mempool.GetRelayAdmissionWatermark();
+    if (watermark <= cursor) {
+        return;
+    }
+    const uint64_t removal_seq = m_mempool.GetRemovalSequence();
+    if (removal_seq == m_relay_last_removal_seq) {
+        LOCK(m_peer_mutex);
+        bool any_stale = false;
+        size_t non_empty_peers = 0;
+        for (const auto &[id, peer] : m_peer_map) {
+            auto *relay = peer->GetTxRelay();
+            if (!relay) continue;
+            LOCK(relay->m_tx_inventory_mutex);
+            if (relay->m_tx_inventory_to_send.Empty()) continue;
+            ++non_empty_peers;
+            if (relay->m_tx_inventory_to_send.StaleSize() > 0) {
+                any_stale = true;
+                break;
+            }
+        }
+        if (!any_stale && m_mempool.GetRemovalSequence() == removal_seq) {
+            const uint64_t delta = watermark - cursor;
+            m_relay_inventory_work.new_admission_facts += delta;
+            m_relay_inventory_work.peer_suffix_checks +=
+                delta * non_empty_peers;
+            m_relay_admission_cursor = watermark;
+            return;
+        }
+    }
+    uint64_t captured_removal_seq = 0;
+    auto admissions = WITH_LOCK(m_mempool.cs, {
+        captured_removal_seq = m_mempool.GetRemovalSequence();
+        return m_mempool.ReadRelayAdmissionsAfter(cursor);
+    });
     m_relay_inventory_work.new_admission_facts += admissions.entries.size();
     if (!admissions.entries.empty()) {
         // Release mempool.cs before taking peer/inventory locks: selection
-        // keeps the existing inventory -> mempool lock order. cs_main keeps
-        // admission/removal stable while applying this captured suffix.
+        // keeps the existing inventory -> mempool lock order.
         LOCK(m_peer_mutex);
         for (const auto &[id, peer] : m_peer_map) {
             auto *relay = peer->GetTxRelay();
@@ -4474,6 +4516,7 @@ void PeerManagerImpl::RefreshRelayInventoryAdmissions() {
     // This depends on serialized ID assignment AND publication; a future
     // parallel reservation counter is not a committed publication frontier.
     m_relay_admission_cursor = admissions.watermark;
+    m_relay_last_removal_seq = captured_removal_seq;
 }
 
 void PeerManagerImpl::MarkPeerKnownTx(NodeId peer_id, const TxId &txid) {
@@ -11228,7 +11271,6 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
     };
 
     {
-        LOCK(cs_main);
         RefreshRelayInventoryAdmissions();
 
         {
@@ -11488,7 +11530,7 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                 m_txrelay_wake.store(true, std::memory_order_relaxed);
             }
         }
-    } // release cs_main
+    }
 
     if (!vShortTxBatch.empty()) {
         for (size_t offset = 0; offset < vShortTxBatch.size();
@@ -11510,6 +11552,7 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
         MakeAndPushMessage(*pto, NetMsgType::INV, vInv);
     }
 
+    std::vector<CInv> vGetData;
     {
         LOCK(cs_main);
 
@@ -11617,18 +11660,10 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
         // Check that outbound peers have reasonable chains GetTime() is used by
         // this anti-DoS logic so we can test this using mocktime.
         ConsiderEviction(*pto, *peer, GetTime<std::chrono::seconds>());
-    } // release cs_main
 
-    std::vector<CInv> vGetData;
-
-    //
-    // Message: getdata (blocks)
-    //
-    {
-        LOCK(cs_main);
-
-        CNodeState &state = *State(pto->GetId());
-
+        //
+        // Message: getdata (blocks)
+        //
         if (CanServeBlocks(*peer) &&
             ((sync_blocks_and_headers_from_peer && !IsLimitedPeer(*peer)) ||
              !m_chainman.IsInitialBlockDownload()) &&

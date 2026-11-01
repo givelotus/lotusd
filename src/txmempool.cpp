@@ -168,6 +168,7 @@ CTxMemPool::txiter CTxMemPool::addUnchecked(
     CTxMemPoolEntryRef entry,
     bool search_mempool_parents,
     std::span<const txiter> batch_parent_iters) {
+    AssertLockHeld(cs);
     // get a guaranteed unique id (in case tests re-use the same object)
     entry->SetEntryId(nextEntryId++);
 
@@ -309,6 +310,9 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason) {
     m_tx_tree.remove(txid);
     mapTx.erase(it);
     nTransactionsUpdated++;
+    // After the removal is visible, so that a reader that caches a lookup under
+    // this sequence can't have seen the entry that it says is gone.
+    m_removal_sequence.fetch_add(1, std::memory_order_release);
 }
 
 // Calculates descendants of entry that are not already in setDescendants, and
@@ -462,6 +466,7 @@ void CTxMemPool::_clear() {
     mapTx.clear();
     m_next_tx.clear();
     mapTx.get_allocator().resource()->ReleaseUnusedChunks();
+    m_removal_sequence.fetch_add(1, std::memory_order_release);
     m_utxo_fast_filter.ClearMempool();
     totalTxSize = 0;
     m_total_fee = Amount::zero();
@@ -1356,9 +1361,17 @@ void CTxMemPool::UpdateParent(txiter entry, txiter parent, bool add) {
 }
 
 CFeeRate CTxMemPool::GetMinFee(size_t sizelimit) const {
+    const double rate = rollingMinimumFeeRate.load(std::memory_order_relaxed);
+    if (!blockSinceLastRollingFeeBump.load(std::memory_order_relaxed) ||
+        rate == 0) {
+        return CFeeRate(int64_t(ceill(rate)) * SATOSHI);
+    }
+
     LOCK(cs);
     if (!blockSinceLastRollingFeeBump || rollingMinimumFeeRate == 0) {
-        return CFeeRate(int64_t(ceill(rollingMinimumFeeRate)) * SATOSHI);
+        return CFeeRate(int64_t(ceill(rollingMinimumFeeRate.load(
+                                    std::memory_order_relaxed))) *
+                        SATOSHI);
     }
 
     int64_t time = GetTime();
@@ -1375,7 +1388,9 @@ CFeeRate CTxMemPool::GetMinFee(size_t sizelimit) const {
             pow(2.0, (time - lastRollingFeeUpdate) / halflife);
         lastRollingFeeUpdate = time;
     }
-    return CFeeRate(int64_t(ceill(rollingMinimumFeeRate)) * SATOSHI);
+    return CFeeRate(int64_t(ceill(rollingMinimumFeeRate.load(
+                                std::memory_order_relaxed))) *
+                    SATOSHI);
 }
 
 void CTxMemPool::trackPackageRemoved(const CFeeRate &rate) {
