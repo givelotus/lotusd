@@ -342,4 +342,30 @@ BOOST_AUTO_TEST_CASE(unchanged_backlog_has_no_scan_or_rebuild) {
     BOOST_CHECK_EQUAL(queue.StaleSize(), 0U);
 }
 
+BOOST_AUTO_TEST_CASE(update_rank_only_touches_present_entries) {
+    txrelay::RelayInventoryQueue queue;
+    // Unlike SetRank, a rank update for an absent transaction adds nothing.
+    BOOST_CHECK(!queue.UpdateRankIfPresent(QueueId(1), 10));
+    BOOST_CHECK(queue.Empty());
+
+    BOOST_CHECK(queue.SetRank(QueueId(1), std::nullopt));
+    BOOST_CHECK(queue.SetRank(QueueId(2), 20));
+    BOOST_CHECK_EQUAL(queue.StaleSize(), 1U);
+
+    // Stale to live joins the rank order, an unchanged rank is a no-op, a new
+    // rank reorders, and live to stale moves to the tail.
+    BOOST_CHECK(queue.UpdateRankIfPresent(QueueId(1), 30));
+    BOOST_CHECK_EQUAL(queue.StaleSize(), 0U);
+    BOOST_CHECK_EQUAL(queue.LiveSize(), 2U);
+    BOOST_CHECK(!queue.UpdateRankIfPresent(QueueId(1), 30));
+    BOOST_REQUIRE(queue.Peek());
+    BOOST_CHECK(queue.Peek()->txid == QueueId(2));
+    BOOST_CHECK(queue.UpdateRankIfPresent(QueueId(1), 5));
+    BOOST_CHECK(queue.Peek()->txid == QueueId(1));
+    BOOST_CHECK(queue.UpdateRankIfPresent(QueueId(1), std::nullopt));
+    BOOST_CHECK_EQUAL(queue.StaleSize(), 1U);
+    BOOST_CHECK(queue.Peek()->txid == QueueId(2));
+    BOOST_CHECK_EQUAL(queue.Size(), 2U);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

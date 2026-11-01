@@ -58,10 +58,10 @@ TxRelayIndex::TxRelayIndex(unsigned shortid_bits)
     : m_bits{std::clamp(shortid_bits, 1U, 64U)},
       m_published_epochs{std::make_shared<const EpochSnapshot>()} {}
 
-void TxRelayIndex::InsertUnlocked(Epoch &epoch, const TxId &txid) const {
+bool TxRelayIndex::InsertUnlocked(Epoch &epoch, const TxId &txid) const {
     const uint64_t short_id{ShortId(epoch.key, txid)};
     if (!epoch.short_id_of.insert(txid, short_id)) {
-        return;
+        return false;
     }
     std::vector<TxId> txids;
     if (auto existing = epoch.by_short_id.getEntry(short_id)) {
@@ -82,6 +82,7 @@ void TxRelayIndex::InsertUnlocked(Epoch &epoch, const TxId &txid) const {
     }
     txids.push_back(txid);
     epoch.by_short_id.insertOrAssign(short_id, std::move(txids));
+    return true;
 }
 
 void TxRelayIndex::SetEpoch(const EpochKey &key,
@@ -202,14 +203,12 @@ std::optional<EpochKey> TxRelayIndex::FindEpoch(const uint256 &epoch_id) const {
     return epoch->key;
 }
 
-void TxRelayIndex::Add(const TxId &txid, Clock time) {
-    LOCK(m_mutex);
+void TxRelayIndex::AddUnlocked(const TxId &txid, Clock time) {
     RecordEpochChange(txid, true);
     if (m_current) {
-        if (m_current->short_id_of.contains(txid)) {
+        if (!InsertUnlocked(*m_current, txid)) {
             return;
         }
-        InsertUnlocked(*m_current, txid);
     }
     if (m_query_valid && m_query_counts.count(txid)) {
         m_query_tree.insert(RCUPtr<WindowEntry>::make(txid));
@@ -219,6 +218,23 @@ void TxRelayIndex::Add(const TxId &txid, Clock time) {
         m_query_valid = false;
     }
     m_window.emplace_back(time, txid);
+}
+
+void TxRelayIndex::Add(const TxId &txid, Clock time) {
+    LOCK(m_mutex);
+    AddUnlocked(txid, time);
+}
+
+void TxRelayIndex::AddBatch(std::span<const CTransactionRef> txs, Clock time) {
+    if (txs.empty()) {
+        return;
+    }
+    LOCK(m_mutex);
+    for (const auto &tx : txs) {
+        if (tx) {
+            AddUnlocked(tx->GetId(), time);
+        }
+    }
 }
 
 void TxRelayIndex::RemoveFromEpoch(Epoch &epoch, const TxId &txid) {

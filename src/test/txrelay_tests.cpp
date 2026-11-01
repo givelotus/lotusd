@@ -1580,4 +1580,38 @@ BOOST_AUTO_TEST_CASE(txrelay_index_lookups_stay_coherent_during_rotation) {
     BOOST_CHECK_EQUAL(index.Size(), 1U);
 }
 
+BOOST_AUTO_TEST_CASE(txrelay_index_add_batch_matches_single_adds) {
+    using txrelay::TxRelayIndex;
+    const auto key{txrelay::MakeEpochKey(BlockHash{uint256::ONE}, 1)};
+    TxRelayIndex batched{/*shortid_bits=*/32};
+    TxRelayIndex single{/*shortid_bits=*/32};
+    batched.SetEpoch(key, [] { return TxRelayIndex::Snapshot{}; });
+    single.SetEpoch(key, [] { return TxRelayIndex::Snapshot{}; });
+
+    std::vector<CTransactionRef> txs;
+    for (uint32_t i = 0; i < 16; ++i) {
+        CMutableTransaction mtx;
+        mtx.nLockTime = i;
+        txs.push_back(MakeTransactionRef(mtx));
+    }
+    // A null slot is skipped, and a repeat doesn't count twice.
+    txs.push_back(nullptr);
+    txs.push_back(txs[0]);
+    batched.AddBatch(txs, TxRelayIndex::Clock{});
+    batched.AddBatch({}, TxRelayIndex::Clock{});
+    for (const auto &tx : txs) {
+        if (tx) single.Add(tx->GetId(), TxRelayIndex::Clock{});
+    }
+    BOOST_CHECK_EQUAL(batched.Size(), 16U);
+    BOOST_CHECK_EQUAL(batched.Size(), single.Size());
+    for (const auto &tx : txs) {
+        if (!tx) continue;
+        std::vector<TxId> found;
+        BOOST_CHECK(batched.Find(key.epoch_id, batched.ShortId(key, tx->GetId()),
+                                 &found) == TxRelayIndex::Lookup::HAVE);
+        BOOST_CHECK(std::find(found.begin(), found.end(), tx->GetId()) !=
+                    found.end());
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
