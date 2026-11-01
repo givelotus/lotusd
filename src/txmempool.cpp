@@ -188,6 +188,7 @@ CTxMemPool::txiter CTxMemPool::addUnchecked(
     // Sanity check: It is a programming error if insertion fails (uniqueness
     // invariants in mapTx are violated, etc)
     assert(inserted);
+    m_size.store(mapTx.size(), std::memory_order_release);
     // Sanity check: We should always end up inserting at the end of the
     // entry_id index
     assert(&*mapTx.get<entry_id>().rbegin() == &*newit);
@@ -309,6 +310,7 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason) {
         memusage::DynamicUsage((*it)->GetMemPoolChildrenConst());
     m_tx_tree.remove(txid);
     mapTx.erase(it);
+    m_size.store(mapTx.size(), std::memory_order_release);
     nTransactionsUpdated++;
     // After the removal is visible, so that a reader that caches a lookup under
     // this sequence can't have seen the entry that it says is gone.
@@ -464,6 +466,7 @@ void CTxMemPool::_clear() {
     m_overlay_warm.store(true, std::memory_order_relaxed);
     m_tx_tree = LiveTxTree{};
     mapTx.clear();
+    m_size.store(0, std::memory_order_release);
     m_next_tx.clear();
     mapTx.get_allocator().resource()->ReleaseUnusedChunks();
     m_removal_sequence.fetch_add(1, std::memory_order_release);

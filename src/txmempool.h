@@ -354,6 +354,8 @@ public:
         RadixTree<CTxMemPoolEntry, MemPoolEntryRadixTreeAdapter,
                   GlobalConcurrentSlabAllocator<std::byte, 1024>>;
     LiveTxTree m_tx_tree;
+    //! mapTx.size(), written with cs held so that size() needn't take it.
+    std::atomic<size_t> m_size{0};
     RadixTree<CTxMemPoolEntry, MemPoolEntryRadixTreeAdapter> finalizedTxs;
 
 private:
@@ -552,9 +554,12 @@ public:
      */
     void SetLoadTried(bool load_tried);
 
-    unsigned long size() const {
-        LOCK(cs);
-        return mapTx.size();
+    /**
+     * Number of transactions, without cs. Taken with other mempool state it
+     * may be out of step unless cs is held.
+     */
+    unsigned long size() const noexcept {
+        return m_size.load(std::memory_order_acquire);
     }
 
     uint64_t GetTotalTxSize() const EXCLUSIVE_LOCKS_REQUIRED(cs) {

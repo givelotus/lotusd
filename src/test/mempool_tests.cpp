@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <chrono>
 #include <future>
+#include <future>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -1898,6 +1899,34 @@ BOOST_FIXTURE_TEST_CASE(relay_watermark_and_removal_sequence, TestingSetup) {
     pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx));
     pool.clear(/*include_finalized_txs=*/true);
     BOOST_CHECK_GT(pool.GetRemovalSequence(), first_sequence + 1);
+}
+
+BOOST_AUTO_TEST_CASE(size_reads_do_not_wait_for_the_mempool_lock) {
+    CTxMemPool &pool{*Assert(m_node.mempool)};
+    LOCK2(cs_main, pool.cs);
+    TestMemPoolEntryHelper entry;
+    CMutableTransaction tx;
+    tx.vin.resize(1);
+    tx.vin[0].scriptSig = CScript() << OP_1;
+    tx.vout.resize(1);
+    tx.vout[0].scriptPubKey = CScript() << OP_1 << OP_EQUAL;
+    tx.vout[0].nValue = 1 * COIN;
+    const CTransactionRef ref{MakeTransactionRef(tx)};
+    pool.addUnchecked(entry.FromTx(ref));
+
+    // On another thread, as this one holds the recursive cs.
+    auto add_result = std::async(std::launch::async, [&] { return pool.size(); });
+    BOOST_REQUIRE(add_result.wait_for(std::chrono::seconds{10}) ==
+                  std::future_status::ready);
+    BOOST_CHECK_EQUAL(add_result.get(), 1U);
+
+    // The count follows removal and clearing as well as additions.
+    pool.removeRecursive(*ref, MemPoolRemovalReason::MANUAL);
+    BOOST_CHECK_EQUAL(pool.size(), 0U);
+    pool.addUnchecked(entry.FromTx(ref));
+    BOOST_CHECK_EQUAL(pool.size(), 1U);
+    pool.clear();
+    BOOST_CHECK_EQUAL(pool.size(), 0U);
 }
 
 BOOST_AUTO_TEST_CASE(limit_size_acts_only_when_there_is_something_to_do) {
