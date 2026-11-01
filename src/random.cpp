@@ -432,6 +432,7 @@ class RNGState {
      * here (unless always_use_real_rng is passed to MixExtract).
      */
     std::optional<ChaCha20> m_deterministic_prng GUARDED_BY(m_mutex);
+    std::atomic<bool> m_deterministic_active{false};
 
     Mutex m_events_mutex;
     CSHA256 m_events_hasher GUARDED_BY(m_events_mutex);
@@ -480,6 +481,11 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
         LOCK(m_mutex);
         m_deterministic_prng.emplace(MakeByteSpan(seed));
+        m_deterministic_active.store(true, std::memory_order_relaxed);
+    }
+
+    bool IsDeterministic() const noexcept {
+        return m_deterministic_active.load(std::memory_order_relaxed);
     }
     /**
      * Extract up to 32 bytes of entropy from the RNG state, mixing in new
@@ -687,6 +693,10 @@ void ProcRand(uint8_t *out, int num, RNGLevel level,
 /** Internal function to set g_determinstic_rng. Only accessed from tests. */
 void MakeRandDeterministicDANGEROUS(const uint256 &seed) noexcept {
     GetRNGState().MakeDeterministic(seed);
+}
+
+bool IsDeterministicRNGActive() noexcept {
+    return GetRNGState().IsDeterministic();
 }
 
 void GetRandBytes(Span<uint8_t> bytes) noexcept {

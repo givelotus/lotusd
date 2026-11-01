@@ -938,6 +938,63 @@ static void CheckSecondaryQueueFence(bool flush) {
     signals.UnregisterAllValidationInterfaces();
 }
 
+namespace {
+class BatchRecorder final : public CValidationInterface {
+public:
+    std::vector<size_t> batch_sizes;
+    std::vector<uint64_t> sequences;
+
+protected:
+    void TransactionsAddedToMempoolBatch(
+        const std::vector<MempoolAddedBatchItem> &items, int64_t) override {
+        batch_sizes.push_back(items.size());
+        for (const auto &item : items) {
+            sequences.push_back(item.mempool_sequence);
+        }
+    }
+};
+
+class SingleRecorder final : public CValidationInterface {
+public:
+    std::vector<uint64_t> sequences;
+
+protected:
+    void TransactionAddedToMempool(const CTransactionRef &,
+                                   std::shared_ptr<const std::vector<Coin>>,
+                                   uint64_t mempool_sequence,
+                                   int64_t) override {
+        sequences.push_back(mempool_sequence);
+    }
+};
+} // namespace
+
+BOOST_AUTO_TEST_CASE(mempool_batch_reaches_each_subscriber_in_order) {
+    ValidationSignals &signals{*Assert(m_node.validation_signals)};
+    auto batch{std::make_shared<BatchRecorder>()};
+    auto single{std::make_shared<SingleRecorder>()};
+    signals.RegisterSharedValidationInterface(batch);
+    signals.RegisterSharedValidationInterface(single);
+
+    std::vector<ValidationSignals::MempoolAddedBatchItem> items;
+    const std::vector<uint64_t> expected{5, 6, 7};
+    for (const uint64_t sequence : expected) {
+        CMutableTransaction mtx;
+        mtx.nLockTime = uint32_t(sequence);
+        items.push_back({MakeTransactionRef(mtx), nullptr, sequence});
+    }
+    signals.TransactionsAddedToMempoolBatch(std::move(items));
+    signals.SyncWithValidationInterfaceQueue();
+
+    // A subscriber that opts in sees one call; any other still sees every item.
+    BOOST_CHECK(batch->batch_sizes == std::vector<size_t>{3});
+    BOOST_CHECK(batch->sequences == expected);
+    BOOST_CHECK(single->sequences == expected);
+
+    signals.UnregisterSharedValidationInterface(batch);
+    signals.UnregisterSharedValidationInterface(single);
+    signals.SyncWithValidationInterfaceQueue();
+}
+
 BOOST_AUTO_TEST_CASE(flush_waits_for_secondary_queue) {
     CheckSecondaryQueueFence(true);
 }

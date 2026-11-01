@@ -528,4 +528,9 @@ void Shuffle(I first, I last, R &&rng) {
  */
 bool Random_SanityCheck();
 
+/**
+ * Return true if MakeRandDeterministicDANGEROUS has been called in tests.
+ */
+bool IsDeterministicRNGActive() noexcept;
+
 #endif // BITCOIN_RANDOM_H
