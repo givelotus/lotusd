@@ -1173,14 +1173,16 @@ private:
     /**
      * Handle a transaction whose result was
      * MempoolAcceptResult::ResultType::VALID. Updates m_txrequest and
-     * m_orphanage. Also queues the tx for relay.
+     * m_orphanage. Also queues the tx for relay (or appends to relay_batch).
      */
-    void ProcessValidTx(NodeId nodeid, const CTransactionRef &tx)
+    void ProcessValidTx(NodeId nodeid, const CTransactionRef &tx,
+                        std::vector<CTransactionRef> *relay_batch = nullptr)
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, g_msgproc_mutex, cs_main);
 
     void ProcessSingleTx(CNode &pfrom, Peer &peer, const CTransactionRef &ptx,
                          const PrecomputedAdmissionChecks *precomputed = nullptr,
-                         bool measure_lock = true)
+                         bool measure_lock = true,
+                         std::vector<CTransactionRef> *relay_batch = nullptr)
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
                                  g_msgproc_mutex);
@@ -1269,7 +1271,8 @@ private:
      * reconsideration and misbehavior, all driven by `result`.
      */
     void FinishTxAdmission(CNode &pfrom, Peer &peer, const CTransactionRef &ptx,
-                           const MempoolAcceptResult &result)
+                           const MempoolAcceptResult &result,
+                           std::vector<CTransactionRef> *relay_batch = nullptr)
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
                                  g_msgproc_mutex, cs_main);
@@ -3474,29 +3477,38 @@ bool PeerManagerImpl::ProcessTxAdmissionDone() {
     if (done.empty()) {
         return false;
     }
-    const auto waiting = SteadyClock::now();
-    LOCK(cs_main);
-    node::AdmissionLockTimer timer(waiting);
-    for (TxAdmissionDone &d : done) {
-        CNode &node = d.sender->node;
-        Peer &peer = *d.sender->peer;
-        switch (d.kind) {
-            case TxAdmissionDone::Kind::RESULT:
-                FinishTxAdmission(node, peer, d.tx, *d.result);
-                break;
-            case TxAdmissionDone::Kind::REPLAY:
-                if (PrepareTxAdmission(node, d.tx)) {
-                    const MempoolAcceptResult result =
-                        m_chainman.ProcessTransaction(d.tx);
-                    FinishTxAdmission(node, peer, d.tx, result);
-                }
-                break;
-            case TxAdmissionDone::Kind::DROPPED:
-                break;
+    std::vector<CTransactionRef> relay_batch;
+    relay_batch.reserve(done.size());
+    {
+        const auto waiting = SteadyClock::now();
+        LOCK(cs_main);
+        node::AdmissionLockTimer timer(waiting);
+        for (TxAdmissionDone &d : done) {
+            CNode &node = d.sender->node;
+            Peer &peer = *d.sender->peer;
+            switch (d.kind) {
+                case TxAdmissionDone::Kind::RESULT:
+                    FinishTxAdmission(node, peer, d.tx, *d.result,
+                                      &relay_batch);
+                    break;
+                case TxAdmissionDone::Kind::REPLAY:
+                    if (PrepareTxAdmission(node, d.tx)) {
+                        const MempoolAcceptResult result =
+                            m_chainman.ProcessTransaction(d.tx);
+                        FinishTxAdmission(node, peer, d.tx, result,
+                                          &relay_batch);
+                    }
+                    break;
+                case TxAdmissionDone::Kind::DROPPED:
+                    break;
+            }
+            m_tx_admission_inflight.erase(d.tx->GetId());
+            Assume(peer.m_tx_admission_pending > 0);
+            --peer.m_tx_admission_pending;
         }
-        m_tx_admission_inflight.erase(d.tx->GetId());
-        Assume(peer.m_tx_admission_pending > 0);
-        --peer.m_tx_admission_pending;
+    }
+    if (!relay_batch.empty()) {
+        RelayTransactionBatch(relay_batch, /*is_local=*/false);
     }
     return true;
 }
@@ -4167,12 +4179,16 @@ void PeerManagerImpl::ProcessShortTxResponse(
         m_chainman.IsInitialBlockDownload()) {
         return;
     }
+    const bool force_relay = node.HasPermission(NetPermissionFlags::ForceRelay);
     // The handler already checked response bounds and request eligibility.
     // Use the same bounded admission/verdict path as ordinary TX messages.
     constexpr size_t retained_limit = 64U << 20;
     size_t retained_bytes{0};
     for (const auto &tx : txs) {
         if (!tx) continue;
+        if (!force_relay && m_mempool.exists(tx->GetId())) {
+            continue;
+        }
         const size_t bytes = tx->GetTotalSize();
         if (bytes > retained_limit - retained_bytes) {
             retained_bytes = retained_limit + 1;
@@ -4195,6 +4211,10 @@ void PeerManagerImpl::ProcessShortTxResponse(
         node::AdmissionLockTimer timer(waiting);
         for (const auto &tx : txs) {
             if (!tx) continue;
+            if (!force_relay && m_mempool.exists(tx->GetId())) {
+                PrepareTxAdmission(node, tx);
+                continue;
+            }
             if (!peer->m_tx_admission_held_txs.empty() ||
                 !QueueTxForAdmission(node, peer, tx, /*count_full=*/true)) {
                 peer->m_tx_admission_held_txs.push_back(tx);
@@ -4208,8 +4228,14 @@ void PeerManagerImpl::ProcessShortTxResponse(
         return;
     }
     // Serial control: orphan handling, 1p1c, reject caches and relay apply.
+    std::vector<CTransactionRef> relay_batch;
+    relay_batch.reserve(txs.size());
     for (const auto &tx : txs) {
-        ProcessSingleTx(node, *peer, tx);
+        ProcessSingleTx(node, *peer, tx, /*precomputed=*/nullptr,
+                        /*measure_lock=*/true, &relay_batch);
+    }
+    if (!relay_batch.empty()) {
+        RelayTransactionBatch(relay_batch, /*is_local=*/false);
     }
 }
 
@@ -5664,7 +5690,9 @@ void PeerManagerImpl::ProcessInvalidTx(NodeId nodeid,
     }
 }
 
-void PeerManagerImpl::ProcessValidTx(NodeId nodeid, const CTransactionRef &tx) {
+void PeerManagerImpl::ProcessValidTx(
+    NodeId nodeid, const CTransactionRef &tx,
+    std::vector<CTransactionRef> *relay_batch) {
     AssertLockNotHeld(m_peer_mutex);
     AssertLockHeld(g_msgproc_mutex);
     AssertLockHeld(cs_main);
@@ -5686,13 +5714,17 @@ void PeerManagerImpl::ProcessValidTx(NodeId nodeid, const CTransactionRef &tx) {
         nodeid, tx->GetId().ToString(), m_mempool.size(),
         m_mempool.DynamicMemoryUsage() / 1000);
 
-    RelayTransaction(tx->GetId());
+    if (relay_batch) {
+        relay_batch->push_back(tx);
+    } else {
+        RelayTransaction(tx->GetId());
+    }
 }
 
-void PeerManagerImpl::ProcessSingleTx(CNode &pfrom, Peer &peer,
-                                      const CTransactionRef &ptx,
-                                      const PrecomputedAdmissionChecks *precomputed,
-                                      bool measure_lock) {
+void PeerManagerImpl::ProcessSingleTx(
+    CNode &pfrom, Peer &peer, const CTransactionRef &ptx,
+    const PrecomputedAdmissionChecks *precomputed, bool measure_lock,
+    std::vector<CTransactionRef> *relay_batch) {
     AssertLockHeld(g_msgproc_mutex);
     if (!ptx) {
         return;
@@ -5708,7 +5740,7 @@ void PeerManagerImpl::ProcessSingleTx(CNode &pfrom, Peer &peer,
     }
     const MempoolAcceptResult result = m_chainman.ProcessTransaction(
         ptx, /*test_accept=*/false, {}, precomputed);
-    FinishTxAdmission(pfrom, peer, ptx, result);
+    FinishTxAdmission(pfrom, peer, ptx, result, relay_batch);
 }
 
 bool PeerManagerImpl::PrepareTxAdmission(CNode &pfrom,
@@ -5770,9 +5802,10 @@ bool PeerManagerImpl::PrepareTxAdmission(CNode &pfrom,
     return true;
 }
 
-void PeerManagerImpl::FinishTxAdmission(CNode &pfrom, Peer &peer,
-                                        const CTransactionRef &ptx,
-                                        const MempoolAcceptResult &result) {
+void PeerManagerImpl::FinishTxAdmission(
+    CNode &pfrom, Peer &peer, const CTransactionRef &ptx,
+    const MempoolAcceptResult &result,
+    std::vector<CTransactionRef> *relay_batch) {
     AssertLockHeld(g_msgproc_mutex);
     AssertLockHeld(cs_main);
     const CTransaction &tx = *ptx;
@@ -5780,7 +5813,7 @@ void PeerManagerImpl::FinishTxAdmission(CNode &pfrom, Peer &peer,
     const TxValidationState &state = result.m_state;
 
     if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
-        ProcessValidTx(pfrom.GetId(), ptx);
+        ProcessValidTx(pfrom.GetId(), ptx, relay_batch);
         pfrom.m_last_tx_time = GetTime<std::chrono::seconds>();
     } else if (state.GetResult() == TxValidationResult::TX_MISSING_INPUTS) {
         bool fRejectedParents = false;
@@ -5936,26 +5969,33 @@ void PeerManagerImpl::ProcessTxBatch(
     // member otherwise doubles expensive admission work. One pass retains
     // valid members and gives each transaction the ordinary orphan/reject
     // handling, while sharing cs_main and deferring snapshot publication.
-    const auto waiting = SteadyClock::now();
-    LOCK(cs_main);
-    node::AdmissionLockTimer timer(waiting);
-    struct PublicationScope {
-        CTxMemPool &pool;
-        std::optional<CTxMemPool::ScopedSnapshotDefer> defer;
-        explicit PublicationScope(CTxMemPool &p) : pool(p) {
-            LOCK(pool.cs);
-            defer.emplace(pool);
+    std::vector<CTransactionRef> relay_batch;
+    relay_batch.reserve(ptxs.size());
+    {
+        const auto waiting = SteadyClock::now();
+        LOCK(cs_main);
+        node::AdmissionLockTimer timer(waiting);
+        struct PublicationScope {
+            CTxMemPool &pool;
+            std::optional<CTxMemPool::ScopedSnapshotDefer> defer;
+            explicit PublicationScope(CTxMemPool &p) : pool(p) {
+                LOCK(pool.cs);
+                defer.emplace(pool);
+            }
+            ~PublicationScope() {
+                LOCK(pool.cs);
+                defer.reset();
+            }
+        } publication_scope(m_mempool);
+        for (size_t i = 0; i < ptxs.size(); ++i) {
+            if (pfrom.fDisconnect) break;
+            ProcessSingleTx(pfrom, peer, ptxs[i],
+                            precomputed.empty() ? nullptr : &precomputed[i],
+                            /*measure_lock=*/false, &relay_batch);
         }
-        ~PublicationScope() {
-            LOCK(pool.cs);
-            defer.reset();
-        }
-    } publication_scope(m_mempool);
-    for (size_t i = 0; i < ptxs.size(); ++i) {
-        if (pfrom.fDisconnect) break;
-        ProcessSingleTx(pfrom, peer, ptxs[i],
-                        precomputed.empty() ? nullptr : &precomputed[i],
-                        /*measure_lock=*/false);
+    }
+    if (!relay_batch.empty()) {
+        RelayTransactionBatch(relay_batch, /*is_local=*/false);
     }
 }
 
