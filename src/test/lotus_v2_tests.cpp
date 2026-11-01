@@ -576,6 +576,126 @@ NativeBenchmarkSpend(const CTransaction &previous, uint32_t index,
     return tx;
 }
 
+BOOST_FIXTURE_TEST_CASE(batch_admission_finds_the_bad_signature_and_keeps_the_rest,
+                        TestChain100Setup) {
+    using namespace lotus::v2;
+    const auto program = NativeBenchmarkProgram();
+    Output output;
+    output.value = 100000;
+    output.branches = {BranchLeaf(program)};
+    output.paths = {{0}};
+    constexpr size_t count{9};
+    const auto funding = MineV2Coinbase(
+        std::vector<CTxOut>(count, CTxOut::FromV2Output(output)));
+    std::vector<CTransactionRef> txs;
+    for (size_t i = 0; i < count; ++i) {
+        auto spend = NativeBenchmarkSpend(*funding, i, {90000 * SATOSHI});
+        if (i == 4) {
+            spend.vin[0].vWitnesses[0].arguments[0][10] ^= 1;
+        }
+        txs.push_back(MakeTransactionRef(std::move(spend)));
+    }
+    StagedAdmissionOptions options;
+    options.script_threads = 2;
+    options.expected_mempool = m_node.mempool.get();
+    StagedAdmissionStats stats;
+    const auto results =
+        AcceptToMemoryPoolStaged(*m_node.chainman, txs, options, &stats);
+    BOOST_REQUIRE_EQUAL(results.size(), count);
+    for (size_t i = 0; i < count; ++i) {
+        BOOST_REQUIRE(results[i].has_value());
+        BOOST_CHECK_EQUAL(
+            results[i]->m_result_type == MempoolAcceptResult::ResultType::VALID,
+            i != 4);
+    }
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), count - 1);
+    // Only the transaction with the bad signature lost its preparation.
+    BOOST_CHECK_EQUAL(stats.native_reused, count - 1);
+}
+
+// The fast path rebuilds the signed message by hand and is also used for blocks,
+// so any difference from the VM is a chain split. Every signature mode, and
+// signatures that are malformed in the ways the shape check looks at, must get
+// the verdict of signature rules applied to the VM's own message.
+BOOST_FIXTURE_TEST_CASE(native_signature_fast_path_matches_the_vm,
+                        TestChain100Setup) {
+    using namespace lotus::v2;
+    const auto program = NativeBenchmarkProgram();
+    const auto chain = m_node.chainman->GetParams().V2ChainId();
+    enum class Tamper { NONE, FLIP_BIT, ADD_ZERO_BYTE, ADD_BAD_MODE, DROP_BYTE };
+    for (const uint8_t mode : {uint8_t{0}, uint8_t{1}, uint8_t{2}}) {
+        for (const Tamper tamper : {Tamper::NONE, Tamper::FLIP_BIT,
+                                    Tamper::ADD_ZERO_BYTE, Tamper::ADD_BAD_MODE,
+                                    Tamper::DROP_BYTE}) {
+            BOOST_TEST_MESSAGE("mode " << int(mode) << " tamper "
+                                       << int(tamper));
+            Output output;
+            output.value = 100000;
+            output.branches = {BranchLeaf(program)};
+            output.paths = {{0}};
+            const auto funding = MineV2Coinbase({CTxOut::FromV2Output(output)});
+            auto spend = NativeBenchmarkSpend(
+                *funding, 0, {funding->vout[0].nValue - 10000 * SATOSHI}, mode);
+            auto &signature = spend.vin[0].vWitnesses[0].arguments[0];
+            switch (tamper) {
+                case Tamper::NONE:
+                    break;
+                case Tamper::FLIP_BIT:
+                    signature[10] ^= 1;
+                    break;
+                case Tamper::ADD_ZERO_BYTE:
+                    if (signature.size() != 64) continue;
+                    signature.push_back(0);
+                    break;
+                case Tamper::ADD_BAD_MODE:
+                    if (signature.size() != 64) continue;
+                    signature.push_back(3);
+                    break;
+                case Tamper::DROP_BYTE:
+                    signature.pop_back();
+                    break;
+            }
+            const auto tx = MakeTransactionRef(spend);
+
+            // The VM on its own: run the input through the script check.
+            auto &cache = m_node.chainman->m_validation_cache.m_signature_cache;
+            auto resolved = std::make_shared<CScriptCheck::V2ResolvedCoins>(1);
+            (*resolved)[0] = funding->vout[0].ToV2Output();
+            auto deferred = std::make_shared<V2DeferredTxChecks>(*tx);
+            TxSigCheckLimiter limiter;
+            const CTxOut empty;
+            CScriptCheck check(empty, *tx, cache, 0, STANDARD_SCRIPT_VERIFY_FLAGS,
+                               /*cacheIn=*/false, tx->GetPrecomputedData(),
+                               &limiter, nullptr, resolved);
+            check.SetV2Deferred(deferred);
+            check.SetV2ChainId(chain);
+            const bool vm_valid{!check().has_value() &&
+                                deferred->Run().Accepted() &&
+                                !deferred->RuleFailure()};
+            BOOST_CHECK_EQUAL(vm_valid, tamper == Tamper::NONE);
+
+            // Admission through the fast path.
+            StagedAdmissionOptions options;
+            options.script_threads = 2;
+            options.expected_mempool = m_node.mempool.get();
+            StagedAdmissionStats stats;
+            const auto results =
+                AcceptToMemoryPoolStaged(*m_node.chainman, {tx}, options, &stats);
+            BOOST_REQUIRE_EQUAL(results.size(), 1U);
+            BOOST_REQUIRE(results[0].has_value());
+            BOOST_CHECK_EQUAL(results[0]->m_result_type ==
+                                  MempoolAcceptResult::ResultType::VALID,
+                              vm_valid);
+            if (vm_valid) {
+                BOOST_CHECK_EQUAL(stats.native_reused, 1U);
+                BOOST_CHECK_EQUAL(deferred->SigChecks(), 0);
+            }
+            LOCK2(cs_main, m_node.mempool->cs);
+            m_node.mempool->clear();
+        }
+    }
+}
+
 BOOST_FIXTURE_TEST_CASE(v2_native_crypto_warmup_keeps_authoritative_context,
                         TestChain100Setup) {
     using namespace lotus::v2;
