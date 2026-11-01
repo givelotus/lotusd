@@ -2105,6 +2105,83 @@ BOOST_FIXTURE_TEST_CASE(shorttx_uses_bounded_admission_and_orders_following_ping
     }
 }
 
+BOOST_FIXTURE_TEST_CASE(bad_witness_copy_does_not_block_its_transaction,
+                        TestChain100Setup) {
+    struct ResetMockTime {
+        ~ResetMockTime() { SetMockTime(0); }
+    } reset_mock_time;
+    const Config &config = m_node.chainman->GetConfig();
+    SetMockTime(m_node.chainman->ActiveChain().Tip()->GetBlockTime());
+    const std::vector<uint8_t> program{0x4e}; // Native OP_1.
+    lotus::v2::Output output;
+    output.value = 100000;
+    output.branches = {lotus::v2::BranchLeaf(program)};
+    output.paths = {{0}};
+    uint256 id;
+    WriteLE64(id.begin(), 77000);
+    const COutPoint previous(TxId(id), 0);
+    {
+        LOCK(cs_main);
+        m_node.chainman->ActiveChainstate().CoinsTip().AddCoin(
+            previous, Coin(CTxOut::FromV2Output(output), 100, false), false);
+    }
+    const auto make = [&](const std::vector<std::vector<uint8_t>> &arguments) {
+        CMutableTransaction tx;
+        tx.nVersion = 7;
+        tx.nV2Lock = 0;
+        CTxIn input(previous);
+        input.nFlags = 1;
+        input.nPathIndex = 0;
+        lotus::v2::BranchWitness witness;
+        witness.script = program;
+        witness.arguments = arguments;
+        input.vWitnesses = {witness};
+        tx.vin.push_back(std::move(input));
+        auto next = output;
+        next.value -= 10000;
+        tx.vout.push_back(CTxOut::FromV2Output(next));
+        return MakeTransactionRef(std::move(tx));
+    };
+    // Witness arguments aren't part of a native TxId. The script leaves these
+    // extra arguments on the stack, so this copy fails.
+    const CTransactionRef honest{make({})};
+    const CTransactionRef bad{make({{1, 2, 3}})};
+    BOOST_REQUIRE(honest->GetId() == bad->GetId());
+    auto connman =
+        std::make_unique<ConnmanTestMsg>(config, 123, 456, *m_node.addrman);
+    PeerManager::Options peer_options;
+    peer_options.deterministic_rng = true;
+    auto peerman = PeerManager::make(*connman, *m_node.addrman, nullptr,
+                                     *m_node.chainman, *m_node.mempool, nullptr,
+                                     peer_options);
+    CConnman::Options options;
+    options.m_msgproc = {peerman.get()};
+    options.nSendBufferMaxSize = 1024 * 1024;
+    connman->Init(options);
+    auto attacker = std::make_unique<CNode>(
+        1500, nullptr, CAddress(), 0, 0, 0, CAddress(), "",
+        ConnectionType::OUTBOUND_FULL_RELAY, false);
+    auto honest_peer = std::make_unique<CNode>(
+        1501, nullptr, CAddress(), 0, 0, 0, CAddress(), "",
+        ConnectionType::OUTBOUND_FULL_RELAY, false);
+    {
+        LOCK(NetEventsInterface::g_msgproc_mutex);
+        for (CNode *node : {attacker.get(), honest_peer.get()}) {
+            connman->Handshake(*node, true, NODE_NETWORK, NODE_NETWORK,
+                               PROTOCOL_VERSION, true);
+        }
+        peerman->ProcessShortTxResponse(*attacker, {&bad, 1});
+        BOOST_CHECK(!m_node.mempool->exists(honest->GetId()));
+        peerman->ProcessShortTxResponse(*honest_peer, {&honest, 1});
+        BOOST_CHECK(m_node.mempool->exists(honest->GetId()));
+        peerman->FinalizeNode(config, *attacker);
+        peerman->FinalizeNode(config, *honest_peer);
+    }
+    peerman.reset();
+    LOCK2(cs_main, m_node.mempool->cs);
+    m_node.mempool->clear();
+}
+
 BOOST_AUTO_TEST_CASE(malformed_later_tx_does_not_discard_decoded_prefix) {
     LOCK(NetEventsInterface::g_msgproc_mutex);
     const Config &config = m_node.chainman->GetConfig();
