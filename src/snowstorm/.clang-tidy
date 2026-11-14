@@ -1,0 +1,5 @@
+Checks: '-*,readability-function-cognitive-complexity,readability-else-after-return,readability-function-size,readability-magic-numbers'
+WarningsAsErrors: '*'
+HeaderFilterRegex: 'snowstorm/src/.*'
+CheckOptions:
+  readability-function-size.NestingThreshold: 3
