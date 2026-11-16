@@ -1,8 +1,8 @@
 package=nng
-$(package)_version=1.5.2
+$(package)_version=2.1.0
 $(package)_download_path=https://github.com/nanomsg/nng/archive/refs/tags/
 $(package)_file_name=v$($(package)_version).tar.gz
-$(package)_sha256_hash=f8b25ab86738864b1f2e3128e8badab581510fa8085ff5ca9bb980d317334c46
+$(package)_sha256_hash=e2fdcdf126b530e331b4727812b710629cdb5d90d230ce8f080e2eb520299d8d
 $(package)_patches=remove_deps.patch
 
 define $(package)_preprocess_cmds
@@ -15,6 +15,8 @@ define $(package)_config_cmds
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CROSSCOMPILING=on \
     -DNNG_ENABLE_NNGCAT=off \
+    -DNNG_TESTS=off \
+    -DNNG_TOOLS=off \
     -DCMAKE_TOOLCHAIN_FILE=$(CMAKE_TOOLCHAIN_FILE) \
     -DBASEPREFIX=$(BASEPREFIX)
 endef
