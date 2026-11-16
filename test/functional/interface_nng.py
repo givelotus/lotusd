@@ -9,6 +9,7 @@ import asyncio
 
 from test_framework.blocktools import create_block, create_coinbase, prepare_block, SUBSIDY
 from test_framework.test_framework import BitcoinTestFramework
+from test_framework.test_node import ErrorMatch
 from test_framework.messages import CTransaction, CTxIn, COutPoint, CTxOut, COIN, CBlockHeader
 from test_framework.script import CScript, OP_HASH160, OP_EQUAL
 from test_framework.txtools import pad_tx
@@ -666,11 +667,17 @@ class NngInterfaceTest(BitcoinTestFramework):
         pub_sock.unsubscribe('chainstflush')
 
     def _test_invalid_params(self, node):
+        # NNG 1 rejects a URL without a scheme as an invalid argument; NNG 2
+        # reports it as an unsupported transport.
         self.stop_node(0)
         node.assert_start_raises_init_error(
-            ["-nngrpc=a"], "Error: Failed listening on -nngrpc=a: Invalid argument")
+            ["-nngrpc=a"],
+            r"Error: Failed listening on -nngrpc=a: (Invalid argument|Not supported)",
+            match=ErrorMatch.FULL_REGEX)
         node.assert_start_raises_init_error(
-            ["-nngpub=a"], "Error: Failed listening on -nngpub=a: Invalid argument")
+            ["-nngpub=a"],
+            r"Error: Failed listening on -nngpub=a: (Invalid argument|Not supported)",
+            match=ErrorMatch.FULL_REGEX)
         node.assert_start_raises_init_error(
             [f"-nngpub={PUB_URL}", "-nngpubmsg=a"], "Error: Invalid message type 'a' in -nngpubmsg.")
 

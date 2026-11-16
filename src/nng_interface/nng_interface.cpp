@@ -22,8 +22,11 @@
 #include <validationinterface.h>
 
 #include <nng/nng.h>
+// NNG 2 declares every protocol in nng.h and removed the per-protocol headers.
+#if NNG_MAJOR_VERSION < 2
 #include <nng/protocol/pubsub0/pub.h>
 #include <nng/protocol/reqrep0/rep.h>
+#endif
 
 #include "nng_interface_generated.h"
 #include <nng_interface/nng_interface.h>
@@ -39,11 +42,29 @@ enum class NngRpcWorkerState {
 
 class NngRpcServer;
 
+// NNG 2 takes its own nng_err type here; NNG 1 takes an int.
+static const char *NngErrorString(int rv) {
+#if NNG_MAJOR_VERSION >= 2
+    return nng_strerror(static_cast<nng_err>(rv));
+#else
+    return nng_strerror(rv);
+#endif
+}
+
+// NNG 2 renamed nng_close to nng_socket_close.
+static int NngCloseSocket(nng_socket sock) {
+#if NNG_MAJOR_VERSION >= 2
+    return nng_socket_close(sock);
+#else
+    return nng_close(sock);
+#endif
+}
+
 #define NNG_TRY_LOG(call)                                                      \
     do {                                                                       \
         int rv = (call);                                                       \
         if (rv != 0) {                                                         \
-            LogPrintf("NNG Error: %s (at %s:%d: %s)\n", nng_strerror(rv),      \
+            LogPrintf("NNG Error: %s (at %s:%d: %s)\n", NngErrorString(rv),   \
                       __FILE__, __LINE__, #call);                              \
             return;                                                            \
         }                                                                      \
@@ -53,7 +74,7 @@ class NngRpcServer;
     do {                                                                       \
         int rv = (call);                                                       \
         if (rv != 0) {                                                         \
-            return InitError(strprintf(_(format_str), nng_strerror(rv)));      \
+            return InitError(strprintf(_(format_str), NngErrorString(rv)));   \
         }                                                                      \
     } while (false)
 
@@ -149,7 +170,7 @@ public:
         for (NngRpcWorker &worker : m_workers) {
             worker.Shutdown();
         }
-        nng_close(m_sock);
+        NngCloseSocket(m_sock);
     }
 };
 
@@ -564,7 +585,7 @@ public:
         return true;
     }
 
-    void Shutdown() { nng_close(m_sock); }
+    void Shutdown() { NngCloseSocket(m_sock); }
 
 private:
     const NodeContext &m_node;
@@ -707,6 +728,14 @@ bool RunPubServer(const NodeContext &node) {
 
 bool StartNngInterface(const NodeContext &node,
                        const Consensus::Params &consensus) {
+#if NNG_MAJOR_VERSION >= 2
+    // NNG 2 has an explicit library initializer; run it before any socket
+    // is opened.
+    if (const nng_err rv = nng_init(nullptr); rv != 0) {
+        return InitError(strprintf(_("Failed initializing NNG: %s"),
+                                   NngErrorString(rv)));
+    }
+#endif
     if (!RunRpcServer(node, consensus)) {
         return false;
     }
