@@ -306,7 +306,7 @@ class NngInterfaceTest(BitcoinTestFramework):
             GetMempoolResponse,
         )
         # Generate block and query it
-        hashes = node.generatetoaddress(self.NUM_GENERATED_COINS, self.anyone_addr)
+        hashes = self.generatetoaddress(node, self.NUM_GENERATED_COINS, self.anyone_addr)
         self.coin_blocks = hashes[1:]
         blockhash = bytes.fromhex(hashes[0])[::-1]
 
@@ -333,7 +333,7 @@ class NngInterfaceTest(BitcoinTestFramework):
         await self._check_block_slice(rpc_sock, block.FileNum(), block.Txs(0).DataPos(), tx_raw)
 
         # Mature coinbase tx
-        node.generatetoaddress(100, self.burn_addr)
+        self.generatetoaddress(node, 100, self.burn_addr)
 
         # Create valid tx
         coinbase_value = coinbase_tx.vout[1].nValue
@@ -398,7 +398,7 @@ class NngInterfaceTest(BitcoinTestFramework):
         assert_equal(other_tx_fbb.Time(), self.TIMESTAMP)
 
         # Mine tx
-        hashes = node.generatetoaddress(1, self.burn_addr)
+        hashes = self.generatetoaddress(node, 1, self.burn_addr)
         # Mempool empty again
         assert_equal(node.getrawmempool(), [])
         await self._send_request(rpc_sock, self._make_get_mempool_request_fbs())
@@ -422,7 +422,15 @@ class NngInterfaceTest(BitcoinTestFramework):
         assert_equal(block.TxsLength(), 3)
         assert_equal(block.FileNum(), 0)
         assert_equal(block.UndoPos(), 4518)
-        coinbase_start_position = 31561
+        # Every block before this one is stored as an 8-byte record header
+        # plus the serialized block. The coinbase follows the 160-byte header,
+        # the empty metadata vector and the transaction count.
+        height = node.getblock(hashes[0])['height']
+        block_start = sum(
+            8 + len(node.getblock(node.getblockhash(h), 0)) // 2
+            for h in range(height)) + 8
+        assert_equal(block.DataPos(), block_start)
+        coinbase_start_position = block_start + 160 + 1 + 1
         assert_equal(block.Txs(0).DataPos(), coinbase_start_position)
         assert_equal(block.Txs(0).UndoPos(), 0)
         assert_equal(block.Txs(0).UndoSize(), 0)
@@ -502,7 +510,7 @@ class NngInterfaceTest(BitcoinTestFramework):
     async def _test_update_chain_tip(self, node, pub_sock):
         from NngInterface.UpdatedBlockTip import UpdatedBlockTip
         pub_sock.subscribe('updateblktip')
-        hashes = node.generatetoaddress(1, self.burn_addr)
+        hashes = self.generatetoaddress(node, 1, self.burn_addr)
         msg = await self._recv_message(pub_sock, 'updateblktip')
         msg = UpdatedBlockTip.GetRootAs(msg, 0)
         assert_equal(bytes(msg.BlockHash().Hash().Data())[::-1].hex(), hashes[0])
@@ -534,7 +542,7 @@ class NngInterfaceTest(BitcoinTestFramework):
     async def _test_transaction_removed_from_mempool_conflict(self, node, pub_sock):
         from NngInterface.TransactionRemovedFromMempool import TransactionRemovedFromMempool
         pub_sock.subscribe('mempooltxrem')
-        node.generatetoaddress(1, self.burn_addr)  # empty out mempool from previous test
+        self.generatetoaddress(node, 1, self.burn_addr)  # empty out mempool from previous test
         await self._check_timeout(pub_sock.arecv_msg(), timeout=0.1) # should not send an eviction message
         assert_equal(node.getrawmempool(), []) # mempool should be empty
         tx = CTransaction()
@@ -560,7 +568,7 @@ class NngInterfaceTest(BitcoinTestFramework):
     async def _test_transaction_removed_from_mempool_expiry(self, node, pub_sock):
         from NngInterface.TransactionRemovedFromMempool import TransactionRemovedFromMempool
         pub_sock.subscribe('mempooltxrem')
-        node.generatetoaddress(1, self.burn_addr)  # empty out mempool from previous test
+        self.generatetoaddress(node, 1, self.burn_addr)  # empty out mempool from previous test
         await self._check_timeout(pub_sock.arecv_msg(), timeout=0.1) # should not send an eviction message
         assert_equal(node.getrawmempool(), []) # mempool should be empty
         tx = CTransaction()
@@ -618,7 +626,7 @@ class NngInterfaceTest(BitcoinTestFramework):
         pub_sock.subscribe('blkdisconctd')
         tip = node.getbestblockhash()
         tipblock = node.getblock(tip)
-        reorged_blockhash = node.generatetoaddress(1, self.burn_addr)[0]
+        reorged_blockhash = self.generatetoaddress(node, 1, self.burn_addr)[0]
         block1 = create_block(
             int(tip, 16),
             create_coinbase(tipblock['height'] + 1, pubkey=b'\x03'*33),
