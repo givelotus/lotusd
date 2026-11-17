@@ -615,13 +615,12 @@ bool CheckBlock(const CBlock &block, BlockValidationState &state,
 /**
  * Check the coinbase height commitment of a block whose parent is pindexPrev:
  * the first coinbase output must be OP_RETURN, COINBASE_PREFIX ("logos") and
- * the block height. This is the last check made by ContextualCheckBlock;
- * it is exposed so that tests can reach heights a test chain cannot.
- * params selects the rules in force after pindexPrev.
+ * the block height, at every height after genesis. This is the last check made
+ * by ContextualCheckBlock; it is exposed so that tests can reach heights a test
+ * chain cannot.
  */
 bool ContextualCheckCoinbaseHeight(const CBlock &block,
                                    BlockValidationState &state,
-                                   const Consensus::Params &params,
                                    const CBlockIndex *pindexPrev);
 
 /**
