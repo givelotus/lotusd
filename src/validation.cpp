@@ -4558,60 +4558,11 @@ static bool ContextualCheckBlockHeader(
     return true;
 }
 
-/**
- * NOTE: This function is not currently invoked by ConnectBlock(), so we
- * should consider upgrade issues if we change which consensus rules are
- * enforced in this function (eg by adding a new consensus rule). See comment
- * in ConnectBlock().
- * Note that -reindex-chainstate skips the validation that happens here!
- */
-static bool ContextualCheckBlock(const CBlock &block,
-                                 BlockValidationState &state,
-                                 const ChainstateManager &chainman,
-                                 const CBlockIndex *pindexPrev) {
+bool ContextualCheckCoinbaseHeight(const CBlock &block,
+                                   BlockValidationState &state,
+                                   const Consensus::Params &params,
+                                   const CBlockIndex *pindexPrev) {
     const int nHeight = pindexPrev == nullptr ? 0 : pindexPrev->nHeight + 1;
-
-    // Always enforce BIP113 (Median Time Past) from genesis.
-    const int64_t nMedianTimePast =
-        pindexPrev == nullptr ? 0 : pindexPrev->GetMedianTimePast();
-
-    const int64_t nLockTimeCutoff = nMedianTimePast;
-
-    const Consensus::Params params = chainman.GetConsensus();
-    // Check transactions:
-    // - canonical ordering
-    // - ensure they are finalized
-    // - check they have the minimum size
-    const CTransaction *prevTx = nullptr;
-    for (const auto &ptx : block.vtx) {
-        const CTransaction &tx = *ptx;
-        if (prevTx && (tx.GetId() <= prevTx->GetId())) {
-            if (tx.GetId() == prevTx->GetId()) {
-                return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                                        "tx-duplicate",
-                                        strprintf("Duplicated transaction %s",
-                                                tx.GetId().ToString()));
-            }
-
-            return state.Invalid(
-                BlockValidationResult::BLOCK_CONSENSUS, "tx-ordering",
-                strprintf("Transaction order is invalid (%s < %s)",
-                            tx.GetId().ToString(),
-                            prevTx->GetId().ToString()));
-        }
-
-        if (prevTx || !tx.IsCoinBase()) {
-            prevTx = &tx;
-        }
-
-        TxValidationState tx_state;
-        if (!ContextualCheckTransaction(params, tx, tx_state, nHeight,
-                                        nLockTimeCutoff)) {
-            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                                 tx_state.GetRejectReason(),
-                                 tx_state.GetDebugMessage());
-        }
-    }
 
     // Enforce rule that the coinbase transaction's first output must contain an OP_RETURN
     // followed by a prefix and the serialized block height.
@@ -4734,6 +4685,64 @@ static bool ContextualCheckBlock(const CBlock &block,
     }
 
     return true;
+}
+
+/**
+ * NOTE: This function is not currently invoked by ConnectBlock(), so we
+ * should consider upgrade issues if we change which consensus rules are
+ * enforced in this function (eg by adding a new consensus rule). See comment
+ * in ConnectBlock().
+ * Note that -reindex-chainstate skips the validation that happens here!
+ */
+static bool ContextualCheckBlock(const CBlock &block,
+                                 BlockValidationState &state,
+                                 const ChainstateManager &chainman,
+                                 const CBlockIndex *pindexPrev) {
+    const int nHeight = pindexPrev == nullptr ? 0 : pindexPrev->nHeight + 1;
+
+    // Always enforce BIP113 (Median Time Past) from genesis.
+    const int64_t nMedianTimePast =
+        pindexPrev == nullptr ? 0 : pindexPrev->GetMedianTimePast();
+
+    const int64_t nLockTimeCutoff = nMedianTimePast;
+
+    const Consensus::Params params = chainman.GetConsensus();
+    // Check transactions:
+    // - canonical ordering
+    // - ensure they are finalized
+    // - check they have the minimum size
+    const CTransaction *prevTx = nullptr;
+    for (const auto &ptx : block.vtx) {
+        const CTransaction &tx = *ptx;
+        if (prevTx && (tx.GetId() <= prevTx->GetId())) {
+            if (tx.GetId() == prevTx->GetId()) {
+                return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                        "tx-duplicate",
+                                        strprintf("Duplicated transaction %s",
+                                                tx.GetId().ToString()));
+            }
+
+            return state.Invalid(
+                BlockValidationResult::BLOCK_CONSENSUS, "tx-ordering",
+                strprintf("Transaction order is invalid (%s < %s)",
+                            tx.GetId().ToString(),
+                            prevTx->GetId().ToString()));
+        }
+
+        if (prevTx || !tx.IsCoinBase()) {
+            prevTx = &tx;
+        }
+
+        TxValidationState tx_state;
+        if (!ContextualCheckTransaction(params, tx, tx_state, nHeight,
+                                        nLockTimeCutoff)) {
+            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                 tx_state.GetRejectReason(),
+                                 tx_state.GetDebugMessage());
+        }
+    }
+
+    return ContextualCheckCoinbaseHeight(block, state, params, pindexPrev);
 }
 
 /**

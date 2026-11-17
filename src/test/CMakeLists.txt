@@ -161,6 +161,7 @@ add_boost_unit_tests_to_suite(bitcoin test_lotus
 		checkdatasig_tests.cpp
 		checkpoints_tests.cpp
 		checkqueue_tests.cpp
+		coinbase_height_tests.cpp
 		coins_tests.cpp
 		coinscachepair_tests.cpp
 		coinstatsindex_tests.cpp
