@@ -4,11 +4,13 @@
 
 #include <blockindex.h>
 #include <chainparams.h>
+#include <common/args.h>
 #include <consensus/consensus.h>
 #include <consensus/validation.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <script/script.h>
+#include <util/string.h>
 #include <validation.h>
 
 #include <test/util/setup_common.h>
@@ -104,6 +106,70 @@ BOOST_AUTO_TEST_CASE(vanity_prefix_after_loosening_accepted) {
     const int h = LOOSENED_FROM_HEIGHT;
     BOOST_CHECK(TestBlock(h, EARLY_MTP, Vanity(h)).Check());
     BOOST_CHECK(TestBlock(h, EARLY_MTP, Vanity(1)).Check());
+}
+
+// From the 2nd Kings upgrade (median time past of the parent at or after
+// secondKingsActivationTime, 2026-12-21T20:50:00Z on mainnet), the first
+// coinbase output must start with OP_RETURN "logos" <height> at every height.
+static int64_t SecondKings() {
+    return Params().GetConsensus().secondKingsActivationTime;
+}
+
+BOOST_AUTO_TEST_CASE(second_kings_activation_time) {
+    BOOST_CHECK_EQUAL(SecondKings(), 1797886200);
+}
+
+BOOST_AUTO_TEST_CASE(vanity_prefix_rejected_from_second_kings) {
+    for (const int h : {LOOSENED_FROM_HEIGHT, LOOSENED_FROM_HEIGHT + 400000}) {
+        // One second before the upgrade the loosened rule still applies.
+        BOOST_CHECK(TestBlock(h, SecondKings() - 1, Vanity(h)).Check());
+
+        for (const int64_t mtp : {SecondKings(), SecondKings() + 1}) {
+            BlockValidationState state;
+            BOOST_CHECK(!TestBlock(h, mtp, Vanity(h)).Check(state));
+            BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-cb-height");
+            BOOST_CHECK(!TestBlock(h, mtp, Vanity(1)).Check());
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(canonical_coinbase_accepted_from_second_kings) {
+    const int h = LOOSENED_FROM_HEIGHT + 400000;
+    BOOST_CHECK(TestBlock(h, SecondKings(), Canonical(h)).Check());
+    BOOST_CHECK(TestBlock(h, SecondKings(),
+                          Canonical(h) << std::vector<uint8_t>{1, 2, 3})
+                    .Check());
+
+    BlockValidationState state;
+    BOOST_CHECK(!TestBlock(h, SecondKings(), Canonical(h - 1)).Check(state));
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-cb-height");
+
+    // The output must start with the commitment; anything else is rejected.
+    BOOST_CHECK(!TestBlock(h, SecondKings(), CScript() << OP_TRUE).Check());
+    BOOST_CHECK(!TestBlock(h, SecondKings(), CScript()).Check());
+    BOOST_CHECK(
+        !TestBlock(h, SecondKings(),
+                   CScript() << OP_RETURN << COINBASE_PREFIX)
+             .Check());
+}
+
+// Below height 20000 the old rule did not check the height; from 2nd Kings
+// it is checked there too. (This only matters on test chains.)
+BOOST_AUTO_TEST_CASE(low_heights_checked_from_second_kings) {
+    const int h = 100;
+    BOOST_CHECK(TestBlock(h, SecondKings() - 1, Canonical(h - 1)).Check());
+    BOOST_CHECK(!TestBlock(h, SecondKings(), Canonical(h - 1)).Check());
+    BOOST_CHECK(TestBlock(h, SecondKings(), Canonical(h)).Check());
+}
+
+// The upgrade time can be overridden with -secondkingsactivationtime.
+BOOST_AUTO_TEST_CASE(second_kings_activation_time_override) {
+    const int h = LOOSENED_FROM_HEIGHT;
+    gArgs.ForceSetArg("-secondkingsactivationtime", util::ToString(EARLY_MTP));
+    BOOST_CHECK(!TestBlock(h, EARLY_MTP, Vanity(h)).Check());
+    BOOST_CHECK(TestBlock(h, EARLY_MTP - 1, Vanity(h)).Check());
+    gArgs.ClearForcedArg("-secondkingsactivationtime");
+    BOOST_CHECK(TestBlock(h, EARLY_MTP, Vanity(h)).Check());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

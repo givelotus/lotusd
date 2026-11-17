@@ -7,6 +7,7 @@
 #include <chainparams.h>
 #include <common/args.h>
 #include <consensus/activation.h>
+#include <util/string.h>
 #include <util/time.h>
 
 #include <test/util/setup_common.h>
@@ -109,6 +110,36 @@ BOOST_AUTO_TEST_CASE(is_numbers_enabled) {
     BOOST_CHECK_EQUAL(
         IsNumbersEnabled(params, &blocks.back()),
         IsNumbersEnabled(params, blocks.back().GetMedianTimePast()));
+}
+
+BOOST_AUTO_TEST_CASE(is_second_kings_enabled) {
+    const Consensus::Params &params = Params().GetConsensus();
+    // 2026-12-21T20:50:00Z, the same on regtest as on mainnet.
+    const int64_t activation = 1797886200;
+    BOOST_CHECK_EQUAL(params.secondKingsActivationTime, activation);
+
+    BOOST_CHECK(!IsSecondKingsEnabled(params, nullptr));
+
+    std::array<CBlockIndex, 12> blocks;
+    for (size_t i = 1; i < blocks.size(); ++i) {
+        blocks[i].pprev = &blocks[i - 1];
+    }
+
+    SetMTP(blocks, activation - 1);
+    BOOST_CHECK(!IsSecondKingsEnabled(params, &blocks.back()));
+
+    SetMTP(blocks, activation);
+    BOOST_CHECK(IsSecondKingsEnabled(params, &blocks.back()));
+
+    SetMTP(blocks, activation + 1);
+    BOOST_CHECK(IsSecondKingsEnabled(params, &blocks.back()));
+
+    // -secondkingsactivationtime overrides the time.
+    gArgs.ForceSetArg("-secondkingsactivationtime", util::ToString(activation + 2));
+    BOOST_CHECK(!IsSecondKingsEnabled(params, &blocks.back()));
+    SetMTP(blocks, activation + 2);
+    BOOST_CHECK(IsSecondKingsEnabled(params, &blocks.back()));
+    gArgs.ClearForcedArg("-secondkingsactivationtime");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

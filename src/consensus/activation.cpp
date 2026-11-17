@@ -115,3 +115,14 @@ bool IsFirstKingsEnabled(const Consensus::Params &params,
            gArgs.GetIntArg("-firstkingsactivationtime",
                            params.firstKingsActivationTime);
 }
+
+bool IsSecondKingsEnabled(const Consensus::Params &params,
+                          const CBlockIndex *pindexPrev) {
+    if (pindexPrev == nullptr) {
+        return false;
+    }
+
+    return pindexPrev->GetMedianTimePast() >=
+           gArgs.GetIntArg("-secondkingsactivationtime",
+                           params.secondKingsActivationTime);
+}
