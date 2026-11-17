@@ -2126,8 +2126,8 @@ static uint32_t GetNextBlockScriptFlags(const CBlockIndex *pindex,
         flags |= SCRIPT_ENABLE_REPLAY_PROTECTION;
     }
 
-    if (IsNumbersEnabled(consensusparams, pindex) &&
-        !IsSecondSamuelEnabled(consensusparams, pindex)) {
+    // Taproot and SIGHASH_LOTUS are disabled until Second Samuel activation
+    if (!IsSecondSamuelEnabled(consensusparams, pindex)) {
         flags |= SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS;
     }
 
@@ -2260,9 +2260,8 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
     if (fRequireStandardConsensus) {
         extraFlags = STANDARD_SCRIPT_VERIFY_FLAGS;
 
-        // Before Numbers or after Second Samuel, we enable Taproot and SIGHASH_LOTUS
-        if (!IsNumbersEnabled(consensusParams, pindex->pprev) ||
-            IsSecondSamuelEnabled(consensusParams, pindex->pprev)) {
+        // After Second Samuel, we enable Taproot and SIGHASH_LOTUS
+        if (IsSecondSamuelEnabled(consensusParams, pindex->pprev)) {
             extraFlags &= ~SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS;
         }
     }
@@ -2357,9 +2356,8 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
                 state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, reason);
                 break;
             }
-            // Taproot is phased out between Numbers and Second Samuel
-            if (IsNumbersEnabled(consensusParams, pindex->pprev) &&
-                !IsSecondSamuelEnabled(consensusParams, pindex->pprev)) {
+            // Taproot outputs are disabled until Second Samuel activation
+            if (!IsSecondSamuelEnabled(consensusParams, pindex->pprev)) {
                 if (TxHasPayToTaproot(tx)) {
                     state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
                                   "bad-taproot-phased-out");

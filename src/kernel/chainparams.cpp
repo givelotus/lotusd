@@ -120,7 +120,7 @@ public:
         // 2023-12-22T03:27:00.000Z protocol upgrade
         consensus.joshuaActivationTime = 1703215620;
         // 2024-06-20T20:51:00.000Z protocol upgrade
-        consensus.judgesActivationTime = 1718916600;
+        consensus.judgesActivationTime = 1718916660;
         // 2024-12-21T09:20:00.000Z protocol upgrade
         consensus.ruthActivationTime = 1734772800;
         // 2025-06-21T02:42:00.000Z protocol upgrade

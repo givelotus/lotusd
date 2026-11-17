@@ -284,4 +284,25 @@ BOOST_FIXTURE_TEST_CASE(replay_protection_follows_schedule,
     BOOST_CHECK(Confirm(protectedSpend));
 }
 
+// The mainnet upgrade times of the Lotus V1 network, as run by
+// LotusiaStewardship/lotusd.
+BOOST_AUTO_TEST_CASE(mainnet_activation_times) {
+    const ArgsManager args{};
+    const auto main = CreateChainParams(args, ChainType::MAIN);
+    const Consensus::Params &c = main->GetConsensus();
+    BOOST_CHECK_EQUAL(c.exodusActivationTime, 1640102340);
+    BOOST_CHECK_EQUAL(c.leviticusActivationTime, 1655802840);
+    BOOST_CHECK_EQUAL(c.numbersActivationTime, 1671659280);
+    BOOST_CHECK_EQUAL(c.deuteronomyActivationTime, 1687359480);
+    BOOST_CHECK_EQUAL(c.joshuaActivationTime, 1703215620);
+    // 2024-06-20T20:51:00Z
+    BOOST_CHECK_EQUAL(c.judgesActivationTime, 1718916660);
+    BOOST_CHECK_EQUAL(c.ruthActivationTime, 1734772800);
+    BOOST_CHECK_EQUAL(c.firstSamuelActivationTime, 1750473720);
+    BOOST_CHECK_EQUAL(c.secondSamuelActivationTime, 1766329380);
+    BOOST_CHECK_EQUAL(c.firstKingsActivationTime, 1782030240);
+    BOOST_CHECK_EQUAL(c.secondKingsActivationTime, 1797886200);
+    BOOST_CHECK_EQUAL(c.firstChroniclesActivationTime, 1813587000);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
