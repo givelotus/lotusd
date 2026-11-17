@@ -2,14 +2,22 @@
 
 This allows external indexers to be built efficiently using an easy to use NNG interface.
 
-RPC messages are enabled using `-nngrpc=<url>`, where `<url>` should start with tcp:// for a TCP bind, and with ipc:// for a named pipe file.
+RPC messages are enabled using `-nngrpc=<url>`, where `<url>` may be:
+- `tcp://...` for TCP bind/listen
+- `ipc://...` for local named pipe/socket
+
 Available RPC calls currently are:
  - `GetBlockRequest` to get an individual block
  - `GetBlockRangeRequest` to get a range of blocks
  - `GetBlockSliceRequest` to get a slice of a block
  - `GetUndoSliceRequest` to get a slice of the block undo data
  - `GetMempoolRequest` to get the node's mempool
+ - `GetMiningTemplateRequest` to fetch a native mining template optimized for external Stratum coordinators
 
+The mining RPC additions are designed for external pooled-mining services and
+carry both consensus-level payloads (raw block/header bytes) and stratum-
+oriented convenience fields (coinbase split, merkle branches, endian-specific
+hex fields).
 Serialization of the objects transferred and further details are in [nng_interface.fbs](../src/nng_interface/nng_interface.fbs).
 
 Likewise, PubSub messages are enabled using `-nngpub=<url>`, and `-nngpubmsg=<msg>`, where `<msg>` is the message to be enabled (can be supplied more than once) and must be one of:
@@ -19,7 +27,7 @@ Likewise, PubSub messages are enabled using `-nngpub=<url>`, and `-nngpubmsg=<ms
  - `blkconnected` to notify when a block connected to the chain. Flatbuffers table is `BlockConnected`.
  - `blkdisconctd` to notify when a block disconnected from the chain (e.g. reorg, invalidateblock). Flatbuffers table is `BlockDisconnected`.
  - `chainstflush` to nofity when the block database has been flushed to the disk. Flatbuffers table is `ChainStateFlushed`.
-
+ - `miningwrkchg` low-latency mining/template invalidation signal for external stratum services. Flatbuffers table is `MiningWorkChanged`.
 PubSub messages have their message type prepended as the first 12 bytes (0-padded if necessary), after that the message is encoded in the corresponding flatbuffers table (again, see [nng_interface.fbs](../src/nng_interface/nng_interface.fbs)).
 
 ## Example
@@ -33,6 +41,40 @@ nngpubmsg=blkconnected
 nngpubmsg=blkdisconctd
 nngpubmsg=mempooltxadd
 nngpubmsg=mempooltxrem
+nngpubmsg=miningwrkchg
 ```
 
 The same urls would then be specified in the indexer to connect the node to it.
+
+For external stratum services, the exact same transport modes are supported.
+In production, use whichever fits your topology:
+
+- `ipc://...` when stratum and lotusd run on the same host and local filesystem
+  permissions provide the desired access control boundary.
+- `tcp://...` when stratum runs remotely; in this case, explicitly harden bind
+  addresses and network policy (firewall allowlists, private networking, etc).
+
+### Mining endpoint examples
+
+IPC mode:
+
+```
+nngrpc=ipc://datadir/nngrpc.pipe
+nngpub=ipc://datadir/nngpub.pipe
+nngpubmsg=updateblktip
+nngpubmsg=miningwrkchg
+```
+
+TCP mode:
+
+```
+nngrpc=tcp://127.0.0.1:52783
+nngpub=tcp://127.0.0.1:52784
+nngpubmsg=updateblktip
+nngpubmsg=miningwrkchg
+```
+
+A Stratum coordinator typically subscribes to `miningwrkchg` and calls:
+- `GetMiningTemplateRequest` on startup and on each work-change event
+
+Solved blocks are submitted via the JSON-RPC `submitblock` endpoint instead.
