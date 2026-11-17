@@ -30,6 +30,7 @@ struct CoinbaseAddresses {
     std::vector<std::string> secondSamuel;
     std::vector<std::string> firstKings;
     std::vector<std::string> secondKings;
+    std::vector<std::string> firstChronicles;
 };
 
 enum BuriedDeployment : int16_t {
@@ -83,6 +84,9 @@ struct Params {
     /** Unix time used for MTP activation of 2026-12-21T20:50:00.000Z protocol
      * upgrade */
     int secondKingsActivationTime;
+    /** Unix time used for MTP activation of 2027-06-21T14:10:00.000Z protocol
+     * upgrade */
+    int firstChroniclesActivationTime;
     /** Block height at which BIP16 becomes active */
     int BIP16Height;
     /** Block height and hash at which BIP34 becomes active */

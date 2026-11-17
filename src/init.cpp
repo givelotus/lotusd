@@ -522,7 +522,7 @@ void SetupServerArgs(NodeContext &node) {
         "-joshuaactivationtime", "-judgesactivationtime",
         "-ruthactivationtime", "-firstsamuelactivationtime",
         "-secondsamuelactivationtime", "-firstkingsactivationtime",
-        "-secondkingsactivationtime",
+        "-secondkingsactivationtime", "-firstchroniclesactivationtime",
     };
 
     // Set all of the args and their help
