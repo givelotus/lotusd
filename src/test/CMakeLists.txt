@@ -161,6 +161,7 @@ add_boost_unit_tests_to_suite(bitcoin test_lotus
 		checkdatasig_tests.cpp
 		checkpoints_tests.cpp
 		checkqueue_tests.cpp
+		coinbase_height_tests.cpp
 		coins_tests.cpp
 		coinscachepair_tests.cpp
 		coinstatsindex_tests.cpp
@@ -195,6 +196,7 @@ add_boost_unit_tests_to_suite(bitcoin test_lotus
 		malfix_tests.cpp
 		mempool_tests.cpp
 		merkle_tests.cpp
+		minerfund_schedule_tests.cpp
 		merkleblock_tests.cpp
 		miner_tests.cpp
 		monolith_opcodes_tests.cpp

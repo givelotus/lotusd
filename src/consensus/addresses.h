@@ -161,5 +161,9 @@ Consensus::CoinbaseAddresses AddressSets = {
             // faithful turtle
             "lotus_16PSJQXrnTrUbhnxPpPgf1jd16JFkWk8TdbpALVME",
         },
+    .secondKings =
+        {
+            "lotus_16PSJPVHNWEF4t1nSFefhth6HAtqn6oripT4k9iNv",
+        },
 };
 } // namespace RewardAddresses

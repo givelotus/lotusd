@@ -120,7 +120,7 @@ public:
         // 2023-12-22T03:27:00.000Z protocol upgrade
         consensus.joshuaActivationTime = 1703215620;
         // 2024-06-20T20:51:00.000Z protocol upgrade
-        consensus.judgesActivationTime = 1718916600;
+        consensus.judgesActivationTime = 1718916660;
         // 2024-12-21T09:20:00.000Z protocol upgrade
         consensus.ruthActivationTime = 1734772800;
         // 2025-06-21T02:42:00.000Z protocol upgrade
@@ -131,6 +131,8 @@ public:
         consensus.firstKingsActivationTime = 1782030240;
         // 2026-12-21T20:50:00.000Z protocol upgrade
         consensus.secondKingsActivationTime = 1797886200;
+        // 2027-06-21T14:10:00.000Z protocol upgrade
+        consensus.firstChroniclesActivationTime = 1813587000;
 
         /**
          * The message start string is designed to be unlikely to occur in
@@ -178,8 +180,7 @@ public:
         vFixedSeeds.clear();
         vSeeds.clear();
 
-        vSeeds.emplace_back("mainnet.seeds.cash");
-        vSeeds.emplace_back("seed.be.cash");
+        vSeeds.emplace_back("seed.lotusia.org");
 
         base58Prefixes[PUBKEY_ADDRESS] = std::vector<uint8_t>(1, 0);
         base58Prefixes[SCRIPT_ADDRESS] = std::vector<uint8_t>(1, 5);
@@ -302,6 +303,11 @@ public:
         // 2026-12-21T20:50:00.000Z protocol upgrade
         consensus.secondKingsActivationTime =
             mainnetConsensus.secondKingsActivationTime -
+            testnetActivationOffset;
+        // 2027-05-31T14:10:00.000Z protocol upgrade (mainnet minus the
+        // testnet offset)
+        consensus.firstChroniclesActivationTime =
+            mainnetConsensus.firstChroniclesActivationTime -
             testnetActivationOffset;
 
         // "ltdk" with MSB set
@@ -440,6 +446,9 @@ public:
         // 2026-12-21T20:50:00.000Z protocol upgrade
         consensus.secondKingsActivationTime =
             mainnetConsensus.secondKingsActivationTime;
+        // 2027-06-21T14:10:00.000Z protocol upgrade
+        consensus.firstChroniclesActivationTime =
+            mainnetConsensus.firstChroniclesActivationTime;
 
         // "lrdk" with MSB set
         diskMagic[0] = 0xec;

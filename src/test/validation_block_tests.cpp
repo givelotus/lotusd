@@ -7,6 +7,7 @@
 #include <avalanche/processor.h>
 #include <chain.h>
 #include <chainparams.h>
+#include <common/args.h>
 #include <config.h>
 #include <consensus/consensus.h>
 #include <consensus/merkle.h>
@@ -488,4 +489,49 @@ BOOST_AUTO_TEST_CASE(mempool_locks_reorg) {
         rpc_thread.join();
     }
 }
+// Ported from LotusiaStewardship/lotusd 9706858859.
+BOOST_AUTO_TEST_CASE(coinbase_height_second_kings_gate) {
+    GlobalConfig config;
+    const CChainParams &chainParams = config.GetChainParams();
+    ChainstateManager &chainman = *Assert(m_node.chainman);
+
+    bool ignored;
+    auto ProcessBlock = [&](std::shared_ptr<const CBlock> block) -> bool {
+        return chainman.ProcessNewBlock(block, /*force_processing=*/true,
+                                        /*min_pow_checked=*/true, &ignored);
+    };
+    auto Tip = [&]() {
+        LOCK(cs_main);
+        return chainman.ActiveTip();
+    };
+
+    BOOST_REQUIRE(
+        ProcessBlock(std::make_shared<CBlock>(chainParams.GenesisBlock())));
+    auto tip = GoodBlock(config, chainParams.GenesisBlock().GetHash(), 1);
+    BOOST_REQUIRE(ProcessBlock(tip));
+
+    // From the Second Kings activation onward, the coinbase's first output
+    // must carry the canonical "logos" prefix.
+    gArgs.ForceSetArg("-secondkingsactivationtime", "0");
+
+    // A canonical coinbase remains accepted.
+    auto good =
+        GoodBlock(config, Tip()->GetBlockHash(), Tip()->nHeight + 1);
+    BOOST_CHECK(ProcessBlock(good));
+    BOOST_CHECK(Tip()->GetBlockHash() == good->GetHash());
+
+    // A vanity (non-"logos") coinbase is rejected.
+    auto block = Block(config, Tip()->GetBlockHash(), Tip()->nHeight + 1);
+    CMutableTransaction coinbase(*block->vtx[0]);
+    coinbase.vout[0].scriptPubKey =
+        CScript() << OP_RETURN << std::vector<uint8_t>{'F', 'R', 'B', 'T', 'C'}
+                  << block->nHeight;
+    block->vtx[0] = MakeTransactionRef(std::move(coinbase));
+    auto vanity = FinalizeBlock(chainParams.GetConsensus(), block);
+    BOOST_CHECK(!ProcessBlock(vanity));
+    BOOST_CHECK(Tip()->GetBlockHash() == good->GetHash());
+
+    gArgs.ClearForcedArg("-secondkingsactivationtime");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

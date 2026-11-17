@@ -3,7 +3,11 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """
-Test that we successfully phased out taproot during the Numbers update
+Test that we successfully phased out taproot during the Numbers update.
+
+Taproot outputs are rejected in blocks until Second Samuel, also before
+Numbers, as on the network run by LotusiaStewardship/lotusd. After Second
+Samuel, Taproot outputs and spends are accepted.
 """
 
 from test_framework.key import ECKey
@@ -78,13 +82,33 @@ class TaprootKeySpendTest(BitcoinTestFramework):
         # Can't add taproot to mempool: They're henceforth non-standard
         peer.send_txs_and_test([tx_fund_taproot], node, success=False, reject_reason='bad-taproot-phased-out')
 
-        # However, before Numbers, we can still mine txs with taproot output
-        template = node.getblocktemplate()
-        coinbase = create_coinbase(template['height'], pubkey=b'\x03'*33)
-        block1 = create_block(coinbase=coinbase, tmpl=template)
-        block1.vtx.append(tx_fund_taproot)
-        prepare_block(block1)
-        peer.send_blocks_and_test([block1], node, timeout=5)
+        # Taproot outputs can't be mined before Second Samuel, even before
+        # Numbers
+        self.check_taproot_output_rejected(node, peer, tx_fund_taproot)
+
+        # Activate Numbers upgrade
+        node.setmocktime(NUMBERS_ACTIVATION_TIME)
+        self.generatetoaddress(node, 6, burn_address)
+
+        # Adding taproot output to mempool still fails, and so does mining it
+        peer.send_txs_and_test([tx_fund_taproot], node, success=False, reject_reason='bad-taproot-phased-out')
+        self.check_taproot_output_rejected(node, peer, tx_fund_taproot)
+
+        # Now we roll back Numbers
+        node.invalidateblock(node.getbestblockhash())
+
+        # Taproot outputs are still rejected in the mempool and in blocks
+        peer.send_txs_and_test([tx_fund_taproot], node, success=False, reject_reason='bad-taproot-phased-out')
+        self.check_taproot_output_rejected(node, peer, tx_fund_taproot)
+
+        # Activate Second Samuel
+        node.setmocktime(SECOND_SAMUEL_ACTIVATION_TIME)
+        self.generatetoaddress(node, 6, burn_address)
+
+        # Taproot outputs are now accepted in the mempool and in blocks
+        peer.send_txs_and_test([tx_fund_taproot], node)
+        self.generatetoaddress(node, 1, burn_address)
+        assert tx_fund_taproot.txid_hex in node.getblock(node.getbestblockhash())['tx']
 
         # Make tx spending taproot
         tx_spend_taproot = CTransaction()
@@ -101,61 +125,18 @@ class TaprootKeySpendTest(BitcoinTestFramework):
         signature += bytes([sighash_type])
         tx_spend_taproot.vin[0].scriptSig = CScript([signature])
 
-        # We can't add a taproot spend to mempool either
-        peer.send_txs_and_test([tx_spend_taproot], node, success=False, reject_reason='non-mandatory-script-verify-flag (Taproot is being phased out)')
+        # And so are Taproot spends
+        peer.send_txs_and_test([tx_spend_taproot], node)
+        self.generatetoaddress(node, 1, burn_address)
+        assert tx_spend_taproot.txid_hex in node.getblock(node.getbestblockhash())['tx']
 
-        # However, before Numbers, we can still mine taproot spend txs
+    def check_taproot_output_rejected(self, node, peer, tx_fund_taproot):
         template = node.getblocktemplate()
         coinbase = create_coinbase(template['height'], pubkey=b'\x03'*33)
-        block2 = create_block(coinbase=coinbase, tmpl=template)
-        block2.vtx.append(tx_spend_taproot)
-        prepare_block(block2)
-        peer.send_blocks_and_test([block2], node, timeout=5)
-
-        # Undo blocks with the 2 taproot txs
-        node.invalidateblock(block2.hash_hex)
-        node.invalidateblock(block1.hash_hex)
-
-        # Activate Numbers upgrade
-        node.setmocktime(NUMBERS_ACTIVATION_TIME)
-        self.generatetoaddress(node, 6, burn_address)
-
-        # Adding taproot output to mempool still fails
-        peer.send_txs_and_test([tx_fund_taproot], node, success=False, reject_reason='bad-taproot-phased-out')
-
-        # But now taproot outputs can't even be mined in blocks anymore
-        template = node.getblocktemplate()
-        coinbase = create_coinbase(template['height'], pubkey=b'\x03'*33)
-        block3 = create_block(coinbase=coinbase, tmpl=template)
-        block3.vtx.append(tx_fund_taproot)
-        prepare_block(block3)
-        peer.send_blocks_and_test([block3], node, success=False, reject_reason='bad-taproot-phased-out')
-
-        # Now we roll back Numbers
-        node.invalidateblock(node.getbestblockhash())
-
-        # Adding taproot output to mempool still fails
-        peer.send_txs_and_test([tx_fund_taproot], node, success=False, reject_reason='bad-taproot-phased-out')
-
-        # Since we rolled back Numbers, we can mine the taproot output again
-        template = node.getblocktemplate()
-        coinbase = create_coinbase(template['height'], pubkey=b'\x03'*33)
-        block4 = create_block(coinbase=coinbase, tmpl=template)
-        block4.vtx.append(tx_fund_taproot)
-        prepare_block(block4)
-        peer.send_blocks_and_test([block4], node, timeout=5)
-
-        # Adding taproot spend to mempool still fails
-        peer.send_txs_and_test([tx_spend_taproot], node, success=False, reject_reason='non-mandatory-script-verify-flag (Taproot is being phased out)')
-
-        # Numbers is now activated again, so we can't spend the taproot output even in blocks
-        template = node.getblocktemplate()
-        coinbase = create_coinbase(template['height'], pubkey=b'\x03'*33)
-        block5 = create_block(coinbase=coinbase, tmpl=template)
-        block5.vtx.append(tx_spend_taproot)
-        prepare_block(block5)
-        peer.send_blocks_and_test([block5], node, success=False, reject_reason='mandatory-script-verify-flag-failed (Taproot is being phased out)')
-
+        block = create_block(coinbase=coinbase, tmpl=template)
+        block.vtx.append(tx_fund_taproot)
+        prepare_block(block)
+        peer.send_blocks_and_test([block], node, success=False, reject_reason='bad-taproot-phased-out')
 
 if __name__ == '__main__':
     TaprootKeySpendTest().main()

@@ -7,7 +7,13 @@
 #include <chainparams.h>
 #include <common/args.h>
 #include <consensus/activation.h>
+#include <key.h>
+#include <primitives/transaction.h>
+#include <script/interpreter.h>
+#include <script/script.h>
+#include <util/string.h>
 #include <util/time.h>
+#include <validation.h>
 
 #include <test/util/setup_common.h>
 
@@ -109,6 +115,194 @@ BOOST_AUTO_TEST_CASE(is_numbers_enabled) {
     BOOST_CHECK_EQUAL(
         IsNumbersEnabled(params, &blocks.back()),
         IsNumbersEnabled(params, blocks.back().GetMedianTimePast()));
+}
+
+BOOST_AUTO_TEST_CASE(is_second_kings_enabled) {
+    const Consensus::Params &params = Params().GetConsensus();
+    // 2026-12-21T20:50:00Z, the same on regtest as on mainnet.
+    const int64_t activation = 1797886200;
+    BOOST_CHECK_EQUAL(params.secondKingsActivationTime, activation);
+
+    BOOST_CHECK(!IsSecondKingsEnabled(params, nullptr));
+
+    std::array<CBlockIndex, 12> blocks;
+    for (size_t i = 1; i < blocks.size(); ++i) {
+        blocks[i].pprev = &blocks[i - 1];
+    }
+
+    SetMTP(blocks, activation - 1);
+    BOOST_CHECK(!IsSecondKingsEnabled(params, &blocks.back()));
+
+    SetMTP(blocks, activation);
+    BOOST_CHECK(IsSecondKingsEnabled(params, &blocks.back()));
+
+    SetMTP(blocks, activation + 1);
+    BOOST_CHECK(IsSecondKingsEnabled(params, &blocks.back()));
+
+    // -secondkingsactivationtime overrides the time.
+    gArgs.ForceSetArg("-secondkingsactivationtime", util::ToString(activation + 2));
+    BOOST_CHECK(!IsSecondKingsEnabled(params, &blocks.back()));
+    SetMTP(blocks, activation + 2);
+    BOOST_CHECK(IsSecondKingsEnabled(params, &blocks.back()));
+    gArgs.ClearForcedArg("-secondkingsactivationtime");
+}
+
+// Lotus 11.6.1 and earlier enabled replay protection at the 2nd Kings
+// upgrade, 2026-12-21T20:50:00Z. From 12.x it waits for 1st Chronicles,
+// 2027-06-21T14:10:00Z.
+static constexpr int64_t SECOND_KINGS_TIME = 1797886200;
+static constexpr int64_t FIRST_CHRONICLES_TIME = 1813587000;
+static constexpr int64_t TESTNET_OFFSET = 21 * 24 * 3600;
+
+BOOST_AUTO_TEST_CASE(replay_protection_activation_times) {
+    const ArgsManager args{};
+    const auto main = CreateChainParams(args, ChainType::MAIN);
+    const auto test = CreateChainParams(args, ChainType::TESTNET);
+    const auto reg = CreateChainParams(args, ChainType::REGTEST);
+
+    BOOST_CHECK_EQUAL(main->GetConsensus().secondKingsActivationTime,
+                      SECOND_KINGS_TIME);
+    BOOST_CHECK_EQUAL(test->GetConsensus().secondKingsActivationTime,
+                      SECOND_KINGS_TIME - TESTNET_OFFSET);
+    BOOST_CHECK_EQUAL(reg->GetConsensus().secondKingsActivationTime,
+                      SECOND_KINGS_TIME);
+    BOOST_CHECK_EQUAL(main->GetConsensus().firstChroniclesActivationTime,
+                      FIRST_CHRONICLES_TIME);
+    BOOST_CHECK_EQUAL(test->GetConsensus().firstChroniclesActivationTime,
+                      FIRST_CHRONICLES_TIME - TESTNET_OFFSET);
+    BOOST_CHECK_EQUAL(reg->GetConsensus().firstChroniclesActivationTime,
+                      FIRST_CHRONICLES_TIME);
+}
+
+namespace {
+struct ReplayProtectionSetup : public TestChain100Setup {
+    const CScript coinbaseScript = CScript()
+                                   << ToByteVector(coinbaseKey.GetPubKey())
+                                   << OP_CHECKSIG;
+    size_t nextCoinbase = 0;
+
+    int64_t TipMedianTimePast() {
+        LOCK(cs_main);
+        return m_node.chainman->ActiveTip()->GetMedianTimePast();
+    }
+
+    // Mine empty blocks until the tip's median time past reaches mtp, so the
+    // next block and the mempool use the script flags in force at mtp.
+    void MineUntilMedianTimePast(int64_t mtp) {
+        SetMockTime(mtp);
+        while (TipMedianTimePast() < mtp) {
+            mineBlocks(1);
+        }
+    }
+
+    // Spend the next mature coinbase output paying coinbaseKey. When
+    // replayProtected is set, sign over the replay-protected fork value.
+    CMutableTransaction Spend(bool replayProtected) {
+        const CTransactionRef coinbase = m_coinbase_txns.at(nextCoinbase++);
+        uint32_t n = 0;
+        while (coinbase->vout.at(n).scriptPubKey != coinbaseScript) {
+            ++n;
+        }
+        const Amount amount = coinbase->vout[n].nValue;
+
+        CMutableTransaction tx;
+        tx.vin.emplace_back(COutPoint(coinbase->GetId(), n));
+        tx.vout.emplace_back(amount - 10000 * SATOSHI, coinbaseScript);
+
+        const SigHashType sigHashType = SigHashType().withForkId();
+        uint32_t flags = SCRIPT_ENABLE_SIGHASH_FORKID;
+        if (replayProtected) {
+            flags |= SCRIPT_ENABLE_REPLAY_PROTECTION;
+        }
+        uint256 hash;
+        BOOST_REQUIRE(SignatureHash(hash, std::nullopt, coinbaseScript,
+                                    CTransaction(tx), 0, sigHashType, amount,
+                                    nullptr, flags));
+        std::vector<uint8_t> sig;
+        BOOST_REQUIRE(coinbaseKey.SignSchnorr(hash, sig));
+        sig.push_back(uint8_t(sigHashType.getRawSigHashType()));
+        tx.vin[0].scriptSig = CScript() << sig;
+        return tx;
+    }
+
+    MempoolAcceptResult Submit(const CMutableTransaction &tx) {
+        LOCK(cs_main);
+        return m_node.chainman->ProcessTransaction(MakeTransactionRef(tx));
+    }
+
+    bool IsMandatoryScriptFailure(const MempoolAcceptResult &result) {
+        return result.m_result_type ==
+                   MempoolAcceptResult::ResultType::INVALID &&
+               result.m_state.GetRejectReason().rfind(
+                   "mandatory-script-verify-flag-failed", 0) == 0;
+    }
+
+    // Mine tx in a block and report whether the block became the tip.
+    bool Confirm(const CMutableTransaction &tx) {
+        const CBlock block = CreateAndProcessBlock({tx}, coinbaseScript);
+        LOCK(cs_main);
+        return m_node.chainman->ActiveTip()->GetBlockHash() ==
+               block.GetHash();
+    }
+};
+} // namespace
+
+// Regtest uses the mainnet activation time, and no
+// -replayprotectionactivationtime override is set, so this exercises the
+// default schedule used by mainnet nodes.
+BOOST_FIXTURE_TEST_CASE(replay_protection_follows_schedule,
+                        ReplayProtectionSetup) {
+    const int64_t activation =
+        m_node.chainman->GetConsensus().firstChroniclesActivationTime;
+    BOOST_CHECK_EQUAL(activation, FIRST_CHRONICLES_TIME);
+
+    // From the 2nd Kings upgrade, ordinary ForkID signatures stay valid.
+    MineUntilMedianTimePast(SECOND_KINGS_TIME);
+    const CMutableTransaction ordinary = Spend(false);
+    const MempoolAcceptResult before = Submit(ordinary);
+    BOOST_CHECK_MESSAGE(before.m_result_type ==
+                            MempoolAcceptResult::ResultType::VALID,
+                        "ordinary spend rejected at 2nd Kings: "
+                            << before.m_state.ToString());
+    BOOST_CHECK(Confirm(ordinary));
+
+    // Replay-protected signatures are not valid yet.
+    BOOST_CHECK(IsMandatoryScriptFailure(Submit(Spend(true))));
+
+    // One second before 1st Chronicles nothing changes.
+    MineUntilMedianTimePast(activation - 1);
+    BOOST_CHECK_EQUAL(TipMedianTimePast(), activation - 1);
+    BOOST_CHECK(Submit(Spend(false)).m_result_type ==
+                MempoolAcceptResult::ResultType::VALID);
+
+    // From 1st Chronicles, the replay-protected fork value is required.
+    MineUntilMedianTimePast(activation);
+    BOOST_CHECK(IsMandatoryScriptFailure(Submit(Spend(false))));
+    const CMutableTransaction protectedSpend = Spend(true);
+    BOOST_CHECK(Submit(protectedSpend).m_result_type ==
+                MempoolAcceptResult::ResultType::VALID);
+    BOOST_CHECK(Confirm(protectedSpend));
+}
+
+// The mainnet upgrade times of the Lotus V1 network, as run by
+// LotusiaStewardship/lotusd.
+BOOST_AUTO_TEST_CASE(mainnet_activation_times) {
+    const ArgsManager args{};
+    const auto main = CreateChainParams(args, ChainType::MAIN);
+    const Consensus::Params &c = main->GetConsensus();
+    BOOST_CHECK_EQUAL(c.exodusActivationTime, 1640102340);
+    BOOST_CHECK_EQUAL(c.leviticusActivationTime, 1655802840);
+    BOOST_CHECK_EQUAL(c.numbersActivationTime, 1671659280);
+    BOOST_CHECK_EQUAL(c.deuteronomyActivationTime, 1687359480);
+    BOOST_CHECK_EQUAL(c.joshuaActivationTime, 1703215620);
+    // 2024-06-20T20:51:00Z
+    BOOST_CHECK_EQUAL(c.judgesActivationTime, 1718916660);
+    BOOST_CHECK_EQUAL(c.ruthActivationTime, 1734772800);
+    BOOST_CHECK_EQUAL(c.firstSamuelActivationTime, 1750473720);
+    BOOST_CHECK_EQUAL(c.secondSamuelActivationTime, 1766329380);
+    BOOST_CHECK_EQUAL(c.firstKingsActivationTime, 1782030240);
+    BOOST_CHECK_EQUAL(c.secondKingsActivationTime, 1797886200);
+    BOOST_CHECK_EQUAL(c.firstChroniclesActivationTime, 1813587000);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

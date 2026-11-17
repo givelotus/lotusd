@@ -1,4 +1,5 @@
 // Copyright (c) 2021 The Logos Foundation
+// Copyright (c) 2024 The Lotusia Stewardship
 
 namespace NngInterface;
 
@@ -9,6 +10,7 @@ union RpcRequest {
     GetBlockSliceRequest,
     GetUndoSliceRequest,
     GetMempoolRequest,
+    GetMiningTemplateRequest,
 }
 
 // Result of an RPC call
@@ -229,6 +231,39 @@ table ChainStateFlushed {
     block_hash: BlockHash;
 }
 
+// Why `MiningWorkChanged` was emitted.
+//
+// This enum is used in `reason` and is intentionally compact because the
+// pub/sub topic is low-latency and high-frequency under active mining.
+enum MiningWorkChangeReason: int32 {
+    // New best tip on the same chain progression (non-reorg).
+    NEW_TIP = 0,
+    // Best tip changed due to a reorg/fork switch.
+    REORG = 1,
+    // Mempool change may alter tx selection and coinbase reward.
+    MEMPOOL_REFRESH = 2,
+    // Catch-all for operator/manual invalidation events.
+    MANUAL_INVALIDATION = 3,
+}
+
+// Low-latency signal intended for external stratum coordinators.
+//
+// `UpdatedBlockTip` remains the canonical chain-tip event. This table adds a
+// mining-focused event with explicit reason and a monotonic template epoch to
+// let external services invalidate and refresh jobs quickly.
+table MiningWorkChanged {
+    // Cause of this work-change signal.
+    reason: MiningWorkChangeReason;
+    // Current best tip hash after the change.
+    block_hash: BlockHash;
+    // Current best height after the change.
+    height: int32;
+    // Node timestamp when signal was emitted.
+    node_time: int64;
+    // Monotonic counter local to the running node process.
+    template_epoch: uint64;
+}
+
 // Fetches a single block
 table GetBlockRequest {
     // Identifier of the block; either height or hash
@@ -300,3 +335,108 @@ table GetMempoolResponse {
     // List of txs in the mempool
     txs: [MempoolTx];
 }
+
+// Metadata for a non-coinbase tx included in a mining template.
+table MiningTemplateTx {
+    // Raw serialized transaction.
+    raw: [ubyte];
+    // Txid of the transaction.
+    txid: TxId;
+    // Fee (in satoshis) attributed to this tx by BlockAssembler.
+    fee: int64;
+    // SigOp count attributed to this tx by BlockAssembler.
+    sigops: int64;
+}
+
+// Request a fresh mining template for external stratum/pool coordinators.
+//
+// The template is node-consensus-derived and can be transformed by the
+// external coordinator into one or many per-worker Stratum jobs.
+table GetMiningTemplateRequest {
+    // Script to use for the coinbase output(s).
+    // If omitted/empty, lotusd falls back to OP_RETURN to match
+    // getblocktemplate-like behavior for template-only callers.
+    coinbase_script: [ubyte];
+
+    // Optional aux bytes appended to the coinbase input scriptSig.
+    // Intended for operator/pool identity tags (coinbaseaux-style semantics).
+    coinbase_identity: [ubyte];
+
+    // Number of bytes reserved for extranonce1 in stratum coinbase splitting.
+    // External stratum servers may set this to their session en1 size.
+    extranonce1_size: uint32 = 4;
+
+    // Number of bytes reserved for extranonce2 in stratum coinbase splitting.
+    // External stratum servers should set this to the miner-facing en2 size.
+    extranonce2_size: uint32 = 4;
+
+    // Include `transactions` payload in response.
+    // Set false to reduce payload when caller only needs header/coinbase split.
+    include_transactions: bool = true;
+}
+
+// Response for GetMiningTemplateRequest.
+table GetMiningTemplateResponse {
+    // Monotonic node-local template id for correlation/debugging.
+    template_id: uint64;
+
+    // Full serialized block template (including current coinbase tx).
+    block: [ubyte];
+
+    // Full serialized block header from the template.
+    header: [ubyte];
+
+    // Hash of the previous block this template builds on.
+    previous_block_hash: BlockHash;
+
+    // Height for this template.
+    height: int32;
+
+    // Block header version chosen for this template.
+    version: uint32;
+
+    // Compact target bits for this template.
+    bits: uint32;
+
+    // Full target corresponding to `bits`.
+    target: Hash;
+
+    // Current template time (unix seconds).
+    curtime: uint64;
+
+    // Minimum valid block time for this template (MTP+1 style lower bound).
+    mintime: uint64;
+
+    // Current max acceptable block time from node perspective.
+    maxtime: uint64;
+
+    // Total coinbase output value available to miner (satoshis).
+    coinbase_value: uint64;
+
+    // Raw coinbase tx from the template.
+    coinbase_tx: [ubyte];
+
+    // Optional non-coinbase tx list and metadata.
+    transactions: [MiningTemplateTx];
+
+    // --- Stratum convenience fields (native Lotus header model) ---
+
+    // Coinbase split prefix/suffix, with extranonce space accounted for.
+    // External stratum servers can reconstruct per-share coinbase as:
+    //   coinbase1 || extranonce1 || extranonce2 || coinbase2
+    coinbase1: string;
+    coinbase2: string;
+
+    // Merkle branches for coinbase-first tree reconstruction.
+    merkle_branches: [string];
+
+    // Previous block hash in stratum-native endian presentation.
+    prev_hash_stratum: string;
+
+    // nBits as little-endian hex string for stratum clients.
+    nbits_stratum: string;
+
+    // 6-byte Lotus time field as little-endian hex (12 chars).
+    ntime_stratum: string;
+}
+

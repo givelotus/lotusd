@@ -522,7 +522,7 @@ void SetupServerArgs(NodeContext &node) {
         "-joshuaactivationtime", "-judgesactivationtime",
         "-ruthactivationtime", "-firstsamuelactivationtime",
         "-secondsamuelactivationtime", "-firstkingsactivationtime",
-        "-secondkingsactivationtime",
+        "-secondkingsactivationtime", "-firstchroniclesactivationtime",
     };
 
     // Set all of the args and their help
@@ -1527,6 +1527,26 @@ void SetupServerArgs(NodeContext &node) {
                              DEFAULT_HTTP_SERVER_TIMEOUT),
                    ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
                    OptionsCategory::RPC);
+
+#if ENABLE_NNG
+    argsman.AddArg("-nngrpc=<url>",
+                   "Bind to given url to listen for NNG RPC connections. URL "
+                   "has to be prefixed by tcp:// or ipc://, which also "
+                   "determines the transport that will be used",
+                   ArgsManager::ALLOW_ANY, OptionsCategory::NNG_INTERFACE);
+    argsman.AddArg("-nngpub=<url>",
+                   "Bind to given url to listen for NNG PubSub connections. "
+                   "URL has to be prefixed by tcp:// or ipc://, which also "
+                   "determines the transport that will be used",
+                   ArgsManager::ALLOW_ANY, OptionsCategory::NNG_INTERFACE);
+    argsman.AddArg(
+        "-nngpubmsg=<messagetype>",
+        strprintf("Enable publishing <messagetype> on the NNG PubSub "
+                  "interface. Can be specified multiple times to enable "
+                  "multiple message types. Available message types are: %s",
+                  Join(AVAILABLE_PUB_MESSAGES, ", ")),
+        ArgsManager::ALLOW_ANY, OptionsCategory::NNG_INTERFACE);
+#endif
 
 #if HAVE_DECL_FORK
     argsman.AddArg("-daemon",

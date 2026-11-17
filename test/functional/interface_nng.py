@@ -9,6 +9,7 @@ import asyncio
 
 from test_framework.blocktools import create_block, create_coinbase, prepare_block, SUBSIDY
 from test_framework.test_framework import BitcoinTestFramework
+from test_framework.test_node import ErrorMatch
 from test_framework.messages import CTransaction, CTxIn, COutPoint, CTxOut, COIN, CBlockHeader
 from test_framework.script import CScript, OP_HASH160, OP_EQUAL
 from test_framework.txtools import pad_tx
@@ -41,6 +42,7 @@ class NngInterfaceTest(BitcoinTestFramework):
             "-nngpubmsg=blkconnected",
             "-nngpubmsg=blkdisconctd",
             "-nngpubmsg=chainstflush",
+            "-nngpubmsg=miningwrkchg",
             # Always expire after 1h
             "-mempoolexpiry=1",
         ]]
@@ -72,9 +74,11 @@ class NngInterfaceTest(BitcoinTestFramework):
             await self._test_get_block_slice_errors(rpc_sock)
             await self._test_send_tx(node, rpc_sock)
             await self._test_get_block_range(node, rpc_sock)
+            await self._test_mining_rpcs(node, rpc_sock)
         with pynng.Sub0() as pub_sock:
             pub_sock.dial(PUB_URL)
             await self._test_update_chain_tip(node, pub_sock)
+            await self._test_mining_work_changed(node, pub_sock)
             await self._test_transaction_added_to_mempool(node, pub_sock)
             await self._test_transaction_removed_from_mempool_conflict(node, pub_sock)
             await self._test_transaction_removed_from_mempool_expiry(node, pub_sock)
@@ -196,6 +200,30 @@ class NngInterfaceTest(BitcoinTestFramework):
         fbb.Finish(rpc)
         return bytes(fbb.Output())
 
+    def _make_get_mining_template_request_fbs(self, coinbase_identity=None):
+        from NngInterface import (
+            RpcCall,
+            RpcRequest,
+            GetMiningTemplateRequest,
+        )
+        import flatbuffers
+        fbb = flatbuffers.Builder()
+        identity_vec = None
+        if coinbase_identity is not None:
+            identity_vec = fbb.CreateByteVector(coinbase_identity)
+        # Use defaults: OP_RETURN fallback script and 4/4 extranonce sizes.
+        GetMiningTemplateRequest.Start(fbb)
+        if identity_vec is not None:
+            GetMiningTemplateRequest.AddCoinbaseIdentity(fbb, identity_vec)
+        req = GetMiningTemplateRequest.End(fbb)
+        RpcCall.Start(fbb)
+        RpcCall.AddRpcType(fbb, RpcRequest.RpcRequest.GetMiningTemplateRequest)
+        RpcCall.AddRpc(fbb, req)
+        rpc = RpcCall.End(fbb)
+        fbb.Finish(rpc)
+        return bytes(fbb.Output())
+
+
     async def _send_request(self, rpc_sock, request, *, timeout=1):
         await asyncio.wait_for(rpc_sock.asend(request), timeout=timeout)
 
@@ -210,8 +238,8 @@ class NngInterfaceTest(BitcoinTestFramework):
             assert result.IsSuccess(), f"Unexpected error: {result.ErrorMsg().decode()}"
             return get_fb_bytes(result, 'Data')
 
-    def _get_utxo(self, node):
-        blockhash = self.coin_blocks.pop(0)
+    def _get_utxo(self, node, index=0):
+        blockhash = self.coin_blocks.pop(index)
         coinbase_tx = node.getblock(blockhash, 2)['tx'][0]
         vout = 1
         value = int(coinbase_tx['vout'][vout]['value'] * COIN)
@@ -306,7 +334,7 @@ class NngInterfaceTest(BitcoinTestFramework):
             GetMempoolResponse,
         )
         # Generate block and query it
-        hashes = node.generatetoaddress(self.NUM_GENERATED_COINS, self.anyone_addr)
+        hashes = self.generatetoaddress(node, self.NUM_GENERATED_COINS, self.anyone_addr)
         self.coin_blocks = hashes[1:]
         blockhash = bytes.fromhex(hashes[0])[::-1]
 
@@ -333,7 +361,7 @@ class NngInterfaceTest(BitcoinTestFramework):
         await self._check_block_slice(rpc_sock, block.FileNum(), block.Txs(0).DataPos(), tx_raw)
 
         # Mature coinbase tx
-        node.generatetoaddress(100, self.burn_addr)
+        self.generatetoaddress(node, 100, self.burn_addr)
 
         # Create valid tx
         coinbase_value = coinbase_tx.vout[1].nValue
@@ -398,7 +426,7 @@ class NngInterfaceTest(BitcoinTestFramework):
         assert_equal(other_tx_fbb.Time(), self.TIMESTAMP)
 
         # Mine tx
-        hashes = node.generatetoaddress(1, self.burn_addr)
+        hashes = self.generatetoaddress(node, 1, self.burn_addr)
         # Mempool empty again
         assert_equal(node.getrawmempool(), [])
         await self._send_request(rpc_sock, self._make_get_mempool_request_fbs())
@@ -422,7 +450,15 @@ class NngInterfaceTest(BitcoinTestFramework):
         assert_equal(block.TxsLength(), 3)
         assert_equal(block.FileNum(), 0)
         assert_equal(block.UndoPos(), 4518)
-        coinbase_start_position = 31561
+        # Every block before this one is stored as an 8-byte record header
+        # plus the serialized block. The coinbase follows the 160-byte header,
+        # the empty metadata vector and the transaction count.
+        height = node.getblock(hashes[0])['height']
+        block_start = sum(
+            8 + len(node.getblock(node.getblockhash(h), 0)) // 2
+            for h in range(height)) + 8
+        assert_equal(block.DataPos(), block_start)
+        coinbase_start_position = block_start + 160 + 1 + 1
         assert_equal(block.Txs(0).DataPos(), coinbase_start_position)
         assert_equal(block.Txs(0).UndoPos(), 0)
         assert_equal(block.Txs(0).UndoSize(), 0)
@@ -485,6 +521,52 @@ class NngInterfaceTest(BitcoinTestFramework):
         response = GetBlockRangeResponse.GetBlockRangeResponse.GetRootAs(response, 0)
         assert_equal(response.BlocksLength(), 12)
 
+    async def _test_mining_rpcs(self, node, rpc_sock):
+        from NngInterface import (
+            GetMiningTemplateResponse,
+        )
+
+        # GetMiningTemplate: returns a coherent template payload with both
+        # raw block/header bytes and stratum helper fields.
+        await self._send_request(rpc_sock, self._make_get_mining_template_request_fbs())
+        response = await self._recv_response(rpc_sock)
+        response = GetMiningTemplateResponse.GetMiningTemplateResponse.GetRootAs(response, 0)
+        assert response.TemplateId() > 0
+        assert response.BlockLength() > 0
+        assert response.HeaderLength() > 0
+        assert response.CoinbaseTxLength() > 0
+        assert_equal(response.PrevHashStratum().__len__(), 64)
+        assert_equal(response.NbitsStratum().__len__(), 8)
+        assert_equal(response.NtimeStratum().__len__(), 12)
+
+        # Identity bytes should appear in coinbase scriptSig-related split data.
+        identity = b"lotusia-pool"
+        await self._send_request(
+            rpc_sock,
+            self._make_get_mining_template_request_fbs(identity),
+        )
+        response_with_identity = await self._recv_response(rpc_sock)
+        response_with_identity = GetMiningTemplateResponse.GetMiningTemplateResponse.GetRootAs(response_with_identity, 0)
+        coinbase1 = response_with_identity.Coinbase1().decode()
+        coinbase2 = response_with_identity.Coinbase2().decode()
+        assert identity.hex() in coinbase1
+
+        # coinbase1 || extranonce1 || extranonce2 || coinbase2 is the template
+        # coinbase with 4 + 4 extranonce bytes appended to its scriptSig.
+        template_cb = CTransaction()
+        template_cb.deserialize(BytesIO(bytes(
+            response_with_identity.CoinbaseTx(i)
+            for i in range(response_with_identity.CoinbaseTxLength()))))
+        extranonce = bytes(range(1, 9))
+        stratum_cb = CTransaction()
+        stratum_cb.deserialize(BytesIO(
+            bytes.fromhex(coinbase1) + extranonce + bytes.fromhex(coinbase2)))
+        assert_equal(stratum_cb.vin[0].scriptSig,
+                     template_cb.vin[0].scriptSig + extranonce)
+        assert_equal([out.serialize() for out in stratum_cb.vout],
+                     [out.serialize() for out in template_cb.vout])
+        assert_equal(stratum_cb.nLockTime, template_cb.nLockTime)
+
     async def _recv_message(self, pub_sock, expected_msg_type, timeout=2):
         received_msg = await asyncio.wait_for(pub_sock.arecv_msg(), timeout=timeout)
         actual_msg_type = received_msg.bytes[:12]
@@ -502,11 +584,43 @@ class NngInterfaceTest(BitcoinTestFramework):
     async def _test_update_chain_tip(self, node, pub_sock):
         from NngInterface.UpdatedBlockTip import UpdatedBlockTip
         pub_sock.subscribe('updateblktip')
-        hashes = node.generatetoaddress(1, self.burn_addr)
+        hashes = self.generatetoaddress(node, 1, self.burn_addr)
         msg = await self._recv_message(pub_sock, 'updateblktip')
         msg = UpdatedBlockTip.GetRootAs(msg, 0)
         assert_equal(bytes(msg.BlockHash().Hash().Data())[::-1].hex(), hashes[0])
         pub_sock.unsubscribe('updateblktip')
+
+    async def _test_mining_work_changed(self, node, pub_sock):
+        from NngInterface.MiningWorkChanged import MiningWorkChanged
+
+        pub_sock.subscribe('miningwrkchg')
+
+        # 1) Tip-driven work change.
+        hashes = self.generatetoaddress(node, 1, self.burn_addr)
+        msg = await self._recv_message(pub_sock, 'miningwrkchg')
+        evt = MiningWorkChanged.GetRootAs(msg, 0)
+        assert_equal(bytes(evt.BlockHash().Hash().Data())[::-1].hex(), hashes[0])
+        assert evt.TemplateEpoch() > 0
+        # NEW_TIP
+        assert_equal(evt.Reason(), 0)
+
+        # 2) Mempool-driven work change. Spend the newest coin, so that the
+        # later tests keep the coins (and heights) they expect.
+        tx = CTransaction()
+        outpoint, value = self._get_utxo(node, -1)
+        tx.vin.append(CTxIn(outpoint, CScript([b'\x51'])))
+        tx.vout.append(CTxOut(value - 1000, CScript([OP_HASH160, bytes(20), OP_EQUAL])))
+        pad_tx(tx)
+        node.sendrawtransaction(tx.serialize().hex())
+
+        msg2 = await self._recv_message(pub_sock, 'miningwrkchg')
+        evt2 = MiningWorkChanged.GetRootAs(msg2, 0)
+        assert_equal(bytes(evt2.BlockHash().Hash().Data())[::-1].hex(), node.getbestblockhash())
+        # MEMPOOL_REFRESH
+        assert_equal(evt2.Reason(), 2)
+        assert evt2.TemplateEpoch() > evt.TemplateEpoch()
+
+        pub_sock.unsubscribe('miningwrkchg')
 
     async def _test_transaction_added_to_mempool(self, node, pub_sock):
         from NngInterface.TransactionAddedToMempool import TransactionAddedToMempool
@@ -534,7 +648,7 @@ class NngInterfaceTest(BitcoinTestFramework):
     async def _test_transaction_removed_from_mempool_conflict(self, node, pub_sock):
         from NngInterface.TransactionRemovedFromMempool import TransactionRemovedFromMempool
         pub_sock.subscribe('mempooltxrem')
-        node.generatetoaddress(1, self.burn_addr)  # empty out mempool from previous test
+        self.generatetoaddress(node, 1, self.burn_addr)  # empty out mempool from previous test
         await self._check_timeout(pub_sock.arecv_msg(), timeout=0.1) # should not send an eviction message
         assert_equal(node.getrawmempool(), []) # mempool should be empty
         tx = CTransaction()
@@ -560,7 +674,7 @@ class NngInterfaceTest(BitcoinTestFramework):
     async def _test_transaction_removed_from_mempool_expiry(self, node, pub_sock):
         from NngInterface.TransactionRemovedFromMempool import TransactionRemovedFromMempool
         pub_sock.subscribe('mempooltxrem')
-        node.generatetoaddress(1, self.burn_addr)  # empty out mempool from previous test
+        self.generatetoaddress(node, 1, self.burn_addr)  # empty out mempool from previous test
         await self._check_timeout(pub_sock.arecv_msg(), timeout=0.1) # should not send an eviction message
         assert_equal(node.getrawmempool(), []) # mempool should be empty
         tx = CTransaction()
@@ -618,7 +732,7 @@ class NngInterfaceTest(BitcoinTestFramework):
         pub_sock.subscribe('blkdisconctd')
         tip = node.getbestblockhash()
         tipblock = node.getblock(tip)
-        reorged_blockhash = node.generatetoaddress(1, self.burn_addr)[0]
+        reorged_blockhash = self.generatetoaddress(node, 1, self.burn_addr)[0]
         block1 = create_block(
             int(tip, 16),
             create_coinbase(tipblock['height'] + 1, pubkey=b'\x03'*33),
@@ -658,11 +772,17 @@ class NngInterfaceTest(BitcoinTestFramework):
         pub_sock.unsubscribe('chainstflush')
 
     def _test_invalid_params(self, node):
+        # NNG 1 rejects a URL without a scheme as an invalid argument; NNG 2
+        # reports it as an unsupported transport.
         self.stop_node(0)
         node.assert_start_raises_init_error(
-            ["-nngrpc=a"], "Error: Failed listening on -nngrpc=a: Invalid argument")
+            ["-nngrpc=a"],
+            r"Error: Failed listening on -nngrpc=a: (Invalid argument|Not supported)",
+            match=ErrorMatch.FULL_REGEX)
         node.assert_start_raises_init_error(
-            ["-nngpub=a"], "Error: Failed listening on -nngpub=a: Invalid argument")
+            ["-nngpub=a"],
+            r"Error: Failed listening on -nngpub=a: (Invalid argument|Not supported)",
+            match=ErrorMatch.FULL_REGEX)
         node.assert_start_raises_init_error(
             [f"-nngpub={PUB_URL}", "-nngpubmsg=a"], "Error: Invalid message type 'a' in -nngpubmsg.")
 

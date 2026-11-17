@@ -21,10 +21,13 @@ const std::string MSG_MEMPOOLTXREM = "mempooltxrem";
 const std::string MSG_BLKCONNECTED = "blkconnected";
 const std::string MSG_BLKDISCONCTD = "blkdisconctd";
 const std::string MSG_CHAINSTFLUSH = "chainstflush";
+// Mining-focused low-latency template invalidation signal.
+const std::string MSG_MININGWRKCHG = "miningwrkchg";
 
 const std::vector<std::string> AVAILABLE_PUB_MESSAGES = {
     MSG_UPDATEBLKTIP, MSG_MEMPOOLTXADD, MSG_MEMPOOLTXREM,
     MSG_BLKCONNECTED, MSG_BLKDISCONCTD, MSG_CHAINSTFLUSH,
+    MSG_MININGWRKCHG,
 };
 
 bool StartNngInterface(const node::NodeContext &node,

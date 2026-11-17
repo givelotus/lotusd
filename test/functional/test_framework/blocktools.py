@@ -6,7 +6,7 @@
 import struct
 import time
 import unittest
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 from .key import ECKey
 from .messages import (

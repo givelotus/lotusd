@@ -227,7 +227,7 @@ IsReplayProtectionEnabled(const Consensus::Params &params,
     }
 
     return pindexPrev->GetMedianTimePast() >=
-           activation_time.value_or(params.secondKingsActivationTime);
+           activation_time.value_or(params.firstChroniclesActivationTime);
 }
 
 /**
@@ -2126,8 +2126,8 @@ static uint32_t GetNextBlockScriptFlags(const CBlockIndex *pindex,
         flags |= SCRIPT_ENABLE_REPLAY_PROTECTION;
     }
 
-    if (IsNumbersEnabled(consensusparams, pindex) &&
-        !IsSecondSamuelEnabled(consensusparams, pindex)) {
+    // Taproot and SIGHASH_LOTUS are disabled until Second Samuel activation
+    if (!IsSecondSamuelEnabled(consensusparams, pindex)) {
         flags |= SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS;
     }
 
@@ -2260,9 +2260,8 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
     if (fRequireStandardConsensus) {
         extraFlags = STANDARD_SCRIPT_VERIFY_FLAGS;
 
-        // Before Numbers or after Second Samuel, we enable Taproot and SIGHASH_LOTUS
-        if (!IsNumbersEnabled(consensusParams, pindex->pprev) ||
-            IsSecondSamuelEnabled(consensusParams, pindex->pprev)) {
+        // After Second Samuel, we enable Taproot and SIGHASH_LOTUS
+        if (IsSecondSamuelEnabled(consensusParams, pindex->pprev)) {
             extraFlags &= ~SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS;
         }
     }
@@ -2357,9 +2356,8 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
                 state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, reason);
                 break;
             }
-            // Taproot is phased out between Numbers and Second Samuel
-            if (IsNumbersEnabled(consensusParams, pindex->pprev) &&
-                !IsSecondSamuelEnabled(consensusParams, pindex->pprev)) {
+            // Taproot outputs are disabled until Second Samuel activation
+            if (!IsSecondSamuelEnabled(consensusParams, pindex->pprev)) {
                 if (TxHasPayToTaproot(tx)) {
                     state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
                                   "bad-taproot-phased-out");
@@ -4558,60 +4556,11 @@ static bool ContextualCheckBlockHeader(
     return true;
 }
 
-/**
- * NOTE: This function is not currently invoked by ConnectBlock(), so we
- * should consider upgrade issues if we change which consensus rules are
- * enforced in this function (eg by adding a new consensus rule). See comment
- * in ConnectBlock().
- * Note that -reindex-chainstate skips the validation that happens here!
- */
-static bool ContextualCheckBlock(const CBlock &block,
-                                 BlockValidationState &state,
-                                 const ChainstateManager &chainman,
-                                 const CBlockIndex *pindexPrev) {
+bool ContextualCheckCoinbaseHeight(const CBlock &block,
+                                   BlockValidationState &state,
+                                   const Consensus::Params &params,
+                                   const CBlockIndex *pindexPrev) {
     const int nHeight = pindexPrev == nullptr ? 0 : pindexPrev->nHeight + 1;
-
-    // Always enforce BIP113 (Median Time Past) from genesis.
-    const int64_t nMedianTimePast =
-        pindexPrev == nullptr ? 0 : pindexPrev->GetMedianTimePast();
-
-    const int64_t nLockTimeCutoff = nMedianTimePast;
-
-    const Consensus::Params params = chainman.GetConsensus();
-    // Check transactions:
-    // - canonical ordering
-    // - ensure they are finalized
-    // - check they have the minimum size
-    const CTransaction *prevTx = nullptr;
-    for (const auto &ptx : block.vtx) {
-        const CTransaction &tx = *ptx;
-        if (prevTx && (tx.GetId() <= prevTx->GetId())) {
-            if (tx.GetId() == prevTx->GetId()) {
-                return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                                        "tx-duplicate",
-                                        strprintf("Duplicated transaction %s",
-                                                tx.GetId().ToString()));
-            }
-
-            return state.Invalid(
-                BlockValidationResult::BLOCK_CONSENSUS, "tx-ordering",
-                strprintf("Transaction order is invalid (%s < %s)",
-                            tx.GetId().ToString(),
-                            prevTx->GetId().ToString()));
-        }
-
-        if (prevTx || !tx.IsCoinBase()) {
-            prevTx = &tx;
-        }
-
-        TxValidationState tx_state;
-        if (!ContextualCheckTransaction(params, tx, tx_state, nHeight,
-                                        nLockTimeCutoff)) {
-            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                                 tx_state.GetRejectReason(),
-                                 tx_state.GetDebugMessage());
-        }
-    }
 
     // Enforce rule that the coinbase transaction's first output must contain an OP_RETURN
     // followed by a prefix and the serialized block height.
@@ -4619,6 +4568,27 @@ static bool ContextualCheckBlock(const CBlock &block,
     // Note: This rule was added after some blocks were already mined, so we need
     // to be flexible with validation for older blocks.
     if (nHeight > 0) {
+        // From the Second Kings activation onward, the coinbase's first output
+        // must match the canonical form emitted by the miner:
+        // OP_RETURN <COINBASE_PREFIX> <nHeight>. This restores the strict
+        // pre-8.3.4 rule behind an MTP gate, so that blocks mined under the
+        // loosened vanity-prefix rule before activation are not retroactively
+        // rejected. A prefix match (not equality) is used so trailing data
+        // after the height remains accepted.
+        if (IsSecondKingsEnabled(params, pindexPrev)) {
+            const CScript expect =
+                CScript() << OP_RETURN << COINBASE_PREFIX << nHeight;
+            if (block.vtx[0]->vout[0].scriptPubKey.size() < expect.size() ||
+                !std::equal(expect.begin(), expect.end(),
+                            block.vtx[0]->vout[0].scriptPubKey.begin())) {
+                return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                     "bad-cb-height",
+                                     "block height mismatch in coinbase");
+            }
+            // Canonical form verified; the loosened check below is superseded.
+            return true;
+        }
+
         // Get the coinbase transaction's first output scriptPubKey
         const CScript &scriptPubKey = block.vtx[0]->vout[0].scriptPubKey;
 
@@ -4680,7 +4650,8 @@ static bool ContextualCheckBlock(const CBlock &block,
         // subsequent `<nHeight>` check for non-"logos" coinbases. We preserve
         // that early `return true` for `nHeight >= 1018000` to avoid a chain
         // split against LotusiaStewardship/lotusd nodes, while properly calling
-        // `state.Invalid(...)` on failures when `nHeight < 1018000`.
+        // `state.Invalid(...)` on failures when `nHeight < 1018000`. From the
+        // Second Kings activation the strict check above applies instead.
         if (prefixLen != COINBASE_PREFIX.size() || prefixData != COINBASE_PREFIX) {
             if (!strictCheckingCoinbaseShame) {
                 return true;
@@ -4734,6 +4705,64 @@ static bool ContextualCheckBlock(const CBlock &block,
     }
 
     return true;
+}
+
+/**
+ * NOTE: This function is not currently invoked by ConnectBlock(), so we
+ * should consider upgrade issues if we change which consensus rules are
+ * enforced in this function (eg by adding a new consensus rule). See comment
+ * in ConnectBlock().
+ * Note that -reindex-chainstate skips the validation that happens here!
+ */
+static bool ContextualCheckBlock(const CBlock &block,
+                                 BlockValidationState &state,
+                                 const ChainstateManager &chainman,
+                                 const CBlockIndex *pindexPrev) {
+    const int nHeight = pindexPrev == nullptr ? 0 : pindexPrev->nHeight + 1;
+
+    // Always enforce BIP113 (Median Time Past) from genesis.
+    const int64_t nMedianTimePast =
+        pindexPrev == nullptr ? 0 : pindexPrev->GetMedianTimePast();
+
+    const int64_t nLockTimeCutoff = nMedianTimePast;
+
+    const Consensus::Params params = chainman.GetConsensus();
+    // Check transactions:
+    // - canonical ordering
+    // - ensure they are finalized
+    // - check they have the minimum size
+    const CTransaction *prevTx = nullptr;
+    for (const auto &ptx : block.vtx) {
+        const CTransaction &tx = *ptx;
+        if (prevTx && (tx.GetId() <= prevTx->GetId())) {
+            if (tx.GetId() == prevTx->GetId()) {
+                return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                        "tx-duplicate",
+                                        strprintf("Duplicated transaction %s",
+                                                tx.GetId().ToString()));
+            }
+
+            return state.Invalid(
+                BlockValidationResult::BLOCK_CONSENSUS, "tx-ordering",
+                strprintf("Transaction order is invalid (%s < %s)",
+                            tx.GetId().ToString(),
+                            prevTx->GetId().ToString()));
+        }
+
+        if (prevTx || !tx.IsCoinBase()) {
+            prevTx = &tx;
+        }
+
+        TxValidationState tx_state;
+        if (!ContextualCheckTransaction(params, tx, tx_state, nHeight,
+                                        nLockTimeCutoff)) {
+            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                 tx_state.GetRejectReason(),
+                                 tx_state.GetDebugMessage());
+        }
+    }
+
+    return ContextualCheckCoinbaseHeight(block, state, params, pindexPrev);
 }
 
 /**
