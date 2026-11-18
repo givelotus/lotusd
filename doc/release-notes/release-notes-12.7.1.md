@@ -22,8 +22,33 @@ major and the second number change: it follows 11.6.1 as 12.7.1.
 
 Activation happens when the median time of the last 11 blocks reaches that
 time, so it can arrive about an hour after the clock time. 12.7.1 nodes and
-11.6.x nodes agree on every block before then, so nodes can be upgraded in
-any order before activation.
+11.6.x nodes agree on every block before then, with one exception: 12.7.1
+rejects a coinbase that does not commit the block height, as described below.
+Nodes can be upgraded in any order before activation.
+
+## Coinbase height commitment restored (security fix)
+
+The first output of every coinbase must again start with `OP_RETURN "logos"
+<height>`. Lotus 8.3.4 loosened this rule: from height 1,018,000 a coinbase
+whose first output did not carry the `logos` prefix was accepted without any
+height check. Because the coinbase input script is not part of a Lotus
+transaction ID and there is no BIP30 check, the height commitment is what
+keeps coinbase transaction IDs unique. Without it, a miner could create a
+coinbase with the same ID as an earlier one and overwrite its unspent
+outputs (the class of bug fixed in Bitcoin by BIP30, CVE-2012-1909).
+
+The check takes effect when a node runs 12.7.1; it does not wait for 2nd
+Kings. It rejects nothing historical: every block on the chain from height 1
+to the tip commits its height (heights 1..16 as `OP_1`..`OP_16`, which is
+what the miner emits for those values), so no block mined under the loose
+rule exists. From 12.7.1, a block whose first coinbase output does not begin
+with `OP_RETURN "logos" <height>` is rejected with `bad-cb-height`. Data
+after the height is still allowed.
+
+Until 2nd Kings activates this is the one rule where 12.7.1 and 11.6.x
+disagree: 11.6.x still accepts a coinbase without the commitment, and
+LotusiaStewardship/lotusd 12.0.0 accepts one until 2nd Kings. After
+activation all of them reject it.
 
 ## Consensus changes at 2nd Kings
 
@@ -38,23 +63,6 @@ It replaces the 1st Kings address (`lotus_16PSJQXrnTrUbhnxPpPgf1jd16JFkWk8TdbpAL
 Blocks that pay any earlier address set are rejected with `bad-cb-minerfund`.
 Mining software that builds its own coinbase must be updated; `getblocktemplate`
 and the built-in miner already include the new output.
-
-### Coinbase height commitment restored (security fix)
-
-The first output of every coinbase must again start with
-`OP_RETURN "logos" <height>`. Lotus 8.3.4 loosened this rule: from height
-1,018,000 a coinbase whose first output did not carry the `logos` prefix was
-accepted without any height check. Because the coinbase input script is not
-part of a Lotus transaction ID and there is no BIP30 check, the height
-commitment is what keeps coinbase transaction IDs unique. Without it, a
-miner could create a coinbase with the same ID as an earlier one and
-overwrite its unspent outputs (the class of bug fixed in Bitcoin by BIP30,
-CVE-2012-1909).
-
-From activation, a block whose first coinbase output does not begin with
-`OP_RETURN "logos" <height>` is rejected with `bad-cb-height`. Data after the
-height is still allowed. Blocks mined before activation under the loosened
-rule remain valid.
 
 ### Replay protection moves to 1st Chronicles
 
