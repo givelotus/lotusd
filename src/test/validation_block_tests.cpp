@@ -489,8 +489,9 @@ BOOST_AUTO_TEST_CASE(mempool_locks_reorg) {
         rpc_thread.join();
     }
 }
-// Ported from LotusiaStewardship/lotusd 9706858859.
-BOOST_AUTO_TEST_CASE(coinbase_height_second_kings_gate) {
+// Ported from LotusiaStewardship/lotusd 9706858859. The height commitment is
+// required at every height, so no activation override is needed here.
+BOOST_AUTO_TEST_CASE(coinbase_height_commitment_enforced) {
     GlobalConfig config;
     const CChainParams &chainParams = config.GetChainParams();
     ChainstateManager &chainman = *Assert(m_node.chainman);
@@ -510,9 +511,8 @@ BOOST_AUTO_TEST_CASE(coinbase_height_second_kings_gate) {
     auto tip = GoodBlock(config, chainParams.GenesisBlock().GetHash(), 1);
     BOOST_REQUIRE(ProcessBlock(tip));
 
-    // From the Second Kings activation onward, the coinbase's first output
-    // must carry the canonical "logos" prefix.
-    gArgs.ForceSetArg("-secondkingsactivationtime", "0");
+    // The canonical coinbase form is required at every height; no activation
+    // gate stands between a block and the check.
 
     // A canonical coinbase remains accepted.
     auto good =
@@ -530,8 +530,6 @@ BOOST_AUTO_TEST_CASE(coinbase_height_second_kings_gate) {
     auto vanity = FinalizeBlock(chainParams.GetConsensus(), block);
     BOOST_CHECK(!ProcessBlock(vanity));
     BOOST_CHECK(Tip()->GetBlockHash() == good->GetHash());
-
-    gArgs.ClearForcedArg("-secondkingsactivationtime");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
