@@ -8,7 +8,7 @@ related to this activation.
 It is derived from the much more complex p2p-fullblocktest.
 """
 
-from test_framework.blocktools import BlockTestMixin, create_tx_with_script
+from test_framework.blocktools import SUBSIDY, BlockTestMixin, create_tx_with_script
 from test_framework.key import ECKey
 from test_framework.messages import COIN, COutPoint, CTransaction, CTxIn, CTxOut, ToHex
 from test_framework.p2p import P2PDataStore
@@ -64,7 +64,7 @@ class ReplayProtectionTest(BitcoinTestFramework, BlockTestMixin):
 
         # get an output that we previously marked as spendable
         def get_spendable_output():
-            return PreviousSpendableOutput(spendable_outputs.pop(0).vtx[0], 0)
+            return PreviousSpendableOutput(spendable_outputs.pop(0).vtx[0], 1)
 
         # shorthand
         block = self.next_block
@@ -97,18 +97,22 @@ class ReplayProtectionTest(BitcoinTestFramework, BlockTestMixin):
             # Fund transaction
             script = CScript([public_key, OP_CHECKSIG])
             txfund = create_tx_with_script(
-                spend.tx, spend.n, b"", amount=50 * COIN - 1000, script_pub_key=script
+                spend.tx,
+                spend.n,
+                b"",
+                amount=int(SUBSIDY * COIN) - 1000,
+                script_pub_key=script,
             )
 
             # Spend transaction
             txspend = CTransaction()
-            txspend.vout.append(CTxOut(50 * COIN - 2000, CScript([OP_TRUE])))
+            txspend.vout.append(CTxOut(int(SUBSIDY * COIN) - 2000, CScript([OP_TRUE])))
             txspend.vin.append(CTxIn(COutPoint(txfund.txid_int, 0), b""))
 
             # Sign the transaction
             sighashtype = (forkvalue << 8) | SIGHASH_ALL | SIGHASH_FORKID
             sighash = SignatureHashForkId(
-                script, txspend, 0, sighashtype, 50 * COIN - 1000
+                script, txspend, 0, sighashtype, int(SUBSIDY * COIN) - 1000
             )
             sig = private_key.sign_ecdsa(sighash) + bytes(
                 bytearray([SIGHASH_ALL | SIGHASH_FORKID])

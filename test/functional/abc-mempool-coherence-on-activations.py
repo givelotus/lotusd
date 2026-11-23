@@ -131,7 +131,7 @@ class MempoolCoherenceOnActivationsTest(BitcoinTestFramework, BlockTestMixin):
 
         # get an output that we previously marked as spendable
         def get_spendable_output():
-            return PreviousSpendableOutput(spendable_outputs.pop(0).vtx[0], 0)
+            return PreviousSpendableOutput(spendable_outputs.pop(0).vtx[0], 1)
 
         # send a txn to the mempool and check it was accepted
         def send_transaction_to_mempool(tx):
@@ -150,7 +150,7 @@ class MempoolCoherenceOnActivationsTest(BitcoinTestFramework, BlockTestMixin):
                 spend.tx,
                 spend.n,
                 b"",
-                amount=spend.tx.vout[0].nValue - 1000,
+                amount=spend.tx.vout[spend.n].nValue - 1000,
                 script_pub_key=CScript([OP_TRUE]),
             )
             return tx, PreviousSpendableOutput(tx, 0)
