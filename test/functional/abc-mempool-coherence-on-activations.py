@@ -38,6 +38,10 @@ from test_framework.util import assert_equal, assert_raises_rpc_error
 ACTIVATION_TIME = 2000000000
 EXTRA_ARG = f"-replayprotectionactivationtime={ACTIVATION_TIME}"
 
+# The chain-specific fork id committed once replay protection is active.
+# Must match CHAIN_FORK_ID in src/script/sighashtype.h.
+CHAIN_FORK_ID = 0x4C4F54
+
 # simulation starts before activation
 FIRST_BLOCK_TIME = ACTIVATION_TIME - 86400
 
@@ -77,7 +81,7 @@ def create_fund_and_activation_specific_spending_tx(spend, pre_fork_only):
     # Sign the transaction
     # Use forkvalues that create pre-fork-only or post-fork-only
     # transactions.
-    forkvalue = 0 if pre_fork_only else 0xFFDEAD
+    forkvalue = 0 if pre_fork_only else CHAIN_FORK_ID
     sighashtype = (forkvalue << 8) | SIGHASH_ALL | SIGHASH_FORKID
     sighash = SignatureHashForkId(script, txspend, 0, sighashtype, 50 * COIN)
     sig = private_key.sign_ecdsa(sighash) + bytes(

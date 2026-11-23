@@ -171,6 +171,14 @@ bool FatalError(kernel::Notifications &notifications,
                 const bilingual_str &userMessage = {});
 
 /**
+ * The fork id that signatures for the next block must commit to, or 0 when
+ * replay protection is not active. Signing surfaces use this to choose the
+ * implicit fork value; verification derives the same value from the
+ * SCRIPT_ENABLE_REPLAY_PROTECTION script flag.
+ */
+uint32_t GetChainForkId(const ChainstateManager &chainman);
+
+/**
  * Guess verification progress (as a fraction between 0.0=genesis and
  * 1.0=current tip).
  */

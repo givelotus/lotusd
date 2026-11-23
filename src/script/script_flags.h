@@ -47,7 +47,8 @@ enum {
     //
     SCRIPT_ENABLE_SIGHASH_FORKID = (1U << 16),
 
-    // Do we accept activate replay protection using a different fork id.
+    // Do we commit signatures to CHAIN_FORK_ID for chain-specific replay
+    // protection.
     //
     SCRIPT_ENABLE_REPLAY_PROTECTION = (1U << 17),
 
