@@ -1889,11 +1889,10 @@ bool SignatureHash(uint256 &sighashOut,
     assert(nIn < txTo.vin.size());
 
     if (flags & SCRIPT_ENABLE_REPLAY_PROTECTION) {
-        // Legacy chain's value for fork id must be of the form 0xffxxxx.
-        // By xoring with 0xdead, we ensure that the value will be different
-        // from the original one, even if it already starts with 0xff.
-        uint32_t newForkValue = sigHashType.getForkValue() ^ 0xdead;
-        sigHashType = sigHashType.withForkValue(0xff0000 | newForkValue);
+        // Commit the signature to this chain's fork id. Signatures made for
+        // another chain (including one using the old 0xffdead transform) are
+        // invalid here, and signatures made here are invalid there.
+        sigHashType = sigHashType.withForkValue(CHAIN_FORK_ID);
     }
 
     if (sigHashType.isLegacy() || !(flags & SCRIPT_ENABLE_SIGHASH_FORKID)) {

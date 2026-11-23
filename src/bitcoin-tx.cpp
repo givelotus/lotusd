@@ -15,6 +15,7 @@
 #include <consensus/amount.h>
 #include <consensus/consensus.h>
 #include <core_io.h>
+#include <crypto/hex_base.h>
 #include <currencyunit.h>
 #include <key_io.h>
 #include <primitives/transaction.h>
@@ -40,6 +41,7 @@ using util::ToString;
 using util::TrimString;
 
 static bool fCreateBlank;
+static uint32_t nForkId;
 static std::map<std::string, UniValue> registers;
 static const int CONTINUE_EXECUTION = -1;
 
@@ -59,6 +61,13 @@ static void SetupBitcoinTxArgs(ArgsManager &argsman) {
         "-txid",
         "Output only the hex-encoded transaction id of the resultant "
         "transaction.",
+        ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg(
+        "-forkid=<id>",
+        "Fork id committed by signatures added with the sign command "
+        "(default: 0). Use 0x4c4f54 after 2nd Kings replay protection "
+        "activates. Accepts decimal or 0x-prefixed hexadecimal, up to "
+        "0xffffff.",
         ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     SetupChainParamsBaseOptions(argsman);
 
@@ -97,6 +106,7 @@ static void SetupBitcoinTxArgs(ArgsManager &argsman) {
                    "This command requires JSON registers:"
                    "prevtxs=JSON object, "
                    "privatekeys=JSON object. "
+                   "Signatures commit the fork id given by -forkid. "
                    "See signrawtransactionwithkey docs for format of sighash "
                    "flags, JSON objects.",
                    ArgsManager::ALLOW_ANY, OptionsCategory::COMMANDS);
@@ -107,6 +117,33 @@ static void SetupBitcoinTxArgs(ArgsManager &argsman) {
     argsman.AddArg("set=NAME:JSON-STRING",
                    "Set register NAME to given JSON-STRING",
                    ArgsManager::ALLOW_ANY, OptionsCategory::REGISTER_COMMANDS);
+}
+
+/**
+ * Parse a 24-bit fork id from a decimal or 0x-prefixed hexadecimal string.
+ */
+static uint32_t ParseForkId(const std::string &str) {
+    const bool isHex = str.size() > 2 && str[0] == '0' &&
+                       (str[1] == 'x' || str[1] == 'X');
+    uint32_t forkId = 0;
+
+    if (isHex) {
+        for (size_t i = 2; i < str.size(); i++) {
+            const signed char digit = HexDigit(str[i]);
+            if (digit < 0 || forkId > (0xffffffu >> 4)) {
+                throw std::runtime_error("invalid fork id '" + str +
+                                         "': expected a 24-bit value");
+            }
+            forkId = (forkId << 4) | uint32_t(digit);
+        }
+        return forkId;
+    }
+
+    if (!ParseUInt32(str, &forkId) || forkId > 0xffffff) {
+        throw std::runtime_error("invalid fork id '" + str +
+                                 "': expected a 24-bit value");
+    }
+    return forkId;
 }
 
 //
@@ -135,6 +172,13 @@ static int AppInitRawTx(int argc, char *argv[]) {
     }
 
     fCreateBlank = gArgs.GetBoolArg("-create", false);
+
+    try {
+        nForkId = ParseForkId(gArgs.GetArg("-forkid", "0"));
+    } catch (const std::exception &e) {
+        tfm::format(std::cerr, "Error: %s\n", e.what());
+        return EXIT_FAILURE;
+    }
 
     if (argc < 2 || HelpRequested(gArgs) || gArgs.IsArgSet("-version")) {
         // First part of help message is specific to this utility
@@ -589,6 +633,10 @@ static void MutateTxSign(CMutableTransaction &tx, const std::string &flagStr) {
     if ((flagStr.size() > 0) && !findSigHashFlags(sigHashType, flagStr)) {
         throw std::runtime_error("unknown sighash flag/sign option");
     }
+
+    // The fork id is implicit in the signature and this tool has no chain
+    // state, so the caller supplies it explicitly.
+    sigHashType = sigHashType.withForkValue(nForkId);
 
     // mergedTx will end up with all the signatures; it
     // starts as a clone of the raw tx:

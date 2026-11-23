@@ -6,8 +6,10 @@
 #include <consensus/tx_check.h>
 #include <consensus/validation.h>
 #include <hash.h>
+#include <key.h>
 #include <script/interpreter.h>
 #include <script/script.h>
+#include <script/standard.h>
 #include <serialize.h>
 #include <streams.h>
 #include <util/strencodings.h>
@@ -126,9 +128,10 @@ BOOST_FIXTURE_TEST_SUITE(sighash_tests, SigHashTest)
 BOOST_AUTO_TEST_CASE(sighash_test) {
 #if defined(PRINT_SIGHASH_JSON)
     std::cout << "[\n";
-    std::cout << "\t[\"raw_transaction, script, input_index, hashType, "
-                 "signature_hash (regular), signature_hash(no forkid), "
-                 "signature_hash(replay protected)\"],\n";
+    std::cout
+        << "\t[\"raw_transaction, script, input_index, hashType, "
+           "signature_hash (regular), signature_hash(no forkid), "
+           "signature_hash(replay protected; retained, not asserted)\"],\n";
 #endif
 
     int nRandomTests = 1000;
@@ -182,42 +185,31 @@ BOOST_AUTO_TEST_CASE(sighash_test) {
             BOOST_CHECK(shreg == shref);
         }
 
-        // Make sure replay protection works as expected.
+        // Replay protection commits the chain-specific fork id, independently
+        // of the fork value carried by the signature.
         uint256 shrep;
         BOOST_CHECK(SignatureHash(
             shrep, execdata, scriptCode, CTransaction(txTo), nIn, sigHashType,
             Amount::zero(), &txdata,
             SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_ENABLE_REPLAY_PROTECTION));
-        uint32_t newForkValue = 0xff0000 | ((nHashType >> 8) ^ 0xdead);
         uint256 manualshrep;
         BOOST_CHECK(SignatureHash(
             manualshrep, execdata, scriptCode, CTransaction(txTo), nIn,
-            sigHashType.withForkValue(newForkValue), Amount::zero(), &txdata));
+            sigHashType.withForkValue(CHAIN_FORK_ID), Amount::zero(), &txdata));
         BOOST_CHECK(shrep == manualshrep);
 
-        // Replay protection works even if the hash is of the form 0xffxxxx
-        uint256 shrepff;
-        BOOST_CHECK(SignatureHash(
-            shrepff, execdata, scriptCode, CTransaction(txTo), nIn,
-            sigHashType.withForkValue(newForkValue), Amount::zero(), &txdata,
-            SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_ENABLE_REPLAY_PROTECTION));
-        uint256 manualshrepff;
-        BOOST_CHECK(SignatureHash(
-            manualshrepff, execdata, scriptCode, CTransaction(txTo), nIn,
-            sigHashType.withForkValue(newForkValue ^ 0xdead), Amount::zero(),
-            &txdata));
-        BOOST_CHECK(shrepff == manualshrepff);
+        // The chain id must not be the old 0xffdead transform.
+        const uint32_t chainForkId = CHAIN_FORK_ID;
+        const uint32_t legacyForkValue = 0xff0000 | ((nHashType >> 8) ^ 0xdead);
+        BOOST_CHECK(chainForkId != legacyForkValue);
 
-        uint256 shrepabcdef;
-        BOOST_CHECK(SignatureHash(
-            shrepabcdef, execdata, scriptCode, CTransaction(txTo), nIn,
-            sigHashType.withForkValue(0xabcdef), Amount::zero(), &txdata,
-            SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_ENABLE_REPLAY_PROTECTION));
-        uint256 manualshrepabcdef;
-        BOOST_CHECK(SignatureHash(
-            manualshrepabcdef, execdata, scriptCode, CTransaction(txTo), nIn,
-            sigHashType.withForkValue(0xff1342), Amount::zero(), &txdata));
-        BOOST_CHECK(shrepabcdef == manualshrepabcdef);
+        // A different fork value produces a different digest.
+        uint256 shrepwrong;
+        BOOST_CHECK(SignatureHash(shrepwrong, execdata, scriptCode,
+                                  CTransaction(txTo), nIn,
+                                  sigHashType.withForkValue(CHAIN_FORK_ID ^ 1),
+                                  Amount::zero(), &txdata));
+        BOOST_CHECK(shrep != shrepwrong);
 
 #if defined(PRINT_SIGHASH_JSON)
         DataStream ss{};
@@ -259,7 +251,7 @@ BOOST_AUTO_TEST_CASE(sighash_from_data) {
             continue;
         }
 
-        std::string sigHashRegHex, sigHashOldHex, sigHashRepHex;
+        std::string sigHashRegHex, sigHashOldHex;
         int nIn;
         SigHashType sigHashType;
         CTransactionRef tx;
@@ -273,7 +265,6 @@ BOOST_AUTO_TEST_CASE(sighash_from_data) {
             sigHashType = SigHashType(test[3].getInt<int>());
             sigHashRegHex = test[4].get_str();
             sigHashOldHex = test[5].get_str();
-            sigHashRepHex = test[6].get_str();
 
             DataStream stream{ParseHex(raw_tx)};
             stream >> tx;
@@ -310,7 +301,11 @@ BOOST_AUTO_TEST_CASE(sighash_from_data) {
                                   sigHashType, Amount::zero(), &txdata,
                                   SCRIPT_ENABLE_SIGHASH_FORKID |
                                       SCRIPT_ENABLE_REPLAY_PROTECTION));
-        BOOST_CHECK_MESSAGE(shrep.GetHex() == sigHashRepHex, strTest);
+        uint256 expectedshrep;
+        BOOST_CHECK(SignatureHash(expectedshrep, execdata, scriptCode, *tx, nIn,
+                                  sigHashType.withForkValue(CHAIN_FORK_ID),
+                                  Amount::zero(), &txdata));
+        BOOST_CHECK_MESSAGE(shrep == expectedshrep, strTest);
     }
 }
 
@@ -458,14 +453,12 @@ BOOST_AUTO_TEST_CASE(sighash_caching) {
                 BOOST_CHECK(cache.Load(sig_hash_type, scriptcode, h));
                 SigHashType sig_hash_type2{sig_hash_type};
                 if (flags & SCRIPT_ENABLE_REPLAY_PROTECTION) {
-                    // We modify the sig hash type by xoring with 0xdead.
-                    // See relevant comment in interpreter.cpp:SignatureHash
+                    // The fork value is replaced with the chain fork id. See
+                    // the relevant comment in interpreter.cpp:SignatureHash.
                     // This affects the resulting hash, but not the index in
                     // the cache.
-                    uint32_t newForkValue =
-                        sig_hash_type2.getForkValue() ^ 0xdead;
                     sig_hash_type2 =
-                        sig_hash_type2.withForkValue(0xff0000 | newForkValue);
+                        sig_hash_type2.withForkValue(CHAIN_FORK_ID);
                 }
                 h << sig_hash_type2;
                 const auto new_hash{h.GetHash()};
@@ -493,6 +486,60 @@ BOOST_AUTO_TEST_CASE(sighash_caching) {
             BOOST_CHECK(cache.Load(sig_hash_type, scriptcode, dummy) ||
                         expect_one);
         }
+    }
+}
+
+// A signature made for one fork id must not verify against the other, for
+// every sighash algorithm. This is the two-way separation the chain fork id
+// exists for.
+BOOST_AUTO_TEST_CASE(sighash_cross_chain_domain) {
+    CKey key;
+    key.MakeNewKey(true);
+    const CScript scriptCode =
+        GetScriptForDestination(PKHash(key.GetPubKey()));
+
+    CMutableTransaction txFrom;
+    txFrom.nVersion = 1;
+    txFrom.vin.resize(1);
+    txFrom.vin[0].prevout = COutPoint();
+    txFrom.vout.resize(1);
+    txFrom.vout[0].nValue = 5 * COIN;
+    txFrom.vout[0].scriptPubKey = scriptCode;
+
+    CMutableTransaction txTo;
+    txTo.nVersion = 1;
+    txTo.vin.resize(1);
+    txTo.vin[0].prevout = COutPoint(txFrom.GetId(), 0);
+    txTo.vout.resize(1);
+    txTo.vout[0].nValue = 4 * COIN;
+    txTo.vout[0].scriptPubKey = CScript() << OP_TRUE;
+
+    const CTransaction txConst(txTo);
+    const PrecomputedTransactionData txdata(txConst, {txFrom.vout[0]});
+    const std::optional<ScriptExecutionData> execdata{
+        ScriptExecutionData(scriptCode)};
+    const CPubKey pubkey = key.GetPubKey();
+
+    for (const SigHashType &base :
+         {SigHashType(SIGHASH_ALL), SigHashType(SIGHASH_ALL | SIGHASH_FORKID),
+          SigHashType(SIGHASH_ALL | SIGHASH_LOTUS)}) {
+        const uint32_t flags =
+            base.isLegacy() ? SCRIPT_VERIFY_NONE : SCRIPT_ENABLE_SIGHASH_FORKID;
+        uint256 hashFork0, hashChain;
+        BOOST_CHECK(SignatureHash(hashFork0, execdata, scriptCode, txConst, 0,
+                                  base, txFrom.vout[0].nValue, &txdata, flags));
+        BOOST_CHECK(SignatureHash(hashChain, execdata, scriptCode, txConst, 0,
+                                  base.withForkValue(CHAIN_FORK_ID),
+                                  txFrom.vout[0].nValue, &txdata, flags));
+        BOOST_CHECK(hashFork0 != hashChain);
+
+        std::vector<uint8_t> sigFork0, sigChain;
+        BOOST_CHECK(key.SignECDSA(hashFork0, sigFork0));
+        BOOST_CHECK(key.SignECDSA(hashChain, sigChain));
+        BOOST_CHECK(pubkey.VerifyECDSA(hashFork0, sigFork0));
+        BOOST_CHECK(pubkey.VerifyECDSA(hashChain, sigChain));
+        BOOST_CHECK(!pubkey.VerifyECDSA(hashChain, sigFork0));
+        BOOST_CHECK(!pubkey.VerifyECDSA(hashFork0, sigChain));
     }
 }
 

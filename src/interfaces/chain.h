@@ -142,6 +142,10 @@ public:
     //! contain any blocks)
     virtual std::optional<int> getHeight() = 0;
 
+    //! The fork id signatures for the next block must commit to, or 0 when
+    //! replay protection is not active.
+    virtual uint32_t getChainForkId() = 0;
+
     //! Get block hash. Height must be valid or this function will abort.
     virtual BlockHash getBlockHash(int height) = 0;
 

@@ -8,7 +8,7 @@ related to this activation.
 It is derived from the much more complex p2p-fullblocktest.
 """
 
-from test_framework.blocktools import BlockTestMixin, create_tx_with_script
+from test_framework.blocktools import SUBSIDY, BlockTestMixin, create_tx_with_script
 from test_framework.key import ECKey
 from test_framework.messages import COIN, COutPoint, CTransaction, CTxIn, CTxOut, ToHex
 from test_framework.p2p import P2PDataStore
@@ -23,6 +23,14 @@ from test_framework.util import assert_equal, assert_raises_rpc_error
 
 # far into the future
 REPLAY_PROTECTION_START_TIME = 2000000000
+
+# The chain-specific fork id committed by the replay-protection transform.
+# Must match CHAIN_FORK_ID in src/script/sighashtype.h.
+CHAIN_FORK_ID = 0x4C4F54
+
+# The global transform used before the chain id was introduced. It must no
+# longer validate once the chain id is active.
+LEGACY_REPLAY_PROTECTION_FORK_VALUE = 0xFFDEAD
 
 # Error due to invalid signature
 INVALID_SIGNATURE_ERROR = (
@@ -64,7 +72,7 @@ class ReplayProtectionTest(BitcoinTestFramework, BlockTestMixin):
 
         # get an output that we previously marked as spendable
         def get_spendable_output():
-            return PreviousSpendableOutput(spendable_outputs.pop(0).vtx[0], 0)
+            return PreviousSpendableOutput(spendable_outputs.pop(0).vtx[0], 1)
 
         # shorthand
         block = self.next_block
@@ -97,18 +105,22 @@ class ReplayProtectionTest(BitcoinTestFramework, BlockTestMixin):
             # Fund transaction
             script = CScript([public_key, OP_CHECKSIG])
             txfund = create_tx_with_script(
-                spend.tx, spend.n, b"", amount=50 * COIN - 1000, script_pub_key=script
+                spend.tx,
+                spend.n,
+                b"",
+                amount=int(SUBSIDY * COIN) - 1000,
+                script_pub_key=script,
             )
 
             # Spend transaction
             txspend = CTransaction()
-            txspend.vout.append(CTxOut(50 * COIN - 2000, CScript([OP_TRUE])))
+            txspend.vout.append(CTxOut(int(SUBSIDY * COIN) - 2000, CScript([OP_TRUE])))
             txspend.vin.append(CTxIn(COutPoint(txfund.txid_int, 0), b""))
 
             # Sign the transaction
             sighashtype = (forkvalue << 8) | SIGHASH_ALL | SIGHASH_FORKID
             sighash = SignatureHashForkId(
-                script, txspend, 0, sighashtype, 50 * COIN - 1000
+                script, txspend, 0, sighashtype, int(SUBSIDY * COIN) - 1000
             )
             sig = private_key.sign_ecdsa(sighash) + bytes(
                 bytearray([SIGHASH_ALL | SIGHASH_FORKID])
@@ -132,8 +144,8 @@ class ReplayProtectionTest(BitcoinTestFramework, BlockTestMixin):
         self.update_block(1, txns)
         peer.send_blocks_and_test([self.tip], node)
 
-        # Replay protected transactions are rejected.
-        replay_txns = create_fund_and_spend_tx(out[1], 0xFFDEAD)
+        # Replay protected transactions are rejected before activation.
+        replay_txns = create_fund_and_spend_tx(out[1], CHAIN_FORK_ID)
         send_transaction_to_mempool(replay_txns[0])
         assert_raises_rpc_error(
             -26,
@@ -223,6 +235,28 @@ class ReplayProtectionTest(BitcoinTestFramework, BlockTestMixin):
         # The replay protected transaction is now valid
         replay_tx0_id = send_transaction_to_mempool(replay_txns[0])
         replay_tx1_id = send_transaction_to_mempool(replay_txns[1])
+
+        # A signature made with the old global transform is not valid here.
+        legacy_txns = create_fund_and_spend_tx(
+            out[3], LEGACY_REPLAY_PROTECTION_FORK_VALUE
+        )
+        send_transaction_to_mempool(legacy_txns[0])
+        assert_raises_rpc_error(
+            -26,
+            INVALID_SIGNATURE_ERROR,
+            node.sendrawtransaction,
+            ToHex(legacy_txns[1]),
+        )
+
+        # A signature made with an unrelated fork id is not valid either.
+        wrong_txns = create_fund_and_spend_tx(out[4], 0x123456)
+        send_transaction_to_mempool(wrong_txns[0])
+        assert_raises_rpc_error(
+            -26,
+            INVALID_SIGNATURE_ERROR,
+            node.sendrawtransaction,
+            ToHex(wrong_txns[1]),
+        )
 
         # Make sure the transaction are ready to be mined.
         tmpl = node.getblocktemplate()

@@ -343,11 +343,11 @@ TX_CASES = [
         ],
     ),
     'ENABLE_REPLAY_PROTECTION',
-    dict(outputs=1, inputs=[(script_checksig, 0, [0xffdead60])], error='Signature hash type missing or not understood'),
-    dict(outputs=1, inputs=[(script_checksig, 0, [0xffdead61])]),
-    dict(outputs=1, inputs=[(script_checksig, 0, [0xffdead62])]),
-    dict(outputs=1, inputs=[(script_checksig, 0, [0xffdead63])]),
-    dict(outputs=1, inputs=[(script_checksig, 0, [0xffdead64])], error='Signature hash type missing or not understood'),
+    dict(outputs=1, inputs=[(script_checksig, 0, [0x4c4f5460])], error='Signature hash type missing or not understood'),
+    dict(outputs=1, inputs=[(script_checksig, 0, [0x4c4f5461])]),
+    dict(outputs=1, inputs=[(script_checksig, 0, [0x4c4f5462])]),
+    dict(outputs=1, inputs=[(script_checksig, 0, [0x4c4f5463])]),
+    dict(outputs=1, inputs=[(script_checksig, 0, [0x4c4f5464])], error='Signature hash type missing or not understood'),
 ]
 
 ACTIVATION_TIME = 2000000000

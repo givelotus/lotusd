@@ -21,6 +21,7 @@ public:
 
 private Q_SLOTS:
     void walletTests();
+    void walletTestsReplayProtection();
 };
 
 #endif // BITCOIN_QT_TEST_WALLETTESTS_H

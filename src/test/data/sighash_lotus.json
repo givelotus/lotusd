@@ -471,7 +471,7 @@
         4294967295,
         "SIGHASH_FORKID,REPLAY_PROTECTION",
         [
-            "61addeff",
+            "61544f4c",
             [
                 "02",
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef00000000",
@@ -510,7 +510,7 @@
         256,
         "SIGHASH_FORKID,REPLAY_PROTECTION",
         [
-            "61addeff",
+            "61544f4c",
             [
                 "02",
                 "333333333333333333333333333333333333333333333333333333333333333300000000",
@@ -556,7 +556,7 @@
         4294967295,
         "SIGHASH_FORKID,REPLAY_PROTECTION",
         [
-            "e1addeff",
+            "e1544f4c",
             [
                 "02",
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef00000000",
@@ -590,7 +590,7 @@
         256,
         "SIGHASH_FORKID,REPLAY_PROTECTION",
         [
-            "e1addeff",
+            "e1544f4c",
             [
                 "02",
                 "333333333333333333333333333333333333333333333333333333333333333300000000",
@@ -625,7 +625,7 @@
         4294967295,
         "SIGHASH_FORKID,REPLAY_PROTECTION",
         [
-            "62addeff",
+            "62544f4c",
             [
                 "02",
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef00000000",
@@ -661,7 +661,7 @@
         256,
         "SIGHASH_FORKID,REPLAY_PROTECTION",
         [
-            "62addeff",
+            "62544f4c",
             [
                 "02",
                 "333333333333333333333333333333333333333333333333333333333333333300000000",
@@ -701,7 +701,7 @@
         4294967295,
         "SIGHASH_FORKID,REPLAY_PROTECTION",
         [
-            "e2addeff",
+            "e2544f4c",
             [
                 "02",
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef00000000",
@@ -731,7 +731,7 @@
         256,
         "SIGHASH_FORKID,REPLAY_PROTECTION",
         [
-            "e2addeff",
+            "e2544f4c",
             [
                 "02",
                 "333333333333333333333333333333333333333333333333333333333333333300000000",
@@ -759,7 +759,7 @@
         4294967295,
         "SIGHASH_FORKID,REPLAY_PROTECTION",
         [
-            "63addeff",
+            "63544f4c",
             [
                 "02",
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef00000000",
@@ -810,7 +810,7 @@
         256,
         "SIGHASH_FORKID,REPLAY_PROTECTION",
         [
-            "63addeff",
+            "63544f4c",
             [
                 "02",
                 "333333333333333333333333333333333333333333333333333333333333333300000000",
@@ -866,7 +866,7 @@
         4294967295,
         "SIGHASH_FORKID,REPLAY_PROTECTION",
         [
-            "e3addeff",
+            "e3544f4c",
             [
                 "02",
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef00000000",
@@ -897,7 +897,7 @@
         256,
         "SIGHASH_FORKID,REPLAY_PROTECTION",
         [
-            "e3addeff",
+            "e3544f4c",
             [
                 "02",
                 "333333333333333333333333333333333333333333333333333333333333333300000000",

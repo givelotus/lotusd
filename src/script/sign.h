@@ -173,10 +173,21 @@ void SerializeHDKeypaths(Stream &s,
     }
 }
 
+/**
+ * Script verification flags that match the signature domain requested by
+ * sigHashType. The chain fork value enables replay protection; an explicit
+ * SIGHASH_LOTUS request is not phaseout-rejected by the local check.
+ */
+uint32_t GetSigningVerifyFlags(SigHashType sigHashType);
+
 /** Produce a script signature using a generic signature creator. */
 bool ProduceSignature(const SigningProvider &provider,
                       const BaseSignatureCreator &creator,
                       const CScript &scriptPubKey, SignatureData &sigdata);
+bool ProduceSignature(const SigningProvider &provider,
+                      const BaseSignatureCreator &creator,
+                      const CScript &scriptPubKey, SignatureData &sigdata,
+                      uint32_t flags);
 
 /** Produce a script signature for a transaction. */
 bool SignSignature(const SigningProvider &provider,

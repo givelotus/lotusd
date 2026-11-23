@@ -147,9 +147,8 @@ BOOST_AUTO_TEST_CASE(is_second_kings_enabled) {
     gArgs.ClearForcedArg("-secondkingsactivationtime");
 }
 
-// Lotus 11.6.1 and earlier enabled replay protection at the 2nd Kings
-// upgrade, 2026-12-21T20:50:00Z. From 12.x it waits for 1st Chronicles,
-// 2027-06-21T14:10:00Z.
+// Replay protection is enabled at the 2nd Kings upgrade,
+// 2026-12-21T20:50:00Z.
 static constexpr int64_t SECOND_KINGS_TIME = 1797886200;
 static constexpr int64_t FIRST_CHRONICLES_TIME = 1813587000;
 static constexpr int64_t TESTNET_OFFSET = 21 * 24 * 3600;
@@ -187,10 +186,13 @@ struct ReplayProtectionSetup : public TestChain100Setup {
     }
 
     // Mine empty blocks until the tip's median time past reaches mtp, so the
-    // next block and the mempool use the script flags in force at mtp.
+    // next block and the mempool use the script flags in force at mtp. The
+    // mock time is set for each block because mineBlocks() moves it one
+    // second ahead; otherwise the blocks carry later times and the next block
+    // mined can take the median time past beyond mtp.
     void MineUntilMedianTimePast(int64_t mtp) {
-        SetMockTime(mtp);
         while (TipMedianTimePast() < mtp) {
+            SetMockTime(mtp);
             mineBlocks(1);
         }
     }
@@ -253,30 +255,22 @@ struct ReplayProtectionSetup : public TestChain100Setup {
 BOOST_FIXTURE_TEST_CASE(replay_protection_follows_schedule,
                         ReplayProtectionSetup) {
     const int64_t activation =
-        m_node.chainman->GetConsensus().firstChroniclesActivationTime;
-    BOOST_CHECK_EQUAL(activation, FIRST_CHRONICLES_TIME);
+        m_node.chainman->GetConsensus().secondKingsActivationTime;
+    BOOST_CHECK_EQUAL(activation, SECOND_KINGS_TIME);
 
-    // From the 2nd Kings upgrade, ordinary ForkID signatures stay valid.
-    MineUntilMedianTimePast(SECOND_KINGS_TIME);
-    const CMutableTransaction ordinary = Spend(false);
-    const MempoolAcceptResult before = Submit(ordinary);
-    BOOST_CHECK_MESSAGE(before.m_result_type ==
-                            MempoolAcceptResult::ResultType::VALID,
-                        "ordinary spend rejected at 2nd Kings: "
-                            << before.m_state.ToString());
-    BOOST_CHECK(Confirm(ordinary));
-
-    // Replay-protected signatures are not valid yet.
-    BOOST_CHECK(IsMandatoryScriptFailure(Submit(Spend(true))));
-
-    // One second before 1st Chronicles nothing changes.
+    // Until 2nd Kings, ordinary ForkID signatures are the only valid ones.
     MineUntilMedianTimePast(activation - 1);
     BOOST_CHECK_EQUAL(TipMedianTimePast(), activation - 1);
-    BOOST_CHECK(Submit(Spend(false)).m_result_type ==
+    const CMutableTransaction ordinary = Spend(false);
+    BOOST_CHECK(Submit(ordinary).m_result_type ==
                 MempoolAcceptResult::ResultType::VALID);
+    BOOST_CHECK(Confirm(ordinary));
+    BOOST_CHECK_EQUAL(TipMedianTimePast(), activation - 1);
+    BOOST_CHECK(IsMandatoryScriptFailure(Submit(Spend(true))));
 
-    // From 1st Chronicles, the replay-protected fork value is required.
+    // From 2nd Kings, the replay-protected fork value is required.
     MineUntilMedianTimePast(activation);
+    BOOST_CHECK_EQUAL(TipMedianTimePast(), activation);
     BOOST_CHECK(IsMandatoryScriptFailure(Submit(Spend(false))));
     const CMutableTransaction protectedSpend = Spend(true);
     BOOST_CHECK(Submit(protectedSpend).m_result_type ==

@@ -2,8 +2,8 @@
 
 Lotus 12.7.1 is a required upgrade for the Winter Solstice 2026 network
 upgrade, the **2nd Kings** epoch. It follows the consensus rules of
-LotusiaStewardship/lotusd 12.0.0 exactly, so nodes running either release stay
-on the same chain. Nodes that do not upgrade split from the network when 2nd
+LotusiaStewardship/lotusd 12.0.0, plus the chain fork id replay protection
+described below. Nodes that do not upgrade split from the network when 2nd
 Kings activates.
 
 Lotus version numbers are major.RPC.security. The major number changes when
@@ -56,23 +56,35 @@ From activation, a block whose first coinbase output does not begin with
 height is still allowed. Blocks mined before activation under the loosened
 rule remain valid.
 
-### Replay protection moves to 1st Chronicles
+### Replay protection at 2nd Kings uses the Lotus chain fork id
 
-Lotus 11.6.1 and older switch to the replay-protected signature fork value at
-2nd Kings; after that they treat every signature made by ordinary wallets as
-invalid. 12.7.1 does not switch at 2nd Kings: replay protection now activates
-at the next scheduled upgrade, **1st Chronicles**, 2027-06-21 14:10 UTC
-(`firstChroniclesActivationTime` = `1813587000`; testnet 2027-05-31 14:10 UTC).
+From activation, every signature commits to the Lotus chain fork id
+`CHAIN_FORK_ID = 0x4c4f54` ("LOT"), defined in `src/script/sighashtype.h`.
+`SignatureHash` uses it whenever `SCRIPT_ENABLE_REPLAY_PROTECTION` is set, in
+place of the stock `forkValue ^ 0xdead | 0xff0000` transform. It applies
+before the signature algorithm is chosen, so it covers legacy, BIP143 and
+`SIGHASH_LOTUS` signatures.
 
-A node left on 11.6.1 therefore stops following the network at 2nd Kings in
-two ways: it rejects blocks with ordinary wallet transactions, and it does not
-require the new miner fund output. If such a node has already rejected a
-block, run `lotus-cli reconsiderblock <hash>` with the hash of the first
-rejected block after upgrading.
+The separation is two-way. A signature made for Lotus is invalid on any chain
+that uses another fork id, including one that activates the stock `0xffdead`
+value, and a signature made for such a chain is invalid on Lotus.
 
-1st Chronicles has no rules of its own yet. 12.7.1 nodes will make the
-replay-protection switch at that time, so the network needs another release
-before 2027-06-21.
+`lotus-tx` is offline and has no median time past, so it takes the fork id
+explicitly: `-forkid=0x4c4f54` commits the chain id, and the default
+`-forkid=0` keeps pre-activation signatures.
+
+The default activation is `secondKingsActivationTime` (`1797886200`).
+`-replayprotectionactivationtime` still overrides it for testnet and regtest.
+`firstChroniclesActivationTime` (`1813587000`) now only marks the next
+scheduled epoch, **1st Chronicles**, 2027-06-21 14:10 UTC, which has no rules
+of its own.
+
+After activation, signatures with fork value 0 are invalid. Lotus 11.6.1 and
+older, and any node without the chain fork id, therefore stop following the
+network at 2nd Kings. A node left on 11.6.1 also does not require the new
+miner fund output. If such a node has already rejected a block, run
+`lotus-cli reconsiderblock <hash>` with the hash of the first rejected block
+after upgrading.
 
 ## NNG interface
 
@@ -118,3 +130,6 @@ chain is affected.
   set them on mainnet.
 - The consensus changes are ported from LotusiaStewardship/lotusd 12.0.0
   (commit 9706858859, by Matthew (maff1989)).
+- The chain fork id replay protection is ported from LotusiaStewardship/lotusd
+  (commits 5463ed8ce, 54739e491, ff7ae63fb and 17cbfbf9f, by Matthew
+  (maff1989)).

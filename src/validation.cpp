@@ -227,7 +227,17 @@ IsReplayProtectionEnabled(const Consensus::Params &params,
     }
 
     return pindexPrev->GetMedianTimePast() >=
-           activation_time.value_or(params.firstChroniclesActivationTime);
+           activation_time.value_or(params.secondKingsActivationTime);
+}
+
+uint32_t GetChainForkId(const ChainstateManager &chainman) {
+    LOCK(::cs_main);
+    if (IsReplayProtectionEnabled(
+            chainman.GetConsensus(), chainman.ActiveTip(),
+            chainman.m_options.replay_protection_activation_time)) {
+        return CHAIN_FORK_ID;
+    }
+    return 0;
 }
 
 /**

@@ -39,6 +39,22 @@ enum {
 };
 
 /**
+ * The Lotus chain's fork id, committed to every signature while replay
+ * protection is active.
+ *
+ * This is a chain identity, not an epoch marker: a signature made for this
+ * value is invalid on any chain using a different fork id, and a signature
+ * made for another chain is invalid here. It occupies the 24-bit fork-value
+ * field of SigHashType, so it must fit in 24 bits and must not be zero.
+ *
+ * Do not change this value without a coordinated hard fork.
+ */
+static constexpr uint32_t CHAIN_FORK_ID = 0x4c4f54; // "LOT"
+static_assert(CHAIN_FORK_ID != 0, "CHAIN_FORK_ID must be non-zero");
+static_assert(CHAIN_FORK_ID <= 0xffffff,
+              "CHAIN_FORK_ID must fit in the 24-bit fork-value field");
+
+/**
  * Base signature hash types
  * Base sig hash types not defined in this enum may be used, but they will be
  * represented as UNSUPPORTED.  See transaction

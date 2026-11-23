@@ -205,20 +205,20 @@ TESTCASES = [
     dict(outputs=3, sig_hash_types=[0x21], error='Signature must be zero for failed CHECK(MULTI)SIG operation', suffix=0x61),
     dict(outputs=3, sig_hash_types=[0x81], error='Signature must be zero for failed CHECK(MULTI)SIG operation', suffix=0xe1),
     'ENABLE_REPLAY_PROTECTION',
-    dict(outputs=3, sig_hash_types=[0xffdead60], error='Signature hash type missing or not understood'),
-    dict(outputs=3, sig_hash_types=[0xffdead61]),
-    dict(outputs=3, sig_hash_types=[0xffdead62]),
-    dict(outputs=3, sig_hash_types=[0xffdead63]),
-    dict(outputs=3, sig_hash_types=[0xffdead64], error='Signature hash type missing or not understood'),
-    dict(outputs=3, sig_hash_types=[0xffdead6f], error='Signature hash type missing or not understood'),
-    dict(outputs=3, sig_hash_types=[0xffdead71], error='Signature hash type missing or not understood'),
-    dict(outputs=3, sig_hash_types=[0xffdeade0], error='Signature hash type missing or not understood'),
-    dict(outputs=3, sig_hash_types=[0xffdeade1]),
-    dict(outputs=3, sig_hash_types=[0xffdeade2]),
-    dict(outputs=3, sig_hash_types=[0xffdeade3]),
-    dict(outputs=3, sig_hash_types=[0xffdeade4], error='Signature hash type missing or not understood'),
-    dict(outputs=3, sig_hash_types=[0xffdeadef], error='Signature hash type missing or not understood'),
-    dict(outputs=3, sig_hash_types=[0xffdeadf1], error='Signature hash type missing or not understood'),
+    dict(outputs=3, sig_hash_types=[0x4c4f5460], error='Signature hash type missing or not understood'),
+    dict(outputs=3, sig_hash_types=[0x4c4f5461]),
+    dict(outputs=3, sig_hash_types=[0x4c4f5462]),
+    dict(outputs=3, sig_hash_types=[0x4c4f5463]),
+    dict(outputs=3, sig_hash_types=[0x4c4f5464], error='Signature hash type missing or not understood'),
+    dict(outputs=3, sig_hash_types=[0x4c4f546f], error='Signature hash type missing or not understood'),
+    dict(outputs=3, sig_hash_types=[0x4c4f5471], error='Signature hash type missing or not understood'),
+    dict(outputs=3, sig_hash_types=[0x4c4f54e0], error='Signature hash type missing or not understood'),
+    dict(outputs=3, sig_hash_types=[0x4c4f54e1]),
+    dict(outputs=3, sig_hash_types=[0x4c4f54e2]),
+    dict(outputs=3, sig_hash_types=[0x4c4f54e3]),
+    dict(outputs=3, sig_hash_types=[0x4c4f54e4], error='Signature hash type missing or not understood'),
+    dict(outputs=3, sig_hash_types=[0x4c4f54ef], error='Signature hash type missing or not understood'),
+    dict(outputs=3, sig_hash_types=[0x4c4f54f1], error='Signature hash type missing or not understood'),
 ]
 
 ACTIVATION_TIME = 2000000000
@@ -378,19 +378,20 @@ class Bip341Sighash(BitcoinTestFramework):
                     # If we're a simple output type (P2PKH or P2KH) and aren't supposed to fail,
                     # we sign using signrawtransactionwithkey and verify the transaction signed
                     # the expected sighash. We won't broadcast it though.
-                    # Note: signrawtransactionwithkey will not sign using replay-protection.
+                    # The RPC commits the active chain fork id, which is the fork
+                    # value encoded in this test case.
                     private_key_wif = bytes_to_wif(private_keys[key_idx].get_bytes())
-                    raw_tx_signed = self.nodes[0].signrawtransactionwithkey(
-                        unsigned_tx, [private_key_wif], sign_inputs, sig_hash_type_str)['hex']
+                    signed_result = self.nodes[0].signrawtransactionwithkey(
+                        unsigned_tx, [private_key_wif], sign_inputs, sig_hash_type_str)
                     # Extract signature from signed
                     signed_tx = CTransaction()
-                    signed_tx.deserialize(io.BytesIO(bytes.fromhex(raw_tx_signed)))
+                    signed_tx.deserialize(io.BytesIO(bytes.fromhex(signed_result['hex'])))
                     sig = list(CScript(signed_tx.vin[i].scriptSig))[0]
                     pubkey = private_keys[key_idx].get_pubkey()
                     sighash = SignatureHashLotus(
                         tx_to=tx,
                         spent_utxos=spent_outputs,
-                        sig_hash_type=sig_hash_type & 0xff,
+                        sig_hash_type=sig_hash_type,
                         input_index=i,
                         executed_script_hash=hash256(executed_scripts[key_idx]),
                     )

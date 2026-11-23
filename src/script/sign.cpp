@@ -203,9 +203,34 @@ static CScript PushAll(const std::vector<valtype> &values) {
     return result;
 }
 
+uint32_t GetSigningVerifyFlags(SigHashType sigHashType) {
+    uint32_t flags = STANDARD_SCRIPT_VERIFY_FLAGS;
+    // The chain fork value means the caller signed for a replay-protected
+    // chain. Verify against the same domain instead of fork value 0, or the
+    // signature this helper just produced would be reported as invalid.
+    if (sigHashType.getForkValue() == CHAIN_FORK_ID) {
+        flags |= SCRIPT_ENABLE_REPLAY_PROTECTION;
+    }
+    // An explicit SIGHASH_LOTUS request must not be phaseout-rejected by the
+    // local completeness check. Relay policy enforces the phaseout on
+    // broadcast.
+    if (sigHashType.hasLotus()) {
+        flags &= ~SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS;
+    }
+    return flags;
+}
+
 bool ProduceSignature(const SigningProvider &provider,
                       const BaseSignatureCreator &creator,
                       const CScript &fromPubKey, SignatureData &sigdata) {
+    return ProduceSignature(provider, creator, fromPubKey, sigdata,
+                            STANDARD_SCRIPT_VERIFY_FLAGS);
+}
+
+bool ProduceSignature(const SigningProvider &provider,
+                      const BaseSignatureCreator &creator,
+                      const CScript &fromPubKey, SignatureData &sigdata,
+                      uint32_t flags) {
     if (sigdata.complete) {
         return true;
     }
@@ -234,9 +259,8 @@ bool ProduceSignature(const SigningProvider &provider,
     sigdata.scriptSig = PushAll(result);
 
     // Test solution
-    sigdata.complete =
-        solved && VerifyScript(sigdata.scriptSig, fromPubKey,
-                               STANDARD_SCRIPT_VERIFY_FLAGS, creator.Checker());
+    sigdata.complete = solved && VerifyScript(sigdata.scriptSig, fromPubKey,
+                                              flags, creator.Checker());
     return sigdata.complete;
 }
 
@@ -372,8 +396,10 @@ bool SignSignature(const SigningProvider &provider,
         &txTo, nIn, txdata.m_spent_outputs[nIn].nValue, sigHashType, txdata);
 
     SignatureData sigdata;
+    const uint32_t flags = GetSigningVerifyFlags(sigHashType);
     bool ret = ProduceSignature(
-        provider, creator, txdata.m_spent_outputs[nIn].scriptPubKey, sigdata);
+        provider, creator, txdata.m_spent_outputs[nIn].scriptPubKey, sigdata,
+        flags);
     UpdateInput(txTo.vin.at(nIn), sigdata);
     return ret;
 }
@@ -488,6 +514,10 @@ bool SignTransaction(CMutableTransaction &mtx, const SigningProvider *keystore,
         has_coin[i] = true;
     }
     const PrecomputedTransactionData txdata(mtx, std::move(spent_outputs));
+    // Verify the signatures against the domain they were created for. Without
+    // this, a chain-fork-id signature is checked with fork value 0 and
+    // reported as invalid by the RPC and wallet that just made it.
+    const uint32_t flags = GetSigningVerifyFlags(sigHashType);
 
     // Sign what we can:
     for (size_t i = 0; i < mtx.vin.size(); i++) {
@@ -506,7 +536,7 @@ bool SignTransaction(CMutableTransaction &mtx, const SigningProvider *keystore,
             ProduceSignature(*keystore,
                              MutableTransactionSignatureCreator(
                                  &mtx, i, amount, sigHashType, txdata),
-                             prevPubKey, sigdata);
+                             prevPubKey, sigdata, flags);
         }
 
         UpdateInput(txin, sigdata);
@@ -519,7 +549,7 @@ bool SignTransaction(CMutableTransaction &mtx, const SigningProvider *keystore,
 
         ScriptError serror = ScriptError::OK;
         if (!VerifyScript(
-                txin.scriptSig, prevPubKey, STANDARD_SCRIPT_VERIFY_FLAGS,
+                txin.scriptSig, prevPubKey, flags,
                 TransactionSignatureChecker(&txConst, i, amount, txdata),
                 &serror)) {
             if (serror == ScriptError::INVALID_STACK_OPERATION) {
