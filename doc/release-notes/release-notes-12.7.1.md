@@ -69,6 +69,10 @@ The separation is two-way. A signature made for Lotus is invalid on any chain
 that uses another fork id, including one that activates the stock `0xffdead`
 value, and a signature made for such a chain is invalid on Lotus.
 
+`lotus-tx` is offline and has no median time past, so it takes the fork id
+explicitly: `-forkid=0x4c4f54` commits the chain id, and the default
+`-forkid=0` keeps pre-activation signatures.
+
 The default activation is `secondKingsActivationTime` (`1797886200`).
 `-replayprotectionactivationtime` still overrides it for testnet and regtest.
 `firstChroniclesActivationTime` (`1813587000`) now only marks the next
