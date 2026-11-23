@@ -263,13 +263,15 @@ void ParsePrevouts(const UniValue &prevTxsUnival,
 
 void SignTransaction(CMutableTransaction &mtx, const SigningProvider *keystore,
                      const std::map<COutPoint, Coin> &coins,
-                     const UniValue &hashType, UniValue &result) {
+                     const UniValue &hashType, UniValue &result,
+                     uint32_t chainForkId) {
     SigHashType sigHashType = ParseSighashString(hashType);
     if (!sigHashType.hasForkId() && !sigHashType.hasLotus()) {
         throw JSONRPCError(
             RPC_INVALID_PARAMETER,
             "Signature must use SIGHASH_FORKID or SIGHASH_LOTUS");
     }
+    sigHashType = sigHashType.withForkValue(chainForkId);
 
     // Script verification errors
     std::map<int, std::string> input_errors;

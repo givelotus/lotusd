@@ -378,19 +378,20 @@ class Bip341Sighash(BitcoinTestFramework):
                     # If we're a simple output type (P2PKH or P2KH) and aren't supposed to fail,
                     # we sign using signrawtransactionwithkey and verify the transaction signed
                     # the expected sighash. We won't broadcast it though.
-                    # Note: signrawtransactionwithkey will not sign using replay-protection.
+                    # The RPC commits the active chain fork id, which is the fork
+                    # value encoded in this test case.
                     private_key_wif = bytes_to_wif(private_keys[key_idx].get_bytes())
-                    raw_tx_signed = self.nodes[0].signrawtransactionwithkey(
-                        unsigned_tx, [private_key_wif], sign_inputs, sig_hash_type_str)['hex']
+                    signed_result = self.nodes[0].signrawtransactionwithkey(
+                        unsigned_tx, [private_key_wif], sign_inputs, sig_hash_type_str)
                     # Extract signature from signed
                     signed_tx = CTransaction()
-                    signed_tx.deserialize(io.BytesIO(bytes.fromhex(raw_tx_signed)))
+                    signed_tx.deserialize(io.BytesIO(bytes.fromhex(signed_result['hex'])))
                     sig = list(CScript(signed_tx.vin[i].scriptSig))[0]
                     pubkey = private_keys[key_idx].get_pubkey()
                     sighash = SignatureHashLotus(
                         tx_to=tx,
                         spent_utxos=spent_outputs,
-                        sig_hash_type=sig_hash_type & 0xff,
+                        sig_hash_type=sig_hash_type,
                         input_index=i,
                         executed_script_hash=hash256(executed_scripts[key_idx]),
                     )

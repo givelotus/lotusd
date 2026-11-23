@@ -7,6 +7,7 @@
 
 #include <rpc/util.h>
 
+#include <cstdint>
 #include <map>
 #include <string>
 #include <vector>
@@ -31,7 +32,8 @@ class UniValue;
  */
 void SignTransaction(CMutableTransaction &mtx, const SigningProvider *keystore,
                      const std::map<COutPoint, Coin> &coins,
-                     const UniValue &hashType, UniValue &result);
+                     const UniValue &hashType, UniValue &result,
+                     uint32_t chainForkId = 0);
 void SignTransactionResultToJSON(CMutableTransaction &mtx, bool complete,
                                  const std::map<COutPoint, Coin> &coins,
                                  const std::map<int, std::string> &input_errors,

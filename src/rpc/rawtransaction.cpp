@@ -674,7 +674,8 @@ static RPCHelpMan signrawtransactionwithkey() {
             ParsePrevouts(request.params[2], &keystore, coins);
 
             UniValue result(UniValue::VOBJ);
-            SignTransaction(mtx, &keystore, coins, request.params[3], result);
+            SignTransaction(mtx, &keystore, coins, request.params[3], result,
+                            GetChainForkId(EnsureChainman(node)));
             return result;
         },
     };

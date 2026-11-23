@@ -6,6 +6,7 @@
 #include <chainparams.h> // For CChainParams
 #include <checkqueue.h>
 #include <clientversion.h>
+#include <coins.h>
 #include <common/system.h>
 #include <config.h>
 #include <consensus/amount.h>
@@ -1032,6 +1033,68 @@ BOOST_AUTO_TEST_CASE(tx_getvalueout) {
     mtx.vout[1].nValue = (std::numeric_limits<int64_t>::max() - 1) * SATOSHI;
     CTransaction overflow_sum_tx{mtx};
     BOOST_CHECK_THROW(overflow_sum_tx.GetValueOut(), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(sign_transaction_replay_protection) {
+    CKey key;
+    key.MakeNewKey(true);
+    FillableSigningProvider keystore;
+    BOOST_CHECK(keystore.AddKey(key));
+
+    const CScript scriptPubKey =
+        GetScriptForDestination(PKHash(key.GetPubKey()));
+    const Amount value = 5 * COIN;
+
+    CMutableTransaction credit;
+    credit.nVersion = 1;
+    credit.vin.resize(1);
+    credit.vin[0].prevout = COutPoint();
+    credit.vout.resize(1);
+    credit.vout[0].nValue = value;
+    credit.vout[0].scriptPubKey = scriptPubKey;
+
+    auto makeSpend = [&]() {
+        CMutableTransaction spend;
+        spend.nVersion = 1;
+        spend.vin.resize(1);
+        spend.vin[0].prevout = COutPoint(credit.GetId(), 0);
+        spend.vout.resize(1);
+        spend.vout[0].nValue = value - COIN / 100;
+        spend.vout[0].scriptPubKey = CScript() << OP_TRUE;
+        return spend;
+    };
+
+    std::map<COutPoint, Coin> coins;
+    coins.emplace(COutPoint(credit.GetId(), 0),
+                  Coin(credit.vout[0], 0, false));
+
+    // The helper must accept the signatures it creates for a replay-protected
+    // chain, for both BIP143 and SIGHASH_LOTUS.
+    for (const SigHashType sighash :
+         {SigHashType().withForkId().withForkValue(CHAIN_FORK_ID),
+          SigHashType().withLotus().withForkValue(CHAIN_FORK_ID)}) {
+        CMutableTransaction spend = makeSpend();
+        std::map<int, std::string> errors;
+        BOOST_CHECK(SignTransaction(spend, &keystore, coins, sighash, errors));
+        BOOST_CHECK(errors.empty());
+        BOOST_CHECK(!spend.vin[0].scriptSig.empty());
+    }
+
+    // The same signature is invalid when checked without replay protection.
+    CMutableTransaction spend = makeSpend();
+    std::map<int, std::string> errors;
+    BOOST_CHECK(SignTransaction(
+        spend, &keystore, coins,
+        SigHashType().withForkId().withForkValue(CHAIN_FORK_ID), errors));
+    BOOST_CHECK(errors.empty());
+
+    const CTransaction txConst(spend);
+    const PrecomputedTransactionData txdata(txConst,
+                                            {credit.vout[0]});
+    ScriptError serror = ScriptError::OK;
+    BOOST_CHECK(!VerifyScript(
+        spend.vin[0].scriptSig, scriptPubKey, STANDARD_SCRIPT_VERIFY_FLAGS,
+        TransactionSignatureChecker(&txConst, 0, value, txdata), &serror));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -110,9 +110,25 @@ QModelIndex FindTx(const QAbstractItemModel &model, const uint256 &txid) {
 //     QT_QPA_PLATFORM=xcb     src/qt/test/test_lotus-qt  # Linux
 //     QT_QPA_PLATFORM=windows src/qt/test/test_lotus-qt  # Windows
 //     QT_QPA_PLATFORM=cocoa   src/qt/test/test_lotus-qt  # macOS
-void TestGUI(interfaces::Node &node) {
+void TestGUI(interfaces::Node &node, bool replayProtection = false) {
+    // Optionally run the send flow with replay protection active, so the
+    // wallet commits and verifies the chain fork id.
+    const size_t extraArgsSize = fixture_extra_args.size();
+    if (replayProtection) {
+        fixture_extra_args.push_back("-replayprotectionactivationtime=0");
+    }
+    struct RestoreFixtureArgs {
+        size_t size;
+        ~RestoreFixtureArgs() { fixture_extra_args.resize(size); }
+    } restoreFixtureArgs{extraArgsSize};
+
     // Set up wallet and chain with 105 blocks (5 mature blocks for spending).
     TestChain100Setup test;
+    if (replayProtection) {
+        // The send flow below must run with the chain fork id active.
+        QCOMPARE(GetChainForkId(*Assert(test.m_node.chainman)),
+                 CHAIN_FORK_ID);
+    }
     for (int i = 0; i < 5; ++i) {
         test.CreateAndProcessBlock(
             {}, GetScriptForRawPubKey(test.coinbaseKey.GetPubKey()));
@@ -183,6 +199,17 @@ void TestGUI(interfaces::Node &node) {
     QCOMPARE(transactionTableModel->rowCount({}), 107);
     QVERIFY(FindTx(*transactionTableModel, txid1).isValid());
     QVERIFY(FindTx(*transactionTableModel, txid2).isValid());
+
+    if (replayProtection) {
+        // The node's mempool only accepts signatures that commit
+        // CHAIN_FORK_ID, so these transactions prove the GUI send flow signed
+        // in the replay-protected domain.
+        for (const TxId &txid : {txid1, txid2}) {
+            const CWalletTx *wtx = wallet->GetWalletTx(txid);
+            QVERIFY(wtx != nullptr);
+            QVERIFY(wtx->InMempool());
+        }
+    }
 
     // Check current balance on OverviewPage
     OverviewPage overviewPage(platformStyle.get());
@@ -313,4 +340,8 @@ void WalletTests::walletTests() {
     }
 #endif
     TestGUI(m_node);
+}
+
+void WalletTests::walletTestsReplayProtection() {
+    TestGUI(m_node, true);
 }

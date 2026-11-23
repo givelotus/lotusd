@@ -553,6 +553,7 @@ namespace {
             }
             return std::nullopt;
         }
+        uint32_t getChainForkId() override { return GetChainForkId(chainman()); }
         BlockHash getBlockHash(int height) override {
             LOCK(::cs_main);
             const CChain &active = Assert(m_node.chainman)->ActiveChain();

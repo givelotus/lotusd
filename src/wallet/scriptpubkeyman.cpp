@@ -582,8 +582,11 @@ LegacyScriptPubKeyMan::FillPSBT(PartiallySignedTransaction &psbtx,
         }
 
         // Get the Sighash type
+        // The fork id is implicit in the signature and is supplied by the
+        // active chain, not by the PSBT. Normalize it before comparing.
         if (sign && input.sighash_type != std::nullopt &&
-            *input.sighash_type != sighash_type) {
+            input.sighash_type->withForkValue(sighash_type.getForkValue()) !=
+                sighash_type) {
             return PSBTError::SIGHASH_MISMATCH;
         }
 
@@ -2200,8 +2203,11 @@ DescriptorScriptPubKeyMan::FillPSBT(PartiallySignedTransaction &psbtx,
         }
 
         // Get the Sighash type
+        // The fork id is implicit in the signature and is supplied by the
+        // active chain, not by the PSBT. Normalize it before comparing.
         if (sign && input.sighash_type != std::nullopt &&
-            *input.sighash_type != sighash_type) {
+            input.sighash_type->withForkValue(sighash_type.getForkValue()) !=
+                sighash_type) {
             return PSBTError::SIGHASH_MISMATCH;
         }
 
