@@ -138,4 +138,20 @@ BOOST_AUTO_TEST_CASE(sighash_serialization_test) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(chain_fork_id) {
+    // The chain id must fit the 24-bit fork-value field and round-trip.
+    BOOST_CHECK_NE(CHAIN_FORK_ID, 0U);
+    BOOST_CHECK_LE(CHAIN_FORK_ID, 0xffffffU);
+
+    const SigHashType type =
+        SigHashType().withForkId().withForkValue(CHAIN_FORK_ID);
+    BOOST_CHECK_EQUAL(type.getForkValue(), CHAIN_FORK_ID);
+    BOOST_CHECK(type.hasForkId());
+    BOOST_CHECK(!type.hasLotus());
+    BOOST_CHECK(type.isDefined());
+
+    // The old global transform is a different value.
+    BOOST_CHECK_NE(CHAIN_FORK_ID, (0xff0000U | 0xdeadU));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

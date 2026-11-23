@@ -6,8 +6,10 @@
 #include <consensus/tx_check.h>
 #include <consensus/validation.h>
 #include <hash.h>
+#include <key.h>
 #include <script/interpreter.h>
 #include <script/script.h>
+#include <script/standard.h>
 #include <serialize.h>
 #include <streams.h>
 #include <util/strencodings.h>
@@ -484,6 +486,60 @@ BOOST_AUTO_TEST_CASE(sighash_caching) {
             BOOST_CHECK(cache.Load(sig_hash_type, scriptcode, dummy) ||
                         expect_one);
         }
+    }
+}
+
+// A signature made for one fork id must not verify against the other, for
+// every sighash algorithm. This is the two-way separation the chain fork id
+// exists for.
+BOOST_AUTO_TEST_CASE(sighash_cross_chain_domain) {
+    CKey key;
+    key.MakeNewKey(true);
+    const CScript scriptCode =
+        GetScriptForDestination(PKHash(key.GetPubKey()));
+
+    CMutableTransaction txFrom;
+    txFrom.nVersion = 1;
+    txFrom.vin.resize(1);
+    txFrom.vin[0].prevout = COutPoint();
+    txFrom.vout.resize(1);
+    txFrom.vout[0].nValue = 5 * COIN;
+    txFrom.vout[0].scriptPubKey = scriptCode;
+
+    CMutableTransaction txTo;
+    txTo.nVersion = 1;
+    txTo.vin.resize(1);
+    txTo.vin[0].prevout = COutPoint(txFrom.GetId(), 0);
+    txTo.vout.resize(1);
+    txTo.vout[0].nValue = 4 * COIN;
+    txTo.vout[0].scriptPubKey = CScript() << OP_TRUE;
+
+    const CTransaction txConst(txTo);
+    const PrecomputedTransactionData txdata(txConst, {txFrom.vout[0]});
+    const std::optional<ScriptExecutionData> execdata{
+        ScriptExecutionData(scriptCode)};
+    const CPubKey pubkey = key.GetPubKey();
+
+    for (const SigHashType &base :
+         {SigHashType(SIGHASH_ALL), SigHashType(SIGHASH_ALL | SIGHASH_FORKID),
+          SigHashType(SIGHASH_ALL | SIGHASH_LOTUS)}) {
+        const uint32_t flags =
+            base.isLegacy() ? SCRIPT_VERIFY_NONE : SCRIPT_ENABLE_SIGHASH_FORKID;
+        uint256 hashFork0, hashChain;
+        BOOST_CHECK(SignatureHash(hashFork0, execdata, scriptCode, txConst, 0,
+                                  base, txFrom.vout[0].nValue, &txdata, flags));
+        BOOST_CHECK(SignatureHash(hashChain, execdata, scriptCode, txConst, 0,
+                                  base.withForkValue(CHAIN_FORK_ID),
+                                  txFrom.vout[0].nValue, &txdata, flags));
+        BOOST_CHECK(hashFork0 != hashChain);
+
+        std::vector<uint8_t> sigFork0, sigChain;
+        BOOST_CHECK(key.SignECDSA(hashFork0, sigFork0));
+        BOOST_CHECK(key.SignECDSA(hashChain, sigChain));
+        BOOST_CHECK(pubkey.VerifyECDSA(hashFork0, sigFork0));
+        BOOST_CHECK(pubkey.VerifyECDSA(hashChain, sigChain));
+        BOOST_CHECK(!pubkey.VerifyECDSA(hashChain, sigFork0));
+        BOOST_CHECK(!pubkey.VerifyECDSA(hashFork0, sigChain));
     }
 }
 
